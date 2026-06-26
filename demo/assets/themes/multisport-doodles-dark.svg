@@ -1,0 +1,115 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 760">
+  <rect width="1200" height="760" fill="none"/>
+  <g fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <g stroke="#72d6ff" stroke-width="4" opacity=".30">
+      <path d="M70 82c42-16 94-14 134 4"/>
+      <path d="M89 64c38 21 72 21 109 0"/>
+      <path d="M114 48c-10 37-10 75 0 116"/>
+      <path d="M164 48c10 37 10 76-1 116"/>
+      <circle cx="139" cy="107" r="57"/>
+    </g>
+    <g stroke="#ff9a66" stroke-width="5" opacity=".30">
+      <path d="M285 102c23-33 68-38 95-11 20 20 19 51-1 72-24 25-72 22-93-7-12-17-13-37-1-54z"/>
+      <path d="M303 94c18 22 44 43 76 61"/>
+      <path d="M381 91c-23 17-48 39-77 66"/>
+      <path d="M331 75c-4 37 0 71 13 104"/>
+    </g>
+    <g stroke="#80e07e" stroke-width="5" opacity=".29">
+      <path d="M520 86c-23 12-37 35-33 61 3 24 20 40 42 43"/>
+      <path d="M540 70c16 14 22 35 17 62-4 24-16 43-35 58"/>
+      <path d="M490 124c22-7 46-8 72-4"/>
+      <path d="M466 88l34 28"/>
+      <path d="M565 72l-28 37"/>
+    </g>
+    <g stroke="#c7b4ff" stroke-width="4" opacity=".27">
+      <path d="M700 70c32-9 65 7 73 38 8 32-12 61-45 67-31 6-61-12-66-43-4-27 11-52 38-62z"/>
+      <path d="M679 161l-54 58"/>
+      <path d="M641 206c18 5 32 16 43 32"/>
+      <path d="M688 89c26 16 47 39 63 70"/>
+      <path d="M668 120c35-6 69-15 101-28"/>
+    </g>
+    <g stroke="#ff7f88" stroke-width="4" opacity=".27">
+      <path d="M875 95c28-18 64-17 90 2"/>
+      <path d="M884 98c-10 35-8 68 8 99"/>
+      <path d="M957 96c12 34 9 66-8 97"/>
+      <path d="M894 188c20 15 40 16 61 1"/>
+      <path d="M922 68v25"/>
+    </g>
+    <g stroke="#72d6ff" stroke-width="4" opacity=".26">
+      <path d="M1040 78c38 16 61 44 70 84"/>
+      <path d="M1037 181c43 8 82-2 118-30"/>
+      <path d="M1044 80c-11 39-11 76 0 112"/>
+      <path d="M1099 87c9 34 7 65-8 94"/>
+      <path d="M1017 191h134"/>
+    </g>
+    <g stroke="#ffd166" stroke-width="5" opacity=".29">
+      <path d="M105 322c28-41 78-48 118-17 35 27 40 77 10 110-34 38-99 34-126-8-17-26-18-58-2-85z"/>
+      <path d="M121 313c44 20 86 53 124 97"/>
+      <path d="M107 386c47-20 91-49 132-86"/>
+    </g>
+    <g stroke="#80e07e" stroke-width="5" opacity=".28">
+      <path d="M340 293c42 2 72 19 93 51"/>
+      <path d="M336 293c-7 50 9 92 48 126"/>
+      <path d="M432 346c-42 8-78 27-108 55"/>
+      <path d="M379 278l21 37"/>
+      <path d="M346 268l29 25"/>
+    </g>
+    <g stroke="#72d6ff" stroke-width="4" opacity=".27">
+      <path d="M560 316c44-22 98-16 137 16"/>
+      <path d="M561 318c8 35 26 68 55 98"/>
+      <path d="M697 331c-14 39-40 68-79 87"/>
+      <path d="M603 294c18 38 21 76 8 113"/>
+      <path d="M655 298c-20 32-31 66-31 104"/>
+    </g>
+    <g stroke="#ff7f88" stroke-width="5" opacity=".25">
+      <path d="M808 352c46-18 94-17 144 3"/>
+      <path d="M812 398c39-12 83-10 132 8"/>
+      <path d="M824 332l-18 90"/>
+      <path d="M948 335l-24 96"/>
+      <path d="M862 322l-12 100"/>
+      <path d="M904 326l-16 103"/>
+    </g>
+    <g stroke="#c7b4ff" stroke-width="4" opacity=".28">
+      <path d="M1037 292c30 8 55 25 73 51"/>
+      <path d="M1027 423c44-8 83-28 119-60"/>
+      <path d="M1052 302c-3 38 2 75 16 112"/>
+      <path d="M1104 344c-31 7-58 20-82 39"/>
+      <path d="M1018 430c49 5 93-4 134-26"/>
+    </g>
+    <g stroke="#72d6ff" stroke-width="5" opacity=".26">
+      <path d="M104 603c38-34 79-39 122-15"/>
+      <path d="M86 645c54 23 111 21 170-6"/>
+      <path d="M115 606c8 26 20 47 37 62"/>
+      <path d="M210 590c-13 28-33 52-60 72"/>
+      <path d="M71 653c58 13 122 11 192-6"/>
+    </g>
+    <g stroke="#80e07e" stroke-width="5" opacity=".28">
+      <path d="M343 579c30-10 63-8 99 4"/>
+      <path d="M335 676c42 13 87 8 136-16"/>
+      <path d="M368 576c-9 39-7 75 6 109"/>
+      <path d="M424 582c4 38-4 72-22 102"/>
+      <path d="M330 646c46 10 91 5 137-16"/>
+    </g>
+    <g stroke="#ff9a66" stroke-width="5" opacity=".28">
+      <path d="M572 640c38-39 84-47 140-24"/>
+      <path d="M566 640c51 37 104 37 159 0"/>
+      <path d="M591 624c29 18 65 18 107 0"/>
+      <path d="M610 593c5 32 5 65 0 99"/>
+      <path d="M676 594c-7 31-7 63 0 96"/>
+    </g>
+    <g stroke="#ff7f88" stroke-width="4" opacity=".27">
+      <path d="M858 590c18-18 41-24 67-19"/>
+      <path d="M884 572c-15 30-18 61-9 95"/>
+      <path d="M853 671c42 8 78 0 108-25"/>
+      <path d="M922 578c18 24 25 52 20 84"/>
+      <path d="M825 690c52 6 101-4 149-31"/>
+    </g>
+    <g stroke="#c7b4ff" stroke-width="5" opacity=".27">
+      <path d="M1042 585c29-18 64-17 92 2"/>
+      <path d="M1010 660c53 18 105 12 156-20"/>
+      <path d="M1066 582c-8 33-4 64 12 93"/>
+      <path d="M1122 589c6 31 0 58-20 82"/>
+      <path d="M1025 627c44 13 87 12 128-5"/>
+    </g>
+  </g>
+</svg>

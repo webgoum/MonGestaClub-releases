@@ -1,0 +1,633 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>MonGestaClub — Le logiciel de gestion de club tout-en-un</title>
+<meta name="description" content="MonGestaClub centralise le quotidien d'un club : contacts, cours, planning, coachs, salles, stages, inscriptions, paiements, factures et documents. Application locale, vos données restent chez vous. Mac & Windows. Essai de 30 jours." />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Lobster&family=Nunito:wght@400;600;700;800;900&display=swap" rel="stylesheet" />
+<link rel="icon" type="image/png" href="shots/logo.png" />
+<style>
+  :root{
+    --bg:#eee9dc; --paper:#fbf7ea; --paper-2:#ebe4d3; --paper-3:#fffdf5;
+    --ink:#242424; --muted:#676258;
+    --line:#918b7e; --line-strong:#48443d;
+    --slate:#4d5966; --terra:#9a5148; --ocre:#a98638;
+    --shadow:5px 7px 0 rgba(48,45,38,.14);
+    --shadow-sm:3px 4px 0 rgba(48,45,38,.14);
+    --radius:11px;
+    --maxw:1180px;
+    --font-body:Nunito,"Trebuchet MS",ui-sans-serif,system-ui,sans-serif;
+    --font-title:Lobster,cursive;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html{scroll-behavior:smooth}
+  body{
+    font-family:var(--font-body);color:var(--ink);line-height:1.65;font-weight:600;
+    background:
+      radial-gradient(ellipse at 12% 8%, rgba(255,255,255,.80), transparent 320px),
+      repeating-linear-gradient(102deg, rgba(36,36,36,.035) 0 1px, transparent 1px 9px),
+      repeating-linear-gradient(6deg, rgba(36,36,36,.025) 0 1px, transparent 1px 17px),
+      linear-gradient(180deg,#f7f1e3,#e5decd);
+    background-attachment:fixed;
+    overflow-x:hidden;
+  }
+  a{color:inherit;text-decoration:none}
+  img{max-width:100%;display:block}
+  .wrap{max-width:var(--maxw);margin:0 auto;padding:0 24px}
+  h1,h2,h3,.brand-name{font-family:var(--font-title);font-weight:400;letter-spacing:.5px;line-height:1.1}
+  h1{font-size:clamp(2.6rem,6vw,4.6rem)}
+  h2{font-size:clamp(2rem,4vw,3rem)}
+  h3{font-size:1.5rem}
+  .eyebrow{display:inline-block;font-family:var(--font-body);font-size:.72rem;font-weight:900;
+    letter-spacing:.16em;text-transform:uppercase;color:var(--terra);
+    background:var(--paper-3);border:2px solid var(--line-strong);
+    padding:6px 14px;border-radius:9px;margin-bottom:18px;box-shadow:var(--shadow-sm);
+    transform:rotate(-.6deg)}
+  .lead{font-size:clamp(1.05rem,1.7vw,1.3rem);color:#3c382f;font-weight:600;max-width:680px}
+
+  /* PAPER CARD */
+  .paper{
+    background:
+      linear-gradient(2deg, transparent, rgba(255,255,255,.06)),
+      repeating-linear-gradient(96deg, rgba(0,0,0,.035) 0 1px, transparent 1px 12px),
+      var(--paper);
+    border:2px solid var(--line-strong);
+    border-radius:var(--radius);
+    box-shadow:var(--shadow);
+  }
+
+  /* BUTTONS */
+  .btn{display:inline-flex;align-items:center;gap:9px;font-family:var(--font-body);font-weight:900;
+    font-size:1rem;padding:14px 26px;border-radius:12px;cursor:pointer;border:2px solid var(--line-strong);
+    transition:transform .12s, box-shadow .12s;box-shadow:var(--shadow-sm)}
+  .btn:hover{transform:translate(-1px,-2px);box-shadow:6px 8px 0 rgba(48,45,38,.18)}
+  .btn:active{transform:translate(1px,2px);box-shadow:2px 3px 0 rgba(48,45,38,.14)}
+  .btn-primary{background:var(--terra);color:#fff5ee}
+  .btn-dark{background:var(--ink);color:#f3eddd}
+  .btn-paper{background:var(--paper-3);color:var(--ink)}
+
+  /* NAV */
+  header.nav{position:sticky;top:0;z-index:50;
+    background:rgba(251,247,234,.86);backdrop-filter:blur(8px);
+    border-bottom:2px solid var(--line-strong)}
+  .nav-in{display:flex;align-items:center;justify-content:space-between;height:72px;gap:16px}
+  .brand{display:flex;align-items:center;gap:12px}
+  .brand img{width:42px;height:42px;border-radius:10px;border:2px solid var(--line-strong)}
+  .brand-name{font-size:1.4rem}
+  .nav-links{display:flex;gap:26px;font-weight:800;color:#46423a}
+  .nav-links a:hover{color:var(--terra)}
+  .nav-actions{display:flex;align-items:center;gap:10px}
+  /* Hamburger (masqué en desktop) */
+  .nav-toggle{display:none;width:46px;height:44px;align-items:center;justify-content:center;
+    background:var(--paper-3);border:2px solid var(--line-strong);border-radius:11px;
+    box-shadow:var(--shadow-sm);cursor:pointer;flex:none}
+  .nav-toggle-bar{position:relative;display:block;width:20px;height:2.5px;background:var(--ink);border-radius:2px;transition:background .18s}
+  .nav-toggle-bar::before,.nav-toggle-bar::after{content:"";position:absolute;left:0;width:20px;height:2.5px;background:var(--ink);border-radius:2px;transition:transform .18s}
+  .nav-toggle-bar::before{transform:translateY(-6px)}
+  .nav-toggle-bar::after{transform:translateY(6px)}
+  .nav-toggle[aria-expanded="true"] .nav-toggle-bar{background:transparent}
+  .nav-toggle[aria-expanded="true"] .nav-toggle-bar::before{transform:translateY(0) rotate(45deg)}
+  .nav-toggle[aria-expanded="true"] .nav-toggle-bar::after{transform:translateY(0) rotate(-45deg)}
+  @media(max-width:880px){
+    .nav-toggle{display:inline-flex}
+    .nav-links{display:none;position:absolute;top:100%;left:0;right:0;flex-direction:column;gap:4px;
+      background:rgba(251,247,234,.98);backdrop-filter:blur(8px);
+      border-bottom:2px solid var(--line-strong);padding:12px 24px 18px;box-shadow:var(--shadow)}
+    .nav-links.open{display:flex}
+    .nav-links a{padding:11px 6px;border-bottom:1px solid var(--line);font-size:1.05rem}
+    .nav-links a:last-child{border-bottom:none}
+  }
+  /* Évite le surpeuplement de la barre (logo + nom + hamburger + bouton) sur petits écrans */
+  @media(max-width:480px){
+    .brand img{width:36px;height:36px}
+    .brand-name{font-size:1.12rem}
+    .nav-actions .btn{padding:10px 14px;font-size:.9rem}
+    .nav-toggle{width:42px;height:40px}
+  }
+  @media(max-width:360px){ .brand-name{display:none} }
+
+  /* HERO */
+  .hero{padding:74px 0 50px;text-align:center;position:relative}
+  .hero-logo{width:132px;height:132px;margin:0 auto 22px;border-radius:26px;
+    border:3px solid var(--line-strong);box-shadow:var(--shadow);transform:rotate(-1.5deg);background:var(--paper-3)}
+  .hero h1{margin-bottom:20px}
+  .hero h1 .u{color:var(--terra);position:relative;white-space:nowrap}
+  .hero h1 .u::after{content:"";position:absolute;left:0;right:0;bottom:6px;height:6px;
+    background:var(--ocre);opacity:.5;border-radius:4px;transform:rotate(-.5deg)}
+  .hero .lead{margin:0 auto 30px}
+  .hero-cta{display:flex;gap:14px;justify-content:center;flex-wrap:wrap;margin-bottom:14px}
+  /* Peaufinages mobile */
+  @media(max-width:700px){ body{background-attachment:scroll} }
+  @media(max-width:420px){
+    .hero-cta{flex-direction:column;align-items:stretch}
+    .hero-cta .btn{width:100%;justify-content:center}
+  }
+  @media(max-width:380px){ .wrap{padding:0 16px} .cta-band{margin:0 16px} }
+  /* Le titre souligne ne reste sur une ligne (nowrap) que tant qu'il tient ; on autorise
+     le retour a la ligne uniquement sur tres petits ecrans pour eviter tout rognage. */
+  @media(max-width:360px){ .hero h1 .u{white-space:normal} }
+  .hero-note{font-size:.92rem;color:var(--muted);font-weight:700}
+  .hero-shot{margin:46px auto 0;max-width:1000px;transform:rotate(-.4deg)}
+  .hero-shot img{width:100%;border:3px solid var(--line-strong);border-radius:16px 12px 18px 11px;box-shadow:var(--shadow)}
+
+  /* TRUST */
+  .trust{display:flex;gap:14px 26px;justify-content:center;flex-wrap:wrap;padding:30px 0;
+    border-bottom:2px dashed var(--line)}
+  .trust .pill{display:flex;align-items:center;gap:9px;font-weight:800;color:#3c382f;font-size:.96rem}
+  .trust .pill b{font-size:1.15rem}
+
+  /* SECTION */
+  section{padding:78px 0}
+  .sec-head{text-align:center;max-width:720px;margin:0 auto 50px}
+  .sec-head h2{margin-bottom:14px}
+  .sec-head p{color:var(--muted);font-size:1.08rem;font-weight:600}
+
+  /* BENEFITS (4 cartes) */
+  .benefits{display:grid;grid-template-columns:repeat(4,1fr);gap:20px}
+  @media(max-width:900px){.benefits{grid-template-columns:repeat(2,1fr)}}
+  @media(max-width:520px){.benefits{grid-template-columns:1fr}}
+
+  /* FEATURES (cartes) */
+  .features{display:grid;grid-template-columns:repeat(3,1fr);gap:22px}
+  @media(max-width:900px){.features{grid-template-columns:repeat(2,1fr)}}
+  @media(max-width:600px){.features{grid-template-columns:1fr}}
+  .card{padding:26px;transition:transform .14s}
+  .card:nth-child(odd){transform:rotate(-.3deg)}
+  .card:nth-child(even){transform:rotate(.3deg)}
+  .card:hover{transform:translate(-2px,-3px) rotate(0deg)}
+  .card .ico{width:52px;height:52px;border-radius:13px;display:grid;place-items:center;font-size:1.6rem;
+    background:var(--paper-3);border:2px solid var(--line-strong);margin-bottom:15px;box-shadow:var(--shadow-sm)}
+  .card h3{font-size:1.3rem;margin-bottom:8px;color:var(--slate)}
+  .card p{color:#4a463d;font-size:.97rem;font-weight:600}
+
+  /* SHOWCASE */
+  .showcase{display:grid;grid-template-columns:1fr 1fr;gap:46px;align-items:center;margin-bottom:60px}
+  .showcase:last-child{margin-bottom:0}
+  .showcase.rev .txt{order:2}
+  @media(max-width:880px){.showcase{grid-template-columns:1fr;gap:26px}.showcase.rev .txt{order:0}}
+  .showcase .shot img{width:100%;border:3px solid var(--line-strong);border-radius:14px 11px 15px 10px;box-shadow:var(--shadow)}
+  .showcase.rev .shot{transform:rotate(.5deg)}
+  .showcase:not(.rev) .shot{transform:rotate(-.5deg)}
+  .showcase .txt h3{font-size:1.8rem;margin-bottom:13px;color:var(--terra)}
+  .showcase .txt p{color:#4a463d;margin-bottom:16px;font-weight:600}
+  .showcase ul{list-style:none;display:grid;gap:11px}
+  .showcase li{display:flex;gap:11px;align-items:flex-start;color:#3c382f;font-weight:700}
+  .showcase li::before{content:"✓";color:var(--terra);font-weight:900;font-size:1.1rem;flex:none}
+
+  /* PERSO */
+  .perso{display:grid;grid-template-columns:repeat(4,1fr);gap:18px;margin-top:10px}
+  @media(max-width:760px){.perso{grid-template-columns:repeat(2,1fr)}}
+  .mini{padding:22px;text-align:center}
+  .mini:nth-child(odd){transform:rotate(-.5deg)}
+  .mini:nth-child(even){transform:rotate(.5deg)}
+  .mini .n{font-family:var(--font-title);font-size:2.4rem;color:var(--terra);line-height:1}
+  .mini .l{color:var(--muted);font-size:.9rem;margin-top:6px;font-weight:700}
+
+  /* THEMES */
+  .theme-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:20px}
+  @media(max-width:900px){.theme-grid{grid-template-columns:repeat(2,1fr)}}
+  @media(max-width:600px){.theme-grid{grid-template-columns:1fr}}
+  .theme{overflow:hidden;padding:0}
+  .theme:nth-child(3n+1){transform:rotate(-.4deg)}
+  .theme:nth-child(3n+2){transform:rotate(.3deg)}
+  .theme:nth-child(3n){transform:rotate(-.2deg)}
+  .theme:hover{transform:translate(-2px,-3px) rotate(0deg)}
+  .theme img{width:100%;aspect-ratio:16/10;object-fit:cover;object-position:top left;border-bottom:2px solid var(--line-strong)}
+  .theme .cap{padding:12px 16px;font-weight:900;display:flex;justify-content:space-between;align-items:center}
+  .theme .cap span{color:var(--muted);font-weight:700;font-size:.82rem}
+
+  /* GALLERY */
+  .gallery{display:grid;grid-template-columns:repeat(3,1fr);gap:18px}
+  @media(max-width:900px){.gallery{grid-template-columns:repeat(2,1fr)}}
+  @media(max-width:600px){.gallery{grid-template-columns:1fr}}
+  .gallery figure{overflow:hidden;padding:0}
+  .gallery figure:nth-child(even){transform:rotate(.3deg)}
+  .gallery figure:nth-child(odd){transform:rotate(-.3deg)}
+  .gallery img{width:100%;aspect-ratio:16/10;object-fit:cover;object-position:top left;border-bottom:2px solid var(--line-strong)}
+  .gallery figcaption{padding:12px 16px;font-weight:800;color:var(--slate)}
+
+  /* DOWNLOAD */
+  .download-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:22px}
+  @media(max-width:820px){.download-grid{grid-template-columns:1fr}}
+  .download-card{display:flex;flex-direction:column;align-items:center;text-align:center;gap:7px;padding:30px 24px;transition:transform .14s}
+  .download-card:nth-child(1){transform:rotate(-.5deg)}
+  .download-card:nth-child(3){transform:rotate(.5deg)}
+  .download-card:hover{transform:translate(-2px,-3px) rotate(0deg)}
+  .download-card .dl-ico{font-size:2.6rem;line-height:1;margin-bottom:4px}
+  .download-card h3{font-size:1.3rem;color:var(--slate)}
+  .download-card .dl-sub{color:var(--muted);font-size:.9rem;font-weight:700}
+  .download-card .dl-btn{margin-top:12px;background:var(--terra);color:#fff5ee;font-weight:900;
+    padding:11px 24px;border-radius:11px;border:2px solid var(--line-strong);box-shadow:var(--shadow-sm)}
+  .download-card:hover .dl-btn{box-shadow:5px 6px 0 rgba(48,45,38,.18)}
+  .download-note{text-align:center;color:var(--muted);font-size:.9rem;font-weight:700;margin-top:26px;max-width:700px;margin-left:auto;margin-right:auto}
+
+  /* CTA */
+  .cta-band{margin:0 24px}
+  .cta-inner{max-width:var(--maxw);margin:0 auto;padding:60px 30px;text-align:center}
+  .cta-inner h2{margin-bottom:14px}
+  .cta-inner p{color:#4a463d;font-size:1.1rem;font-weight:600;max-width:620px;margin:0 auto 28px}
+
+  footer{padding:40px 0;color:var(--muted);font-size:.9rem;text-align:center;font-weight:700;
+    border-top:2px dashed var(--line)}
+  .footer-brand{display:flex;align-items:center;gap:10px;justify-content:center;margin-bottom:10px}
+  .footer-brand img{width:34px;height:34px;border-radius:9px;border:2px solid var(--line-strong)}
+  .footer-brand span{font-family:var(--font-title);font-size:1.4rem;color:var(--ink)}
+
+  /* LIGHTBOX */
+  .zoomable{cursor:zoom-in}
+  .lightbox{position:fixed;inset:0;z-index:100;background:rgba(36,33,28,.88);
+    display:flex;align-items:center;justify-content:center;padding:28px;cursor:zoom-out;opacity:0;transition:opacity .18s}
+  .lightbox.open{opacity:1}
+  .lightbox[hidden]{display:none}
+  .lightbox img{max-width:95vw;max-height:92vh;border:3px solid var(--paper);border-radius:14px;box-shadow:0 30px 80px rgba(0,0,0,.5)}
+  .lightbox .lb-close{position:absolute;top:22px;right:26px;width:46px;height:46px;border-radius:50%;
+    border:2px solid var(--paper);background:rgba(255,255,255,.12);color:#fff;font-size:1.5rem;cursor:pointer;display:grid;place-items:center}
+  .lightbox .lb-hint{position:absolute;bottom:22px;left:0;right:0;text-align:center;color:#d9d2c4;font-size:.85rem;font-weight:700}
+
+  /* ICÔNES MGC (SVG inline, même famille que l'application) */
+  .mgc-icon{display:block;width:100%;height:100%}
+  .card .ico .mgc-icon{width:36px;height:36px}
+  .trust .pill .pill-ico{display:inline-flex;width:24px;height:24px;flex:none}
+  .download-card .dl-ico{display:flex;align-items:center;justify-content:center}
+  .download-card .dl-ico .mgc-icon{width:50px;height:50px}
+  /* Petites icônes UI monochromes des boutons (téléchargement / lecture démo) */
+  .btn-ic{width:1em;height:1em;flex:none}
+  .dl-btn .btn-ic{width:.95em;height:.95em;vertical-align:-2px;margin-right:5px}
+</style>
+</head>
+<body>
+
+<header class="nav">
+  <div class="wrap nav-in">
+    <a class="brand" href="#top"><img src="shots/logo.png" alt="MonGestaClub" /><span class="brand-name">MonGestaClub</span></a>
+    <nav class="nav-links" id="navLinks">
+      <a href="#modules">Modules</a>
+      <a href="#planning">Planning</a>
+      <a href="#perso">Personnalisation</a>
+      <a href="#themes">Thèmes</a>
+      <a href="demo/index.html" target="_blank" rel="noopener">Démo en ligne</a>
+      <a href="#download">Télécharger</a>
+    </nav>
+    <div class="nav-actions">
+      <button type="button" class="nav-toggle" id="navToggle" aria-label="Ouvrir le menu" aria-expanded="false" aria-controls="navLinks"><span class="nav-toggle-bar" aria-hidden="true"></span></button>
+      <a class="btn btn-primary" href="#download">Télécharger</a>
+    </div>
+  </div>
+</header>
+
+<a id="top"></a>
+
+<!-- ============ 1. HERO ============ -->
+<section class="hero">
+  <div class="wrap">
+    <img class="hero-logo" src="shots/logo.png" alt="MonGestaClub" />
+    <span class="eyebrow">Gestion de club · Associations sportives</span>
+    <h1>Gérez tout votre club<br><span class="u">depuis un seul logiciel</span></h1>
+    <p class="lead">Contacts, cours, planning, coachs, salles, stages, paiements, factures et documents :
+      MonGestaClub centralise le quotidien d'un club dans une <strong>application locale</strong>, claire et personnalisable.</p>
+    <div class="hero-cta">
+      <a class="btn btn-primary" href="#download"><svg class="btn-ic" viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2.5v8"/><path d="M4.5 7 8 10.5 11.5 7"/><path d="M3 13.5h10"/></svg>Télécharger</a>
+      <a class="btn btn-paper" href="demo/index.html" target="_blank" rel="noopener"><svg class="btn-ic" viewBox="0 0 16 16" aria-hidden="true" fill="currentColor"><path d="M5 3.5 12 8 5 12.5z"/></svg>Voir la démo</a>
+    </div>
+    <p class="hero-note">Mac &amp; Windows · Application locale · Essai de 30 jours</p>
+    <div class="hero-shot"><img src="shots/page-accueil.png" alt="Tableau de bord de MonGestaClub" /></div>
+  </div>
+</section>
+
+<div class="trust wrap">
+  <div class="pill"><span class="pill-ico"><svg class="mgc-icon" viewBox="0 0 64 64" aria-hidden="true"><g fill="none" stroke="#2f3740" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"><path d="M32 7 53 13v15c0 14-9 23-21 27-12-4-21-13-21-27V13Z" fill="#a8bf8a"/><path d="M32 14 46 18v10c0 10-6 17-14 20-8-3-14-10-14-20V18Z" stroke-width="2"/></g></svg></span> Vos données restent chez vous</div>
+  <div class="pill"><span class="pill-ico"><svg class="mgc-icon" viewBox="0 0 64 64" aria-hidden="true"><g fill="none" stroke="#2f3740" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"><rect x="14" y="14" width="36" height="26" rx="3" fill="#6f8798"/><rect x="19" y="19" width="26" height="16" rx="1.5" fill="#f3eadc"/><path d="M8 48h48l-3 4a3 3 0 0 1-2.6 1.5H13.6A3 3 0 0 1 11 52Z" fill="#df8c68"/><path d="M27 48h10"/></g></svg></span> Application locale</div>
+  <div class="pill"><span class="pill-ico"><svg class="mgc-icon" viewBox="0 0 64 64" aria-hidden="true"><g fill="none" stroke="#2f3740" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"><circle cx="32" cy="18" r="10" fill="#df8c68"/><circle cx="32" cy="18" r="3.6" fill="#f3eadc"/><path d="M32 28v22" stroke-width="4"/><path d="M32 44h7M32 50h5" stroke-width="4"/></g></svg></span> Sans cloud imposé</div>
+  <div class="pill"><span class="pill-ico"><svg class="mgc-icon" viewBox="0 0 64 64" aria-hidden="true"><g fill="none" stroke="#2f3740" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"><path d="M28 11 31.6 23 43.5 26.5 31.6 30 28 42 24.4 30 12.5 26.5 24.4 23Z" fill="#9fb3c3"/><path d="M48 36 50 42 56 44 50 46 48 52 46 46 40 44 46 42Z" fill="#df8c68"/><path d="M47 13 48.4 17.2 52.5 18.5 48.4 19.8 47 24 45.6 19.8 41.5 18.5 45.6 17.2Z" fill="#a8bf8a"/></g></svg></span> Personnalisable</div>
+  <div class="pill"><span class="pill-ico"><svg class="mgc-icon" viewBox="0 0 64 64" aria-hidden="true"><g fill="none" stroke="#2f3740" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"><path d="M32 8 52 14v17c0 14-10 22-20 26C22 53 12 45 12 31V14z" fill="#6f8798"/><path d="M32 21 35.4 28.2 43.2 29.2 37.6 34.6 39 42.2 32 38.5 25 42.2 26.4 34.6 20.8 29.2 28.6 28.2Z" fill="#df8c68"/></g></svg></span> Multi-clubs</div>
+  <div class="pill"><span class="pill-ico"><svg class="mgc-icon" viewBox="0 0 64 64" aria-hidden="true"><g fill="none" stroke="#2f3740" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"><rect x="14" y="14" width="36" height="26" rx="3" fill="#6f8798"/><rect x="19" y="19" width="26" height="16" rx="1.5" fill="#f3eadc"/><path d="M8 48h48l-3 4a3 3 0 0 1-2.6 1.5H13.6A3 3 0 0 1 11 52Z" fill="#df8c68"/><path d="M27 48h10"/></g></svg></span> Mac &amp; Windows</div>
+</div>
+
+<!-- ============ 2. BÉNÉFICES PRINCIPAUX ============ -->
+<section id="benefices">
+  <div class="wrap">
+    <div class="sec-head">
+      <span class="eyebrow">Pourquoi MonGestaClub</span>
+      <h2>Plus simple qu'Excel, le papier et les messages</h2>
+      <p>Un seul outil pour tout le club, à la place des fichiers éparpillés et des relances à la main.</p>
+    </div>
+    <div class="benefits">
+      <div class="card paper"><div class="ico"><svg class="mgc-icon" viewBox="0 0 64 64" aria-hidden="true"><g fill="none" stroke="#2f3740" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"><path d="M7 17a3 3 0 0 1 3-3h12l4 4h25a3 3 0 0 1 3 3v5H7Z" fill="#e8d8bf"/><path d="M7 24h50l-4 25a3 3 0 0 1-3 2.5H10a3 3 0 0 1-3-2.5Z" fill="#f3eadc"/></g></svg></div><h3>Tout centraliser</h3><p>Adhérents, paiements, planning, stages, factures et documents au même endroit, reliés entre eux.</p></div>
+      <div class="card paper"><div class="ico"><svg class="mgc-icon" viewBox="0 0 64 64" aria-hidden="true"><g fill="none" stroke="#2f3740" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"><circle cx="32" cy="37" r="19" fill="#f3eadc"/><path d="M27 8h10" stroke-width="3.4"/><path d="M32 8v6"/><path d="M48 14l4 4" stroke-width="3.2"/><g stroke="#9fb3c3" stroke-width="2"><path d="M32 21v3M45 37h3M32 53v3M16 37h3"/></g><path d="M32 37 41 28" stroke="#c97868" stroke-width="3"/><circle cx="32" cy="37" r="2.4" fill="#2f3740" stroke="none"/></g></svg></div><h3>Gagner du temps</h3><p>Tarifs, licences et restes à payer se calculent tout seuls. Moins de saisie, moins d'erreurs.</p></div>
+      <div class="card paper"><div class="ico"><svg class="mgc-icon" viewBox="0 0 64 64" aria-hidden="true"><g fill="none" stroke="#2f3740" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"><path d="M18 44V30a14 14 0 0 1 28 0v14l3 4H15z" fill="#df8c68"/><path d="M28 52a4 4 0 0 0 8 0"/><circle cx="48" cy="18" r="9" fill="#c97868"/><path d="M51.5 14.5a4 4 0 1 0 0 7" stroke="#f3eadc" stroke-width="2.4"/><path d="M44 17.5h6M44 20.5h5" stroke="#f3eadc" stroke-width="2.4"/></g></svg></div><h3>Suivre les paiements</h3><p>Qui a payé, qui doit encore, en une ou plusieurs fois : le reste à payer est toujours à jour.</p></div>
+      <div class="card paper"><div class="ico"><svg class="mgc-icon" viewBox="0 0 64 64" aria-hidden="true"><g fill="none" stroke="#2f3740" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"><path d="M20 28a12 12 0 1 1 24 0c0 5-3 8-4.6 11-1 1.9-1.2 3.4-1.3 5H25.9c-.1-1.6-.3-3.1-1.3-5C23 36 20 33 20 28Z" fill="#f3eadc"/><path d="M32 20.5 34.2 25.8 40 26.2 35.5 30 37 35.6 32 32.5 27 35.6 28.5 30 24 26.2 29.8 25.8Z" fill="#df8c68"/><path d="M26.5 49h11"/><path d="M28.5 53.5h7"/></g></svg></div><h3>Mieux organiser le planning</h3><p>Coachs, salles et groupes réunis, avec un assistant qui propose les créneaux qui fonctionnent.</p></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 3. MODULES ESSENTIELS ============ -->
+<section id="modules">
+  <div class="wrap">
+    <div class="sec-head">
+      <span class="eyebrow">Tout-en-un</span>
+      <h2>Ce que vous gérez avec MonGestaClub</h2>
+      <p>De l'inscription d'un adhérent au suivi des paiements, chaque besoin du club est couvert.</p>
+    </div>
+    <div class="features">
+      <div class="card paper"><div class="ico"><svg class="mgc-icon" viewBox="0 0 64 64" aria-hidden="true"><g fill="none" stroke="#2f3740" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"><rect x="12" y="14" width="40" height="37" rx="6" fill="#f3eadc"/><circle cx="24" cy="28" r="6.5" fill="#e8d8bf"/><circle cx="24" cy="26" r="3.4" fill="#6f8798"/><path d="M17.5 39a6.5 6.5 0 0 1 13 0" fill="#6f8798"/><path d="M38 24h9"/><path d="M38 31h9"/><path d="M38 38h6"/></g></svg></div><h3>Contacts &amp; adhérents</h3><p>Fiches complètes : coordonnées, photo, documents (certificats, autorisations), catégorie et historique financier.</p></div>
+      <div class="card paper"><div class="ico"><svg class="mgc-icon" viewBox="0 0 64 64" aria-hidden="true"><g fill="none" stroke="#2f3740" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"><rect x="12" y="15" width="40" height="40" rx="5" fill="#f3eadc"/><path d="M14 15h36a2 2 0 0 1 2 2v9H12v-9a2 2 0 0 1 2-2z" fill="#6f8798"/><path d="M22 11v8"/><path d="M42 11v8"/><rect x="19" y="33" width="8" height="7" rx="1.6" fill="#df8c68"/><rect x="31" y="33" width="8" height="7" rx="1.6" fill="#e8d8bf"/><rect x="19" y="44" width="8" height="7" rx="1.6" fill="#e8d8bf"/><rect x="31" y="44" width="8" height="7" rx="1.6" fill="#e8d8bf"/></g></svg></div><h3>Cours &amp; planning</h3><p>Vos séances, vos lieux et vos encadrants, visualisés clairement — par semaine ou en liste.</p></div>
+      <div class="card paper"><div class="ico"><svg class="mgc-icon" viewBox="0 0 64 64" aria-hidden="true"><g fill="none" stroke="#2f3740" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"><path d="M15 53a17 17 0 0 1 34 0z" fill="#6f8798"/><circle cx="32" cy="27" r="9" fill="#f3eadc"/><path d="M22 25a10 10 0 0 1 20 1z" fill="#df8c68"/><path d="M42 25.5 52 28"/><circle cx="44" cy="41" r="3" fill="#c97868"/></g></svg></div><h3>Coachs &amp; salles</h3><p>Fiches coachs avec photo, coordonnées et disponibilités ; salles avec capacité et surface.</p></div>
+      <div class="card paper"><div class="ico"><svg class="mgc-icon" viewBox="0 0 64 64" aria-hidden="true"><g fill="none" stroke="#2f3740" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"><path d="M28 13a4 4 0 0 1 8 0" /><path d="M18 27a14 14 0 0 1 28 0v23a4 4 0 0 1-4 4H22a4 4 0 0 1-4-4z" fill="#df8c68"/><path d="M20 34a12 8 0 0 1 24 0" fill="#c97868"/><rect x="24" y="38" width="16" height="16" rx="3" fill="#f3eadc"/><path d="M24 45h16"/><path d="M22 28a8 9 0 0 0-5 11M42 28a8 9 0 0 1 5 11"/></g></svg></div><h3>Stages &amp; inscriptions</h3><p>Inscrivez en quelques secondes : tarif, licence et assurance se pré-remplissent automatiquement.</p></div>
+      <div class="card paper"><div class="ico"><svg class="mgc-icon" viewBox="0 0 64 64" aria-hidden="true"><g fill="none" stroke="#2f3740" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"><path d="M18 10h20l8 8v34a2 2 0 0 1-2 2H18a2 2 0 0 1-2-2V12a2 2 0 0 1 2-2z" fill="#f3eadc"/><path d="M38 10v8h8" fill="#e8d8bf"/><path d="M37 29a8 8 0 1 0 0 14" stroke="#c97868" stroke-width="3.4"/><path d="M22 33h13" stroke="#c97868" stroke-width="3.4"/><path d="M22 39h13" stroke="#c97868" stroke-width="3.4"/></g></svg></div><h3>Factures &amp; paiements</h3><p>Une facture par contact, paiements partiels et reste à payer suivis sans calculette.</p></div>
+      <div class="card paper"><div class="ico"><svg class="mgc-icon" viewBox="0 0 64 64" aria-hidden="true"><g fill="none" stroke="#2f3740" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"><rect x="14" y="12" width="36" height="44" rx="5" fill="#f3eadc"/><rect x="25" y="7" width="14" height="9" rx="3" fill="#6f8798"/><circle cx="24" cy="30" r="4" stroke="#df8c68"/><path d="M38 26 46 34M46 26 38 34" stroke="#c97868"/><path d="M22 43 40 47" stroke="#a8bf8a"/><path d="M40 47 34.5 46.5M40 47 38 42" stroke="#a8bf8a"/></g></svg></div><h3>Documents &amp; paramètres</h3><p>Certificats, autorisations, sauvegardes, et des réglages d'affichage entièrement à votre main.</p></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 4. PLANNING INTELLIGENT / DISPONIBILITÉS ============ -->
+<section id="planning">
+  <div class="wrap">
+    <div class="sec-head">
+      <span class="eyebrow">Nouveau</span>
+      <h2>Un planning qui trouve les créneaux pour vous</h2>
+      <p>Le centre des disponibilités croise coachs, salles et groupes pour proposer les créneaux qui fonctionnent.</p>
+    </div>
+    <div class="showcase">
+      <div class="txt">
+        <h3>Planning intelligent</h3>
+        <p>Plus besoin de tester chaque combinaison à la main : le logiciel cherche pour vous les moments où tout le monde est disponible.</p>
+        <ul>
+          <li>Recherche de créneaux compatibles coach + salle + groupe</li>
+          <li>Aide à la création d'un cours au bon moment</li>
+          <li>Moins d'essais/erreurs et d'allers-retours</li>
+        </ul>
+      </div>
+      <div class="shot"><img src="shots/page-disponibilites.png" alt="Centre des disponibilités : recherche de créneaux compatibles" /></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 5. COACHS ET SALLES ============ -->
+<section id="coachs">
+  <div class="wrap">
+    <div class="showcase rev">
+      <div class="txt">
+        <h3>Des fiches coachs claires et à jour</h3>
+        <p>Chaque coach a sa carte d'identité : photo ou avatar, coordonnées, disponibilités et salles associées.</p>
+        <ul>
+          <li>Photo du coach ou avatar au choix</li>
+          <li>Coordonnées et rôle en un coup d'œil</li>
+          <li>Disponibilités et alertes « à remplacer »</li>
+          <li>Salles avec capacité et surface</li>
+        </ul>
+      </div>
+      <div class="shot"><img src="shots/page-coachs.png" alt="Fiches coachs avec photo, avatar et coordonnées" /></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 6. FACTURATION ET PAIEMENTS ============ -->
+<section id="facturation">
+  <div class="wrap">
+    <div class="showcase">
+      <div class="txt">
+        <h3>Facturation et paiements, sous contrôle</h3>
+        <p>Une facture par contact, numérotée. Réglez ligne par ligne, en une ou plusieurs fois, et gardez le reste à payer à jour.</p>
+        <ul>
+          <li>Reprise automatique des cotisations, stages et achats</li>
+          <li>Paiements partiels et reste à payer calculés tout seuls</li>
+          <li>Impression et export PDF</li>
+        </ul>
+      </div>
+      <div class="shot"><img src="shots/page-factures.png" alt="Facturation et paiements" /></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 7. STAGES ET INSCRIPTIONS ============ -->
+<section id="stages">
+  <div class="wrap">
+    <div class="showcase rev">
+      <div class="txt">
+        <h3>Stages et inscriptions en quelques secondes</h3>
+        <p>Créez un stage, inscrivez les participants, et laissez le logiciel calculer tarifs et paiements liés.</p>
+        <ul>
+          <li>Tarif, licence et assurance pré-remplis</li>
+          <li>Paiements du stage suivis avec le reste à payer</li>
+          <li>Tout rattaché à la fiche du contact</li>
+        </ul>
+      </div>
+      <div class="shot"><img src="shots/dialog-inscription.png" alt="Dialogue d'inscription" /></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 8. ASSISTANT INTÉGRÉ ============ -->
+<section id="assistant">
+  <div class="wrap">
+    <div class="showcase">
+      <div class="txt">
+        <h3>Un assistant qui vous accompagne</h3>
+        <p>Le centre d'accompagnement propose des visites guidées et une aide contextuelle, page par page. Et si vous préférez travailler seul, il se masque d'un clic.</p>
+        <ul>
+          <li>Visites guidées des fonctionnalités</li>
+          <li>Aide contextuelle sur chaque page</li>
+          <li>Assistant masquable quand vous n'en avez plus besoin</li>
+        </ul>
+      </div>
+      <div class="shot"><img src="shots/page-accompagnement.png" alt="Centre d'accompagnement : visites guidées et aide contextuelle" /></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 9. PERSONNALISATION ============ -->
+<section id="perso">
+  <div class="wrap">
+    <div class="sec-head">
+      <span class="eyebrow">À votre image</span>
+      <h2>Un logiciel à votre image</h2>
+      <p>Thèmes, icônes, menus et niveau d'interface : adaptez MonGestaClub à votre club en quelques clics.</p>
+    </div>
+    <div class="perso">
+      <div class="mini paper"><div class="n">12</div><div class="l">thèmes prêts à l'emploi</div></div>
+      <div class="mini paper"><div class="n">2</div><div class="l">modes clair &amp; sombre</div></div>
+      <div class="mini paper"><div class="n">4</div><div class="l">familles de polices au choix</div></div>
+      <div class="mini paper"><div class="n">100%</div><div class="l">menus &amp; modules réorganisables</div></div>
+    </div>
+    <div class="showcase" style="margin-top:52px">
+      <div class="txt">
+        <h3>Réglez l'interface comme vous voulez</h3>
+        <p>Choisissez un thème et vos couleurs, réorganisez les menus avec leurs icônes, et passez de l'interface simple à avancée selon vos besoins.</p>
+        <ul>
+          <li>Thèmes clairs et sombres, couleurs personnalisables</li>
+          <li>Icônes MGC illustrées dans les menus</li>
+          <li>Menus réorganisables, protégeables par mot de passe</li>
+          <li>Interface simple, avancée ou personnalisée</li>
+        </ul>
+      </div>
+      <div class="shot"><img src="shots/page-themes.png" alt="Personnalisation : choix du thème et des couleurs" /></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ THÈMES ============ -->
+<section id="themes" style="padding-top:0">
+  <div class="wrap">
+    <div class="sec-head">
+      <span class="eyebrow">6 ambiances × clair / sombre</span>
+      <h2>Le même logiciel, votre style</h2>
+      <p>Du papier au crayon au cuir &amp; inox brossé, du look Windows 11 aux illustrations sportives.</p>
+    </div>
+    <div class="theme-grid">
+      <div class="theme paper"><img src="shots/page-accueil.png" alt="Thème Graphite"><div class="cap">Graphite<span>clair · papier</span></div></div>
+      <div class="theme paper"><img src="shots/theme-graphite-dark.png" alt="Thème Graphite sombre"><div class="cap">Graphite<span>sombre</span></div></div>
+      <div class="theme paper"><img src="shots/theme-mac.png" alt="Thème Cuir / Inox"><div class="cap">Cuir / Inox<span>cuir &amp; inox brossé</span></div></div>
+      <div class="theme paper"><img src="shots/theme-mac-dark.png" alt="Thème Cuir / Inox sombre"><div class="cap">Cuir / Inox<span>sombre</span></div></div>
+      <div class="theme paper"><img src="shots/theme-classic.png" alt="Thème Classique"><div class="cap">Classique<span>clair · pro</span></div></div>
+      <div class="theme paper"><img src="shots/theme-classic-dark.png" alt="Thème Classique sombre"><div class="cap">Classique<span>sombre</span></div></div>
+      <div class="theme paper"><img src="shots/theme-ubuntu.png" alt="Thème Ubuntu"><div class="cap">Ubuntu<span>chaleureux</span></div></div>
+      <div class="theme paper"><img src="shots/theme-win11.png" alt="Thème Windows 11"><div class="cap">Windows 11<span>moderne</span></div></div>
+      <div class="theme paper"><img src="shots/theme-windows.png" alt="Thème Multi-sport"><div class="cap">Multi-sport<span>illustré</span></div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 10. GALERIE / APERÇU DES ÉCRANS ============ -->
+<section id="apercu">
+  <div class="wrap">
+    <div class="sec-head">
+      <span class="eyebrow">Visite guidée</span>
+      <h2>Aperçu des écrans</h2>
+      <p>Une interface homogène et lisible, de l'accueil à la comptabilité. Cliquez pour agrandir.</p>
+    </div>
+    <div class="gallery">
+      <figure class="paper"><img src="shots/page-contacts.png" alt="Contacts"><figcaption>Contacts &amp; adhérents</figcaption></figure>
+      <figure class="paper"><img src="shots/page-disciplines.png" alt="Disciplines"><figcaption>Disciplines</figcaption></figure>
+      <figure class="paper"><img src="shots/page-coachs.png" alt="Coachs"><figcaption>Coachs</figcaption></figure>
+      <figure class="paper"><img src="shots/page-salles.png" alt="Salles"><figcaption>Salles</figcaption></figure>
+      <figure class="paper"><img src="shots/page-planning.png" alt="Planning"><figcaption>Planning des séances</figcaption></figure>
+      <figure class="paper"><img src="shots/page-stages.png" alt="Stages"><figcaption>Stages</figcaption></figure>
+      <figure class="paper"><img src="shots/page-email.png" alt="E-mail"><figcaption>E-mails &amp; relances</figcaption></figure>
+      <figure class="paper"><img src="shots/page-compta.png" alt="Comptabilité"><figcaption>Comptabilité</figcaption></figure>
+      <figure class="paper"><img src="shots/page-stock.png" alt="Stock"><figcaption>Stock</figcaption></figure>
+      <figure class="paper"><img src="shots/page-stats.png" alt="Statistiques"><figcaption>Statistiques</figcaption></figure>
+      <figure class="paper"><img src="shots/page-boutique.png" alt="Boutique"><figcaption>Boutique</figcaption></figure>
+      <figure class="paper"><img src="shots/page-aide.png" alt="Aide"><figcaption>Aide intégrée</figcaption></figure>
+    </div>
+  </div>
+</section>
+
+<!-- ============ CONFIANCE / DONNÉES ============ -->
+<section>
+  <div class="wrap">
+    <div class="sec-head">
+      <span class="eyebrow">Vos données</span>
+      <h2>Vos données restent chez vous</h2>
+    </div>
+    <div class="features">
+      <div class="card paper"><div class="ico"><svg class="mgc-icon" viewBox="0 0 64 64" aria-hidden="true"><g fill="none" stroke="#2f3740" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"><path d="M32 7 53 13v15c0 14-9 23-21 27-12-4-21-13-21-27V13Z" fill="#a8bf8a"/><path d="M32 14 46 18v10c0 10-6 17-14 20-8-3-14-10-14-20V18Z" stroke-width="2"/></g></svg></div><h3>100 % local</h3><p>Tout est stocké sur votre ordinateur, protégé par mot de passe. Sans cloud imposé.</p></div>
+      <div class="card paper"><div class="ico"><svg class="mgc-icon" viewBox="0 0 64 64" aria-hidden="true"><g fill="none" stroke="#2f3740" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"><path d="M32 8 52 14v17c0 14-10 22-20 26C22 53 12 45 12 31V14z" fill="#6f8798"/><path d="M32 21 35.4 28.2 43.2 29.2 37.6 34.6 39 42.2 32 38.5 25 42.2 26.4 34.6 20.8 29.2 28.6 28.2Z" fill="#df8c68"/></g></svg></div><h3>Multi-clubs</h3><p>Gérez plusieurs clubs séparés dans le même logiciel, chacun avec ses données et son apparence.</p></div>
+      <div class="card paper"><div class="ico"><svg class="mgc-icon" viewBox="0 0 64 64" aria-hidden="true"><g fill="none" stroke="#2f3740" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"><rect x="12" y="16" width="40" height="40" rx="3" fill="#f3eadc"/><path d="M12 33h40"/><rect x="17" y="20" width="13" height="10" rx="1.5" fill="#9fb3c3"/><rect x="34" y="22" width="12" height="8" rx="1.5" fill="#e8d8bf"/><rect x="17" y="43" width="12" height="10" rx="1.5" fill="#df8c68"/><rect x="33" y="40" width="13" height="13" rx="1.5" fill="#9fb3c3"/></g></svg></div><h3>Sauvegardes simples</h3><p>Export et import en un clic pour archiver vos saisons et garder l'historique du club.</p></div>
+      <div class="card paper"><div class="ico"><svg class="mgc-icon" viewBox="0 0 64 64" aria-hidden="true"><g fill="none" stroke="#2f3740" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"><rect x="14" y="14" width="36" height="26" rx="3" fill="#6f8798"/><rect x="19" y="19" width="26" height="16" rx="1.5" fill="#f3eadc"/><path d="M8 48h48l-3 4a3 3 0 0 1-2.6 1.5H13.6A3 3 0 0 1 11 52Z" fill="#df8c68"/><path d="M27 48h10"/></g></svg></div><h3>Mac &amp; Windows</h3><p>Application native pour macOS (Intel &amp; Apple Silicon) et Windows.</p></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 11. TÉLÉCHARGEMENT ============ -->
+<section id="download">
+  <div class="wrap">
+    <div class="sec-head">
+      <span class="eyebrow">Téléchargement</span>
+      <h2>Installez MonGestaClub</h2>
+      <p>Choisissez votre système. Le logiciel est 100 % fonctionnel pendant 30 jours, sans limite.</p>
+    </div>
+    <div class="download-grid">
+      <a class="download-card paper" href="https://github.com/webgoum/MonGestaClub-releases/releases/download/v1.0.4/MonGestaClub-1.0.4-mac-arm64.dmg" download>
+        <div class="dl-ico"><svg class="mgc-icon" viewBox="0 0 64 64" aria-hidden="true"><g fill="none" stroke="#2f3740" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"><rect x="14" y="14" width="36" height="26" rx="3" fill="#6f8798"/><rect x="19" y="19" width="26" height="16" rx="1.5" fill="#f3eadc"/><path d="M8 48h48l-3 4a3 3 0 0 1-2.6 1.5H13.6A3 3 0 0 1 11 52Z" fill="#df8c68"/><path d="M27 48h10"/></g></svg></div>
+        <h3>macOS — Apple Silicon</h3>
+        <span class="dl-sub">M1, M2, M3, M4 · fichier .dmg</span>
+        <span class="dl-btn"><svg class="btn-ic" viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2.5v8"/><path d="M4.5 7 8 10.5 11.5 7"/><path d="M3 13.5h10"/></svg>Télécharger</span>
+      </a>
+      <a class="download-card paper" href="https://github.com/webgoum/MonGestaClub-releases/releases/download/v1.0.4/MonGestaClub-1.0.4-mac-intel.dmg" download>
+        <div class="dl-ico"><svg class="mgc-icon" viewBox="0 0 64 64" aria-hidden="true"><g fill="none" stroke="#2f3740" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"><rect x="14" y="14" width="36" height="26" rx="3" fill="#6f8798"/><rect x="19" y="19" width="26" height="16" rx="1.5" fill="#f3eadc"/><path d="M8 48h48l-3 4a3 3 0 0 1-2.6 1.5H13.6A3 3 0 0 1 11 52Z" fill="#df8c68"/><path d="M27 48h10"/></g></svg></div>
+        <h3>macOS — Intel</h3>
+        <span class="dl-sub">Mac à processeur Intel · fichier .dmg</span>
+        <span class="dl-btn"><svg class="btn-ic" viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2.5v8"/><path d="M4.5 7 8 10.5 11.5 7"/><path d="M3 13.5h10"/></svg>Télécharger</span>
+      </a>
+      <a class="download-card paper" href="https://github.com/webgoum/MonGestaClub-releases/releases/download/v1.0.4/MonGestaClub-1.0.4-windows.exe" download>
+        <div class="dl-ico"><svg class="mgc-icon" viewBox="0 0 64 64" aria-hidden="true"><g fill="none" stroke="#2f3740" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"><rect x="14" y="14" width="36" height="26" rx="3" fill="#6f8798"/><rect x="19" y="19" width="26" height="16" rx="1.5" fill="#f3eadc"/><path d="M8 48h48l-3 4a3 3 0 0 1-2.6 1.5H13.6A3 3 0 0 1 11 52Z" fill="#df8c68"/><path d="M27 48h10"/></g></svg></div>
+        <h3>Windows</h3>
+        <span class="dl-sub">Windows 10 / 11 · installeur .exe</span>
+        <span class="dl-btn"><svg class="btn-ic" viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2.5v8"/><path d="M4.5 7 8 10.5 11.5 7"/><path d="M3 13.5h10"/></svg>Télécharger</span>
+      </a>
+    </div>
+    <p class="download-note">Version 1.0.4 · Application non signée par les magasins d'applications. Au premier lancement, votre système peut afficher un avertissement (sur Mac : « endommagé »). C'est normal et sans danger — suivez le guide <a href="installation.html" style="color:var(--terra);font-weight:900;text-decoration:underline">Première ouverture (Mac &amp; Windows)</a>.</p>
+  </div>
+</section>
+
+<!-- ============ CTA ============ -->
+<div class="cta-band">
+  <div class="paper cta-inner">
+    <span class="eyebrow">Prêt à simplifier la gestion de votre club ?</span>
+    <h2>Essayez MonGestaClub</h2>
+    <p>Testez d'abord la démo dans votre navigateur, puis installez le logiciel : il reste 100 % fonctionnel pendant 30 jours, sans limite.</p>
+    <div class="hero-cta" style="justify-content:center">
+      <a class="btn btn-primary" href="#download"><svg class="btn-ic" viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2.5v8"/><path d="M4.5 7 8 10.5 11.5 7"/><path d="M3 13.5h10"/></svg>Télécharger</a>
+      <a class="btn btn-paper" href="demo/index.html" target="_blank" rel="noopener"><svg class="btn-ic" viewBox="0 0 16 16" aria-hidden="true" fill="currentColor"><path d="M5 3.5 12 8 5 12.5z"/></svg>Voir la démo</a>
+    </div>
+  </div>
+</div>
+
+<footer>
+  <div class="wrap">
+    <div class="footer-brand"><img src="shots/logo.png" alt=""><span>MonGestaClub</span></div>
+    <p>Logiciel de gestion pour clubs et associations sportives.</p>
+    <p>Copyright © 2026 Thierry.C — Tous droits réservés · Contact : contact@mongestaclub.fr</p>
+  </div>
+</footer>
+
+<div class="lightbox" id="lightbox" hidden>
+  <button class="lb-close" id="lbClose" aria-label="Fermer">×</button>
+  <img id="lightboxImg" src="" alt="" />
+  <div class="lb-hint">Cliquez n'importe où ou appuyez sur Échap pour fermer</div>
+</div>
+
+<script>
+(function(){
+  var lb=document.getElementById('lightbox'), img=document.getElementById('lightboxImg');
+  var selector='.hero-shot img,.showcase .shot img,.theme img,.gallery img';
+  document.querySelectorAll(selector).forEach(function(el){
+    el.classList.add('zoomable');
+    el.addEventListener('click',function(){
+      img.src=el.currentSrc||el.src; img.alt=el.alt||'';
+      lb.hidden=false; requestAnimationFrame(function(){lb.classList.add('open');});
+      document.body.style.overflow='hidden';
+    });
+  });
+  function close(){lb.classList.remove('open');document.body.style.overflow='';setTimeout(function(){lb.hidden=true;img.src='';},180);}
+  lb.addEventListener('click',close);
+  document.getElementById('lbClose').addEventListener('click',function(e){e.stopPropagation();close();});
+  document.addEventListener('keydown',function(e){if(e.key==='Escape'&&!lb.hidden)close();});
+})();
+</script>
+
+<script>
+(function(){
+  var toggle=document.getElementById('navToggle'), links=document.getElementById('navLinks');
+  if(!toggle||!links) return;
+  function setOpen(open){
+    links.classList.toggle('open',open);
+    toggle.setAttribute('aria-expanded',open?'true':'false');
+    toggle.setAttribute('aria-label',open?'Fermer le menu':'Ouvrir le menu');
+  }
+  toggle.addEventListener('click',function(e){e.stopPropagation();setOpen(!links.classList.contains('open'));});
+  links.addEventListener('click',function(e){if(e.target.closest('a'))setOpen(false);});
+  document.addEventListener('click',function(e){
+    if(links.classList.contains('open')&&!links.contains(e.target)&&!toggle.contains(e.target))setOpen(false);
+  });
+  document.addEventListener('keydown',function(e){if(e.key==='Escape'&&links.classList.contains('open')){setOpen(false);toggle.focus();}});
+  // Si on repasse en desktop, on referme proprement pour repartir d'un état neutre.
+  window.matchMedia('(min-width:881px)').addEventListener('change',function(ev){if(ev.matches)setOpen(false);});
+})();
+</script>
+
+</body>
+</html>

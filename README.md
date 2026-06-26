@@ -1,6 +1,34 @@
-# MonGestaClub — Téléchargements publics
+# MonGestaClub — Site public & téléchargements
 
-Ce dépôt héberge uniquement les **installateurs publics** de MonGestaClub via GitHub Releases.
-Il ne contient aucun code source.
+Ce dépôt **public** héberge deux choses, et **aucun code source applicatif** :
 
-➡️ Voir la section **Releases** pour télécharger l'application (macOS & Windows).
+1. **Le site de présentation** (vitrine + démo jouable), publié via **GitHub Pages**
+   sur https://www.mongestaclub.fr
+2. **Les installateurs** (macOS & Windows), publiés comme **assets de GitHub Releases**.
+
+Le code source de l'application est conservé dans un dépôt **privé** séparé.
+
+## Contenu
+
+- `index.html` — page de présentation
+- `installation.html` — guide de première ouverture (Mac & Windows)
+- `demo/` — démo jouable (application web en mode démonstration, données locales au navigateur)
+- `shots/` — captures d'écran
+- `CNAME` — domaine personnalisé (`www.mongestaclub.fr`)
+- `.nojekyll` — désactive le traitement Jekyll de GitHub Pages
+
+## Téléchargements (release `v1.0.4`)
+
+Installeurs non signés (voir le guide *Première ouverture*) :
+
+- [`MonGestaClub-1.0.4-mac-arm64.dmg`](https://github.com/webgoum/MonGestaClub-releases/releases/download/v1.0.4/MonGestaClub-1.0.4-mac-arm64.dmg) — macOS Apple Silicon (M1–M4)
+- [`MonGestaClub-1.0.4-mac-intel.dmg`](https://github.com/webgoum/MonGestaClub-releases/releases/download/v1.0.4/MonGestaClub-1.0.4-mac-intel.dmg) — macOS Intel
+- [`MonGestaClub-1.0.4-windows.exe`](https://github.com/webgoum/MonGestaClub-releases/releases/download/v1.0.4/MonGestaClub-1.0.4-windows.exe) — Windows 10 / 11
+
+## Mise à jour
+
+Le contenu est synchronisé depuis le dossier `presentation/` du dépôt privé.
+À chaque version : copier `presentation/` ici, committer/pousser, puis publier la release
+correspondante avec les nouveaux installateurs.
+
+© 2026 Thierry.C — Tous droits réservés.

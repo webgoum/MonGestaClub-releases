@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>MonGestaClub — Première ouverture (Mac & Windows)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Lobster&family=Nunito:wght@400;600;700;800;900&display=swap" rel="stylesheet" />
+<link rel="icon" type="image/png" href="shots/logo.png" />
+<style>
+  :root{
+    --bg:#eee9dc; --paper:#fbf7ea; --paper-3:#fffdf5;
+    --ink:#242424; --muted:#676258; --line:#918b7e; --line-strong:#48443d;
+    --slate:#4d5966; --terra:#9a5148; --ocre:#a98638;
+    --shadow:5px 7px 0 rgba(48,45,38,.14); --shadow-sm:3px 4px 0 rgba(48,45,38,.14); --radius:11px;
+    --font-body:Nunito,"Trebuchet MS",ui-sans-serif,system-ui,sans-serif; --font-title:Lobster,cursive;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:var(--font-body);color:var(--ink);font-weight:600;line-height:1.65;
+    background:
+      repeating-linear-gradient(102deg, rgba(36,36,36,.035) 0 1px, transparent 1px 9px),
+      repeating-linear-gradient(6deg, rgba(36,36,36,.025) 0 1px, transparent 1px 17px),
+      linear-gradient(180deg,#f7f1e3,#e5decd);
+    background-attachment:fixed;min-height:100vh;overflow-x:hidden}
+  a{color:var(--terra)}
+  h1,h2,h3{font-family:var(--font-title);font-weight:400;letter-spacing:.5px;line-height:1.1}
+  h1{font-size:clamp(2.2rem,5vw,3.4rem)}
+  h2{font-size:1.8rem;color:var(--slate)}
+  .wrap{max-width:780px;margin:0 auto;padding:46px 24px 80px}
+  .brand{display:flex;align-items:center;gap:12px;margin-bottom:26px}
+  .brand img{width:44px;height:44px;border-radius:11px;border:2px solid var(--line-strong)}
+  .brand span{font-family:var(--font-title);font-size:1.5rem}
+  .paper{background:
+      repeating-linear-gradient(96deg, rgba(0,0,0,.035) 0 1px, transparent 1px 12px), var(--paper);
+    border:2px solid var(--line-strong);border-radius:var(--radius);box-shadow:var(--shadow)}
+  .lead{color:#3c382f;font-size:1.1rem;margin:14px 0 30px}
+  .alert{padding:18px 20px;margin:24px 0;border-left:6px solid var(--terra)}
+  .alert strong{color:var(--terra)}
+  .panel{padding:26px 28px;margin-bottom:24px}
+  .panel h2{margin-bottom:8px}
+  ol{margin:14px 0 0 22px;display:grid;gap:12px}
+  li{padding-left:4px;min-width:0}
+  .cmd{display:flex;align-items:center;gap:12px;margin:10px 0;min-width:0;
+    background:var(--ink);color:#f3eddd;border-radius:10px;padding:14px 16px;
+    font-family:ui-monospace,"SF Mono",Menlo,monospace;font-weight:700;font-size:.95rem;
+    border:2px solid var(--line-strong);overflow-x:auto}
+  .cmd code{white-space:nowrap;min-width:0;overflow-x:auto}
+  .copy{margin-left:auto;flex:none;cursor:pointer;font-family:var(--font-body);font-weight:900;
+    background:var(--terra);color:#fff5ee;border:0;border-radius:8px;padding:8px 14px;font-size:.85rem}
+  .copy.ok{background:var(--slate)}
+  .muted{color:var(--muted);font-size:.92rem;font-weight:700}
+  .back{display:inline-flex;align-items:center;gap:8px;margin-top:10px;font-weight:900}
+  .tag{display:inline-block;font-size:.72rem;font-weight:900;letter-spacing:.12em;text-transform:uppercase;
+    color:#fff5ee;background:var(--slate);padding:4px 11px;border-radius:7px;margin-bottom:10px}
+  .tag.win{background:var(--ocre)}
+  @media(max-width:700px){
+    body{background-attachment:scroll}
+  }
+  @media(max-width:480px){
+    .cmd{flex-wrap:wrap}
+    .cmd code{flex:1 1 100%;width:100%}
+    .copy{margin-left:0}
+  }
+  @media(max-width:380px){
+    .wrap{padding:38px 16px 64px}
+    .panel{padding:22px 18px}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="brand"><img src="shots/logo.png" alt=""><span>MonGestaClub</span></div>
+  <a class="back" href="index.html">← Retour à la présentation</a>
+
+  <h1>Première ouverture du logiciel</h1>
+  <p class="lead">MonGestaClub n'est pas signé par les magasins d'applications. Au tout premier lancement,
+  votre système peut afficher un avertissement de sécurité : c'est normal et sans danger. Voici comment l'autoriser, une seule fois.</p>
+
+  <div class="paper panel">
+    <span class="tag">macOS</span>
+    <h2>« MonGestaClub est endommagé » — la vraie solution</h2>
+    <p class="muted">Ce message trompeur apparaît parce que l'application n'est pas notariée par Apple. L'app n'est pas endommagée : il suffit de retirer la mise en quarantaine ajoutée au téléchargement.</p>
+    <ol>
+      <li>Ouvrez le fichier <strong>.dmg</strong> téléchargé, puis <strong>glissez MonGestaClub</strong> dans le dossier <strong>Applications</strong>.</li>
+      <li>Ouvrez l'application <strong>Terminal</strong> (Spotlight : <strong>⌘ + Espace</strong>, tapez « Terminal », Entrée).</li>
+      <li>Copiez-collez cette commande dans le Terminal, puis appuyez sur <strong>Entrée</strong> :
+        <div class="cmd"><code id="cmdMac">sudo xattr -cr /Applications/MonGestaClub.app</code>
+          <button class="copy" data-copy="cmdMac">Copier</button></div>
+        <p class="muted" style="margin-top:8px">Le Terminal demandera le <strong>mot de passe de votre Mac</strong> : tapez-le puis appuyez sur Entrée (par sécurité, rien ne s'affiche pendant la saisie, c'est normal).</p>
+      </li>
+      <li>Lancez <strong>MonGestaClub</strong> depuis le dossier Applications. C'est fait — l'avertissement ne reviendra plus.</li>
+    </ol>
+    <p class="muted" style="margin-top:14px">Astuce : si vous préférez ne pas utiliser le Terminal, faites un <strong>clic droit sur l'app → Ouvrir</strong>. Si le message « endommagé » persiste malgré tout, la commande ci-dessus reste la méthode fiable.</p>
+  </div>
+
+  <div class="paper panel">
+    <span class="tag win">Windows</span>
+    <h2>« Windows a protégé votre ordinateur »</h2>
+    <p class="muted">SmartScreen affiche cet avertissement pour les applications peu téléchargées. L'installeur est sûr.</p>
+    <ol>
+      <li>Lancez le fichier <strong>MonGestaClub Setup .exe</strong> téléchargé.</li>
+      <li>Sur l'écran bleu SmartScreen, cliquez sur <strong>« Informations complémentaires »</strong>.</li>
+      <li>Cliquez sur <strong>« Exécuter quand même »</strong>, puis suivez l'installation.</li>
+    </ol>
+  </div>
+
+  <p class="muted">Un souci pour installer ? Écrivez à <a href="mailto:contact@mongestaclub.fr">contact@mongestaclub.fr</a>.</p>
+  <a class="back" href="index.html">← Retour à la présentation</a>
+</div>
+
+<script>
+  document.querySelectorAll(".copy").forEach(function(btn){
+    btn.addEventListener("click", function(){
+      var text = document.getElementById(btn.dataset.copy).textContent;
+      navigator.clipboard.writeText(text).then(function(){
+        btn.textContent = "Copié ✓"; btn.classList.add("ok");
+        setTimeout(function(){ btn.textContent = "Copier"; btn.classList.remove("ok"); }, 1800);
+      });
+    });
+  });
+</script>
+</body>
+</html>
