@@ -24,6 +24,7 @@ Installeurs non signés (voir le guide *Première ouverture*) :
 - [`MonGestaClub-1.0.4-mac-arm64.dmg`](https://github.com/webgoum/MonGestaClub-releases/releases/download/v1.0.4/MonGestaClub-1.0.4-mac-arm64.dmg) — macOS Apple Silicon (M1–M4)
 - [`MonGestaClub-1.0.4-mac-intel.dmg`](https://github.com/webgoum/MonGestaClub-releases/releases/download/v1.0.4/MonGestaClub-1.0.4-mac-intel.dmg) — macOS Intel
 - [`MonGestaClub-1.0.4-windows.exe`](https://github.com/webgoum/MonGestaClub-releases/releases/download/v1.0.4/MonGestaClub-1.0.4-windows.exe) — Windows 10 / 11
+- [`MonGestaClub-1.0.4-linux.AppImage`](https://github.com/webgoum/MonGestaClub-releases/releases/download/v1.0.4/MonGestaClub-1.0.4-linux.AppImage) — Linux (AppImage 64 bits, rendre exécutable si nécessaire)
 
 ## Mise à jour
 

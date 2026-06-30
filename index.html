@@ -210,7 +210,8 @@
   .gallery figcaption{padding:12px 16px;font-weight:800;color:var(--slate)}
 
   /* DOWNLOAD */
-  .download-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:22px}
+  .download-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:22px}
+  @media(max-width:1040px){.download-grid{grid-template-columns:repeat(2,1fr)}}
   @media(max-width:820px){.download-grid{grid-template-columns:1fr}}
   .download-card{display:flex;flex-direction:column;align-items:center;text-align:center;gap:7px;padding:30px 24px;transition:transform .14s}
   .download-card:nth-child(1){transform:rotate(-.5deg)}
@@ -557,6 +558,13 @@
         <h3>Windows</h3>
         <span class="dl-sub">Windows 10 / 11 · installeur .exe</span>
         <span class="dl-btn"><svg class="btn-ic" viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2.5v8"/><path d="M4.5 7 8 10.5 11.5 7"/><path d="M3 13.5h10"/></svg>Télécharger</span>
+      </a>
+      <a class="download-card paper" href="https://github.com/webgoum/MonGestaClub-releases/releases/download/v1.0.4/MonGestaClub-1.0.4-linux.AppImage" download>
+        <div class="dl-ico"><svg class="mgc-icon" viewBox="0 0 64 64" aria-hidden="true"><g fill="none" stroke="#2f3740" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"><rect x="14" y="14" width="36" height="26" rx="3" fill="#6f8798"/><rect x="19" y="19" width="26" height="16" rx="1.5" fill="#f3eadc"/><path d="M8 48h48l-3 4a3 3 0 0 1-2.6 1.5H13.6A3 3 0 0 1 11 52Z" fill="#df8c68"/><path d="M27 48h10"/></g></svg></div>
+        <h3>Linux</h3>
+        <span class="dl-sub">AppImage 64 bits</span>
+        <span class="dl-btn"><svg class="btn-ic" viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2.5v8"/><path d="M4.5 7 8 10.5 11.5 7"/><path d="M3 13.5h10"/></svg>Télécharger Linux</span>
+        <span class="dl-sub" style="font-size:.78rem;opacity:.85;margin-top:8px">Rendre le fichier exécutable si nécessaire.</span>
       </a>
     </div>
     <p class="download-note">Version 1.0.4 · Application non signée par les magasins d'applications. Au premier lancement, votre système peut afficher un avertissement (sur Mac : « endommagé »). C'est normal et sans danger — suivez le guide <a href="installation.html" style="color:var(--terra);font-weight:900;text-decoration:underline">Première ouverture (Mac &amp; Windows)</a>.</p>
