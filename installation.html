@@ -127,10 +127,37 @@
   document.querySelectorAll(".copy").forEach(function(btn){
     btn.addEventListener("click", function(){
       var text = document.getElementById(btn.dataset.copy).textContent;
-      navigator.clipboard.writeText(text).then(function(){
-        btn.textContent = "Copié ✓"; btn.classList.add("ok");
-        setTimeout(function(){ btn.textContent = "Copier"; btn.classList.remove("ok"); }, 1800);
-      });
+      var original = btn.textContent;
+      function showResult(ok){
+        btn.textContent = ok ? "Copié ✓" : "Copie impossible";
+        btn.classList.toggle("ok", ok);
+        setTimeout(function(){ btn.textContent = original; btn.classList.remove("ok"); }, 1800);
+      }
+      function fallbackCopy(){
+        var ok = false;
+        try {
+          var ta = document.createElement("textarea");
+          ta.value = text;
+          ta.setAttribute("readonly", "");
+          ta.style.position = "fixed";
+          ta.style.top = "-1000px";
+          ta.style.left = "-1000px";
+          document.body.appendChild(ta);
+          ta.select();
+          ta.setSelectionRange(0, text.length);
+          ok = document.execCommand("copy");
+          document.body.removeChild(ta);
+        } catch (e) { ok = false; }
+        showResult(ok);
+      }
+      // Clipboard API : disponible seulement en contexte sécurisé (HTTPS, localhost, file://).
+      // Hors contexte sécurisé (site public servi en HTTP), navigator.clipboard est undefined :
+      // on bascule directement sur le fallback textarea + execCommand, plus universel.
+      if (window.isSecureContext && navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(function(){ showResult(true); }).catch(fallbackCopy);
+      } else {
+        fallbackCopy();
+      }
     });
   });
 </script>
