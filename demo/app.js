@@ -184,7 +184,15 @@
   ];
   // Modules jamais masquables (sécurité : on ne bloque jamais l'utilisateur).
   // "assistant" (Centre d'accompagnement) est toujours accessible depuis la barre supérieure.
-  const DISPLAY_FORCED_MODULES = ["dashboard", "settings", "help", "assistant"];
+  // "search" et "newsletter" : fonctions transversales (recherche globale toujours affichée dans
+  // la topbar, boutons e-mail/contact sur coachs/salles/groupes) qui restaient cliquables même
+  // masquées, menant à une redirection silencieuse « module non affiché ». Forcées ici plutôt que
+  // gardées au cas par cas sur chaque bouton (audit modules désactivables).
+  // "documents" : fonction cœur liée aux adhérents. Les champs licence/certificat/autorisation
+  // parentale restent toujours saisissables dans les fiches contact ; masquer la seule vue globale
+  // qui les exploite (alertes d'expiration, dossiers manquants) créait une expérience à moitié
+  // visible plutôt qu'un bug technique — décision produit, même mécanisme que Recherche/E-mails.
+  const DISPLAY_FORCED_MODULES = ["dashboard", "settings", "help", "assistant", "search", "newsletter", "documents"];
 
   // Assistant MonGestaClub — version de schéma de settings.assistant (migrations futures).
   // Déclarés ici (tôt) car normalizeAssistantSettings est appelée dès loadSettings au démarrage,
@@ -259,14 +267,22 @@
     ["lightbulb", "Ampoule", "./assets/postits/postit-lightbulb.png"],
     ["check", "Validation", "./assets/postits/postit-check.png"],
   ];
+  // Lot Post-it V2 — libellés alignés sur l'usage réel après le lot À faire V2 (audit) : "late"
+  // couvre aussi les paiements refusés, "due" sert de fourre-tout (coachs/salles/conflits/groupes/
+  // documents non-certificat, plus aucun paiement), "stock" ne couvre plus que la rupture.
   const POSTIT_TYPES = [
-    ["late", "Paiement en retard"],
-    ["due", "À encaisser"],
-    ["stock", "Stock faible"],
-    ["certificate", "Certificat médical manquant"],
+    ["late", "Paiement en retard / refusé"],
+    ["due", "Autres urgences"],
+    ["stock", "Stock en rupture"],
+    ["certificate", "Certificat manquant / expiré"],
     ["insurance", "Assurance à vérifier"],
     ["birthday", "Anniversaire à venir"],
   ];
+  // "insurance" et "birthday" ne produisent plus aucun post-it réel dans À faire (cf. audit) mais
+  // restent dans POSTIT_TYPES pour que normalizePostitStyles() continue de lire sans erreur une
+  // préférence enregistrée par une ancienne version. VISIBLE_POSTIT_TYPES est la liste à utiliser
+  // pour le RENDU du réglage Post-it À faire uniquement — jamais pour la normalisation.
+  const VISIBLE_POSTIT_TYPES = POSTIT_TYPES.filter(([key]) => key !== "insurance" && key !== "birthday");
 
   const themes = [
     { id: "classic", name: "Classique", icon: "□", note: "Professionnel, neutre, lisible" },
@@ -281,6 +297,9 @@
     { id: "windows-dark", name: "Multi-sport sombre", icon: "✐", note: "Croquis sportifs sur ambiance nocturne" },
     { id: "win11", name: "Windows 11", icon: "⊞", note: "Arrondi, fluide, bleu moderne" },
     { id: "win11-dark", name: "Windows 11 sombre", icon: "▣", note: "Mica sombre, arrondis doux" },
+    // Lot Thème — contraste renforcé pour malvoyance légère / fatigue visuelle : fond blanc,
+    // texte noir, aucune texture ni gradient décoratif (cf. audit Thème Accessibilité / Daltonisme).
+    { id: "high-contrast", name: "Contraste élevé", icon: "◧", note: "Fond blanc, texte noir, contraste maximal" },
   ];
 
   // Chapeau de diplômé (Centre d'accompagnement), au trait — partagé barre d'outils + menu
@@ -1590,6 +1609,11 @@
     if (display.mode === "advanced") return true;
     if (display.mode === "simple") return DISPLAY_SIMPLE_MODULES.includes(view);
     const visible = display.visibleModules || {};
+    // Bloc unique Boutique & Stock (audit modules désactivables) : Stock n'a pas de sens autonome
+    // sans Boutique en V1. Plutôt qu'une case indépendante, Stock suit toujours la visibilité de
+    // Boutique en mode Personnalisé — combinaison "Stock visible sans Boutique" impossible, sans
+    // migration de données (l'ancienne valeur visibleModules.stock, si présente, est ignorée ici).
+    if (view === "stock") return visible.boutique === true;
     return visible[view] === true;
   }
 
@@ -2054,21 +2078,44 @@
 
     function renderChoice() {
       applyTheme();
+      const benefits = [
+        "Adhérents, inscriptions et documents au même endroit.",
+        "Planning des cours, présences et disponibilités des salles et coachs.",
+        "Factures, paiements, avoirs et suivi des règlements.",
+      ];
+      const modules = [
+        "Contacts", "Disciplines", "Groupes", "Coachs", "Salles", "Planning",
+        "Présences", "Factures", "Stages", "Boutique", "Disponibilités",
+      ];
       app.innerHTML = `<main class="password-gate">
-        <div class="welcome-card">
+        <div class="welcome-card welcome-card-intro">
           <img src="${esc(appLogoSrc())}" alt="MonGestaClub" />
-          <h2>Bienvenue dans MonGestaClub</h2>
-          <p class="muted">Configurez votre propre club ou explorez d'abord avec des données de démonstration.</p>
+          <div class="welcome-headline">
+            <h2>Gérez votre club, simplement.</h2>
+            <p class="welcome-subtitle">MonGestaClub réunit vos adhérents, votre planning, vos présences et votre facturation dans un seul logiciel, 100 % sur votre ordinateur.</p>
+          </div>
+          <ul class="welcome-benefits">
+            ${benefits.map((text) => `<li>${esc(text)}</li>`).join("")}
+          </ul>
+          <ul class="welcome-modules" aria-label="Modules disponibles">
+            ${modules.map((name) => `<li class="welcome-module-chip">${esc(name)}</li>`).join("")}
+          </ul>
           <div class="welcome-choice-grid">
             <button type="button" class="welcome-choice welcome-choice-primary" data-welcome-action="create">
               <strong>Créer mon club</strong>
-              <span>Configurez votre club avec vos propres données. Tout restera modifiable ensuite.</span>
+              <span>Configurez votre vrai club en quelques étapes. Tout reste modifiable ensuite.</span>
             </button>
             <button type="button" class="welcome-choice" data-welcome-action="demo">
               <strong>Essayer la démo</strong>
-              <span>Explorez le logiciel avec le club démo GestaClub — données fictives prêtes à l'emploi.</span>
+              <span>Découvrez le logiciel avec un club fictif déjà rempli.</span>
             </button>
           </div>
+          <div class="welcome-demo-note">
+            <strong>La démo, sans risque.</strong>
+            <p>Elle ouvre un club fictif avec des données d'exemple. Vos vraies données ne sont jamais modifiées.</p>
+            <p class="welcome-demo-try">Vous pouvez tester : ajouter un adhérent, construire un planning, faire l'appel, éditer une facture, encaisser un paiement, gérer la boutique et les stages.</p>
+          </div>
+          <p class="welcome-reassurance">100 % local · aucune donnée envoyée sur Internet · tout reste modifiable</p>
         </div>
       </main>`;
       app.querySelector("[data-welcome-action='create']")?.addEventListener("click", renderCreate);
@@ -2150,14 +2197,52 @@
       setupDemoClub();
       ui.saveMessage = `${DEMO_CLUB_NAME} prêt`;
       resolve();
+      // Intro spécifique démo, une fois par entrée dans la démo (au clic « Essayer la démo »).
+      // Différée après le premier render() : resolve() enchaîne les microtâches d'initApp
+      // (requireInitialSetup → statut licence → render), le setTimeout(0) macrotâche passe ensuite,
+      // donc le dialogue s'affiche par-dessus l'app rendue. Aucun stockage : ne revient pas à la
+      // navigation, réapparaît seulement si l'utilisateur ré-entre volontairement dans la démo.
+      setTimeout(() => { try { showDemoIntroDialog(); } catch (error) { /* jamais bloquer la démo */ } }, 0);
     }
 
     renderChoice();
   }
 
+  // Petite intro affichée à l'entrée dans le club de démonstration. Réutilise le dialogue modal
+  // existant (classes .dialog-*) ; aucune modification des données ni du contenu de la démo.
+  // Garde de session (mémoire volatile, jamais persistée) : l'intro s'affiche au plus une fois
+  // par session, quel que soit le déclencheur (« Essayer la démo » en Electron, chargement direct
+  // en démo web) — pas de réapparition à la navigation, pas de double affichage.
+  let demoIntroShownThisSession = false;
+  function showDemoIntroDialog() {
+    if (demoIntroShownThisSession) return;
+    if (typeof activeClubId === "function" && activeClubId() !== DEMO_CLUB_ID) return;
+    if (typeof dialogForNewWindow !== "function" || typeof showFloatingDialog !== "function") return;
+    demoIntroShownThisSession = true;
+    const targetDialog = dialogForNewWindow();
+    targetDialog.classList.remove("has-identity-photo");
+    targetDialog.innerHTML = `<div class="demo-intro">
+      <div class="dialog-header"><h2>Vous explorez le club de démo</h2><button class="icon" type="button" data-dialog-close title="Fermer" aria-label="Fermer">×</button></div>
+      <div class="dialog-body">
+        <p>Toutes les données sont fictives : vous pouvez modifier, tester et supprimer librement. Votre vrai club n'est pas affecté.</p>
+        <p class="muted">Essayez par exemple d'ajouter un adhérent, de consulter le planning, de faire l'appel ou d'éditer une facture.</p>
+      </div>
+      <div class="dialog-footer"><span></span><button type="button" class="primary" data-dialog-close>J'ai compris</button></div>
+    </div>`;
+    targetDialog.querySelectorAll("[data-dialog-close]").forEach((button) => button.addEventListener("click", () => targetDialog.close()));
+    showFloatingDialog(targetDialog, "[data-dialog-close].primary", targetDialog);
+  }
+
   function requireInitialSetup() {
     if (isDemoMode()) {
       setupDemoClub();
+      // Démo web (MONGESTACLUB_DEMO / ?demo) : le premier lancement est court-circuité, donc
+      // l'intro « Vous explorez le club de démo » (déclenchée par « Essayer la démo » en Electron)
+      // ne passerait jamais. On l'affiche ici, différée après le premier render() (même mécanique
+      // que handleDemo). Pas de double affichage possible : en Electron isDemoMode() est faux
+      // (cette branche ne s'exécute pas) et en démo web le wizard/handleDemo ne s'exécute jamais ;
+      // la garde de session dans showDemoIntroDialog verrouille le tout.
+      setTimeout(() => { try { showDemoIntroDialog(); } catch (error) { /* jamais bloquer la démo */ } }, 0);
       return Promise.resolve();
     }
     if (settings.initialSetupDone) return Promise.resolve();
@@ -2418,6 +2503,19 @@
       contact.identityAvatarChoice = normalizeIdentityAvatarChoice(contact.identityAvatarChoice);
       contact.documents = normalizeContactDocuments(contact.documents);
       contact.documentsText = asText(contact.documentsText || contact.documentNotes || "");
+      // Lot Contact V2 — responsable légal saisi directement sur le contact (mineur). Mêmes
+      // champs texte que ceux déjà utilisés côté membership (src/19-contact-dialogs.js) ;
+      // aucune synchronisation entre les deux dans ce lot, cf. audit.
+      contact.legalGuardianName = asText(contact.legalGuardianName);
+      contact.legalGuardianPhone = asText(contact.legalGuardianPhone);
+      contact.legalGuardianEmail = asText(contact.legalGuardianEmail);
+      // Lot Contact/Dossier V2 — autorisation parentale et droit à l'image centralisés sur le
+      // contact (mêmes champs que côté membership, aucune synchronisation entre les deux, cf. audit).
+      contact.parentalAuthorization = Boolean(contact.parentalAuthorization);
+      contact.imageRights = Boolean(contact.imageRights);
+      // Lot Contact/Dossier V2 (règlement) — même principe pour le règlement signé : information
+      // personne, pas discipline (l'assurance, elle, reste sur la membership, inchangée).
+      contact.rulesSigned = Boolean(contact.rulesSigned);
     });
     base.contacts.prospects.forEach((contact) => {
       contact.id = contact.id || id("prospect");
@@ -3375,6 +3473,7 @@
     if (key === "check") return /^c\d+$/i.test(raw) ? raw.toUpperCase() : `Chèque ${index + 1}`;
     if (key === "card") return /^cb\d+$/i.test(raw) ? raw.toUpperCase() : `CB ${index + 1}`;
     if (key === "cash") return /^esp\d+$/i.test(raw) ? raw.replace(/^esp/i, "Esp") : `Esp ${index + 1}`;
+    if (raw === "avoir") return "Avoir";
     return paymentModeLabel(raw);
   }
 
@@ -3770,6 +3869,7 @@
     };
     applyNormalizedTaxRate(normalized, payment);
     if (paymentMethodKind(normalized) !== "check") normalized.checkNumber = "";
+    if (payment.creditNoteId) normalized.creditNoteId = payment.creditNoteId;
     return normalizeImmediatePayment(normalized);
   }
 
@@ -4144,6 +4244,12 @@
   function compactPaymentEditor({ index, payment = {}, attrs = "", mode = "form", prefix = "", active = false, visible = true, suggestedAmount = 0, defaultTaxRate = 0 }) {
     const amountValue = payment?.amount || suggestedAmount || "";
     const amountNumber = asNumber(amountValue);
+    // Correctif Boutique — un montant affiché qui vient de suggestedAmount (aucun payment.amount
+    // réel) n'est pas une saisie utilisateur : le marquer data-auto-amount="true" dès le rendu HTML
+    // initial, sinon distributePaymentSplit() le traite comme une saisie figée et ne le recalcule
+    // plus jamais quand le total change (cas "Vendre" : article déjà présent à l'ouverture).
+    const isSuggestedAmount = !asNumber(payment?.amount) && asNumber(suggestedAmount) > 0;
+    const autoAmountAttr = isSuggestedAmount ? ' data-auto-amount="true"' : "";
     const taxRateValue = payment.taxRate ?? payment.vatRate ?? payment.tva ?? defaultTaxRate ?? 0;
     const status = paymentDisplayStatus(payment, amountNumber, mode);
     const stateValue = paymentStateValue(payment);
@@ -4163,8 +4269,8 @@
       ? `<label class="payment-check-number-field">N° chèque<input name="${esc(prefix)}${index}CheckNumber" value="${esc(payment.checkNumber || "")}"${lockI} /></label>`
       : `<label class="payment-check-number-field">N° chèque<input value="${esc(payment.checkNumber || "")}" data-payment-field="checkNumber" data-index="${index}" ${attrs}${lockI} /></label>`;
     const amountInput = mode === "form"
-      ? `<label>Somme<input name="${esc(prefix)}${index}Amount" type="number" step="0.01" value="${esc(amountValue)}"${lockI} /></label>`
-      : `<label>Somme<input class="payment-amount" type="number" step="0.01" value="${esc(amountValue)}" data-payment-field="amount" data-index="${index}" ${attrs}${lockI} /></label>`;
+      ? `<label>Somme<input name="${esc(prefix)}${index}Amount" type="number" step="0.01" value="${esc(amountValue)}"${autoAmountAttr}${lockI} /></label>`
+      : `<label>Somme<input class="payment-amount" type="number" step="0.01" value="${esc(amountValue)}" data-payment-field="amount" data-index="${index}" ${attrs}${autoAmountAttr}${lockI} /></label>`;
     const dateInput = mode === "form"
       ? `<label class="payment-date-field">${immediate ? "Payé le" : "Encaisser le"}<input name="${esc(prefix)}${index}Date" type="date" value="${esc(dateVal)}"${lockI} /></label>`
       : `<label class="payment-date-field" title="${immediate ? "Date du paiement" : "Date d'encaissement"}">${immediate ? "Payé le" : "Encaisser le"}<input class="payment-date" type="date" value="${esc(dateVal)}" data-payment-field="date" data-index="${index}" ${attrs}${lockI} /></label>`;
@@ -4899,6 +5005,13 @@
       ui.view = firstVisibleView();
       ui.settingsMenuOpen = false;
       ui.boutiqueMenuOpen = ui.view === "boutique";
+      // Audit Navigation — seul point racine de la redirection silencieuse (change de mode
+      // d'affichage, décochage d'un module, désactivation Boutique/Stages, ou retour arrière
+      // vers une vue devenue invisible entre-temps). Un message resté d'une action précédente
+      // n'a plus de rapport avec ce qui vient de se passer à l'écran : on le remplace plutôt
+      // que le garder, sinon la redirection resterait aussi silencieuse qu'avant.
+      const fallbackLabel = Object.fromEntries(views)[ui.view] || ui.view;
+      ui.saveMessage = `Ce module n'est pas affiché dans ce club. Vous avez été redirigé vers ${fallbackLabel}.`;
     }
     if (license && !license.canUse) {
       app.innerHTML = renderLicensePanel(true);
@@ -5576,7 +5689,17 @@
       if (visible("groups")) return `data-action="vigilance-open" data-vig-view="groups"`;
       return `data-action="vigilance-open" data-vig-tasks="misc"`;
     }
-    // planning / coaches / rooms : « À faire » filtré sur la famille (liste ciblée, action par item)
+    // Lot Vigilance/Planning — même précédent que Stock ci-dessus : depuis le lot À faire V2
+    // (fenêtre coachs/salles), taskRows() ne porte plus que les remplacements immédiats
+    // (aujourd'hui/demain), donc « À faire » filtré peut afficher moins que ce que Vigilance/le
+    // résolveur annoncent. Coachs/salles ont leur page naturelle (Planning), qui affiche déjà
+    // chaque séance à remplacer avec la classe .course-replace (cf. courseReplacementInfoForDate) :
+    // on y navigue directement avec surbrillance plutôt que de renvoyer vers À faire.
+    if (fam === "coaches" || fam === "rooms") {
+      if (visible("planning")) return `data-action="vigilance-open" data-vig-view="planning" data-vig-flash=".course-replace"`;
+      return `data-action="vigilance-open" data-vig-tasks="${esc(fam)}"`;
+    }
+    // planning : « À faire » filtré sur la famille (liste ciblée, action par item)
     return `data-action="vigilance-open" data-vig-tasks="${esc(fam)}"`;
   }
 
@@ -5629,8 +5752,19 @@
     const groups = {};
     rows.forEach((row) => {
       if (row.tone === "ok") return;
+      // Lot À faire V2 (factures en retard) — routées vers le groupe "payments" pour le filtre
+      // À faire (cf. taskFilterGroupOf), mais volontairement exclues d'ici : Vigilance ne doit pas
+      // gagner de nouvelle alerte pour ce lot (consigne explicite), et le montant de la facture
+      // gonflerait sinon le total "€ à encaisser" des paiements sans qu'aucun de ces deux nombres
+      // ne devienne cohérent avec l'autre (la ligne n'a pas de champ `amount`, contrairement aux
+      // lignes de paiement source).
+      if (asText(row.category).indexOf("Facture") === 0) return;
       const fam = (typeof taskFilterGroupOf === "function") ? taskFilterGroupOf(row) : "misc";
-      if (!cfg[fam] || fam === "documents") return; // documents comptés par dossier
+      // documents comptés par dossier ; coaches/rooms reconstruits indépendamment ci-dessous (comme
+      // le stock "seuil bas") car taskRows() ne porte plus que les remplacements immédiats
+      // (aujourd'hui/demain) depuis le lot À faire V2 fenêtre coachs/salles — Vigilance a besoin
+      // d'une fenêtre plus large et ne doit pas les recompter une seconde fois depuis ici.
+      if (!cfg[fam] || fam === "documents" || fam === "coaches" || fam === "rooms") return;
       const level = row.tone === "late" ? "red" : "amber";
       const key = `${fam}|${level}`;
       const g = groups[key] || (groups[key] = { count: 0, attrs: "", amount: 0, minDate: "", minAvail: null, minName: "", zero: 0 });
@@ -5644,10 +5778,52 @@
         if (asNumber(row.available) === 0) g.zero += 1;
       }
     });
+    // Lot À faire V2 (micro-correctif) — le stock "seuil bas" (non rupture) est volontairement
+    // sorti de taskRows()/« À faire », mais Vigilance doit continuer à le signaler en orange :
+    // reconstruit group("shop|amber") directement depuis stockRows(), indépendamment de
+    // taskRows(). Le stock RÉELLEMENT en rupture (available < 0) reste porté par taskRows()
+    // ci-dessus, inchangé ; même forme de groupe donc mêmes destinations qu'avant ce correctif.
+    if (isModuleEnabled("boutique")) {
+      stockRows().filter((row) => row.available >= 0 && isStockLow(row)).forEach((row) => {
+        const key = "shop|amber";
+        const g = groups[key] || (groups[key] = { count: 0, attrs: "", amount: 0, minDate: "", minAvail: null, minName: "", zero: 0 });
+        g.count += 1;
+        if (g.count === 1) g.attrs = `data-action="edit-stock-article" data-index="${row.index}"`;
+        if (g.minAvail === null || row.available < g.minAvail) { g.minAvail = row.available; g.minName = row.article.name || "Article"; }
+        if (row.available === 0) g.zero += 1;
+      });
+    }
+    // Lot À faire V2 (fenêtre coachs/salles) — même précédent que le stock ci-dessus : Vigilance
+    // garde la fenêtre large (tous les remplacements pending, pas seulement aujourd'hui/demain),
+    // reconstruite directement depuis pendingCoachReplacements()/pendingRoomReplacements() +
+    // impactStillPendingForTasks (mêmes filtres "tâche fantôme" que taskRows(), sans le filtre de
+    // date). Toujours "red" : aucune de ces deux familles n'a jamais produit de niveau "amber".
+    const buildReplacementGroup = (fam, impacts, actionName) => {
+      if (!impacts.length) return;
+      const key = `${fam}|red`;
+      const g = groups[key] || (groups[key] = { count: 0, attrs: "", amount: 0, minDate: "", minAvail: null, minName: "", zero: 0 });
+      impacts.forEach((x) => {
+        g.count += 1;
+        if (g.count === 1) g.attrs = `data-action="${actionName}" data-course-id="${esc(x.course.id)}" data-ps="${esc(x.periodStart)}" data-pe="${esc(x.periodEnd)}"`;
+        const nextDate = x.archived ? "" : (typeof impactFirstPendingDate === "function" ? impactFirstPendingDate(x) : "");
+        if (nextDate && (!g.minDate || nextDate < g.minDate)) g.minDate = nextDate;
+      });
+    };
+    if (typeof pendingCoachReplacements === "function") {
+      buildReplacementGroup("coaches", pendingCoachReplacements().filter((x) => typeof impactStillPendingForTasks !== "function" || impactStillPendingForTasks(x)), "replace-session");
+    }
+    if (typeof pendingRoomReplacements === "function") {
+      buildReplacementGroup("rooms", pendingRoomReplacements().filter((x) => typeof impactStillPendingForTasks !== "function" || impactStillPendingForTasks(x)), "replace-room-session");
+    }
     const doc = vigilanceDocModel();
     const toCards = (level) => {
       const cards = Object.keys(groups)
         .filter((k) => k.endsWith(`|${level}`))
+        // Lot Accueil V2 — évite le doublon « Paiements » rouge + orange : si l'urgence existe
+        // déjà en rouge (retards/refus), ne pas répéter la famille en orange (même bouton
+        // "Encaisser", même destination). Règle strictement limitée à cette famille : Documents/
+        // Stock/Groupes gardent rouge et orange, qui y représentent des informations distinctes.
+        .filter((k) => !(level === "amber" && k === "payments|amber" && groups["payments|red"]))
         .map((k) => {
           const fam = k.split("|")[0];
           const c = cfg[fam];
@@ -5710,12 +5886,15 @@
     const verb = card.verb ? `<span class="vigilance-card-verb">${esc(card.verb)}</span>` : "";
     const qualifier = card.qualifier ? `<span class="vigilance-card-qualifier">${esc(card.qualifier)}</span>` : "";
     const tip = [card.title, card.countLabel, card.verb, card.qualifier].filter(Boolean).join(" · ");
-    return `<button type="button" class="vigilance-card vigilance-${esc(card.level)}" ${card.dest} title="${esc(tip)}">
+    // Lot Accueil V2 — une seule action par carte : la carte n'est plus un bouton (elle informe),
+    // seul le CTA porte data-action/data-view (elle agit). Aucune destination ni donnée changée,
+    // uniquement l'élément qui les porte.
+    return `<div class="vigilance-card vigilance-${esc(card.level)}" title="${esc(tip)}">
       <span class="vigilance-card-head"><span class="vigilance-card-icon" aria-hidden="true">${card.icon}</span><strong class="vigilance-card-title">${esc(card.title)}</strong></span>
       <span class="vigilance-card-count">${esc(card.countLabel)}</span>
       ${verb}${qualifier}
-      <span class="vigilance-card-cta">${esc(card.cta)} →</span>
-    </button>`;
+      <button type="button" class="vigilance-card-cta" ${card.dest}>${esc(card.cta)} →</button>
+    </div>`;
   }
 
   // Une section (rouge ou jaune) : max 5 cartes, surplus regroupé vers « À faire ».
@@ -5724,10 +5903,10 @@
     const shown = cards.slice(0, 5);
     const extra = cards.length - shown.length;
     const overflow = extra > 0
-      ? `<button type="button" class="vigilance-card vigilance-more" data-view="tasks" title="Voir toutes les alertes dans À faire">
+      ? `<div class="vigilance-card vigilance-more" title="Voir toutes les alertes dans À faire">
           <span class="vigilance-card-head"><span class="vigilance-card-icon" aria-hidden="true">${getIconSvg("dashboard-alert-action")}</span><strong class="vigilance-card-title">Autres points</strong></span>
           <span class="vigilance-card-count">${extra} de plus</span>
-          <span class="vigilance-card-cta">Tout voir dans « À faire » →</span></button>`
+          <button type="button" class="vigilance-card-cta" data-view="tasks">Tout voir dans « À faire » →</button></div>`
       : "";
     const heading = level === "red" ? "🔴 À traiter" : "🟠 À surveiller";
     return `<div class="band vigilance-band">
@@ -5795,7 +5974,7 @@
     const greenItems = [...model.green, "MonGestaClub veille sur votre club"];
     const greenIcon = `<span class="vigilance-green-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" fill="currentColor"/><path d="M7.5 12.4l3 3 6-6.4" stroke="#fff" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"/></svg></span>`;
     const greenBlock = `<div class="band vigilance-band vigilance-green-band">
-      <div class="band-title"><h2>${greenIcon} Le reste est en ordre</h2></div>
+      <div class="band-title"><h2>${greenIcon} En ordre</h2></div>
       <ul class="vigilance-green">${greenItems.map((g) => `<li>${esc(g)}</li>`).join("")}</ul>
     </div>`;
     // Emplacement réservé pour le futur widget « Aujourd'hui dans votre club » (Lot ultérieur).
@@ -5809,6 +5988,35 @@
   // fenêtre se met à jour toute seule (refreshOpenVigilanceResolver, branchée sur le flux
   // de sauvegarde de showDialog) — le président ne quitte jamais son Accueil.
   function vigilanceResolverRows(fam, level) {
+    // Lot À faire V2 (micro-correctif) — le stock "seuil bas" (amber) n'est plus dans taskRows()
+    // (retiré de « À faire »), donc reconstruit ici depuis stockRows() pour que le résolveur
+    // Vigilance (2 à 5 articles) reste fonctionnel. Le stock en rupture (red) reste inchangé,
+    // toujours porté par taskRows().
+    if (fam === "shop" && level === "amber") {
+      return stockRows().filter((row) => row.available >= 0 && isStockLow(row)).map((row) => ({
+        title: row.article.name || "Article",
+        detail: `${intValue(row.available)} disponible · seuil ${intValue(row.article.stockAlert || 0)}`,
+        attrs: `data-action="edit-stock-article" data-index="${row.index}"`,
+      }));
+    }
+    // Lot À faire V2 (fenêtre coachs/salles) — même précédent que le stock ci-dessus : coaches/rooms
+    // ne sont plus dans taskRows() au-delà d'aujourd'hui/demain, donc reconstruits ici depuis
+    // pendingCoachReplacements()/pendingRoomReplacements() pour que le résolveur Vigilance (2 à 5
+    // éléments) continue de lister tous les remplacements pending, comme avant ce lot.
+    if (fam === "coaches" && typeof pendingCoachReplacements === "function") {
+      return pendingCoachReplacements().filter((x) => typeof impactStillPendingForTasks !== "function" || impactStillPendingForTasks(x)).map((x) => ({
+        title: `${x.course.name} · ${coachFullName(x.coach)}`,
+        detail: `${x.course.day || "?"} ${x.course.startTime || ""}`,
+        attrs: `data-action="replace-session" data-course-id="${esc(x.course.id)}" data-ps="${esc(x.periodStart)}" data-pe="${esc(x.periodEnd)}"`,
+      }));
+    }
+    if (fam === "rooms" && typeof pendingRoomReplacements === "function") {
+      return pendingRoomReplacements().filter((x) => typeof impactStillPendingForTasks !== "function" || impactStillPendingForTasks(x)).map((x) => ({
+        title: `${x.course.name} · ${roomName(x.room)}`,
+        detail: `${x.course.day || "?"} ${x.course.startTime || ""}`,
+        attrs: `data-action="replace-room-session" data-course-id="${esc(x.course.id)}" data-ps="${esc(x.periodStart)}" data-pe="${esc(x.periodEnd)}"`,
+      }));
+    }
     return (typeof taskRows === "function" ? taskRows() : []).filter((row) => {
       if (row.tone === "ok") return false;
       const f = (typeof taskFilterGroupOf === "function") ? taskFilterGroupOf(row) : "misc";
@@ -5948,11 +6156,24 @@
     if (groups.length === 1) { handleAction(vigilanceButtonFromAttrs(`data-action="edit-membership" data-id="${groups[0].membershipId}"`)); return; }
     const c = vigilanceFamilyConfig().documents;
     const title = level === "red" ? c.titles.red : c.titles.amber;
+    // Lot Vigilance/Documents orange — depuis le lot À faire V2, « À faire » ne compte plus les
+    // documents "soon" (taskRows filtré) ; y renvoyer pour le niveau amber noie le seul document
+    // effectivement affiché (rendu via dossierDocumentGroups, non filtré) parmi les dossiers rouges
+    // sans rapport, et ne représente jamais le cas assurance seule (angle mort connu, non traité
+    // ici). La page Documents a déjà un filtre "bientôt" dédié (licence/certificat) : on y navigue
+    // directement pour amber, sans toucher au cas red (inchangé, toujours vers À faire). Même
+    // prudence que Stock/Coachs/Salles : si la page Documents est masquée de la navigation de ce
+    // club (menu personnalisé), on garde le repli existant vers À faire plutôt qu'une destination
+    // invisible (isViewVisible redirige silencieusement vers l'accueil si la vue n'est pas visible).
+    const docViewVisible = typeof isViewVisible !== "function" || isViewVisible("documents");
+    const allAttrs = level === "amber" && docViewVisible
+      ? `data-action="vigilance-open" data-vig-view="documents" data-vig-doc-filter="soon"`
+      : `data-action="vigilance-open" data-vig-tasks="documents"`;
     dialog.innerHTML = `<form class="vigilance-resolver-form">
       <div class="dialog-header">${vigilanceDialogTitleHtml("documents", title)}<button class="icon" type="button" data-dialog-close aria-label="Fermer">×</button></div>
       <div class="dialog-body"><div class="vigilance-resolve-list vigilance-doc-list" data-vigilance-doc-resolver data-level="${esc(level)}">${vigilanceDocResolverBodyHtml(level, groups)}</div></div>
       <div class="dialog-footer">
-        <button type="button" class="link-button vigilance-resolve-all" data-action="vigilance-open" data-vig-tasks="documents" data-dialog-close>Tout traiter dans la liste complète</button>
+        <button type="button" class="link-button vigilance-resolve-all" ${allAttrs} data-dialog-close>Tout traiter dans la liste complète</button>
         <div class="dialog-footer-actions"><button type="button" data-dialog-close>Fermer</button></div>
       </div>
     </form>`;
@@ -5967,7 +6188,7 @@
     const today = todayInputValue();
     const memberCount = state.contacts.members.length;
     const invoicesPending = (state.invoices || [])
-      .filter((invoice) => invoiceBelongsToActiveClub(invoice) && ["issued", "partial", "late"].includes(computedInvoiceStatus(invoice)))
+      .filter((invoice) => invoiceBelongsToActiveClub(invoice) && ["issued", "partial"].includes(computedInvoiceStatus(invoice)))
       .length;
     const upcomingStages = stagesEnabled
       ? state.tariffs.stages.filter((stage) => { const d = dateInputValue(stage.startDate); return d && d >= today; }).length
@@ -6006,7 +6227,13 @@
     // plutôt que des actions prématurées (encaisser, facturer).
     const quickActions = clubIsEmpty
       ? [
-          `<button class="primary" data-action="add-membership">Ajouter un adhérent</button>`,
+          // Club tout neuf : « Ajouter un adhérent » ouvre une fiche contact simple (add-contact),
+          // et non une inscription (add-membership) qui exigerait une discipline encore inexistante
+          // — sinon impasse dès la première action. Cohérent avec l'étape assistant « premier
+          // adhérent » qui utilise déjà add-contact. L'inscription à une discipline reste accessible
+          // ensuite depuis la fiche contact. La branche « club configuré » ci-dessous garde
+          // add-membership (une discipline existe alors, pas d'impasse).
+          `<button class="primary" data-action="add-contact">Ajouter un adhérent</button>`,
           `<button data-view="disciplines">Mes disciplines &amp; tarifs</button>`,
           `<button data-action="open-dashboard-target" data-target="assistant">Premiers pas guidés</button>`,
         ].join("")
@@ -6163,6 +6390,22 @@
     }
     return "";
   }
+  // Lot À faire V2 (fenêtre coachs/salles) — À faire = action immédiate : un impact coach/salle n'y
+  // reste visible que si sa première séance encore problématique tombe aujourd'hui ou demain, ou si
+  // c'est un cas archivé/sans date (urgence structurelle non bornée dans le temps, toujours ouverte).
+  // N'affecte QUE taskRows() : pendingCoachReplacements/pendingRoomReplacements/impactFirstPendingDate
+  // restent inchangés et continuent d'alimenter Vigilance avec une fenêtre plus large.
+  function replacementImpactIsImmediateForTasks(impact) {
+    if (!impact) return false;
+    if (impact.archived) return true;
+    const nextDate = impactFirstPendingDate(impact);
+    if (!nextDate) return false;
+    const d = parseDate(nextDate); if (!d) return false;
+    d.setHours(0, 0, 0, 0);
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    const diff = Math.round((d - today) / 86400000);
+    return diff >= 0 && diff <= 1;
+  }
   // Date relative lisible pour les cartes : « aujourd'hui / demain / mardi / le 12/07/2026 ».
   function vigilanceRelativeDate(dateStr) {
     const d = parseDate(dateStr); if (!d) return "";
@@ -6175,14 +6418,34 @@
     return "le " + dateDisplay(dateStr);
   }
 
+  // Lot À faire V2 — une facture en retard ne doit pas doubler une alerte "Paiement en
+  // retard/refusé" déjà affichée pour la même source. Déduplication stricte par sourceId
+  // (invoice.lines[].sourceId correspond exactement au row.id de paymentAgendaRows : membership.id,
+  // shopOrder.id ou stageRegistration.id) — jamais par contact ou montant seuls, qui peuvent
+  // coïncider entre deux dettes distinctes. Une facture sans sourceId (ligne "custom") n'est
+  // jamais couverte : elle est la seule preuve du retard, rien d'autre ne peut déjà l'annoncer.
+  function invoiceIsCoveredBySourcePaymentAlert(invoice, sourcePaymentRows) {
+    const sourceIds = new Set((invoice.lines || []).map((line) => asText(line.sourceId)).filter(Boolean));
+    if (!sourceIds.size) return false;
+    const coveredIds = new Set((sourcePaymentRows || []).map((row) => row.id));
+    return [...sourceIds].every((sid) => coveredIds.has(sid));
+  }
+
   function taskRows() {
     const rows = [];
     const todayKey = dateInputValue(new Date());
     const add = (row) => rows.push({ id: row.id || id("task"), tone: "", ...row });
-    paymentAgendaRows(null).forEach((row) => {
+    // Lot À faire V2 — ne garder que les vraies urgences : un paiement à venir, à encaisser
+    // aujourd'hui (mais pas en retard) ou un chèque simplement "en cours" reste visible dans
+    // "Paiements dus", mais sort de "À faire". Seuls refusé/en retard restent. Capturé à part
+    // (au lieu d'un simple forEach+return) pour pouvoir dédupliquer les factures en retard contre
+    // ces mêmes lignes juste après (cf. invoiceIsCoveredBySourcePaymentAlert plus bas).
+    const alertingPaymentRows = paymentAgendaRows(null).filter((row) => {
       const isLate = row.date && row.date < todayKey;
-      const isToday = row.date === todayKey || (!row.date && row.status !== "En cours");
-      const category = row.status === "Refusé" ? "Paiement refusé" : isLate ? "Paiement en retard" : isToday ? "À encaisser" : "Paiement à venir";
+      return row.status === "Refusé" || isLate;
+    });
+    alertingPaymentRows.forEach((row) => {
+      const category = row.status === "Refusé" ? "Paiement refusé" : "Paiement en retard";
       add({
         id: `payment-${row.editAction}-${row.id}-${row.stageId || ""}`,
         category,
@@ -6196,21 +6459,50 @@
         payment: row.payment || {},
         module: row.module,
         email: reminderEmailForPerson(row.person),
-        tone: row.status === "Refusé" || isLate ? "late" : row.status === "En cours" ? "wait" : "due",
-        postitType: row.status === "Refusé" || isLate ? "late" : "due",
+        tone: "late",
+        postitType: "late",
         action: row.editAction,
         attrs: `data-action="${esc(row.editAction)}" data-id="${esc(row.id)}" ${row.stageId ? `data-stage-id="${esc(row.stageId)}"` : ""}`,
         reminder: true,
       });
     });
+    // Lot À faire V2 — factures en retard (invoiceIsLate), affichées seulement quand ce retard
+    // n'est pas déjà annoncé par une alerte "Paiement en retard/refusé" ci-dessus sur la même
+    // source : déduplication stricte par sourceId (jamais par contact/montant, cf. audit — deux
+    // pistes différentes peuvent partager un contact ou un montant sans être la même dette).
+    // Une ligne de facture "custom" (sans sourceId, ex. frais de dossier) n'a par construction
+    // aucune source à vérifier : elle est donc toujours affichée si la facture est en retard.
+    (state.invoices || []).forEach((invoice) => {
+      if (!invoiceIsLate(invoice)) return;
+      if (invoiceIsCoveredBySourcePaymentAlert(invoice, alertingPaymentRows)) return;
+      const totals = invoiceTotalsFromLines(invoice.lines || [], invoice.paymentsSnapshot || []);
+      const earliestLateDate = (invoice.paymentsSnapshot || [])
+        .filter((payment) => paymentIsLate(payment))
+        .map((payment) => paymentDueDate(payment))
+        .filter(Boolean)
+        .sort((a, b) => a - b)[0];
+      const category = asNumber(totals.paid) > 0 ? "Facture partiellement payée en retard" : "Facture en retard";
+      add({
+        id: `invoice-late-${invoice.id}`,
+        category,
+        title: `${personLabel(invoice.contactSnapshot || {})} · ${invoice.number}`,
+        detail: `Reste dû ${money(totals.restDue)}${earliestLateDate ? ` · Échéance du ${dateDisplay(dateInputValue(earliestLateDate))}` : ""}`,
+        tone: "late",
+        postitType: "late",
+        action: "open-invoice",
+        attrs: `data-action="open-invoice" data-id="${esc(invoice.id)}"`,
+      });
+    });
     if (isModuleEnabled("boutique")) {
-      stockRows().filter(isStockLow).forEach((row) => {
+      // Lot À faire V2 — seul le stock réellement en rupture (available < 0) reste une urgence ;
+      // le simple seuil bas (isStockLow non-rupture) reste visible dans la page Stock uniquement.
+      stockRows().filter((row) => row.available < 0).forEach((row) => {
         add({
           id: `stock-${row.article.id || row.index}`,
           category: "Stock",
           title: row.article.name || "Article",
           detail: `${intValue(row.available)} disponible · seuil ${intValue(row.article.stockAlert || 0)}`,
-          tone: row.available < 0 ? "late" : "wait",
+          tone: "late",
           available: row.available,
           postitType: "stock",
           action: "edit-stock-article",
@@ -6219,25 +6511,28 @@
       });
     }
     // Alertes documents sportifs centralisées (licence, certificat, autorisation, droit image, règlement)
+    // Lot À faire V2 — seuls les documents manquants/expirés (level "soon" exclu = "bientôt
+    // expiré", pas encore bloquant) restent une urgence ; le reste vit dans la page Documents.
     state.memberships.filter((row) => asText(row.discipline)).forEach((row) => {
-      getMissingDocuments(row).forEach((issue) => {
+      getMissingDocuments(row).filter((issue) => issue.level !== "soon").forEach((issue) => {
         add({
           id: `doc-${issue.key}-${row.id}`,
           category: "Document",
           title: personLabel(row),
           detail: `${row.discipline || "Discipline"} · ${issue.label}`,
-          tone: issue.level === "soon" ? "wait" : "late",
+          tone: "late",
           postitType: issue.key.indexOf("certificate") === 0 ? "certificate" : "due",
           action: "edit-membership",
           attrs: `data-action="edit-membership" data-id="${esc(row.id)}"`,
         });
       });
     });
-    // Alertes organisation : groupes complets / presque complets
+    // Alertes organisation : groupes complets (le statut "complet" reste tel quel dans ce lot,
+    // cf. audit — non traité pour éviter d'élargir le périmètre). "Presque complet" sort de
+    // "À faire" (Lot À faire V2) : simple information, reste visible dans la page Groupes.
     (state.groups || []).filter((g) => !g.archived).forEach((g) => {
       const cap = getGroupCapacityStatus(g.id);
       if (cap.status === "full") add({ id: `group-full-${g.id}`, category: "Groupe complet", title: g.name, detail: `${cap.count} / ${cap.max} membres · complet`, tone: "late", postitType: "due", action: "edit-group", attrs: `data-action="edit-group" data-id="${esc(g.id)}"` });
-      else if (cap.status === "almost") add({ id: `group-almost-${g.id}`, category: "Groupe presque complet", title: g.name, detail: `${cap.count} / ${cap.max} membres`, tone: "wait", postitType: "due", action: "edit-group", attrs: `data-action="edit-group" data-id="${esc(g.id)}"` });
     });
     // Alertes planning : conflits coach / créneau
     allPlanningConflicts().forEach((x) => {
@@ -6255,7 +6550,7 @@
     // Alertes "coach à remplacer" : séances planifiées touchées par une indisponibilité.
     // C2c-c : on masque les tâches fantômes déjà réglées par exception dans le planning (annulation
     // ou coach ponctuel pour la/les date(s) concernée(s)). Filtrage LOCAL à taskRows uniquement.
-    if (typeof pendingCoachReplacements === "function") pendingCoachReplacements().filter((x) => typeof impactStillPendingForTasks !== "function" || impactStillPendingForTasks(x)).forEach((x) => {
+    if (typeof pendingCoachReplacements === "function") pendingCoachReplacements().filter((x) => (typeof impactStillPendingForTasks !== "function" || impactStillPendingForTasks(x)) && replacementImpactIsImmediateForTasks(x)).forEach((x) => {
       const periodLabel = x.periodEnd && x.periodEnd !== x.periodStart ? `${dateDisplay(x.periodStart)}–${dateDisplay(x.periodEnd)}` : dateDisplay(x.periodStart);
       const dates = x.archived ? 0 : impactPendingDatesForTasks(x);
       const datesLabel = dates > 0 ? ` · ${dates} date${dates > 1 ? "s" : ""} concernée${dates > 1 ? "s" : ""}` : "";
@@ -6274,7 +6569,7 @@
     });
     // Alertes "salle à remplacer" : séances planifiées touchées par une indisponibilité de salle.
     // C2c-c : même filtrage des tâches fantômes que pour les coachs (annulation ou salle ponctuelle).
-    if (typeof pendingRoomReplacements === "function") pendingRoomReplacements().filter((x) => typeof impactStillPendingForTasks !== "function" || impactStillPendingForTasks(x)).forEach((x) => {
+    if (typeof pendingRoomReplacements === "function") pendingRoomReplacements().filter((x) => (typeof impactStillPendingForTasks !== "function" || impactStillPendingForTasks(x)) && replacementImpactIsImmediateForTasks(x)).forEach((x) => {
       const periodLabel = x.periodEnd && x.periodEnd !== x.periodStart ? `${dateDisplay(x.periodStart)}–${dateDisplay(x.periodEnd)}` : dateDisplay(x.periodStart);
       const dates = x.archived ? 0 : impactPendingDatesForTasks(x);
       const datesLabel = dates > 0 ? ` · ${dates} date${dates > 1 ? "s" : ""} concernée${dates > 1 ? "s" : ""}` : "";
@@ -6291,32 +6586,9 @@
         attrs: `data-action="replace-room-session" data-course-id="${esc(x.course.id)}" data-ps="${esc(x.periodStart)}" data-pe="${esc(x.periodEnd)}"`,
       });
     });
-    state.memberships.filter((row) => !asText(row.insuranceChoice)).forEach((row) => {
-      add({
-        id: `insurance-${row.id}`,
-        category: "Assurance à vérifier",
-        title: personLabel(row),
-        detail: `${row.discipline || "Discipline"} · assurance non renseignée`,
-        tone: "wait",
-        postitType: "insurance",
-        action: "edit-membership",
-        attrs: `data-action="edit-membership" data-id="${esc(row.id)}"`,
-      });
-    });
-    state.contacts.members.map((contact) => ({ contact, nextBirthday: upcomingBirthday(contact.birthDate, 7) }))
-      .filter((row) => row.nextBirthday)
-      .forEach(({ contact, nextBirthday }) => {
-      add({
-        id: `birthday-${contact.id}`,
-        category: "Anniversaire à venir",
-        title: personLabel(contact),
-        detail: `${dateDisplay(nextBirthday.date)} · dans ${nextBirthday.days} jour${nextBirthday.days > 1 ? "s" : ""} · ${memberAgeLabel(contact) || "âge non calculé"}`,
-        tone: "ok",
-        postitType: "birthday",
-        action: "edit-contact",
-        attrs: `data-action="edit-contact" data-kind="members" data-id="${esc(contact.id)}"`,
-      });
-    });
+    // Lot À faire V2 — "Assurance à vérifier" (toujours non bloquant) et "Anniversaire à venir"
+    // (purement informatif) retirés de "À faire" : aucune des deux ne constitue une urgence,
+    // même en partie ; l'assurance reste visible sur la fiche adhérent.
     const priority = { late: 0, due: 1, wait: 2, ok: 3, "": 4 };
     return rows.sort((a, b) => (priority[a.tone] ?? 5) - (priority[b.tone] ?? 5) || a.category.localeCompare(b.category) || a.title.localeCompare(b.title));
   }
@@ -6349,7 +6621,11 @@
   // Range une alerte dans son groupe de filtre selon sa catégorie réelle.
   function taskFilterGroupOf(row) {
     const c = asText(row && row.category);
-    if (c.includes("Paiement") || c === "À encaisser") return "payments";
+    // Lot À faire V2 (factures en retard) — "Facture en retard"/"Facture partiellement payée en
+    // retard" sont un souci financier au même titre qu'un paiement en retard/refusé : les router
+    // vers "payments" comme eux, pas vers le repli "misc" (qui alimenterait à tort la carte
+    // Vigilance "Groupes", conçue pour les groupes complets/presque pleins, sans rapport).
+    if (c.includes("Paiement") || c === "À encaisser" || c.includes("Facture")) return "payments";
     if (c === "Document" || c === "Assurance à vérifier") return "documents";
     if (c === "Stock") return "shop";
     if (c.indexOf("Conflit") === 0) return "planning";
@@ -6533,7 +6809,7 @@
       ])}
       <div class="band">
         <div class="band-title">
-          <div><h2>À faire aujourd'hui</h2><p class="muted">Tout ce qui mérite ton attention, regroupé automatiquement.</p></div>
+          <div><h2>À faire aujourd'hui</h2><p class="muted">Les vraies urgences à traiter, regroupées automatiquement.</p></div>
           <button data-action="save-now">Actualiser</button>
         </div>
         ${filterPanel}
@@ -6769,13 +7045,35 @@
     </div>`;
   }
 
-  function contactsWithLatePayment() {
-    const lateKeys = new Set();
-    const needsReminder = (payment) => paymentIsLate(payment) || paymentStatus(payment) === "A encaisser";
+  // Lot E-mails — Relance paiement 1a. Destinataire d'une relance pour un membre mineur :
+  // si un responsable légal est déclaré (même condition que la facturation, cf.
+  // contactInvoiceSnapshot), la relance lui est adressée à SON e-mail plutôt qu'à celui —
+  // souvent absent — de l'enfant, pour éviter qu'il disparaisse silencieusement de la liste.
+  function paymentReminderRecipient(contact) {
+    if (memberCategory(contact) === "Enfant" && asText(contact.legalGuardianName)) {
+      return {
+        id: `guardian-${contact.id}`,
+        lastName: `${asText(contact.legalGuardianName)} (resp. ${personLabel(contact)})`,
+        firstName: "",
+        email: asText(contact.legalGuardianEmail),
+        newsletterSource: "contact",
+      };
+    }
+    return contact;
+  }
+
+  // Contacts à relancer pour paiement (audience E-mails "late"). Périmètre aligné sur
+  // À faire V2 : strictement en retard/refusé (paymentIsLate exclut déjà "À encaisser" non
+  // dépassé), PLUS les factures en retard non couvertes par une alerte paiement source
+  // (même règle de déduplication par sourceId que taskRows, réutilisée via
+  // invoiceIsCoveredBySourcePaymentAlert plutôt que reproduite). Dédupliqué par contact via
+  // un seul Set de clés — un contact avec plusieurs dettes n'apparaît qu'une fois.
+  function contactsForPaymentReminders() {
+    const flaggedKeys = new Set();
     const flag = (payments, contactId, prospectId) => {
-      if (!(payments || []).some(needsReminder)) return;
-      if (contactId) lateKeys.add(`member:${contactId}`);
-      if (prospectId) lateKeys.add(`prospect:${prospectId}`);
+      if (!(payments || []).some((payment) => paymentIsLate(payment))) return;
+      if (contactId) flaggedKeys.add(`member:${contactId}`);
+      if (prospectId) flaggedKeys.add(`prospect:${prospectId}`);
     };
     (state.memberships || []).forEach((row) => flag(row.payments, row.contactId, row.prospectContactId));
     (state.shopOrders || []).forEach((row) => flag(row.payments, row.contactId, row.prospectContactId));
@@ -6785,12 +7083,23 @@
         flag(payments, row.contactId, row.prospectContactId);
       });
     });
+    const alertingPaymentRows = paymentAgendaRows(null).filter((row) => {
+      const isLate = row.date && row.date < dateInputValue(new Date());
+      return row.status === "Refusé" || isLate;
+    });
+    (state.invoices || []).forEach((invoice) => {
+      if (!invoiceIsLate(invoice)) return;
+      if (invoiceIsCoveredBySourcePaymentAlert(invoice, alertingPaymentRows)) return;
+      const kind = (typeof contactInvoiceKind === "function") ? contactInvoiceKind(invoice.contactSnapshot?.kind) : "members";
+      const cid = asText(invoice.contactSnapshot?.id);
+      if (cid) flaggedKeys.add(`${kind === "prospects" ? "prospect" : "member"}:${cid}`);
+    });
     const result = [];
     (state.contacts.members || []).forEach((contact) => {
-      if (lateKeys.has(`member:${contact.id}`)) result.push(contact);
+      if (flaggedKeys.has(`member:${contact.id}`)) result.push(paymentReminderRecipient(contact));
     });
     (state.contacts.prospects || []).forEach((contact) => {
-      if (lateKeys.has(`prospect:${contact.id}`)) result.push(contact);
+      if (flaggedKeys.has(`prospect:${contact.id}`)) result.push(contact);
     });
     return result;
   }
@@ -6838,7 +7147,7 @@
       const group = (typeof getGroupById === "function") ? getGroupById(ui.newsletterGroupId) : null;
       return { source: group ? groupMembershipContacts(group.id) : [], sourceTag: "contact" };
     }
-    if (audience === "late") return { source: contactsWithLatePayment(), sourceTag: "contact" };
+    if (audience === "late") return { source: contactsForPaymentReminders(), sourceTag: "contact" };
     if (audience === "prospects") return { source: state.contacts.prospects, sourceTag: "contact" };
     if (audience === "all") return { source: [...state.contacts.members, ...state.contacts.prospects], sourceTag: "contact" };
     return { source: state.contacts.members, sourceTag: "contact" };
@@ -6862,6 +7171,12 @@
       const group = (typeof getGroupById === "function") ? getGroupById(ui.newsletterGroupId) : null;
       if (!group) return [];
       return groupMembershipContacts(group.id).filter((c) => !asText(c.email)).map((c) => personLabel(c));
+    }
+    // Lot E-mails — Relance paiement 1a : un contact en retard sans e-mail exploitable
+    // (le sien, ou celui d'un responsable légal) doit rester visible ici plutôt que
+    // disparaître silencieusement de la sélection.
+    if (audience === "late") {
+      return contactsForPaymentReminders().filter((c) => !asText(c.email)).map((c) => personLabel(c));
     }
     return [];
   }
@@ -7141,6 +7456,14 @@
     const audience = ui.newsletterManualOnly ? "manual" : (ui.newsletterAudience || "members");
     const audienceOption = (value, label) => `<option value="${value}" ${audience === value ? "selected" : ""}>${esc(label)}</option>`;
     const missingEmailNames = newsletterMissingEmailNames();
+    // Lot E-mails — Relance paiement 1b : résumé explicite uniquement pour l'audience
+    // "late" (relance paiement), pour que la sélection soit compréhensible d'un coup
+    // d'œil sans devoir se souvenir du sens du sélecteur "Public" ci-dessus. Recalculé à
+    // chaque rendu (mêmes données que la liste juste en dessous) : reste à jour après
+    // décoche / réaffichage sans logique de sélection supplémentaire.
+    const recipientsSummary = ui.newsletterAudience === "late"
+      ? `${intValue(recipients.length)} contact${recipients.length > 1 ? "s" : ""} avec paiement en retard sélectionné${recipients.length > 1 ? "s" : ""}`
+      : `${intValue(recipients.length)} destinataire${recipients.length > 1 ? "s" : ""}`;
     return `<div class="newsletter-page">
       ${kpis([
         { label: "Destinataires", value: recipients.length },
@@ -7214,7 +7537,7 @@
         <div class="band pad newsletter-recipients-panel">
           <div class="band-title">
             <div><h2>Contacts sélectionnés</h2><p class="muted">Liste utilisée pour l'envoi en copie cachée.</p></div>
-            <strong>${intValue(recipients.length)} destinataire${recipients.length > 1 ? "s" : ""}</strong>
+            <strong>${esc(recipientsSummary)}</strong>
           </div>
           <div class="newsletter-add-email">
             <textarea rows="3" data-newsletter-field="newEmail" placeholder="Écris une ou plusieurs adresses, séparées par virgule, point-virgule, espace ou retour à la ligne">${esc(ui.newsletterNewEmail || "")}</textarea>
@@ -9257,7 +9580,10 @@
     return (state.creditNotes || []).slice().sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")));
   }
   function creditNoteActiveTotal() {
-    return clubCreditNotes().filter((cn) => cn.status !== "annulé").reduce((sum, cn) => sum + asNumber(cn.amount), 0);
+    // Lot B3b — un avoir "utilisé" partiellement laisse un reliquat actif distinct (nouvel avoir) :
+    // compter aussi "utilisé" doublonnerait ce reliquat avec l'avoir d'origine. Seul "actif" reflète
+    // l'encours réel d'avoirs disponibles.
+    return clubCreditNotes().filter((cn) => cn.status === "actif").reduce((sum, cn) => sum + asNumber(cn.amount), 0);
   }
   function refundExpenses() {
     return (state.expenses || []).filter((expense) => expense.category === "Remboursement");
@@ -9272,12 +9598,13 @@
     return [invoice.number || "Facture", invoiceContactDisplay(invoice)].filter((part) => part && part !== "—").join(" · ");
   }
   function openCreditNoteDialog(creditNote = {}) {
-    const types = [["réduction", "Réduction"], ["crédit", "Crédit (avoir à valoir)"], ["annulation", "Annulation"]];
+    const types = [["réduction", "Avoir / crédit"], ["crédit", "Crédit à valoir"], ["annulation", "Annulation"]];
     const statuses = [["actif", "Actif"], ["utilisé", "Utilisé"], ["annulé", "Annulé"]];
     const invoiceOptions = (state.invoices || [])
       .filter((invoice) => invoiceBelongsToActiveClub(invoice) && invoice.status !== "draft")
       .sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")));
     const body = [
+      `<p class="muted">Un avoir est un crédit disponible pour ce contact. Il est visible sur la fiche contact et les factures liées, mais il n'est pas encore déduit automatiquement d'un achat ou d'un paiement. Pour une remise immédiate, utilisez le champ « Remise » dans l'achat ou l'inscription.</p>`,
       `<div class="form-grid compact">${field("date", "Date *", creditNote.date || todayInputValue(), "date", "required")}${field("amount", "Montant (€) *", creditNote.amount ?? "", "number", 'step="0.01" min="0" required')}</div>`,
       field("reason", "Motif *", creditNote.reason || "", "text", "required"),
       `<div class="form-grid compact">
@@ -9287,7 +9614,13 @@
       `<label>Facture liée (facultatif)<select name="invoiceId"><option value="">— Aucune —</option>${invoiceOptions.map((invoice) => `<option value="${esc(invoice.id)}" ${creditNote.invoiceId === invoice.id ? "selected" : ""}>${esc([invoice.number || "Facture", invoiceContactDisplay(invoice)].filter((part) => part && part !== "—").join(" · "))}</option>`).join("")}</select></label>`,
       textareaField("note", "Note", creditNote.note || ""),
     ].join("");
-    const footer = creditNote.id ? `<button type="button" class="danger" data-action="delete-credit-note" data-id="${esc(creditNote.id)}">Supprimer</button>` : "";
+    // Lot V1 Avoirs — Imprimer/PDF uniquement sur un avoir déjà enregistré (id existant), comme
+    // Supprimer juste à côté ; rien sur un formulaire de création pas encore validé.
+    const footer = creditNote.id
+      ? `<button type="button" data-action="print-credit-note" data-id="${esc(creditNote.id)}">Imprimer</button>
+         <button type="button" data-action="export-credit-note-pdf" data-id="${esc(creditNote.id)}">PDF</button>
+         <button type="button" class="danger" data-action="delete-credit-note" data-id="${esc(creditNote.id)}">Supprimer</button>`
+      : "";
     setNextWindowKey(creditNote.id ? `credit-note:${creditNote.id}` : null);
     showDialog(creditNote.id ? "Modifier l'avoir" : "Nouvel avoir", body, (data) => {
       const reason = asText(data.get("reason"));
@@ -9315,6 +9648,112 @@
       return `${creditNote.id ? "Modification" : "Ajout"} de l'avoir ${reason} (${money(next.amount)})`;
     }, () => {}, footer);
   }
+
+  // Lot V1 Avoirs — document imprimable/PDF dédié. UNE SEULE fonction de payload, réutilisée par
+  // Imprimer (showPagePrintPreview, même mécanique que la feuille de présence) et PDF (exportPdf,
+  // même mécanique que les factures) : jamais deux templates. Aucun recalcul de reliquat/statut/
+  // montant ici, tout est lu tel quel depuis l'avoir déjà normalisé ailleurs. Pas de numérotation
+  // officielle inventée : l'avoir n'a pas de compteur séquentiel (contrairement aux factures), on
+  // affiche donc son identifiant interne existant plutôt qu'un faux "n°" qui laisserait croire à une
+  // numérotation officielle.
+  function creditNoteDocumentPayload(creditNote = {}) {
+    creditNote = normalizeCreditNote(creditNote);
+    const club = activeClub() || {};
+    const contactId = asText(creditNote.contactId);
+    const member = contactId ? (state.contacts.members || []).find((c) => c.id === contactId) : null;
+    const prospect = !member && contactId ? (state.contacts.prospects || []).find((c) => c.id === contactId) : null;
+    const contact = member || prospect || {};
+    const contactKind = prospect ? "prospects" : "members";
+    const linkedInvoice = asText(creditNote.invoiceId) ? (state.invoices || []).find((inv) => inv.id === creditNote.invoiceId) : null;
+    // Réutilise EXACTEMENT le helper facture (aucune logique dupliquée) : si l'avoir est lié à une
+    // facture, on prend sa vraie déclinaison (snapshot compris) ; sinon on construit un objet minimal
+    // avec le contact courant, pour bénéficier du même repli "responsable légal manquant".
+    const billing = invoiceBillingDisplay(linkedInvoice || { contactKind, contactId }, contact);
+    const beneficiaryName = billing.billedTo ? billing.billedTo.name : (personLabel(contact) || "Contact non renseigné");
+    const beneficiaryFor = billing.billedTo ? (billing.beneficiary || personLabel(contact)) : "";
+    const typeLabels = { "réduction": "Avoir / crédit", "crédit": "Crédit à valoir", "annulation": "Annulation" };
+    const statusLabels = { "actif": "Actif — utilisable", "utilisé": "Utilisé", "annulé": "Annulé" };
+    const logo = isLogoDataUrl(club.logoDataUrl) ? club.logoDataUrl
+      : isLogoDataUrl(settings.logoDataUrl) ? settings.logoDataUrl
+      : defaultLogoDataUrl();
+    const dateLabel = dateDisplay(creditNote.date);
+    const docTitle = `Avoir${creditNote.reason ? " — " + creditNote.reason : ""}${dateLabel ? " — " + dateLabel : ""}`;
+    return {
+      title: "Avoir",
+      html: `<!doctype html><html lang="fr"><head><meta charset="utf-8" />
+        <title>${esc(docTitle)}</title>
+        <style>
+          @page { size: A4 portrait; margin: 16mm; }
+          * { box-sizing: border-box; }
+          body { font-family: "Helvetica Neue", Helvetica, Arial, sans-serif; color: #1f2937; background: #fff; margin: 0; font-size: 12.5px; line-height: 1.5; }
+          .head { display: flex; gap: 14px; align-items: center; margin: 0 0 16px; padding-bottom: 12px; border-bottom: 2px solid #1f2937; }
+          .head img, .head .fallback { width: 48px; height: 48px; object-fit: contain; }
+          .head .fallback { border: 1px solid #d7dce5; border-radius: 10px; display: grid; place-items: center; font-weight: 800; color: #1f2937; background: #f8fafc; }
+          .head .club { font-size: 15px; font-weight: 800; color: #1f2937; margin: 0; }
+          .head .club-details { color: #64748b; font-size: 11px; }
+          h1 { font-size: 24px; margin: 14px 0 4px; color: #111827; }
+          .ref { font-size: 11px; color: #6b7280; margin: 0 0 14px; }
+          .status-badge { display: inline-block; border-radius: 999px; padding: 4px 10px; font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: .04em; border: 1px solid #cbd5e1; background: #f8fafc; color: #334155; margin-bottom: 14px; }
+          .status-badge.actif { background: #ecfdf5; border-color: #a7f3d0; color: #047857; }
+          .status-badge.utilisé { background: #fff7ed; border-color: #fed7aa; color: #b45309; }
+          .status-badge.annulé { background: #e5e7eb; border-color: #9ca3af; color: #374151; }
+          table { width: 100%; border-collapse: collapse; margin: 0 0 16px; }
+          th, td { border: 1px solid #d8dce3; padding: 8px 10px; text-align: left; vertical-align: top; }
+          th { background: #f3f4f6; width: 34%; font-weight: 700; color: #374151; }
+          .amount { font-size: 18px; font-weight: 800; color: #111827; }
+          .sub { color: #64748b; font-size: 11px; margin-top: 2px; }
+          .guardian-warning { color: #b45309; font-size: 12px; margin-top: 6px; }
+          .note { border: 1px dashed #cbd5e1; border-radius: 8px; padding: 10px 12px; color: #475569; margin-top: 6px; }
+        </style></head><body>
+          <header class="head">
+            ${logo ? `<img src="${esc(logo)}" alt="${esc(club.name || settings.clubName || "Club")}" />` : `<div class="fallback">${esc(initialsForText(club.name || settings.clubName || "Club"))}</div>`}
+            <div>
+              <p class="club">${esc(club.name || settings.clubName || "Club")}</p>
+              <div class="club-details">${invoiceClubDetailsHtml(club).split("<br>").map((row) => `<div>${row}</div>`).join("")}</div>
+            </div>
+          </header>
+          <h1>Avoir</h1>
+          <p class="ref">Référence interne : ${esc(creditNote.id)}</p>
+          <span class="status-badge ${esc(creditNote.status)}">${esc(statusLabels[creditNote.status] || creditNote.status)}</span>
+          <table>
+            <tr><th>Bénéficiaire</th><td><strong>${esc(beneficiaryName)}</strong>${beneficiaryFor ? `<div class="sub">Pour : ${esc(beneficiaryFor)}</div>` : ""}${billing.guardianMissing ? `<div class="guardian-warning">Responsable légal non renseigné</div>` : ""}</td></tr>
+            <tr><th>Date</th><td>${esc(dateLabel)}</td></tr>
+            <tr><th>Motif</th><td>${esc(creditNote.reason || "Non renseigné")}</td></tr>
+            <tr><th>Type</th><td>${esc(typeLabels[creditNote.type] || creditNote.type)}</td></tr>
+            <tr><th>Facture d'origine</th><td>${linkedInvoice ? esc(linkedInvoice.number || "Facture sans numéro") : "Aucune"}</td></tr>
+            <tr><th>Montant</th><td class="amount">${money(creditNote.amount)}</td></tr>
+          </table>
+          ${creditNote.note ? `<div class="note">${esc(creditNote.note).replaceAll("\n", "<br>")}</div>` : ""}
+        </body></html>`,
+    };
+  }
+
+  function printCreditNote(creditNote = {}) {
+    if (!creditNote?.id) return;
+    showPagePrintPreview(creditNoteDocumentPayload(creditNote));
+  }
+
+  async function exportCreditNotePdf(creditNote = {}) {
+    if (!creditNote?.id) return;
+    const payload = creditNoteDocumentPayload(creditNote);
+    if (window.monGestaClubShell?.exportPdf) {
+      ui.saveMessage = "Création du PDF avoir...";
+      render();
+      try {
+        const result = await window.monGestaClubShell.exportPdf(payload);
+        ui.saveMessage = result?.ok ? "PDF avoir créé" : result?.message || "Export PDF avoir annulé";
+        render();
+      } catch (error) {
+        console.error(error);
+        ui.saveMessage = "Erreur PDF avoir";
+        render();
+        alert("Impossible de créer le PDF de l'avoir.");
+      }
+      return;
+    }
+    printCreditNote(creditNote);
+  }
+
   // Section d'affichage : recettes custom + remboursements + avoirs, sans surcharger l'UI.
   function correctionsBandHtml(data, expenseTotalAll) {
     const customIncomes = customInvoiceIncomes();
@@ -9325,7 +9764,7 @@
     const cashBalance = data.totals.paid - expenseTotalAll;
     const correctedBalance = cashBalance + customTotal - avoirTotal;
     const totalEncaisse = data.totals.paid + customTotal;
-    const typeLabels = { "réduction": "Réduction", "crédit": "Crédit", "annulation": "Annulation" };
+    const typeLabels = { "réduction": "Avoir / crédit", "crédit": "Crédit à valoir", "annulation": "Annulation" };
     const statusLabels = { "actif": "Actif", "utilisé": "Utilisé", "annulé": "Annulé" };
     return `<section class="band accounting-corrections">
       <div class="band-title"><h2>Autres recettes / corrections</h2><strong>${money(correctedBalance)}</strong></div>
@@ -9334,7 +9773,7 @@
         ${accountingMetric("Recettes custom encaissées", money(customTotal), "Factures dons / frais / prestations", customTotal ? "is-paid" : "")}
         ${accountingMetric("Total encaissé", money(totalEncaisse), "Sources + recettes custom")}
         ${accountingMetric("Remboursements", money(refundTotal), "Déjà inclus dans les dépenses", refundTotal ? "is-due" : "")}
-        ${accountingMetric("Avoirs actifs", money(avoirTotal), "Réductions / crédits accordés", avoirTotal ? "is-due" : "")}
+        ${accountingMetric("Avoirs actifs", money(avoirTotal), "Crédits / avoirs accordés", avoirTotal ? "is-due" : "")}
         ${accountingMetric("Solde corrigé", money(correctedBalance), "Encaissé + custom - dépenses - avoirs", correctedBalance >= 0 ? "is-paid" : "is-danger")}
       </div>
       <div class="coach-toolbar">
@@ -9677,10 +10116,16 @@
         <td>${tariffActions("discipline", index, "delete-tariff-discipline")}</td>
       </tr>`;
     }
+    // « À définir » : montant vide (discipline seedée par le wizard, jamais tarifée). Distinct d'un
+    // 0 explicite (gratuité voulue) qui reste affiché « 0,00 € ». Seul price/license === "" déclenche
+    // ce libellé ; les ajouts manuels (0) et les clubs existants (0 numérique) ne sont pas concernés.
+    const tariffAmountCell = (value) => value === ""
+      ? `<span class="tariff-to-define" title="Tarif non encore renseigné — à compléter">À définir</span>`
+      : money(value);
     return `<tr class="tariff-row" data-action="edit-tariff-row" data-kind="discipline" data-index="${index}">
       <td><strong>${esc(discipline.name)}</strong></td>
-      <td class="money">${money(discipline.price)}</td>
-      <td class="money">${money(discipline.license)}</td>
+      <td class="money">${tariffAmountCell(discipline.price)}</td>
+      <td class="money">${tariffAmountCell(discipline.license)}</td>
       <td class="tariff-tax-cell">${esc(taxRateLabel(discipline))}</td>
       <td>${tariffActions("discipline", index, "delete-tariff-discipline")}</td>
     </tr>`;
@@ -9858,6 +10303,7 @@
             <a href="#help-factures">Factures</a>
             <a href="#help-newsletter">E-mail</a>
             <a href="#help-disciplines">Disciplines</a>
+            <a href="#help-groupes">Groupes</a>
             <a href="#help-coachs">Coachs</a>
             <a href="#help-salles">Salles</a>
             <a href="#help-planning">Planning</a>
@@ -9882,7 +10328,7 @@
                 <span>Guide intégré</span>
                 <h2>Utiliser MonGestaClub</h2>
                 <p>Cette aide décrit le fonctionnement complet du logiciel. Elle sera complétée au fur et à mesure des évolutions de l'application.</p>
-                <button type="button" class="feedback-cta" data-action="open-feedback"><span class="feedback-cta-icon" aria-hidden="true">💬</span> Donner mon avis</button>
+                <button type="button" class="feedback-cta" data-action="open-feedback"><span class="feedback-cta-icon" aria-hidden="true">💬</span> Donner mon avis / signaler un bug</button>
               </div>
               <div class="help-version">
                 <strong>Version actuelle</strong>
@@ -9921,7 +10367,7 @@
               "La barre du haut affiche d'abord le titre de la page, puis les raccourcis sur la ligne dessous : page précédente, page suivante, annuler, rétablir, couper, copier, coller, imprimer, exporter CSV, ouvrir l'aide et enregistrer.",
               "Le bouton Aide de la barre du haut ouvre directement la section de l'aide qui correspond à la page d'où on le clique : depuis Contacts il ouvre l'aide Contacts, depuis Factures l'aide Factures, etc.",
               "Dans l'aide, le sommaire à gauche reste fixe : il liste toutes les sections et permet d'aller directement à l'une d'elles. Seul le texte de droite défile.",
-              "Le bouton PDF crée un fichier PDF dans la version installée. Dans le navigateur, il peut utiliser la fenêtre d'impression du système.",
+              "Le bouton PDF crée un fichier PDF qui reprend la même présentation que la page imprimable, sans la barre latérale ni les boutons du logiciel. Dans la version installée, c'est un vrai fichier PDF ; dans un navigateur, le bouton peut utiliser la fenêtre d'impression du système.",
               `La recherche globale en haut permet de retrouver rapidement un contact, une inscription${boutiqueEnabled ? ", une commande, un article" : ""}${stagesEnabled ? ", un stage" : ""} ou une note.`,
               "Dans Paramètres > Affichage, on peut ajouter le texte sous les icônes de cette barre pour rendre les boutons plus lisibles.",
               `Le menu principal garde les pages de travail au premier niveau.${boutiqueEnabled ? " Boutique ouvre Stock," : ""} Paramètres ouvre Tarifs, Statistiques, Comptabilité, Notes et Aide.`,
@@ -9946,12 +10392,11 @@
             ])}
 
             ${helpSection("help-a-faire", "À faire aujourd'hui", [
-              "La page À faire regroupe automatiquement les actions importantes du moment.",
-              `Elle affiche des post-it colorés pour les paiements à encaisser, les restes dus, les paiements refusés${boutiqueEnabled ? ", les stocks à surveiller" : ""} et les anniversaires à venir.`,
+              "La page À faire regroupe automatiquement les vraies urgences du moment, pas les simples rappels.",
+              `Elle affiche des post-it colorés pour les paiements en retard ou refusés, les documents manquants ou expirés, les coachs ou salles à remplacer, les conflits de planning${boutiqueEnabled ? ", le stock en rupture" : ""} et les groupes complets.`,
               `Chaque post-it indique le type d'alerte, la personne${boutiqueEnabled ? " ou l'article" : ""} concerné, le détail utile et l'action disponible.`,
               "Le bouton Ouvrir ouvre clairement la fiche concernée. Le bouton Relancer prépare un e-mail quand une relance est possible.",
               `Cliquer sur un post-it de paiement${boutiqueEnabled ? " ou de stock" : ""} ouvre la fiche correspondante pour agir tout de suite.`,
-              "Les anniversaires apparaissent seulement quand ils arrivent bientôt, environ une semaine avant, avec le libellé Anniversaire à venir.",
               "Le bouton Relancer prépare un message simple pour prévenir la personne concernée.",
               "Si la fiche contient un e-mail, la relance propose Ouvrir l'e-mail : la messagerie s'ouvre avec le destinataire, l'objet et le message déjà remplis.",
               "Le texte de relance est modifiable dans Paramètres > Messages e-mail.",
@@ -9981,6 +10426,7 @@
               "La catégorie Adulte ou Enfant est calculée automatiquement avec la date de naissance : adulte à partir de 18 ans.",
               "La couleur à gauche d'une fiche contact résume l'état financier du contact : rouge s'il reste quelque chose à payer, vert si tout est réglé.",
               `Dans une fiche contact, les boutons${boutiqueEnabled ? " Boutique," : ""} Disciplines${stagesEnabled ? " et Stages" : ""} reprennent le même code couleur : vert quand tout est réglé, orange pour un paiement en cours ou à venir, rouge pour un paiement dépassé, refusé ou annulé.`,
+              "Les boutons en bas de la fiche contact (Envoyer un mail, Créer / éditer une facture, Boutique, Disciplines, Stages) suivent les modules actifs dans Paramètres > Affichage : si un module est masqué, son bouton n'est plus proposé. Les données déjà enregistrées ne sont jamais supprimées.",
               `La fiche contact affiche aussi un récapitulatif en lecture seule des disciplines${stagesEnabled ? ", stages" : ""}${boutiqueEnabled ? ", achats boutique" : ""}, montants réglés et restes dus liés à la personne.`,
               "Le bloc Documents permet d'ajouter des fichiers utiles au contact : certificat, autorisation, justificatif ou autre document interne.",
               "Les documents ajoutés restent attachés à la fiche contact et sont inclus dans la sauvegarde JSON.",
@@ -10062,6 +10508,15 @@
               "Le certificat médical, les pathologies et les paiements sont conservés dans la fiche d'inscription.",
               "Si le certificat médical est sur Non, l'inscription reste possible mais une alerte apparaît dans la fiche et dans À faire.",
               "Si l'assurance n'est pas encore renseignée, l'inscription reste possible mais une alerte rappelle de la vérifier.",
+              "Le champ Niveau / grade est une note libre sur l'inscription (par exemple Débutant, Confirmé, Ceinture jaune). Elle s'affiche dans le récapitulatif de cette inscription, mais ce n'est ni une entité structurée ni un filtre automatique.",
+            ])}
+
+            ${helpSection("help-groupes", "Groupes", [
+              "La page Groupes rassemble des adhérents qui s'entraînent ensemble, pour faciliter l'appel et le planning.",
+              "Le champ Type de groupe (repère) sert seulement à classer vos groupes (par exemple Débutants, Confirmés, Enfants, Adultes, Loisir, Compétition). Ce n'est pas un niveau automatique : il ne pilote ni les inscriptions ni les tarifs.",
+              "La discipline reliée au groupe sert à proposer des coachs compatibles et à relier le groupe aux bons créneaux du planning.",
+              "La capacité maximale signale quand le groupe est plein. La tranche d'âge aide à orienter chaque adhérent vers le bon groupe.",
+              "Un groupe archivé n'est plus proposé pour de nouvelles séances mais reste dans l'historique.",
             ])}
 
             ${helpSection("help-coachs", "Coachs", [
@@ -10107,6 +10562,7 @@
               "Quand un créneau convient, « Créer ce cours » ouvre le formulaire du planning déjà prérempli : jour, horaires, discipline et groupe, et même le coach ou la salle lorsqu'un seul est disponible à ce moment-là.",
               "C'est plus sûr qu'une création directe dans le planning : le créneau proposé est déjà vérifié sans conflit, alors qu'une création manuelle peut chevaucher un coach, une salle ou un groupe déjà pris.",
               "Cette page est un outil d'aide à la décision : elle ne modifie rien tant que tu n'as pas créé un cours, et elle n'a pas vocation à être imprimée ou exportée.",
+              "Dans la grille, chaque niveau de disponibilité a aussi son propre motif (hachures plus ou moins denses, bordure pointillée), en plus de la couleur : les niveaux restent reconnaissables même si les couleurs sont difficiles à distinguer.",
             ])}
 
             ${helpSection("help-paiements", "Paiements et statuts", [
@@ -10247,12 +10703,13 @@
               "Chaque couleur indique à quoi elle sert, et l'aperçu affiche aussi toutes les couleurs du thème pour voir immédiatement ce qui change.",
               "Les changements de couleur restent en brouillon tant que Enregistrer n'est pas cliqué. Annuler ou fermer la fenêtre remet les anciennes couleurs.",
               "Changer de thème ne modifie aucune donnée du club. Cela change uniquement les couleurs, les arrondis, les fonds et l'apparence générale.",
+              "Le thème Contraste élevé renforce les écarts de couleur pour une meilleure lisibilité. Il fonctionne comme les autres thèmes : Choisir pour l'appliquer, sans modifier aucune donnée du club.",
               "Le bloc Affichage contient des cases à cocher pour ajouter ou retirer le texte sous les icônes de la barre du haut, et pour afficher ou masquer certaines pages comme Accueil, E-mail, Tarifs, Statistiques ou Notes.",
               "Le bloc Affichage propose aussi trois modes d'interface : Simple (menu allégé pour les petits clubs), Avancé (tous les modules visibles) et Personnalisé (choisir précisément les pages visibles). Changer de mode ne supprime aucune donnée : seules des entrées du menu sont masquées, et les vues masquées restent fonctionnelles. Un nouveau club démarre en mode Simple.",
               "Une puce en bas du menu indique le mode courant (Mode simple, Mode avancé ou Mode personnalisé). Cliquer dessus ouvre directement Paramètres > Affichage pour changer de mode.",
               "Le réglage Disposition (dans Affichage) choisit la mise en page générale : Moderne place le menu principal à gauche (l'affichage par défaut, inchangé) ; Classique le transforme en une barre de menus en haut du logiciel, avec sous-menus déroulants, façon logiciel de bureau. Les deux dispositions donnent accès aux mêmes pages ; on bascule de l'une à l'autre à tout moment, sans rien perdre.",
               "On peut replier le menu et la barre d'outils pour gagner de la place. En disposition Moderne : le bouton ⟨ / ☰ masque ou réaffiche le menu de gauche, et le bouton ⌃ replie la barre du haut (le bouton ⌄ la rouvre). En disposition Classique, le menu fin du haut reste toujours visible : le bouton ⌃ replie uniquement la barre d'outils, et le bouton ⌄ Barre d'outils la réaffiche. Ces préférences sont mémorisées d'une session à l'autre.",
-              "Le bloc Affichage permet aussi de désactiver Stages ou Boutique. Quand un module est désactivé, il disparaît du menu, de l'accueil, des contacts, des statistiques, de la comptabilité, des exports et des tarifs liés, sans supprimer ses données.",
+              "En mode Personnalisé, décocher une page (Factures, E-mail, Disciplines, Boutique, Stages…) la masque partout où elle apparaît : menu, accueil, fiche contact et exports liés, sans supprimer aucune donnée. Le bloc Affichage permet aussi de désactiver spécifiquement Stages ou Boutique dans les statistiques et la comptabilité.",
               "Le bloc Ordre du menu permet de personnaliser le menu principal (à gauche en Moderne, en haut en Classique) : réordonne les éléments du menu et de ses sous-menus (Paramètres, Boutique) en les faisant glisser ou avec les flèches.",
               "Dans Ordre du menu, on peut aussi déplacer un élément d'un groupe à l'autre : sortir une entrée du sous-menu Paramètres vers le menu principal, ou inversement, par glisser-déposer ou avec le bouton ⇄. Le bouton Ordre par défaut remet la navigation d'origine.",
               "Le bouton + Créer un menu ajoute un menu personnalisé : donne-lui un nom et choisis une icône dans la liste proposée, puis fais glisser dedans les entrées de ton choix pour les transformer en sous-menu. Ce menu apparaît dans le menu principal (à gauche en Moderne, en haut en Classique) et se déplie au clic, comme Boutique ou Paramètres.",
@@ -10337,6 +10794,8 @@
               "Les dépenses liées aux coachs et aux salles ne sont jamais automatiques : depuis la fiche, après avoir coché Comptabiliser comme dépense, le bouton dédié crée volontairement une dépense réelle.",
               "Un remboursement est une dépense de catégorie Remboursement : c'est une vraie sortie de caisse, déjà incluse dans le Solde caisse.",
               "Un avoir est une correction comptable rattachée à une facture (réduction, crédit ou annulation). Un avoir actif est déduit du Solde corrigé ; un avoir annulé n'est pas compté.",
+              "Un avoir a un statut : actif (utilisable), utilisé (déjà appliqué à un paiement) ou annulé. S'il dépasse le reste dû d'une facture, seule la part nécessaire est utilisée et un nouvel avoir actif est créé automatiquement pour le reliquat.",
+              "Depuis sa fiche, un avoir peut être imprimé ou exporté en PDF pour être remis à l'adhérent. Il porte une référence interne (pas un numéro de facture officiel), avec le bénéficiaire, le motif, le statut et le montant.",
               "Le Solde caisse correspond à l'argent réellement disponible : encaissé des sources moins les dépenses saisies. Le Solde corrigé ajoute les recettes custom et retire les avoirs actifs.",
               "Le Résultat estimé est une vue de marge (recettes HT moins achats imputés comme les licences et le prix d'achat boutique). Le Solde caisse est une vue de trésorerie. Ce sont deux lectures différentes : il ne faut pas les additionner.",
               "Pour la catégorie Achat boutique / stock : le prix d'achat saisi dans la boutique sert déjà au calcul de la marge et du stock. Une dépense de cette catégorie sert seulement à enregistrer une vraie sortie de caisse ; il ne faut pas cumuler mentalement les deux comme un seul chiffre.",
@@ -10410,17 +10869,21 @@
     const display = displaySettings();
     const label = (Object.fromEntries(views)[key]) || key;
     const forced = DISPLAY_FORCED_MODULES.includes(key);
+    // Bloc unique Boutique & Stock : Stock suit toujours Boutique (isModuleVisibleByMode), donc sa
+    // case n'a rien à régler en propre — verrouillée avec un libellé explicite plutôt qu'un clic
+    // sans effet visible (audit modules désactivables).
+    const linkedToBoutique = key === "stock";
     // L'état coché reflète la visibilité RÉELLE selon le mode courant : en Simple → modules du mode
     // simple ; en Avancé → tous ; en Personnalisé → choix enregistré (visibleModules). Ainsi l'utilisateur
     // voit ce qui est réellement actif dans le mode sélectionné. Les cases ne sont éditables qu'en
     // Personnalisé (disabled sinon), et le choix Personnalisé reste conservé même en Simple/Avancé.
     const checked = isModuleVisibleByMode(key);
-    const disabled = forced || display.mode !== "custom";
+    const disabled = forced || linkedToBoutique || display.mode !== "custom";
     return `<label class="settings-check"${disabled ? ' style="opacity:.55"' : ""}>
       <input type="checkbox" data-visible-module="${esc(key)}" ${checked ? "checked" : ""} ${disabled ? "disabled" : ""} />
       <span>
         <strong>${esc(label)}</strong>
-        ${forced ? `<small>Toujours visible</small>` : ""}
+        ${forced ? `<small>Toujours visible</small>` : linkedToBoutique ? `<small>Visible avec Boutique</small>` : ""}
       </span>
     </label>`;
   }
@@ -10522,8 +10985,8 @@
           <div class="settings-subsection">
             <h4>Menus affichés dans ce mode</h4>
             <p class="muted">${displaySettings().mode === "custom"
-              ? "Cochez les menus que vous souhaitez afficher. Accueil, Paramètres et Aide restent toujours visibles."
-              : "Ce mode est prédéfini. Passez en <strong>Personnalisé</strong> pour modifier les menus. Accueil, Paramètres et Aide restent toujours visibles."}</p>
+              ? "Cochez les menus optionnels que vous souhaitez afficher. Les fonctions de base restent toujours visibles : Accueil, Recherche, E-mails, Documents sportifs, Paramètres et Aide."
+              : "Ce mode est prédéfini. Passez en <strong>Personnalisé</strong> pour modifier les menus optionnels. Les fonctions de base restent toujours visibles : Accueil, Recherche, E-mails, Documents sportifs, Paramètres et Aide."}</p>
             ${displayVisibleModulesHtml()}
           </div>
 
@@ -11018,7 +11481,11 @@
         payload.state.tariffs = payload.state.tariffs || {};
         payload.state.tariffs.disciplines = payload.state.tariffs.disciplines || [];
         if (!payload.state.tariffs.disciplines.some((d) => asText(d.name).toLowerCase() === discName.toLowerCase())) {
-          payload.state.tariffs.disciplines.push({ id: id("discipline"), clubId: normalizedClub.id, name: discName, price: 0, license: 0 });
+          // Tarif/licence « à définir » (chaîne vide) plutôt que 0 : le wizard ne saisit que le NOM
+          // de la discipline, jamais un prix. Une valeur vide signale « tarif non encore renseigné »
+          // (affiché « À définir » dans les tarifs), à distinguer d'un 0 explicite = gratuité voulue.
+          // asNumber("") = 0 → les calculs restent sûrs ; normalizeState ne touche pas price/license.
+          payload.state.tariffs.disciplines.push({ id: id("discipline"), clubId: normalizedClub.id, name: discName, price: "", license: "" });
         }
       }
     }
@@ -11404,7 +11871,7 @@
       const targetDialog = dialogForNewWindow();
       targetDialog.classList.remove("has-identity-photo");
       targetDialog.innerHTML = `<form class="menu-customizer-form">
-        <div class="dialog-header"><h2>${esc(title)}</h2><button class="icon" type="button" data-dialog-close>×</button></div>
+        <div class="dialog-header"><h2>${esc(title)}</h2><button class="icon" type="button" data-dialog-close title="Fermer" aria-label="Fermer">×</button></div>
         <div class="dialog-body">
           <div class="dialog-section">
             ${name !== null ? `<label>Nom du menu<input type="text" name="menuName" value="${esc(name)}" placeholder="Ex. Administration" autofocus /></label>` : ""}
@@ -11598,7 +12065,7 @@
       targetDialog.classList.remove("has-identity-photo");
       const groups = menuTargetGroups(currentGroup);
       targetDialog.innerHTML = `<div class="menu-target-chooser">
-        <div class="dialog-header"><h2>Déplacer « ${esc(menuKeyLabel(key))} »</h2><button class="icon" type="button" data-dialog-close>×</button></div>
+        <div class="dialog-header"><h2>Déplacer « ${esc(menuKeyLabel(key))} »</h2><button class="icon" type="button" data-dialog-close title="Fermer" aria-label="Fermer">×</button></div>
         <div class="dialog-body"><div class="dialog-section">
           <p class="muted">Choisis le menu de destination :</p>
           <div class="menu-target-list">
@@ -11797,7 +12264,7 @@
     return `<div class="settings-panel postit-settings">
       <p class="muted">Personnalise la couleur et le modèle de post-it utilisés dans la page À faire, selon chaque type d'alerte.</p>
       <div class="postit-style-grid">
-        ${POSTIT_TYPES.map(([key, label]) => {
+        ${VISIBLE_POSTIT_TYPES.map(([key, label]) => {
           const style = settings.postitStyles[key];
           const previewStyle = `--postit-color:${esc(style.color)};--postit-image:url('${esc(postitDesignUrl(style.design))}')`;
           return `<section class="postit-style-card" style="${previewStyle}">
@@ -12499,7 +12966,7 @@
       const targetDialog = dialogForNewWindow();
       targetDialog.classList.remove("has-identity-photo");
       targetDialog.innerHTML = `<form class="password-confirm-form">
-        <div class="dialog-header"><h2>${esc(title)}</h2><button class="icon" type="button" data-dialog-close>×</button></div>
+        <div class="dialog-header"><h2>${esc(title)}</h2><button class="icon" type="button" data-dialog-close title="Fermer" aria-label="Fermer">×</button></div>
         <div class="dialog-body">
           <div class="dialog-section">
             ${message.split("\n").filter(Boolean).map((line) => `<p>${esc(line)}</p>`).join("")}
@@ -12541,7 +13008,7 @@
       const targetDialog = dialogForNewWindow();
       targetDialog.classList.remove("has-identity-photo");
       targetDialog.innerHTML = `<form class="password-confirm-form">
-        <div class="dialog-header"><h2>${esc(title)}</h2><button class="icon" type="button" data-dialog-close>×</button></div>
+        <div class="dialog-header"><h2>${esc(title)}</h2><button class="icon" type="button" data-dialog-close title="Fermer" aria-label="Fermer">×</button></div>
         <div class="dialog-body">
           <div class="dialog-section">
             ${bodyHtml || message.split("\n").filter(Boolean).map((line) => `<p>${esc(line)}</p>`).join("")}
@@ -12582,7 +13049,7 @@
       const targetDialog = dialogForNewWindow();
       targetDialog.classList.remove("has-identity-photo");
       targetDialog.innerHTML = `<form class="password-confirm-form">
-        <div class="dialog-header"><h2>${esc(title)}</h2><button class="icon" type="button" data-dialog-close>×</button></div>
+        <div class="dialog-header"><h2>${esc(title)}</h2><button class="icon" type="button" data-dialog-close title="Fermer" aria-label="Fermer">×</button></div>
         <div class="dialog-body">
           <div class="dialog-section">
             <label>${esc(label)}<input type="text" name="textValue" value="${esc(value)}" placeholder="${esc(placeholder)}" autofocus /></label>
@@ -12628,7 +13095,7 @@
     return new Promise((resolve) => {
       let settled = false;
       dialog.innerHTML = `<form class="password-confirm-form">
-        <div class="dialog-header"><h2>${esc(title)}</h2><button class="icon" type="button" data-dialog-close>×</button></div>
+        <div class="dialog-header"><h2>${esc(title)}</h2><button class="icon" type="button" data-dialog-close title="Fermer" aria-label="Fermer">×</button></div>
         <div class="dialog-body">
           <div class="dialog-section">
             <p>${esc(message)}</p>
@@ -12680,7 +13147,7 @@
       if (dialog.open) dialog.close();
       dialog.classList.remove("has-identity-photo");
       dialog.innerHTML = `<form class="password-confirm-form danger-confirm-form">
-        <div class="dialog-header"><h2>${esc(title)}</h2><button class="icon" type="button" data-dialog-close>×</button></div>
+        <div class="dialog-header"><h2>${esc(title)}</h2><button class="icon" type="button" data-dialog-close title="Fermer" aria-label="Fermer">×</button></div>
         <div class="dialog-body">
           <div class="dialog-section">
             ${message.split("\n").filter(Boolean).map((line) => `<p>${esc(line)}</p>`).join("")}
@@ -12730,7 +13197,7 @@
     const targetDialog = dialogForNewWindow();
     targetDialog.classList.remove("has-identity-photo");
     targetDialog.innerHTML = `<div>
-      <div class="dialog-header"><h2>${esc(title)}</h2><button class="icon" type="button" data-dialog-close>×</button></div>
+      <div class="dialog-header"><h2>${esc(title)}</h2><button class="icon" type="button" data-dialog-close title="Fermer" aria-label="Fermer">×</button></div>
       <div class="dialog-body"><div class="dialog-section recovery-dialog-body">
         ${intro ? `<p class="muted">${esc(intro)}</p>` : ""}
         ${recoveryCodeCardHtml(code)}
@@ -13468,7 +13935,9 @@
     if (overpayBox) {
       const covered = paymentCoverageAmount(rows, paymentBlockCount(form, prefix));
       const over = covered - total;
-      if (total > 0 && over > 0.005) {
+      // Un total à 0 € (ex. remise totale) avec un paiement manuel resté positif est un trop-perçu
+      // à part entière : ne plus l'exclure via un total > 0, sinon le bandeau reste muet dans ce cas.
+      if (over > 0.005) {
         overpayBox.hidden = false;
         overpayBox.textContent = `Attention : les paiements saisis (${money(covered)}) dépassent le total attendu (${money(total)}) de ${money(over)}.`;
       } else {
@@ -13540,11 +14009,15 @@
   function distributePaymentSplit(form, prefix, changedInput = null) {
     const block = paymentBlock(form, prefix);
     const total = asNumber(block?.dataset.paymentTotal);
+    const inputs = paymentBlockIndexes(form, prefix).map((index) => paymentAmountInput(form, prefix, index));
     if (!total) {
+      // Remise ramenant le total à 0 € : vider les montants automatiques (clearAutoPaymentAmount
+      // ignore déjà les montants saisis manuellement) pour ne pas laisser un paiement prérempli
+      // figé alors que la commande ne coûte plus rien.
+      inputs.forEach(clearAutoPaymentAmount);
       updatePaymentSplitDisplay(form, prefix);
       return;
     }
-    const inputs = paymentBlockIndexes(form, prefix).map((index) => paymentAmountInput(form, prefix, index));
     if (!inputs[0]) return;
     const userClearedInput = changedInput && changedInput.dataset.manualEmpty === "true" && !asText(changedInput.value);
     if (userClearedInput) inputs.slice(inputs.indexOf(changedInput) + 1).forEach(clearAutoPaymentAmount);
@@ -13717,13 +14190,24 @@
     const windowKey = pendingWindowKey; pendingWindowKey = null;
     if (windowKey && keyedWindows.has(windowKey)) {
       const existing = keyedWindows.get(windowKey);
-      existing.activate();
-      return existing.dialogEl();
+      const existingDialog = existing.dialogEl();
+      // Une entrée peut rester en mémoire alors que sa fenêtre vient d'être fermée par du code
+      // (ex. « Fiche contact / facture » qui ferme puis rouvre aussitôt la même fiche) : l'événement
+      // "close" qui nettoie keyedWindows n'a pas encore eu lieu. Sans cette vérification, on
+      // « réactive » une fenêtre déjà fermée (aucun effet visible) au lieu d'en reconstruire une —
+      // d'où un bouton qui semblait tout fermer sans rien rouvrir. On ne réutilise que si la fenêtre
+      // est réellement affichée ou correctement réduite ; sinon on purge l'entrée périmée et on
+      // reconstruit normalement la fiche ci-dessous.
+      if (existingDialog?.open || existing.isMinimized?.()) {
+        existing.activate();
+        return existingDialog;
+      }
+      keyedWindows.delete(windowKey);
     }
     const targetDialog = dialogForNewWindow();
     const host = { dialog: targetDialog };
     targetDialog.innerHTML = `<form>
-      <div class="dialog-header"><h2>${esc(title)}</h2><div class="dialog-header-actions"><button class="icon" type="button" data-dialog-minimize title="Réduire la fenêtre" aria-label="Réduire la fenêtre">—</button><button class="icon" type="button" data-dialog-close>×</button></div></div>
+      <div class="dialog-header"><h2>${esc(title)}</h2><div class="dialog-header-actions"><button class="icon" type="button" data-dialog-minimize title="Réduire la fenêtre" aria-label="Réduire la fenêtre">—</button><button class="icon" type="button" data-dialog-close title="Fermer" aria-label="Fermer">×</button></div></div>
       <div class="dialog-body"><div class="form-grid">${body}</div></div>
       <datalist id="paymentStateList"><option value="Refusé"></option></datalist>
       <div class="dialog-footer">
@@ -13785,6 +14269,7 @@
       keyedWindows.set(windowKey, {
         dialogEl: () => host.dialog,
         activate: () => { if (minimized) restoreWindow(); else focusDialogControl(form); },
+        isMinimized: () => minimized,
       });
     }
     form.addEventListener("submit", async (event) => {
@@ -13855,7 +14340,7 @@
       ? `<span class="${esc(o.iconClass || "dialog-title-icon")}" aria-hidden="true">${o.iconHtml}</span>${esc(title)}`
       : esc(title);
     targetDialog.innerHTML = `<div>
-      <div class="dialog-header"><h2>${titleHtml}</h2><button class="icon" type="button" data-dialog-close>×</button></div>
+      <div class="dialog-header"><h2>${titleHtml}</h2><button class="icon" type="button" data-dialog-close title="Fermer" aria-label="Fermer">×</button></div>
       <div class="dialog-body">${body}</div>
       <div class="dialog-footer"><button type="button" data-dialog-close>Fermer</button></div>
     </div>`;
@@ -14213,14 +14698,16 @@
         .filter((row) => contactRecordMatches(contact, row))
         .map((row) => ({ row, calc: calcMembership(row) }));
     }
+    // Lot 2 Modules désactivables — fonction de LECTURE : plus de garde isModuleEnabled ici.
+    // Un module désactivé (forcément sans donnée active depuis le lot 1) doit garder son
+    // historique visible sur la fiche contact, avec des totaux exacts. Les points de
+    // CRÉATION et la facturation (billableItemsForContact) gardent leurs propres gardes.
     if (module === "boutique") {
-      if (!isModuleEnabled("boutique")) return [];
       return state.shopOrders
         .filter((row) => contactRecordMatches(contact, row))
         .map((row) => ({ row, calc: calcOrder(row) }));
     }
     if (module === "stages") {
-      if (!isModuleEnabled("stages")) return [];
       return state.tariffs.stages.flatMap((stage) => (state.stageRegistrations[stage.id] || [])
         .filter((row) => contactRecordMatches(contact, row))
         .map((row) => ({ row, stageId: stage.id, calc: calcRegistration(row) })));
@@ -14242,7 +14729,6 @@
     if (status === "issued") return "Émise";
     if (status === "paid") return "Payée";
     if (status === "partial") return "Partiellement payée";
-    if (status === "late") return "En retard";
     if (status === "cancelled") return "Annulée";
     return status;
   }
@@ -14263,11 +14749,43 @@
     return status !== "draft" && status !== "cancelled";
   }
 
+  // Lot 3b — Retard = ALERTE dérivée, jamais un statut principal. Une facture est « en retard »
+  // si elle a un reste dû ET qu'au moins une échéance de paiement planifiée est dépassée
+  // (réutilise paymentIsLate). Une facture payée / annulée / brouillon n'est jamais en retard.
+  function invoiceIsLate(invoice = {}) {
+    const status = computedInvoiceStatus(invoice);
+    if (status === "draft" || status === "cancelled" || status === "paid") return false;
+    const totals = invoiceTotalsFromLines(invoice.lines || [], invoice.paymentsSnapshot || []);
+    if (asNumber(totals.restDue) <= 0.005) return false;
+    return (invoice.paymentsSnapshot || []).some((payment) => paymentIsLate(payment));
+  }
+
+  // Lot 3a — Source unique de vérité des actions autorisées selon l'état de la facture.
+  // Toutes les zones (éditeur, listes, boutons paiement/impression) doivent s'y référer
+  // plutôt que de re-décider chacune de leur côté.
+  function invoiceAllowedActions(invoice = {}) {
+    const status = computedInvoiceStatus(invoice);
+    const isDraft = status === "draft";
+    const isCancelled = status === "cancelled";
+    const totals = invoiceTotalsFromLines(invoice.lines || [], invoice.paymentsSnapshot || []);
+    const hasDue = asNumber(totals.restDue) > 0.005;
+    return {
+      editLines: isDraft,                              // ajouter / modifier / supprimer des lignes
+      emit: isDraft,                                   // émettre / valider
+      addPayment: !isDraft && !isCancelled && hasDue,  // règlement seulement si reste dû
+      settled: !isDraft && !isCancelled && !hasDue,    // soldée -> mention « Facture soldée »
+      print: !isDraft,                                 // imprimer
+      pdf: !isDraft,                                   // PDF
+      open: true,                                      // toujours ouvrable / consultable
+    };
+  }
+
   function invoiceStatusPill(invoice = {}) {
     const status = computedInvoiceStatus(invoice);
     const label = invoiceStatusLabel({ ...invoice, status });
     const frozenTitle = invoiceIsFrozen(invoice) ? ` title="Facture émise : montant figé à l'émission"` : "";
-    return `<span class="invoice-status ${esc(status)}"${frozenTitle}>${esc(label)}</span>`;
+    const lateBadge = invoiceIsLate(invoice) ? `<span class="invoice-status late" title="Au moins une échéance de paiement est dépassée">En retard</span>` : "";
+    return `<span class="invoice-status ${esc(status)}"${frozenTitle}>${esc(label)}</span>${lateBadge}`;
   }
 
   function billableItem(source) {
@@ -14496,7 +15014,7 @@
   }
 
   function contactInvoiceSnapshot(contact = {}, kind = "members") {
-    return {
+    const snapshot = {
       id: contact.id || "",
       kind: contactInvoiceKind(kind),
       lastName: contact.lastName || "",
@@ -14507,6 +15025,16 @@
       postalCode: contact.postalCode || "",
       city: contact.city || "",
     };
+    // Lot 6c — Mineur avec responsable légal : on FIGE le destinataire de facturation (additif).
+    // Les anciennes factures sans billedTo -> fallback d'affichage = le contact lui-même.
+    if (contactInvoiceKind(kind) === "members" && memberCategory(contact) === "Enfant" && asText(contact.legalGuardianName)) {
+      snapshot.billedTo = {
+        name: asText(contact.legalGuardianName),
+        email: asText(contact.legalGuardianEmail),
+        phone: asText(contact.legalGuardianPhone),
+      };
+    }
+    return snapshot;
   }
 
   function draftInvoiceForContact(contact = {}, kind = "members") {
@@ -14603,6 +15131,14 @@
     return `<button type="button" class="${tone}" title="${esc(title)}" data-action="open-contact-module" data-module="${esc(module)}" data-contact-link="${esc(contactLink)}">${esc(label)}</button>`;
   }
 
+  // Lot correctif — cohérence modules désactivés / bas de fiche contact : chaque bouton suit
+  // désormais le MÊME prédicat que la navigation (isViewVisible), au lieu d'un mélange où seuls
+  // Boutique/Stages étaient gardés (via isModuleEnabled) et Facture/E-mail/Disciplines jamais.
+  // isViewVisible() combine déjà visibilité menu (mode simple/avancé/personnalisé) ET drapeau
+  // fonctionnel (Stages/Boutique) : aucune nouvelle règle de désactivation créée, on réutilise
+  // seulement le prédicat existant. Aucune donnée supprimée : un contact garde son historique
+  // (inscriptions, commandes, stages passés) même si le module correspondant est ensuite masqué ;
+  // seule l'action de création/raccourci disparaît du bas de fiche.
   function contactModuleLinks(kind, row = {}) {
     const contactLinkKind = kind === "members" ? "member" : "prospect";
     // Création : le contact n'a pas encore d'id. On affiche quand même les actions ; data-contact-new
@@ -14612,22 +15148,22 @@
     if (!row.id) {
       const newModuleBtn = (module, label) => `<button type="button" class="is-empty" data-action="open-contact-module" data-module="${module}" data-contact-new="1" title="${esc(label)} — le contact sera enregistré d'abord">${esc(label)}</button>`;
       return `<div class="contact-module-links" aria-label="Accès direct du contact" data-tour="contact-modules">
-        <button type="button" class="is-empty" disabled title="Enregistre d'abord le contact pour pouvoir lui envoyer un e-mail">Envoyer un mail</button>
-        <button type="button" class="is-paid" data-action="open-contact-invoice" data-contact-new="1" data-tour="invoice-create" title="Créer une facture — le contact sera enregistré d'abord">Créer / éditer une facture</button>
-        ${isModuleEnabled("boutique") ? newModuleBtn("boutique", "Boutique") : ""}
-        ${kind === "members" ? newModuleBtn("disciplines", "Disciplines") : ""}
-        ${isModuleEnabled("stages") ? newModuleBtn("stages", "Stages") : ""}
+        ${isViewVisible("newsletter") ? `<button type="button" class="is-empty" disabled title="Enregistre d'abord le contact pour pouvoir lui envoyer un e-mail">Envoyer un mail</button>` : ""}
+        ${isViewVisible("invoices") ? `<button type="button" class="is-paid" data-action="open-contact-invoice" data-contact-new="1" data-tour="invoice-create" title="Créer une facture — le contact sera enregistré d'abord">Créer / éditer une facture</button>` : ""}
+        ${isViewVisible("boutique") ? newModuleBtn("boutique", "Boutique") : ""}
+        ${kind === "members" && isViewVisible("disciplines") ? newModuleBtn("disciplines", "Disciplines") : ""}
+        ${isViewVisible("stages") ? newModuleBtn("stages", "Stages") : ""}
       </div>`;
     }
     const contactLink = `${contactLinkKind}:${row.id}`;
-    const memberLinks = kind === "members" ? `
+    const memberLinks = kind === "members" && isViewVisible("disciplines") ? `
       ${contactModuleButton(contactLink, row, "disciplines", "Disciplines")}
     ` : "";
-    const stageLink = isModuleEnabled("stages") ? contactModuleButton(contactLink, row, "stages", "Stages") : "";
+    const stageLink = isViewVisible("stages") ? contactModuleButton(contactLink, row, "stages", "Stages") : "";
     return `<div class="contact-module-links" aria-label="Accès direct du contact" data-tour="contact-modules">
-      <button type="button" class="${asText(row.email) ? "is-paid" : "is-empty"}" title="${asText(row.email) ? "Préparer un e-mail au contact" : "Adresse e-mail manquante"}" data-action="send-contact-email" data-contact-link="${esc(contactLink)}">Envoyer un mail</button>
-      <button type="button" class="is-paid" title="Créer ou éditer une facture centralisée pour ce contact" data-action="open-contact-invoice" data-contact-link="${esc(contactLink)}" data-tour="invoice-create">Créer / éditer une facture</button>
-      ${isModuleEnabled("boutique") ? contactModuleButton(contactLink, row, "boutique", "Boutique") : ""}
+      ${isViewVisible("newsletter") ? `<button type="button" class="${asText(row.email) ? "is-paid" : "is-empty"}" title="${asText(row.email) ? "Préparer un e-mail au contact" : "Adresse e-mail manquante"}" data-action="send-contact-email" data-contact-link="${esc(contactLink)}">Envoyer un mail</button>` : ""}
+      ${isViewVisible("invoices") ? `<button type="button" class="is-paid" title="Créer ou éditer une facture centralisée pour ce contact" data-action="open-contact-invoice" data-contact-link="${esc(contactLink)}" data-tour="invoice-create">Créer / éditer une facture</button>` : ""}
+      ${isViewVisible("boutique") ? contactModuleButton(contactLink, row, "boutique", "Boutique") : ""}
       ${memberLinks}
       ${stageLink}
     </div>`;
@@ -14659,11 +15195,38 @@
     const invoice = normalizeInvoice(state.invoices.find((inv) => inv.id === editor.dataset.invoiceEditorId) || {});
     if (!invoice.id) return;
     const host = editor.closest("dialog") || editor.parentElement;
+    // Lot Responsable légal — l'en-tête (nom/adresse, alerte "Responsable légal non renseigné",
+    // bouton de correction) ne se rafraîchissait pas ici : si le contact est corrigé pendant que
+    // la facture reste ouverte (ou minimisée), l'alerte pouvait rester affichée à tort jusqu'à
+    // fermeture/réouverture complète. Même résolution de contact que openInvoiceEditor().
+    const headWrap = host.querySelector("[data-invoice-editor-head]");
+    if (headWrap) headWrap.innerHTML = invoiceBillingHeadHtml(invoice, invoiceDisplayContact(invoice));
     const summaryWrap = host.querySelector("[data-invoice-editor-summary]");
     if (summaryWrap) summaryWrap.innerHTML = invoiceEditorSummary(invoice, invoice.lines, invoice.paymentsSnapshot);
     const payWrap = host.querySelector("[data-invoice-editor-payments]");
     if (payWrap) payWrap.innerHTML = `<h3>Paiements et échéances</h3>${invoicePaymentsHtml(invoice.paymentsSnapshot)}${invoice.status !== "draft" ? invoicePaymentActionHtml(invoice) : ""}`;
+    // Lot 5d-1 : rafraîchir le bloc « Avoirs liés » en place (avoir créé visible immédiatement).
+    const cnWrap = host.querySelector("[data-invoice-credit-notes]");
+    if (cnWrap) cnWrap.outerHTML = invoiceLinkedCreditNotesHtml(invoice);
     applyClickableTooltips(host);
+  }
+
+  // Lot 6a — Diagnostic mineur / responsable légal sur la fiche contact (AFFICHAGE SEUL).
+  // Réutilise memberCategory (âge si date de naissance, sinon catégorie « Enfant »). Ne touche
+  // ni aux factures, ni à contactInvoiceSnapshot, ni aux calculs, ni aux données.
+  function contactMinorGuardianHtml(contact = {}, kind = "members") {
+    if (kind !== "members") return "";                 // responsable légal = champs adhérent
+    if (memberCategory(contact) !== "Enfant") return ""; // adulte / âge inconnu non-enfant -> rien
+    const name = asText(contact.legalGuardianName);
+    const coords = [asText(contact.legalGuardianPhone), asText(contact.legalGuardianEmail)].filter(Boolean).map(esc).join(" · ");
+    const auth = contact.parentalAuthorization ? ` <span class="muted">· Autorisation parentale renseignée</span>` : "";
+    const body = name
+      ? `<div><strong>Responsable légal :</strong> ${esc(name)}${coords ? ` <span class="muted">(${coords})</span>` : ""}${auth}</div>`
+      : `<div class="muted"><strong>⚠️ Responsable légal non renseigné</strong></div>`;
+    return `<section class="contact-recap-section">
+      <h4><span class="invoice-status">Mineur</span></h4>
+      ${body}
+    </section>`;
   }
 
   function contactActivitySummary(kind, contact = {}) {
@@ -14704,9 +15267,10 @@
         <div><span>Activités</span><strong>${intValue(all.length)}</strong></div>
       </div>
       ${empty}
+      ${contactMinorGuardianHtml(contact, kind)}
       ${contactRecapSection("Disciplines", memberships, contactRecapMembership)}
-      ${isModuleEnabled("boutique") ? contactRecapSection("Boutique", orders, contactRecapOrder) : ""}
-      ${isModuleEnabled("stages") ? contactRecapSection("Stages", registrations, contactRecapRegistration) : ""}
+      ${contactRecapSection("Boutique", orders, contactRecapOrder, isModuleEnabled("boutique") ? "" : "Module désactivé — historique conservé. Réactivez le module pour ajouter de nouvelles données.")}
+      ${contactRecapSection("Stages", registrations, contactRecapRegistration, isModuleEnabled("stages") ? "" : "Module désactivé — historique conservé. Réactivez le module pour ajouter de nouvelles données.")}
       ${invoiceRows.length ? `<section class="contact-recap-section">
         <h4>Factures</h4>
         <div class="contact-recap-kpis">
@@ -14716,13 +15280,15 @@
         </div>
         <div class="contact-recap-list">${invoiceRows.map(contactRecapInvoice).join("")}</div>
       </section>` : ""}
+      ${contactAvailableCreditNotesHtml(contact)}
     </div>`;
   }
 
-  function contactRecapSection(title, entries, renderer) {
+  function contactRecapSection(title, entries, renderer, note = "") {
     if (!entries.length) return "";
     return `<section class="contact-recap-section">
       <h4>${esc(title)}</h4>
+      ${note ? `<p class="muted">${esc(note)}</p>` : ""}
       <div class="contact-recap-list">${entries.map(renderer).join("")}</div>
     </section>`;
   }
@@ -14742,7 +15308,12 @@
 
   function contactRecapMembership(entry) {
     const row = entry.row;
+    // Lot V1 Niveaux — "Niveau" reste une note libre sans automatisme (cf. audit
+    // Niveaux/Groupes/Disciplines) : simple affichage si renseigné, rien sinon, propre à
+    // cette inscription (pas une donnée globale du contact, une autre inscription du même
+    // contact peut avoir un niveau différent ou vide).
     const subtitle = [
+      asText(row.level) ? `Niveau : ${asText(row.level)}` : "",
       row.insuranceChoice ? `Assurance ${membershipInsurancePrice(row) ? money(membershipInsurancePrice(row)) : ""}` : "",
       row.medicalCertificate ? "Certificat OK" : "Certificat non renseigné",
     ].filter(Boolean).join(" · ");
@@ -15003,32 +15574,47 @@
       <div><span>Total</span><strong>${money(totals.total)}</strong></div>
       <div><span>Déjà payé</span><strong>${money(totals.paid)}</strong></div>
       <div><span>Reste à payer</span><strong class="${asNumber(totals.restDue) > 0 ? "due" : ""}">${money(totals.restDue)}</strong></div>
-      <div><span>Statut</span><strong>${invoiceStatusPill({ ...invoice, totals })}</strong></div>
     </div>`;
+  }
+
+  // Lot 4a — Libellé clair de l'état d'un paiement/échéance (réutilise les helpers existants,
+  // aucune logique de stockage modifiée) : Payé / En retard / À encaisser le JJ/MM / Refusé.
+  function invoicePaymentStatusLabel(payment = {}) {
+    if (paymentIsRefused(payment)) return `<span class="invoice-status cancelled">Refusé</span>`;
+    if (paymentStatus(payment) === "OK") return "Payé";
+    if (paymentIsLate(payment)) return `<span class="invoice-status late" title="Échéance dépassée">En retard</span>`;
+    const due = paymentDueDate(payment);
+    if (!isImmediatePayment(payment) && due) return `À encaisser le ${esc(dateDisplay(due))}`;
+    return esc(paymentStatus(payment) || "À suivre");
   }
 
   function invoicePaymentsHtml(payments = []) {
     const rows = invoiceVisiblePayments(payments);
-    if (!rows.length) return `<div class="empty compact">Aucun paiement enregistré pour les lignes sélectionnées.</div>`;
+    if (!rows.length) return `<div class="empty compact">Aucun paiement enregistré.</div>`;
     return `<div class="invoice-payment-list">${rows.map((payment, index) => `<div>
       <strong>${esc(invoicePaymentModeLabel(payment, index))}</strong>
       <span>${money(payment.amount)}</span>
       <span>${esc(invoiceDateLabel(payment.date))}</span>
-      <span>${esc(paymentStatus(payment) || payment.state || "à suivre")}</span>
+      <span>${invoicePaymentStatusLabel(payment)}</span>
     </div>`).join("")}</div>`;
   }
 
   function invoicePaymentActionHtml(invoice = {}) {
-    if (invoice.status === "draft" || invoice.status === "cancelled") return "";
+    const allowed = invoiceAllowedActions(invoice);
+    // Facture soldée : pas de bouton ambigu -> mention claire « Facture soldée ».
+    if (allowed.settled) {
+      return `<div class="inline-actions invoice-payment-actions"><span class="invoice-status paid" title="Aucun reste à payer">Facture soldée</span></div>`;
+    }
+    if (!allowed.addPayment) return ""; // brouillon / annulée : rien
     const totals = invoiceTotalsFromLines(invoice.lines || [], invoice.paymentsSnapshot || []);
     return `<div class="inline-actions invoice-payment-actions">
-      <button type="button" class="primary" data-action="add-invoice-payment" data-id="${esc(invoice.id)}" ${asNumber(totals.restDue) <= 0.005 ? "disabled" : ""}>Ajouter un règlement</button>
+      <button type="button" class="primary" data-action="add-invoice-payment" data-id="${esc(invoice.id)}">Ajouter un règlement</button>
       <span>Reste à payer : <strong>${money(totals.restDue)}</strong></span>
     </div>`;
   }
 
   function invoicePrintActionsHtml(invoice = {}) {
-    if (!invoice.id || invoice.status === "draft") return "";
+    if (!invoice.id || !invoiceAllowedActions(invoice).print) return "";
     // Réimpression toujours possible (émise / payée / partielle / annulée). Libellé adapté si déjà imprimée.
     const label = asText(invoice.printedAt) ? "Réimprimer la facture" : "Imprimer la facture";
     return `<button type="button" data-action="print-invoice" data-id="${esc(invoice.id)}">${label}</button>
@@ -15039,6 +15625,97 @@
     return normalizePayments(payments).filter((payment) => asNumber(payment.amount) > 0.005);
   }
 
+  // Lot 5a — Avoirs liés à une facture (affichage seul). Lit state.creditNotes sans rien modifier :
+  // pas de changement de calcul, pas d'effet sur le reste dû, pas de mutation des avoirs.
+  function creditNotesForInvoice(invoiceId) {
+    if (!asText(invoiceId)) return [];
+    return (state.creditNotes || [])
+      .filter((cn) => cn && asText(cn.invoiceId) === asText(invoiceId))
+      .slice()
+      .sort((a, b) => asText(b.date).localeCompare(asText(a.date)));
+  }
+
+  function invoiceCreditNoteStatusPill(creditNote = {}) {
+    const labels = { actif: "Actif", "utilisé": "Utilisé", "annulé": "Annulé" };
+    const cls = creditNote.status === "annulé" ? "cancelled" : (creditNote.status === "utilisé" ? "partial" : "paid");
+    return `<span class="invoice-status ${cls}">${esc(labels[creditNote.status] || creditNote.status)}</span>`;
+  }
+
+  function invoiceLinkedCreditNotesHtml(invoice = {}) {
+    // Bloc affiché pour toute facture NON brouillon : permet aussi de créer le 1er avoir (Lot 5d-1).
+    // Conteneur [data-invoice-credit-notes] -> rafraîchi en place par refreshOpenInvoiceEditor.
+    if (!invoice.id || computedInvoiceStatus(invoice) === "draft") return "";
+    const cancelled = computedInvoiceStatus(invoice) === "cancelled";
+    const notes = creditNotesForInvoice(invoice.id);
+    // Lot 7b — Facture annulée : pas de création d'avoir. On n'affiche le bloc (lecture seule)
+    // que s'il existe déjà des avoirs liés.
+    if (cancelled && !notes.length) return "";
+    const typeLabels = { "réduction": "Avoir / crédit", "crédit": "Crédit à valoir", "annulation": "Annulation" };
+    // Lot UX avoirs — reste dû de la facture, pour proposer directement le règlement par avoir.
+    // Réutilise use-credit-note-payment (mêmes conditions que le bloc du dialogue de paiement) :
+    // aucune logique de calcul dupliquée, juste un raccourci d'affichage.
+    const restDue = asNumber(invoiceTotalsFromLines(invoice.lines || [], invoice.paymentsSnapshot || []).restDue);
+    const rows = notes.map((cn) => {
+      const amt = asNumber(cn.amount);
+      // Lot B3b — un avoir supérieur au reste dû n'est plus bloqué : il est utilisable jusqu'à
+      // concurrence du reste dû, le solde restant activement disponible (voir use-credit-note-payment).
+      const eligible = !cancelled && cn.status === "actif" && asText(cn.contactId) === asText(invoice.contactId) && restDue > 0.005;
+      const usedAmount = eligible ? Math.min(amt, restDue) : 0;
+      const usable = eligible && usedAmount > 0.005;
+      const remainder = usable ? amt - usedAmount : 0;
+      const actionBtn = remainder > 0.005
+        ? `Utiliser ${money(usedAmount)} et garder ${money(remainder)} d'avoir`
+        : "Utiliser au paiement";
+      const action = usable
+        ? `<button type="button" class="secondary small" data-action="use-credit-note-payment" data-credit-note-id="${esc(cn.id)}" data-invoice-id="${esc(invoice.id)}">${esc(actionBtn)}</button>`
+        : "";
+      return `<div class="contact-invoice-row" data-action="edit-credit-note" data-id="${esc(cn.id)}" title="Ouvrir l'avoir" style="cursor:pointer">
+      <span class="contact-invoice-num"><strong>${money(cn.amount)}</strong><small>${esc(dateDisplay(cn.date))}</small></span>
+      <span>${esc(cn.reason || typeLabels[cn.type] || "Avoir")}</span>
+      <span class="muted">${esc(typeLabels[cn.type] || cn.type)}</span>
+      ${invoiceCreditNoteStatusPill(cn)}
+      ${action}
+    </div>`;
+    }).join("");
+    const createBtn = cancelled ? "" : `<button type="button" data-action="add-credit-note" data-invoice-id="${esc(invoice.id)}" data-contact-id="${esc(invoice.contactId)}">Créer un avoir</button>`;
+    return `<div class="dialog-section invoice-editor" data-invoice-credit-notes>
+      <div class="band-title compact"><h3>Avoirs liés à cette facture</h3>${createBtn}</div>
+      <p class="muted">Un avoir peut être utilisé comme règlement pour réduire le reste à payer de cette facture.</p>
+      <div class="contact-invoice-list">${notes.length ? rows : `<div class="empty compact">Aucun avoir lié à cette facture.</div>`}</div>
+    </div>`;
+  }
+
+  // Lot 5b — Avoirs DISPONIBLES (statut « actif ») d'un contact (affichage seul, fiche contact).
+  // Ignore les avoirs sans contactId (orphelins) : aucun rattachement automatique dans ce lot.
+  function creditNotesAvailableForContact(contactId) {
+    if (!asText(contactId)) return [];
+    return (state.creditNotes || [])
+      .filter((cn) => cn && asText(cn.contactId) === asText(contactId) && cn.status === "actif")
+      .slice()
+      .sort((a, b) => asText(b.date).localeCompare(asText(a.date)));
+  }
+
+  function contactAvailableCreditNotesHtml(contact = {}) {
+    const notes = creditNotesAvailableForContact(contact.id);
+    if (!notes.length) return ""; // pas de bloc vide
+    const typeLabels = { "réduction": "Avoir / crédit", "crédit": "Crédit à valoir", "annulation": "Annulation" };
+    const total = notes.reduce((sum, cn) => sum + asNumber(cn.amount), 0);
+    const rows = notes.map((cn) => {
+      const inv = asText(cn.invoiceId) ? (state.invoices || []).find((i) => i.id === cn.invoiceId) : null;
+      const invLabel = inv ? `Facture ${inv.number || "—"}` : "";
+      return `<div class="contact-invoice-row" data-action="edit-credit-note" data-id="${esc(cn.id)}" title="Ouvrir l'avoir" style="cursor:pointer">
+      <span class="contact-invoice-num"><strong>${money(cn.amount)}</strong><small>${esc(dateDisplay(cn.date))}</small></span>
+      <span>${esc(cn.reason || typeLabels[cn.type] || "Avoir")}${invLabel ? ` <small class="muted">· ${esc(invLabel)}</small>` : ""}</span>
+      <span class="muted">${esc(typeLabels[cn.type] || cn.type)}</span>
+    </div>`;
+    }).join("");
+    return `<section class="contact-recap-section">
+      <h4>Avoirs disponibles</h4>
+      <div class="contact-recap-kpis"><div><span>Total disponible</span><strong>${money(total)}</strong></div></div>
+      <div class="contact-invoice-list">${rows}</div>
+    </section>`;
+  }
+
   function invoiceLineVatLabel(line = {}, club = activeClub()) {
     const isReduction = asNumber(line.total) < -0.005 || asNumber(line.unitPrice) < -0.005 || asText(line.sourceKey).startsWith("discount:") || /^remise\b/i.test(asText(line.label));
     if (isReduction || isClubVatExempt(club)) return "—";
@@ -15047,6 +15724,7 @@
 
   function invoicePaymentModeLabel(payment = {}, index = 0) {
     const method = asText(payment.check || defaultPaymentMethod(index));
+    if (method === "avoir") return "Avoir";
     if (/^\d+$/.test(method) && !asText(payment.checkNumber)) return "Chèque";
     return paymentModeLabel(method);
   }
@@ -15117,6 +15795,14 @@
       contact.country,
       contact.email ? `Email ${contact.email}` : "",
       contact.phone ? `Tél. ${contact.phone}` : "",
+    ].filter(Boolean);
+    // Lot 6e — Destinataire de facturation (réutilise le helper du Lot 6d, aucune donnée modifiée).
+    // Cas responsable : on affiche l'adresse du contact (fallback) SANS l'e-mail/tél de l'enfant.
+    const billing = invoiceBillingDisplay(invoice, contact);
+    const billingAddressRows = [
+      contact.address,
+      [contact.postalCode, contact.city].filter(Boolean).join(" "),
+      contact.country,
     ].filter(Boolean);
     const footerRows = [
       club.documents?.legalMentions,
@@ -15249,8 +15935,17 @@
             <section class="section-grid">
               <div class="card">
                 <h2>Facturé à</h2>
-                <strong>${esc(personLabel(contact) || "Contact")}</strong>
+                ${billing.billedTo
+                  ? `<strong>${esc(billing.billedTo.name)}</strong>
+                <div class="details">
+                  <div>Pour : ${esc(billing.beneficiary || personLabel(contact))}</div>
+                  ${asText(billing.billedTo.phone) ? `<div>Tél. ${esc(billing.billedTo.phone)}</div>` : ""}
+                  ${asText(billing.billedTo.email) ? `<div>Email ${esc(billing.billedTo.email)}</div>` : ""}
+                  ${billingAddressRows.length ? billingAddressRows.map((row) => `<div>${esc(row)}</div>`).join("") : `<div>Adresse non renseignée</div>`}
+                </div>`
+                  : `<strong>${esc(personLabel(contact) || "Contact")}</strong>
                 <div class="details">${contactRows.length ? contactRows.map((row) => `<div>${esc(row)}</div>`).join("") : `<div>Informations non renseignées</div>`}</div>
+                ${billing.guardianMissing ? `<div style="color:${secondaryColor};font-size:12px;margin-top:4px">Responsable légal non renseigné</div>` : ""}`}
               </div>
               <div class="card">
                 <h2>Résumé</h2>
@@ -15384,7 +16079,7 @@
       return;
     }
     dialog.innerHTML = `<form>
-      <div class="dialog-header"><h2>Nouvelle facture</h2><button class="icon" type="button" data-dialog-close>×</button></div>
+      <div class="dialog-header"><h2>Nouvelle facture</h2><button class="icon" type="button" data-dialog-close title="Fermer" aria-label="Fermer">×</button></div>
       <div class="dialog-body"><div class="form-grid">
         <p class="muted wide">Choisissez la personne à facturer. MonGestaClub réunira ensuite tout ce qui peut lui être facturé (inscriptions, commandes, stages…), et vous pourrez ajouter des lignes libres.</p>
         ${customerSelectField({}, "Personne à facturer", "— Choisir un contact —")}
@@ -15409,28 +16104,107 @@
   // réimprimer une émise/payée/annulée, continuer un brouillon). Réutilise l'action open-invoice
   // existante (ouverture officielle + réimpression/duplicata déjà en place). Aucune facture créée
   // ni modifiée ici : c'est seulement un raccourci de navigation.
+  // Menu déroulant « Choisir une facture » (remplace l'ancienne liste). Affiché uniquement si le
+  // contact a plusieurs factures. La facture affichée est pré-sélectionnée ; changer d'option ouvre
+  // la facture choisie au même emplacement (swap propre, protection brouillon conservée). Les actions
+  // Imprimer / PDF restent dans le footer de la facture affichée (pas de boutons par option).
   function contactInvoicesSectionHtml(contact = {}, kind = "members", currentInvoiceId = "") {
-    const invoices = contactInvoices(contact, kind)
-      .filter((inv) => inv.id !== currentInvoiceId)
+    const all = contactInvoices(contact, kind)
       .slice()
       .sort((a, b) => asText(b.issuedAt || b.createdAt).localeCompare(asText(a.issuedAt || a.createdAt)));
-    const rows = invoices.map((inv) => {
-      const totals = invoiceDisplayTotals(inv);
-      const isDraft = inv.status === "draft";
-      const label = isDraft ? "Continuer" : (invoiceAlreadyPrinted(inv) ? "Voir / réimprimer" : "Voir / imprimer");
-      return `<div class="contact-invoice-row">
-        <span class="contact-invoice-num"><strong>${esc(inv.number || "Brouillon")}</strong><small>${esc(dateDisplay(inv.issuedAt || inv.createdAt))}</small></span>
-        ${invoiceStatusPill(inv)}
-        <span class="contact-invoice-amounts"><span class="money">${money(totals.total)}</span><span class="money ${asNumber(totals.restDue) > 0 ? "due" : ""}" title="Reste dû">${money(totals.restDue)}</span></span>
-        <button type="button" class="small" data-action="open-invoice" data-id="${esc(inv.id)}">${label}</button>
-      </div>`;
-    }).join("");
+    if (all.length < 2) return ""; // rien à choisir si le contact n'a qu'une (ou zéro) facture
+    const current = all.find((inv) => inv.id === currentInvoiceId);
+    const optionLabel = (inv) => {
+      const total = money(invoiceDisplayTotals(inv).total);
+      if (inv.status === "draft") return `Brouillon — ${total}`;
+      const status = invoiceStatusLabel({ ...inv, status: computedInvoiceStatus(inv) }) + (invoiceIsLate(inv) ? " · En retard" : "");
+      return `${inv.number || "Facture"} — ${status} — ${total}`;
+    };
+    const placeholder = current ? "" : `<option value="" disabled selected>— Choisir une facture —</option>`;
+    const options = all.map((inv) => `<option value="${esc(inv.id)}" ${inv.id === currentInvoiceId ? "selected" : ""}>${esc(optionLabel(inv))}</option>`).join("");
     return `<div class="dialog-section invoice-editor">
-      <h3>Factures du contact</h3>
-      <div class="contact-invoice-list">
-        ${invoices.length ? rows : `<div class="empty compact">Aucune facture existante pour ce contact.</div>`}
-      </div>
+      <label>Choisir une facture<select data-invoice-switch>${placeholder}${options}</select></label>
     </div>`;
+  }
+
+  // Lot 1 — Tableau LECTURE SEULE des lignes figées d'une facture non-brouillon.
+  // Réutilise le motif d'en-têtes de l'impression (Type / Désignation / Qté / Prix U / TVA / Total)
+  // et les classes de table déjà stylées (.table-wrap > table). Aucune édition, aucun input.
+  function invoiceFrozenLinesHtml(invoice = {}) {
+    const club = activeClub();
+    const lines = invoice.lines || [];
+    if (!lines.length) return `<div class="empty compact">Aucune ligne sur cette facture.</div>`;
+    const rows = lines.map((line) => `<tr>
+      <td>${esc(invoiceSourceTypeLabel(line.sourceType))}</td>
+      <td><strong>${esc(line.label || "Ligne")}</strong>${line.description ? `<br><span class="muted">${esc(line.description)}</span>` : ""}</td>
+      <td style="text-align:right">${esc(intValue(line.quantity))}</td>
+      <td style="text-align:right">${money(line.unitPrice)}</td>
+      <td style="text-align:right">${esc(invoiceLineVatLabel(line, club))}</td>
+      <td style="text-align:right">${money(line.total)}</td>
+    </tr>`).join("");
+    return `<div class="table-wrap"><table>
+      <thead><tr><th>Type</th><th>Désignation</th><th style="text-align:right">Qté</th><th style="text-align:right">Prix U</th><th style="text-align:right">TVA</th><th style="text-align:right">Total</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table></div>`;
+  }
+
+  // Lot 6d — Destinataire de facturation affiché dans l'écran facture (AFFICHAGE SEUL).
+  // Facture figée : lit contactSnapshot.billedTo (capturé à l'émission). Brouillon (snapshot
+  // absent) : calcule depuis le contact vivant (mineur + responsable légal). Adulte / ancienne
+  // facture sans billedTo : le contact lui-même (fallback, comportement inchangé).
+  function invoiceBillingDisplay(invoice = {}, contact = {}) {
+    const snap = invoice.contactSnapshot;
+    if (snap && snap.billedTo && asText(snap.billedTo.name)) {
+      return { billedTo: snap.billedTo, beneficiary: personLabel(contact), guardianMissing: false };
+    }
+    if (!snap && contactInvoiceKind(invoice.contactKind) === "members" && memberCategory(contact) === "Enfant") {
+      const name = asText(contact.legalGuardianName);
+      if (name) return { billedTo: { name, email: asText(contact.legalGuardianEmail), phone: asText(contact.legalGuardianPhone) }, beneficiary: personLabel(contact), guardianMissing: false };
+      return { billedTo: null, beneficiary: "", guardianMissing: true };
+    }
+    return { billedTo: null, beneficiary: "", guardianMissing: false };
+  }
+
+  function invoiceBillingHeadHtml(invoice = {}, contact = {}) {
+    const b = invoiceBillingDisplay(invoice, contact);
+    const address = esc([contact.address, contact.postalCode, contact.city].filter(Boolean).join(" ") || "Adresse non renseignée");
+    if (b.billedTo) {
+      const coords = [asText(b.billedTo.phone), asText(b.billedTo.email)].filter(Boolean).map(esc).join(" · ");
+      return `<h3>Facturé à : ${esc(b.billedTo.name)}</h3>
+            <p><span class="muted">Pour :</span> ${esc(b.beneficiary)}</p>
+            ${coords ? `<p class="muted">${coords}</p>` : ""}
+            <p>${address}</p>`;
+    }
+    if (b.guardianMissing) {
+      // Lot Responsable légal — parité avec le dialogue Discipline/Dossier, qui a déjà ce bouton
+      // (membershipGuardianSummaryHtml). Réutilise tel quel contactLinkAction()/open-linked-contact :
+      // le formulaire facture porteur (s'il y en a un, cf. .dialog-footer) est sauvegardé puis fermé
+      // AVANT l'ouverture de la fiche contact — aucun nouveau mécanisme, aucun empilement.
+      // guardianMissing n'est vrai que pour un mineur (memberCategory === "Enfant"), donc contactId
+      // (jamais prospectContactId) est le bon champ pour contactLinkForRow().
+      return `<h3>${esc(personLabel(contact))}</h3>
+            <p>${address}</p>
+            <p class="muted"><strong>⚠️ Responsable légal non renseigné</strong></p>
+            <p>${contactLinkAction({ contactId: contact.id }, "Ouvrir la fiche contact")}</p>`;
+    }
+    return `<h3>${esc(personLabel(contact))}</h3><p>${address}</p>`;
+  }
+
+  // Ouvre une facture avec swap propre. Depuis une facture VERROUILLÉE (lecture seule, rien à
+  // perdre) on ferme la courante avant d'ouvrir la cible -> une seule facture à l'écran. Depuis un
+  // BROUILLON, on NE ferme PAS (aucune perte d'édition non sauvegardée). Réutilisé par l'action
+  // « open-invoice » et par le menu déroulant « Choisir une facture ».
+  function openInvoiceWithSwap(target, originEl) {
+    if (!target) return;
+    const hostDialog = originEl && originEl.closest ? originEl.closest("dialog") : null;
+    const hostEditorId = hostDialog?.querySelector("[data-invoice-editor-id]")?.dataset.invoiceEditorId || "";
+    const hostInvoice = hostEditorId ? state.invoices.find((inv) => inv.id === hostEditorId) : null;
+    if (hostDialog && hostDialog.open && hostInvoice && hostInvoice.status !== "draft" && hostEditorId !== target.id) {
+      hostDialog.close();
+      setTimeout(() => openInvoiceEditor(target), 0);
+      return;
+    }
+    openInvoiceEditor(target);
   }
 
   function openInvoiceEditor(invoice = {}) {
@@ -15440,7 +16214,8 @@
       alert("Contact introuvable pour cette facture.");
       return;
     }
-    const locked = invoice.status !== "draft";
+    const allowed = invoiceAllowedActions(invoice);
+    const locked = !allowed.editLines;
     const billables = billableItemsForContact(contact, invoice.contactKind);
     const alreadyBilled = billedSourceKeys(invoice.id);
     const selectedKeys = new Set((invoice.lines || []).map((line) => line.sourceKey).filter(Boolean));
@@ -15453,17 +16228,19 @@
     const title = locked ? `Facture ${invoice.number || ""}` : "Créer / éditer une facture";
     const body = `<div class="dialog-section invoice-editor" data-invoice-editor data-tour="invoice-dialog" data-invoice-editor-id="${esc(invoice.id)}">
         <div class="invoice-editor-head" data-tour="invoice-contact">
-          <div>
-            <h3>${esc(personLabel(contact))}</h3>
-            <p>${esc([contact.address, contact.postalCode, contact.city].filter(Boolean).join(" ") || "Adresse non renseignée")}</p>
-          </div>
-          <div data-tour="invoice-status">${invoiceStatusPill(invoice)}${invoice.number ? `<strong>${esc(invoice.number)}</strong>` : ""}</div>
+          <div data-invoice-editor-head>${invoiceBillingHeadHtml(invoice, contact)}</div>
+          <div data-tour="invoice-status">${invoiceStatusPill(invoice)}${invoice.number ? `<strong>${esc(invoice.number)}</strong>` : ""}${locked ? `<span class="invoice-status" title="Facture actuellement affichée">Facture affichée</span>` : ""}</div>
         </div>
         <div data-invoice-editor-summary data-tour="invoice-total">${invoiceEditorSummary(invoice, previewLines, previewPayments)}</div>
-        ${invoiceIsFrozen(invoice) ? `<p class="invoice-frozen-note">🔒 Facture émise : son montant est conservé tel qu'il était au moment de l'émission. Modifier l'inscription ou le tarif ne le recalcule pas.</p>` : ""}
+        ${invoiceIsFrozen(invoice) ? `<p class="invoice-frozen-note" title="Le montant d'une facture émise n'est pas recalculé si l'inscription ou le tarif change ensuite.">🔒 Montant figé à l'émission.</p>` : ""}
       </div>
       ${contactInvoicesSectionHtml(contact, invoice.contactKind, invoice.id)}
-      <div class="dialog-section invoice-editor">
+      ${locked
+        ? `<div class="dialog-section invoice-editor">
+        <h3>Lignes de la facture</h3>
+        ${invoiceFrozenLinesHtml(invoice)}
+      </div>`
+        : `<div class="dialog-section invoice-editor">
         <h3>Lignes proposées</h3>
         <p class="muted">Choisis les éléments du contact à ajouter à cette facture. Les lignes déjà présentes dans une facture émise sont signalées.</p>
         <div class="invoice-source-list" data-tour="invoice-lines">
@@ -15472,38 +16249,47 @@
         </div>
       </div>
       <div class="dialog-section invoice-editor">
-        <div class="band-title compact"><h3>Lignes personnalisées</h3>${locked ? "" : `<button type="button" data-action="add-invoice-custom-line" data-tour="invoice-add-line">Ajouter une ligne</button>`}</div>
+        <div class="band-title compact"><h3>Lignes personnalisées</h3><button type="button" data-action="add-invoice-custom-line" data-tour="invoice-add-line">Ajouter une ligne</button></div>
         <div class="invoice-custom-head"><span>Libellé</span><span>Qté</span><span>Prix U</span><span>TVA %</span><span>Catégorie</span><span></span></div>
         <div data-invoice-custom-lines data-tour="invoice-custom-lines">${customLines.map((line, index) => invoiceEditorLineRow(line, index, locked)).join("")}</div>
-      </div>
+      </div>`}
       <div class="dialog-section invoice-editor" data-invoice-editor-payments data-tour="invoice-payments">
         <h3>Paiements et échéances</h3>
         ${invoicePaymentsHtml(previewPayments)}
         ${locked ? invoicePaymentActionHtml(invoice) : ""}
       </div>
-      ${textareaField("notes", "Notes facture", invoice.notes || "")}
+      ${invoiceLinkedCreditNotesHtml(invoice)}
+      ${locked
+        ? (asText(invoice.notes) ? `<div class="dialog-section invoice-editor"><h3>Notes</h3><p>${esc(invoice.notes).replaceAll("\n", "<br>")}</p></div>` : "")
+        : textareaField("notes", "Notes facture", invoice.notes || "")}
       <input type="hidden" name="invoiceId" value="${esc(invoice.id)}" />
       <input type="hidden" name="contactId" value="${esc(invoice.contactId)}" />
       <input type="hidden" name="contactKind" value="${esc(invoice.contactKind)}" />`;
     const footer = [
       invoicePrintActionsHtml(invoice),
-      locked ? "" : `<button class="primary" type="submit" data-submit-action="issue" data-tour="invoice-issue">Émettre / valider la facture</button>`,
+      allowed.emit ? `<button class="primary" type="submit" data-submit-action="issue" data-tour="invoice-issue">Émettre / valider la facture</button>` : "",
     ].filter(Boolean).join("");
     setNextWindowKey(invoice.id ? `invoice:${invoice.id}` : null);
     const invoiceDialog = showDialog(title, body, (data, form) => saveInvoiceFromForm(invoice, data, form), (form) => {
       form.addEventListener("change", (event) => {
         if (event.target.matches("input[name='billableKeys']")) updateInvoiceEditorPreview(form, invoice, billables);
+        if (event.target.matches("[data-invoice-switch]")) {
+          const id = event.target.value;
+          if (id && id !== invoice.id) openInvoiceWithSwap(state.invoices.find((inv) => inv.id === id), event.target);
+        }
       });
       form.addEventListener("input", (event) => {
         if (event.target.closest("[data-invoice-custom-row]")) updateInvoiceEditorPreview(form, invoice, billables);
       });
     }, footer);
-    if (locked) {
-      const submit = invoiceDialog?.querySelector("button.primary[type='submit']");
-      if (submit) {
-        submit.setAttribute("disabled", "disabled");
-        submit.textContent = "Facture verrouillée";
-      }
+    // Facture verrouillée = vue lecture seule : on retire le bouton submit par défaut
+    // (« Enregistrer ») de showDialog et on renomme « Annuler » en « Fermer » pour ne laisser
+    // que des actions cohérentes (Imprimer / PDF / Fermer). Aucune édition possible.
+    if (locked && invoiceDialog) {
+      const submit = invoiceDialog.querySelector(".dialog-footer-actions button.primary[type='submit']");
+      if (submit) submit.remove();
+      const closeBtn = invoiceDialog.querySelector(".dialog-footer-actions button[data-dialog-close]");
+      if (closeBtn) closeBtn.textContent = "Fermer";
     }
   }
 
@@ -15618,6 +16404,35 @@
         </label>`;
       }).join("")}
     </div>` : "";
+    const availableAvoirs = creditNotesAvailableForContact(invoice.contactId);
+    const avoirSection = availableAvoirs.length ? `<div class="dialog-section invoice-credit-note-section">
+      <h4>Utiliser un avoir</h4>
+      <p class="muted">Un avoir réduit le reste à payer, sans créer d'encaissement bancaire.</p>
+      ${availableAvoirs.map((cn) => {
+        const amt = asNumber(cn.amount);
+        const restDue = asNumber(totals.restDue);
+        // Lot B3b — même règle que le bloc facture : utilisable dès que le reste dû est positif,
+        // même au-delà du montant de l'avoir (le reliquat reste disponible pour le contact).
+        const usedAmount = restDue > 0.005 ? Math.min(amt, restDue) : 0;
+        const usable = usedAmount > 0.005;
+        const remainder = usable ? amt - usedAmount : 0;
+        const typeLabel = ({ "réduction": "Avoir / crédit", "crédit": "Crédit à valoir", "annulation": "Annulation" })[cn.type] || "Avoir";
+        const info = `${esc(cn.reason || typeLabel)} · ${money(amt)}`;
+        if (usable) {
+          const actionBtn = remainder > 0.005
+            ? `Utiliser ${money(usedAmount)} et garder ${money(remainder)} d'avoir`
+            : "Utiliser cet avoir";
+          return `<div class="credit-note-use-row">
+            <span class="credit-note-use-info">${info}</span>
+            <button type="button" class="secondary small" data-action="use-credit-note-payment" data-credit-note-id="${esc(cn.id)}" data-invoice-id="${esc(invoice.id)}">${esc(actionBtn)}</button>
+          </div>`;
+        }
+        return `<div class="credit-note-use-row credit-note-use-row--disabled">
+          <span class="credit-note-use-info">${info}</span>
+          <span class="muted small">Facture déjà soldée</span>
+        </div>`;
+      }).join("")}
+    </div>` : "";
     const body = `<div class="dialog-section">
       <h3>${esc(invoice.number || "Facture")}</h3>
       <div class="invoice-summary">
@@ -15626,6 +16441,7 @@
         <div><span>Reste à payer</span><strong class="${totals.restDue > 0 ? "due" : ""}">${money(totals.restDue)}</strong></div>
       </div>
     </div>
+    ${avoirSection}
     ${lineSelector}
     <div class="dialog-section invoice-payment-form">
       <div class="invoice-payment-form-head"><h4>Nouveau règlement</h4></div>
@@ -15904,7 +16720,7 @@
     panel.innerHTML = `
       <div class="dialog-contact-popover-head">
         <strong>Coordonnées</strong>
-        <button class="icon" type="button" data-action="close-dialog-contact">×</button>
+        <button class="icon" type="button" data-action="close-dialog-contact" title="Fermer" aria-label="Fermer">×</button>
       </div>
       ${contactBody(contactFromDialogForm(form))}
     `;
@@ -15946,7 +16762,7 @@
     const overlay = document.createElement("div");
     overlay.className = "identity-photo-lightbox";
     overlay.innerHTML = `<div class="identity-photo-lightbox-panel" role="dialog" aria-modal="true" aria-label="Photo d'identité">
-      <button class="icon identity-photo-lightbox-close" type="button" data-photo-lightbox-close>×</button>
+      <button class="icon identity-photo-lightbox-close" type="button" data-photo-lightbox-close title="Fermer" aria-label="Fermer">×</button>
       <div class="identity-photo-lightbox-image">
         <img src="${esc(isImageDataUrl(dataUrl) ? dataUrl : avatarSrc)}" alt="${isImageDataUrl(dataUrl) ? "Photo d'identité" : "Silhouette automatique"}" />
       </div>
@@ -16011,6 +16827,43 @@
     updateSizeStockDialogTotal(form);
   }
 
+  // Lot Contact V2 — responsable légal directement sur la fiche contact (mineur). Mêmes 3 champs
+  // texte que ceux déjà utilisés côté membership (openMembershipDialog), même pattern de bascule
+  // via un marqueur désactivable (guardianFieldsEditable) pour préserver la valeur existante quand
+  // la section est masquée (contact majeur). Aucune synchronisation avec la membership dans ce lot.
+  function contactLegalGuardianSectionHtml(row = {}) {
+    const isChild = memberCategory(row) === "Enfant";
+    // Lot polish Contact V2 — un seul bloc plein largeur (titre + aide + champs), au lieu de deux
+    // éléments séparés qui se retrouvaient dispersés dans la grille du formulaire.
+    return `<input type="hidden" name="guardianFieldsEditable" value="1" data-guardian-marker ${isChild ? "" : "disabled"} />
+      <div class="dialog-section contact-guardian-section" data-contact-guardian ${isChild ? "" : "hidden"}>
+        <h3>Responsable légal</h3>
+        <p class="muted">Obligatoire pour les mineurs. Utilisé pour la facturation et les documents.</p>
+        <div class="form-grid compact">
+          ${field("legalGuardianName", "Responsable légal — nom", row.legalGuardianName || "")}
+          ${field("legalGuardianPhone", "Responsable légal — téléphone", row.legalGuardianPhone || "")}
+          ${field("legalGuardianEmail", "Responsable légal — e-mail", row.legalGuardianEmail || "", "email")}
+        </div>
+      </div>`;
+  }
+
+  // Lot Contact/Dossier V2 — autorisation parentale (mineur uniquement, même règle de masquage que
+  // le responsable légal) et droit à l'image (tous contacts, adulte compris — déjà le comportement
+  // existant côté membership) centralisés sur le contact. Réutilise le marqueur guardianFieldsEditable
+  // déjà présent (même contrainte "hidden si adulte confirmé") plutôt que d'en créer un second.
+  function contactAdminInfoSectionHtml(row = {}) {
+    const isChild = memberCategory(row) === "Enfant";
+    return `<div class="dialog-section contact-admin-section">
+      <h3>Informations administratives</h3>
+      <p class="muted">Ces informations concernent la personne et s'appliquent à ses inscriptions.</p>
+      <div class="form-check-grid">
+        <label class="form-check" data-contact-parental ${isChild ? "" : "hidden"}><input type="checkbox" name="parentalAuthorization" ${row.parentalAuthorization ? "checked" : ""} /> Autorisation parentale</label>
+        <label class="form-check"><input type="checkbox" name="imageRights" ${row.imageRights ? "checked" : ""} /> Droit à l'image</label>
+        <label class="form-check"><input type="checkbox" name="rulesSigned" ${row.rulesSigned ? "checked" : ""} /> Règlement signé</label>
+      </div>
+    </div>`;
+  }
+
   function openContactDialog(kind, row = {}) {
     const isMember = kind === "members";
     const body = [
@@ -16027,6 +16880,8 @@
       field("address", "Adresse", row.address, "text", 'data-tour="contact-address"'),
       field("birthDate", "Date de naissance", dateInputValue(row.birthDate), "date", "data-birth-date"),
       field("category", "Adulte / Enfant", memberCategory(row), "text", "readonly data-birth-category"),
+      contactLegalGuardianSectionHtml(row),
+      contactAdminInfoSectionHtml(row),
       isMember ? field("birthPlace", "Lieu de naissance", row.birthPlace) : "",
       isMember ? field("nationality", "Nationalité", row.nationality) : "",
       contactDocumentsSection(row),
@@ -16064,6 +16919,17 @@
         identityPhotoDataUrl: isImageDataUrl(form.get("identityPhotoDataUrl")) ? form.get("identityPhotoDataUrl") : "",
         documents,
         documentsText: form.get("documentsText") || "",
+        // Lot Contact V2 — préserve les valeurs existantes quand la section est masquée (majeur),
+        // même pattern que le dossier sportif de la membership.
+        legalGuardianName: form.get("guardianFieldsEditable") ? asText(form.get("legalGuardianName")) : asText(row.legalGuardianName),
+        legalGuardianPhone: form.get("guardianFieldsEditable") ? asText(form.get("legalGuardianPhone")) : asText(row.legalGuardianPhone),
+        legalGuardianEmail: form.get("guardianFieldsEditable") ? asText(form.get("legalGuardianEmail")) : asText(row.legalGuardianEmail),
+        // Lot Contact/Dossier V2 — autorisation parentale : préserve la valeur existante quand
+        // masquée (majeur), même marqueur que le responsable légal. Droit à l'image : jamais masqué.
+        parentalAuthorization: form.get("guardianFieldsEditable") ? Boolean(form.get("parentalAuthorization")) : Boolean(row.parentalAuthorization),
+        imageRights: Boolean(form.get("imageRights")),
+        // Lot Contact/Dossier V2 (règlement) — jamais masqué, comme le droit à l'image.
+        rulesSigned: Boolean(form.get("rulesSigned")),
       };
       upsert(target, next);
       // Action secondaire en attente (boutons Disciplines / Stages / Boutique / Facture cliqués depuis
@@ -16144,6 +17010,49 @@
     return rows;
   }
 
+  // Lot Contact/Discipline V2 — résumé lecture seule du responsable légal dans le formulaire
+  // Discipline/Inscription : `contact` est la source de vérité (déjà lue par la facturation),
+  // `row` est l'inscription (pour la seule note "ancienne information", en lecture seule aussi).
+  function membershipGuardianSummaryHtml(row = {}, contact = {}) {
+    const name = asText(contact.legalGuardianName);
+    const coords = [asText(contact.legalGuardianPhone), asText(contact.legalGuardianEmail)].filter(Boolean).map(esc).join(" · ");
+    const info = name
+      ? `<div><strong>${esc(name)}</strong>${coords ? ` <span class="muted">(${coords})</span>` : ""}</div>`
+      : `<p class="muted">Responsable légal non renseigné sur la fiche contact.</p>`;
+    // Note douce si cette inscription porte encore une ancienne valeur différente de celle du
+    // contact (ou présente alors que le contact est vide) — jamais copiée ni écrasée automatiquement.
+    const legacyDiffers = ["legalGuardianName", "legalGuardianPhone", "legalGuardianEmail"].some((key) => {
+      const value = asText(row[key]);
+      return value && value !== asText(contact[key]);
+    });
+    const legacyNote = legacyDiffers
+      ? `<p class="muted">Ancienne information présente sur cette inscription. À reporter sur la fiche contact.</p>`
+      : "";
+    const linkBtn = contactLinkAction(row, "Modifier sur la fiche contact");
+    return `${info}${legacyNote}
+      <p class="muted">Le responsable légal se renseigne sur la fiche contact du mineur. Il est utilisé pour la facturation et les documents.</p>
+      ${linkBtn}`;
+  }
+
+  // Lot Contact/Dossier V2 — résumé lecture seule autorisation parentale / droit à l'image, même
+  // principe que le responsable légal : le contact est la source de vérité, la membership ne
+  // propose plus ces cases éditables. Autorisation parentale masquée pour un adulte confirmé (déjà
+  // couvert par la note "Adhérent majeur..." affichée à côté) ; droit à l'image toujours affiché.
+  function membershipAdminInfoSummaryHtml(row = {}, contact = {}, isConfirmedAdult = false) {
+    const parentalLine = isConfirmedAdult ? "" : `<div>Autorisation parentale : <strong>${contact.parentalAuthorization ? "Oui" : "Non renseignée sur la fiche contact"}</strong></div>`;
+    const imageLine = `<div>Droit à l'image : <strong>${contact.imageRights ? "Oui" : "Non renseigné sur la fiche contact"}</strong></div>`;
+    // Lot Contact/Dossier V2 (règlement) — même principe, intégré à ce résumé existant.
+    const rulesLine = `<div>Règlement signé : <strong>${contact.rulesSigned ? "Oui" : "Non renseigné sur la fiche contact"}</strong></div>`;
+    const legacyDiffers = ["parentalAuthorization", "imageRights", "rulesSigned"].some((key) => Boolean(row[key]) && Boolean(row[key]) !== Boolean(contact[key]));
+    const legacyNote = legacyDiffers
+      ? `<p class="muted">Ancienne information présente sur cette inscription. À reporter sur la fiche contact.</p>`
+      : "";
+    const linkBtn = contactLinkAction(row, "Modifier sur la fiche contact");
+    return `${parentalLine}${imageLine}${rulesLine}${legacyNote}
+      <p class="muted">Ces informations se renseignent sur la fiche contact.</p>
+      ${linkBtn}`;
+  }
+
   function openMembershipDialog(row = {}) {
     const contact = contactForMembership(row) || {};
     row = {
@@ -16186,23 +17095,31 @@
       textareaField("pathologies", "Pathologie(s)", row.pathologies || ""),
       `<div class="dialog-section"><h3>Dossier sportif</h3></div>`,
       `<label>Groupe<select name="groupId"><option value="">—</option>${(state.groups || []).filter((g) => !g.archived).map((g) => `<option value="${esc(g.id)}" ${row.groupId === g.id ? "selected" : ""}>${esc(g.name)}</option>`).join("")}</select></label>`,
-      `<div class="form-grid compact">${field("level", "Niveau", row.level || "")}${selectField("practiceType", "Type de pratique", row.practiceType || "", ["", "Loisir", "Compétition", "Stage", "Autre"])}</div>`,
+      // Lot V1 Niveaux — note libre assumée (pas de select, pas d'automatisme, cf. audit
+      // Niveaux/Groupes/Disciplines) : libellé et placeholder rendent explicite qu'il s'agit
+      // d'une indication saisie librement, affichée ensuite dans le récap de cette inscription.
+      `<div class="form-grid compact">${field("level", "Niveau / grade (note libre)", row.level || "", "text", 'placeholder="Ex. Débutant, Confirmé, Ceinture jaune"')}${selectField("practiceType", "Type de pratique", row.practiceType || "", ["", "Loisir", "Compétition", "Stage", "Autre"])}</div>`,
       `<div class="form-grid compact">${field("licenseNumber", "N° de licence", row.licenseNumber || "")}${field("licenseFederation", "Fédération", row.licenseFederation || "")}</div>`,
       `<div class="form-grid compact">${field("licenseStartDate", "Licence — début", dateInputValue(row.licenseStartDate), "date")}${field("licenseEndDate", "Licence — expiration", dateInputValue(row.licenseEndDate), "date")}</div>`,
       `<div class="form-grid compact">${field("medicalCertificateDate", "Certificat — date", dateInputValue(row.medicalCertificateDate), "date")}${field("medicalCertificateEndDate", "Certificat — expiration", dateInputValue(row.medicalCertificateEndDate), "date")}</div>`,
       `<div class="form-grid compact">${field("emergencyName", "Urgence — nom", row.emergencyName || "")}${field("emergencyPhone", "Urgence — téléphone", row.emergencyPhone || "")}${field("emergencyRelation", "Urgence — lien", row.emergencyRelation || "")}</div>`,
-      // Responsable légal + autorisation parentale : uniquement mineur / âge inconnu. Les deux états
-      // (champs éditables OU note majeur) sont TOUJOURS rendus, et updateDossierGuardianFields() bascule
-      // l'affichage selon la date de naissance — y compris au changement de contact via le menu déroulant.
-      // Le marqueur (data-guardian-marker) : désactivé = adulte -> hors FormData -> la sauvegarde préserve
-      // les valeurs existantes sans les effacer ; activé = mineur/inconnu -> champs lus normalement.
-      `<input type="hidden" name="guardianFieldsEditable" value="1" data-guardian-marker ${isConfirmedAdult ? "disabled" : ""} />
-       <div class="form-grid compact" data-dossier-guardian ${isConfirmedAdult ? "hidden" : ""}>${field("legalGuardianName", "Responsable légal — nom", row.legalGuardianName || "")}${field("legalGuardianPhone", "Responsable légal — téléphone", row.legalGuardianPhone || "")}${field("legalGuardianEmail", "Responsable légal — e-mail", row.legalGuardianEmail || "", "email")}</div>
-       <p class="muted dossier-adult-note" data-dossier-adult-note ${isConfirmedAdult ? "" : "hidden"}>Adhérent majeur : autorisation parentale et responsable légal non requis.</p>`,
+      // Lot Contact/Discipline V2 — le contact est la source de vérité du responsable légal : ce
+      // bloc n'a plus de champs éditables, seulement un résumé lecture seule (+ lien vers la fiche
+      // contact), recalculé par updateDossierGuardianFields() à chaque changement de date de
+      // naissance ou de contact lié.
+      // Lot Contact/Dossier V2 — même principe étendu à l'autorisation parentale, au droit à
+      // l'image, puis (lot règlement) au règlement signé : plus de cases éditables ici, résumé
+      // lecture seule dans son propre bloc. Seule l'assurance reste éditable dans ce formulaire.
+      `<div class="dialog-section" data-dossier-guardian ${isConfirmedAdult ? "hidden" : ""}>
+         <h3>Responsable légal</h3>
+         <div data-dossier-guardian-body>${membershipGuardianSummaryHtml(row, contact)}</div>
+       </div>
+       <p class="muted dossier-adult-note" data-dossier-adult-note ${isConfirmedAdult ? "" : "hidden"}>Adhérent majeur : autorisation parentale et responsable légal non requis.</p>
+       <div class="dialog-section">
+         <h3>Informations administratives</h3>
+         <div data-dossier-admin-body>${membershipAdminInfoSummaryHtml(row, contact, isConfirmedAdult)}</div>
+       </div>`,
       `<div class="form-check-grid">
-        <label class="form-check" data-dossier-parental ${isConfirmedAdult ? "hidden" : ""}><input type="checkbox" name="parentalAuthorization" ${row.parentalAuthorization ? "checked" : ""} /> Autorisation parentale</label>
-        <label class="form-check"><input type="checkbox" name="imageRights" ${row.imageRights ? "checked" : ""} /> Droit à l'image</label>
-        <label class="form-check"><input type="checkbox" name="rulesSigned" ${row.rulesSigned ? "checked" : ""} /> Règlement signé</label>
         <label class="form-check"><input type="checkbox" name="insurance" ${row.insurance ? "checked" : ""} /> Assurance</label>
       </div>`,
       contactDocumentsSection(row),
@@ -16272,14 +17189,20 @@
         emergencyName: asText(form.get("emergencyName")),
         emergencyPhone: asText(form.get("emergencyPhone")),
         emergencyRelation: asText(form.get("emergencyRelation")),
-        // Adulte : champs parental/responsable légal non affichés -> on PRÉSERVE les valeurs
-        // existantes (pas d'effacement). Le marqueur caché signale que les champs étaient éditables.
-        legalGuardianName: form.get("guardianFieldsEditable") ? asText(form.get("legalGuardianName")) : asText(row.legalGuardianName),
-        legalGuardianPhone: form.get("guardianFieldsEditable") ? asText(form.get("legalGuardianPhone")) : asText(row.legalGuardianPhone),
-        legalGuardianEmail: form.get("guardianFieldsEditable") ? asText(form.get("legalGuardianEmail")) : asText(row.legalGuardianEmail),
-        parentalAuthorization: form.get("guardianFieldsEditable") ? Boolean(form.get("parentalAuthorization")) : Boolean(row.parentalAuthorization),
-        imageRights: Boolean(form.get("imageRights")),
-        rulesSigned: Boolean(form.get("rulesSigned")),
+        // Lot Contact/Discipline V2 — responsable légal : le contact est la seule source de vérité,
+        // ce formulaire n'a plus de champs éditables pour legalGuardianName/Phone/Email (résumé
+        // lecture seule uniquement) -> on préserve systématiquement la valeur déjà présente sur
+        // cette inscription, sans jamais l'écraser ni tenter de la synchroniser depuis le contact.
+        legalGuardianName: asText(row.legalGuardianName),
+        legalGuardianPhone: asText(row.legalGuardianPhone),
+        legalGuardianEmail: asText(row.legalGuardianEmail),
+        // Lot Contact/Dossier V2 — autorisation parentale, droit à l'image et règlement signé :
+        // plus de champs éditables ici (résumé lecture seule uniquement) -> on préserve
+        // systématiquement la valeur déjà présente sur cette inscription, sans jamais l'écraser ni
+        // la synchroniser depuis le contact. Assurance : reste éditable, inchangée.
+        parentalAuthorization: Boolean(row.parentalAuthorization),
+        imageRights: Boolean(row.imageRights),
+        rulesSigned: Boolean(row.rulesSigned),
         insurance: Boolean(form.get("insurance")),
         documents,
         documentsText: asText(form.get("documentsText")),
@@ -16315,13 +17238,13 @@
       };
       form.elements.contactLink?.addEventListener("change", () => {
         applyLinkedContactToForm(form);
-        updateDossierGuardianFields(form); // recalcul enfant/adulte au changement de contact
+        updateDossierGuardianFields(form, row); // recalcul enfant/adulte + résumé au changement de contact
       });
       updateBirthCategoryFields(form);
       // Recalcule l'affichage parental/responsable légal quand la date de naissance change.
-      form.elements.birthDate?.addEventListener("input", () => updateDossierGuardianFields(form));
-      form.elements.birthDate?.addEventListener("change", () => updateDossierGuardianFields(form));
-      updateDossierGuardianFields(form); // état initial cohérent
+      form.elements.birthDate?.addEventListener("input", () => updateDossierGuardianFields(form, row));
+      form.elements.birthDate?.addEventListener("change", () => updateDossierGuardianFields(form, row));
+      updateDossierGuardianFields(form, row); // état initial cohérent
       form.elements.discipline?.addEventListener("change", update);
       form.elements.insuranceChoice?.addEventListener("change", update);
       form.elements.medicalCertificate?.addEventListener("change", update);
@@ -16334,6 +17257,10 @@
     const box = form.querySelector("[data-membership-alerts]");
     if (!box) return;
     const rows = [];
+    // Tarif « à définir » (discipline seedée par le wizard, prix vide) : note douce, non bloquante.
+    // Uniquement si price === "" — un 0 explicite (gratuité voulue) ne déclenche jamais cette note.
+    const selDiscipline = asText(form.elements.discipline?.value);
+    if (selDiscipline && disciplineByName(selDiscipline).price === "") rows.push("Tarif à définir : pensez à compléter le tarif de cette discipline avant de facturer.");
     if (form.elements.medicalCertificate?.value !== "Oui") rows.push("Attention : le certificat médical n'a pas encore été fourni.");
     if (!asText(form.elements.insuranceChoice?.value)) rows.push("Attention : pensez à vérifier que le membre possède une assurance.");
     box.innerHTML = rows.map((text) => `<div class="form-warning">${esc(text)}</div>`).join("");
@@ -16585,11 +17512,13 @@
     setIdentityPhotoInForm(form, contact.identityPhotoDataUrl || "");
   }
 
-  // Dossier sportif : bascule l'affichage parental/responsable légal selon la date de naissance
-  // COURANTE du formulaire (recalcul à chaque changement de contact ou de date). Adulte confirmé
-  // (>= 18) -> champs masqués + note + marqueur désactivé (sauvegarde préserve les données). Mineur
-  // ou âge inconnu -> champs éditables. UX uniquement : aucune donnée n'est modifiée ici.
-  function updateDossierGuardianFields(form) {
+  // Dossier sportif : bascule l'affichage responsable légal selon la date de naissance COURANTE du
+  // formulaire (recalcul à chaque changement de contact ou de date). Adulte confirmé (>= 18) ->
+  // masqué + note. Mineur ou âge inconnu -> visible. UX uniquement : aucune donnée n'est modifiée ici.
+  // `row` (l'inscription) sert uniquement à la note "ancienne information" des résumés lecture seule
+  // (Lot Contact/Discipline V2 puis Lot Contact/Dossier V2) — le contact affiché, lui, est toujours
+  // relu à chaud via le menu déroulant "Contact enregistré", jamais figé depuis l'ouverture du formulaire.
+  function updateDossierGuardianFields(form, row = {}) {
     const guardian = form?.querySelector("[data-dossier-guardian]");
     if (!guardian) return; // pas un formulaire avec dossier sportif
     const age = getMemberAge({ birthDate: form.elements.birthDate?.value || "" });
@@ -16597,16 +17526,36 @@
     guardian.hidden = isAdult;
     const note = form.querySelector("[data-dossier-adult-note]");
     if (note) note.hidden = !isAdult;
-    const parental = form.querySelector("[data-dossier-parental]");
-    if (parental) parental.hidden = isAdult;
-    const marker = form.querySelector("[data-guardian-marker]");
-    if (marker) marker.disabled = isAdult;
+    const linkedContact = contactByLink(form.elements.contactLink?.value) || {};
+    if (!isAdult) {
+      const body = guardian.querySelector("[data-dossier-guardian-body]");
+      if (body) body.innerHTML = membershipGuardianSummaryHtml(row, linkedContact);
+    }
+    // Lot Contact/Dossier V2 — résumé autorisation parentale / droit à l'image : toujours recalculé
+    // (le droit à l'image reste affiché même pour un adulte, contrairement au responsable légal).
+    const adminBody = form.querySelector("[data-dossier-admin-body]");
+    if (adminBody) adminBody.innerHTML = membershipAdminInfoSummaryHtml(row, linkedContact, isAdult);
   }
 
   function updateBirthCategoryFields(form) {
     const update = () => {
       const birthDate = form.elements.birthDate?.value || "";
       if (form.elements.category) form.elements.category.value = memberCategory({ birthDate });
+      // Lot Contact V2 — bascule le bloc "Responsable légal" (titre + aide + champs, un seul
+      // conteneur) en direct au changement de date de naissance, sans fermer/rouvrir le formulaire.
+      // No-op si le formulaire n'a pas ce bloc (ex. openMembershipDialog, qui gère le sien via
+      // updateDossierGuardianFields).
+      const guardian = form.querySelector("[data-contact-guardian]");
+      if (guardian) {
+        const isChild = memberCategory({ birthDate }) === "Enfant";
+        guardian.hidden = !isChild;
+        const marker = form.querySelector("[data-guardian-marker]");
+        if (marker) marker.disabled = !isChild;
+        // Lot Contact/Dossier V2 — autorisation parentale masquée/affichée avec la même règle que
+        // le responsable légal (même marqueur). Droit à l'image reste toujours visible, non touché ici.
+        const parental = form.querySelector("[data-contact-parental]");
+        if (parental) parental.hidden = !isChild;
+      }
     };
     form.querySelectorAll("[data-birth-date]").forEach((input) => {
       input.addEventListener("input", update);
@@ -16809,7 +17758,7 @@
       .map((stage) => `<option value="${esc(stage.id)}" ${stage.id === ui.stageId ? "selected" : ""}>${esc(stage.name || "Stage")}</option>`)
       .join("");
     dialog.innerHTML = `<form>
-      <div class="dialog-header"><h2>Choisir le stage</h2><button class="icon" type="button" data-dialog-close>×</button></div>
+      <div class="dialog-header"><h2>Choisir le stage</h2><button class="icon" type="button" data-dialog-close title="Fermer" aria-label="Fermer">×</button></div>
       <div class="dialog-body"><div class="form-grid">
         <label class="wide">Stage<select name="stageId">${stageOptions}</select></label>
       </div></div>
@@ -17382,6 +18331,10 @@
   }
 
   function buildDemoState(clubId, club) {
+    // Déclaré tôt (avant les paiements démo) : les échéances de paiement l'utilisent désormais elles
+    // aussi, pour rester "à venir"/"en retard" de façon stable quel que soit le jour de génération.
+    const today = new Date();
+    const plusDays = (d) => { const x = new Date(today); x.setDate(x.getDate() + d); return x.toISOString().slice(0, 10); };
     const members = [
       ["member-solane-mila", "SOLANE", "Mila", "2009-04-12", "22 avenue des Platanes", "47300", "Villeneuve-sur-Lot", "06 00 00 00 01", "mila.solane@example.test"],
       ["member-rivory-noe", "RIVORY", "Noé", "2015-11-03", "4 impasse des Érables", "47300", "Le Lédat", "06 00 00 00 02", "noe.rivory@example.test"],
@@ -17418,6 +18371,38 @@
       ["member-ucha-romy", "UCHA", "Romy", "2016-05-05", "2 rue des Mésanges", "47300", "Bias", "06 00 00 02 19", "romy.ucha@example.test"],
       ["member-valdo-tess", "VALDO", "Tess", "2006-03-15", "16 rue des Acacias", "47300", "Villeneuve-sur-Lot", "06 00 00 02 20", "tess.valdo@example.test"],
     ].map(([idValue, lastName, firstName, birthDate, address, postalCode, city, mobile, email]) => demoContact({ id: idValue, lastName, firstName, birthDate, address, postalCode, city, mobile, email }, clubId));
+
+    // Lot Démo Club — responsable légal renseigné sur le CONTACT (source de vérité, cf. lots
+    // "Contact V2" / "Contact-Discipline V2") pour quelques mineurs seulement : assez pour montrer
+    // le cas positif (fiche contact, résumé lecture seule Discipline/Inscription, facturation
+    // "Facturé à / Pour") sans le mettre partout — plusieurs mineurs restent volontairement sans
+    // responsable légal pour continuer à tester le message "non renseigné".
+    // Réutilisé plus bas (générique, malgré son nom) pour aligner autorisation parentale / droit à
+    // l'image / règlement signé sur ces mêmes contacts — mêmes champs que ceux désormais lus depuis
+    // le contact par les alertes documents (cf. lots Contact/Dossier V2).
+    const setContactGuardian = (contactId, fields) => { const contact = members.find((m) => m.id === contactId); if (contact) Object.assign(contact, fields); };
+    setContactGuardian("member-rivory-noe", { legalGuardianName: "Camille RIVORY", legalGuardianPhone: "06 00 00 05 01", legalGuardianEmail: "camille.rivory@example.test" });
+    setContactGuardian("member-solane-mila", { legalGuardianName: "Thomas SOLANE", legalGuardianPhone: "06 00 00 05 02", legalGuardianEmail: "thomas.solane@example.test" });
+    setContactGuardian("member-virel-yanis", { legalGuardianName: "Delphine Marchand", legalGuardianPhone: "06 00 00 05 03", legalGuardianEmail: "delphine.marchand@example.test" });
+
+    // Lot Démo Club (réalignement) — quelques contacts pour lesquels ces informations administratives
+    // sont désormais complètes, pour retrouver des cas positifs démontrables (dossier mineur complet,
+    // dossier adulte complet) maintenant que ces 3 champs sont lus depuis le contact. Yanis, Lino et
+    // les autres restent volontairement incomplets (cf. audit).
+    setContactGuardian("member-rivory-noe", { parentalAuthorization: true, imageRights: true, rulesSigned: true });
+    setContactGuardian("member-solane-mila", { parentalAuthorization: true, imageRights: true, rulesSigned: true });
+    setContactGuardian("member-alden-maelys", { imageRights: true, rulesSigned: true });
+    // Lot Démo Club (réduction du bruit) — 8 adultes déjà assurés et déjà à jour côté certificat :
+    // pas d'autorisation parentale (adultes), seulement droit à l'image + règlement signé, pour
+    // rejoindre une licence ajoutée sur leur membership (cf. plus bas) et obtenir un dossier complet.
+    setContactGuardian("member-soriel-nina", { imageRights: true, rulesSigned: true });
+    setContactGuardian("member-talvan-eliott", { imageRights: true, rulesSigned: true });
+    setContactGuardian("member-lunel-zoe", { imageRights: true, rulesSigned: true });
+    setContactGuardian("member-gallo-paul", { imageRights: true, rulesSigned: true });
+    setContactGuardian("member-hardy-sara", { imageRights: true, rulesSigned: true });
+    setContactGuardian("member-isnard-marc", { imageRights: true, rulesSigned: true });
+    setContactGuardian("member-jamet-eva", { imageRights: true, rulesSigned: true });
+    setContactGuardian("member-valdo-tess", { imageRights: true, rulesSigned: true });
 
     const prospects = [
       ["prospect-noval-iris", "NOVAL", "Iris", "2016-10-12", "8 rue des Pins", "47300", "Villeneuve-sur-Lot", "06 00 00 01 01", "iris.noval@example.test"],
@@ -17466,13 +18451,15 @@
 
     const membershipRows = [
       ["demo-membership-mila-self", "member-solane-mila", "Self-défense", true, "0:0", 0, [demoPaid("card", 135, "2026-05-10")]],
-      ["demo-membership-noe-judo", "member-rivory-noe", "Judo enfant", true, "0:0", 0, [demoPaid("check", 80, "2026-05-05", "100001"), demoPayment("check", 45, { date: "2026-06-15", checkNumber: "100002" }), demoPayment("check", 40, { date: "2026-07-15", checkNumber: "100003" })]],
+      ["demo-membership-noe-judo", "member-rivory-noe", "Judo enfant", true, "0:0", 0, [demoPaid("check", 80, "2026-05-05", "100001"), demoPayment("check", 45, { date: plusDays(20), checkNumber: "100002" }), demoPayment("check", 40, { date: plusDays(50), checkNumber: "100003" })]],
       ["demo-membership-maelys-judo", "member-alden-maelys", "Judo adulte", true, "1:0", 20, [demoPaid("transfer", 100, "2026-05-12")]],
-      ["demo-membership-yanis-baby", "member-virel-yanis", "Baby judo", false, "", 0, [demoPayment("check", 115, { date: "2026-05-01", checkNumber: "100004" })]],
+      // Paiement volontairement en retard (échéance jamais honorée) — date relative pour rester
+      // réellement "en retard" quel que soit le jour de réinitialisation de la démo.
+      ["demo-membership-yanis-baby", "member-virel-yanis", "Baby judo", false, "", 0, [demoPayment("check", 115, { date: plusDays(-14), checkNumber: "100004" })]],
       ["demo-membership-lou-taiso", "member-corvin-lou", "Taïso", true, "0:0", 0, [demoPayment("check", 135, { state: "Refusé", checkNumber: "100005" })]],
       ["demo-membership-elio-baby", "member-azurian-elio", "Baby judo", false, "", 0, []],
       ["demo-membership-zoe-prepa", "member-lunel-zoe", "Préparation physique", true, "0:0", 10, [demoPaid("cash", 145, "2026-05-20")]],
-      ["demo-membership-lino-judo", "member-kerval-lino", "Judo enfant", true, "0:0", 0, [demoPaid("sport_coupon", 100, "2026-05-13"), demoPayment("check", 65, { date: "2026-06-20", checkNumber: "100006" })]],
+      ["demo-membership-lino-judo", "member-kerval-lino", "Judo enfant", true, "0:0", 0, [demoPaid("sport_coupon", 100, "2026-05-13"), demoPayment("check", 65, { date: plusDays(25), checkNumber: "100006" })]],
       ["demo-membership-nina-self", "member-soriel-nina", "Self-défense", true, "1:0", 0, [demoPaid("holiday_voucher", 100, "2026-05-07")]],
       ["demo-membership-eliott-judo", "member-talvan-eliott", "Judo adulte", true, "0:0", 0, [demoPaid("check", 195, "2026-05-02", "100007")]],
       ["demo-membership-mila-taiso", "member-solane-mila", "Taïso", true, "", 30, [demoPaid("card", 90, "2026-05-18")]],
@@ -17528,22 +18515,24 @@
     const stageRegistrations = {
       "demo-stage-fevrier": [
         demoStageRegistration("demo-stage-reg-mila-fevrier", members[0], "demo-stage-fevrier", { quantity: 1, unitPrice: 80, discount: 0, payments: [demoPaid("cash", 80, "2026-02-12")] }, null),
-        demoStageRegistration("demo-stage-reg-yanis-fevrier", members[3], "demo-stage-fevrier", { quantity: 1, unitPrice: 80, discount: 0, payments: [demoPayment("check", 80, { date: "2026-02-20", checkNumber: "200001" })] }, null),
+        // Paiement volontairement en retard (stage déjà passé, jamais réglé).
+        demoStageRegistration("demo-stage-reg-yanis-fevrier", members[3], "demo-stage-fevrier", { quantity: 1, unitPrice: 80, discount: 0, payments: [demoPayment("check", 80, { date: plusDays(-20), checkNumber: "200001" })] }, null),
       ],
       "demo-stage-ete-self": [
-        demoStageRegistration("demo-stage-reg-maelys-ete", members[2], "demo-stage-ete-self", { quantity: 1, unitPrice: 150, discount: 0, payments: [demoPaid("transfer", 75, "2026-05-19"), demoPayment("check", 75, { date: "2026-07-01", checkNumber: "200002" })] }, { quantity: 1, unitPrice: 90, discount: 0, payments: [demoPayment("check", 90, { date: "2026-07-01", checkNumber: "200003" })] }),
+        demoStageRegistration("demo-stage-reg-maelys-ete", members[2], "demo-stage-ete-self", { quantity: 1, unitPrice: 150, discount: 0, payments: [demoPaid("transfer", 75, "2026-05-19"), demoPayment("check", 75, { date: plusDays(15), checkNumber: "200002" })] }, { quantity: 1, unitPrice: 90, discount: 0, payments: [demoPayment("check", 90, { date: plusDays(15), checkNumber: "200003" })] }),
         demoStageRegistration("demo-stage-reg-eliott-ete", members[9], "demo-stage-ete-self", { quantity: 1, unitPrice: 150, discount: 0, payments: [demoPayment("check", 150, { state: "Refusé", checkNumber: "200004" })] }, { quantity: 1, unitPrice: 90, discount: 0, payments: [] }),
       ],
       "demo-stage-decouverte": [
         demoStageRegistration("demo-stage-reg-noe-decouverte", members[1], "demo-stage-decouverte", { quantity: 1, unitPrice: 40, discount: 0, payments: [demoPaid("card", 40, "2026-05-21")] }, null),
-        demoStageRegistration("demo-stage-reg-iris-decouverte", prospects[0], "demo-stage-decouverte", { quantity: 1, unitPrice: 40, discount: 0, payments: [demoPayment("check", 40, { date: "2026-06-10", checkNumber: "200005" })] }, null, true),
+        demoStageRegistration("demo-stage-reg-iris-decouverte", prospects[0], "demo-stage-decouverte", { quantity: 1, unitPrice: 40, discount: 0, payments: [demoPayment("check", 40, { date: plusDays(10), checkNumber: "200005" })] }, null, true),
       ],
     };
 
     const shopOrders = [
       demoOrder("demo-order-mila", members[0], [{ articleId: "demo-article-tshirt", quantity: 1, unitPrice: 18, sizes: { M: 1 } }, { articleId: "demo-article-gourde", quantity: 1, unitPrice: 9, sizes: {} }], [demoPaid("card", 27, "2026-05-11")]),
-      demoOrder("demo-order-noe", members[1], [{ articleId: "demo-article-kimono", quantity: 1, unitPrice: 38, sizes: { 130: 1 } }, { articleId: "demo-article-ecusson", quantity: 2, unitPrice: 5, sizes: {} }], [demoPaid("cash", 20, "2026-05-12"), demoPayment("check", 28, { date: "2026-06-10", checkNumber: "300001" })]),
-      demoOrder("demo-order-lou", members[4], [{ articleId: "demo-article-sweat", quantity: 1, unitPrice: 45, sizes: { M: 1 } }], [demoPayment("check", 45, { date: "2026-05-05", checkNumber: "300002" })]),
+      demoOrder("demo-order-noe", members[1], [{ articleId: "demo-article-kimono", quantity: 1, unitPrice: 38, sizes: { 130: 1 } }, { articleId: "demo-article-ecusson", quantity: 2, unitPrice: 5, sizes: {} }], [demoPaid("cash", 20, "2026-05-12"), demoPayment("check", 28, { date: plusDays(35), checkNumber: "300001" })]),
+      // Paiement volontairement en retard (chèque jamais encaissé).
+      demoOrder("demo-order-lou", members[4], [{ articleId: "demo-article-sweat", quantity: 1, unitPrice: 45, sizes: { M: 1 } }], [demoPayment("check", 45, { date: plusDays(-10), checkNumber: "300002" })]),
       demoOrder("demo-order-merian", prospects[1], [{ articleId: "demo-article-sac", quantity: 1, unitPrice: 32, sizes: {} }, { articleId: "demo-article-casquette", quantity: 1, unitPrice: 15, sizes: { Adulte: 1 } }], [demoPaid("transfer", 47, "2026-05-14")], true),
     ];
 
@@ -17611,7 +18600,7 @@
           { id: "demo-line-maelys-1", sourceType: "stage", sourceId: "demo-stage-reg-maelys-ete", sourceKey: "stage:demo-stage-ete-self:demo-stage-reg-maelys-ete:event", label: "Stage été self-défense", description: "Inscription stage", unitPrice: 150 },
           { id: "demo-line-maelys-2", sourceType: "frais", sourceId: "demo-stage-reg-maelys-ete", sourceKey: "stage:demo-stage-ete-self:demo-stage-reg-maelys-ete:lodging", label: "Hébergement", description: "Stage été self-défense", unitPrice: 90 },
         ],
-        paymentsSnapshot: [demoPaid("transfer", 75, "2026-05-19"), demoPayment("check", 75, { date: "2026-07-01", checkNumber: "400003" }), demoPayment("check", 90, { date: "2026-07-01", checkNumber: "400004" })],
+        paymentsSnapshot: [demoPaid("transfer", 75, "2026-05-19"), demoPayment("check", 75, { date: plusDays(15), checkNumber: "400003" }), demoPayment("check", 90, { date: plusDays(15), checkNumber: "400004" })],
       }),
       demoInvoice({
         id: "demo-invoice-remise-lou",
@@ -17619,7 +18608,9 @@
         contactId: "member-corvin-lou",
         contactKind: "members",
         number: "CDM-2026-0004",
-        status: "issued",
+        // Lot Démo Club (avoirs) — soldée par avoir après le chèque refusé (payé 115 € via avoir,
+        // cf. paymentsSnapshot) : le statut suit le reste dû réellement nul, pas de double comptage.
+        status: "paid",
         issuedAt: "2026-05-08T09:00:00.000Z",
         clubSnapshot,
         contactSnapshot: demoContactSnapshot(members[4], "members"),
@@ -17629,7 +18620,12 @@
           { id: "demo-line-lou-3", sourceType: "assurance", sourceId: "demo-membership-lou-taiso", sourceKey: "assurance:demo-membership-lou-taiso", label: "Assurance Standard", description: "Taïso", unitPrice: 15 },
           { id: "demo-line-lou-4", sourceType: "frais", sourceId: "demo-membership-lou-taiso", sourceKey: "discount:demo-membership-lou-taiso", label: "Remise Taïso", description: "Déduction", unitPrice: -20, total: -20, vatRate: 0 },
         ],
-        paymentsSnapshot: [demoPayment("check", 115, { state: "Refusé", checkNumber: "400005" })],
+        // Chèque refusé conservé tel quel (non compté dans le total réglé) + paiement par avoir
+        // ajouté à côté (115 € = reste dû exact), sans le remplacer ni le supprimer.
+        paymentsSnapshot: [
+          demoPayment("check", 115, { state: "Refusé", checkNumber: "400005" }),
+          normalizePayment({ check: "avoir", amount: 115, state: "Payé", date: "2026-05-29", creditNoteId: "demo-avoir-lou-1", taxRate: 0 }),
+        ],
       }),
       demoInvoice({
         id: "demo-invoice-prospect-merian",
@@ -17679,10 +18675,40 @@
         paymentsSnapshot: [demoPaid("cash", 15, "2026-05-25")],
         notes: "Recette custom — frais divers.",
       }),
+      // Lot précurseur Démo (factures en retard) — cf. audit À faire V2 : facture émise, non
+      // soldée, avec un paiement en retard uniquement dans son propre paymentsSnapshot. Ligne
+      // "custom" (aucun sourceId) : ne peut donc jamais être déjà couverte par un paiement source
+      // dans paymentAgendaRows(), qui ne lit ni les factures ni les lignes custom. Zoé Lunel n'a
+      // par ailleurs aucun paiement en retard/refusé sur sa propre adhésion (cf. demo-membership-
+      // zoe-prepa, entièrement payée) : ce cas est donc isolé, sans doublon possible avec les 5
+      // paiements en retard déjà comptés. Aucune alerte À faire n'en résulte tant que le lot
+      // applicatif (taskRows) n'est pas codé séparément.
+      demoInvoice({
+        id: "demo-invoice-late-zoe",
+        clubId,
+        contactId: "member-lunel-zoe",
+        contactKind: "members",
+        number: "CDM-2026-0008",
+        status: "issued",
+        issuedAt: "2026-05-28T09:00:00.000Z",
+        clubSnapshot,
+        contactSnapshot: demoContactSnapshot(members[6], "members"),
+        lines: [
+          { id: "demo-line-zoe-late-1", sourceType: "custom", sourceKey: "custom:demo-invoice-late-zoe:0:Frais de dossier", category: "Frais", label: "Frais de dossier", description: "Constitution du dossier administratif", unitPrice: 40, vatRate: 0 },
+        ],
+        paymentsSnapshot: [demoPayment("check", 40, { date: plusDays(-10), checkNumber: "400008" })],
+        notes: "Recette custom — frais de dossier, chèque en retard.",
+      }),
     ];
 
     const creditNotes = [
       { id: "demo-avoir-1", clubId, date: "2026-05-26", amount: 20, reason: "Avoir partiel cotisation (séances manquées)", type: "réduction", status: "actif", invoiceId: "demo-invoice-issued-maelys", contactId: "member-alden-maelys", note: "Geste commercial.", createdAt: "2026-05-26T10:00:00.000Z", updatedAt: "2026-05-26T10:00:00.000Z" },
+      // Lot Démo Club (avoirs) — scénario "avoir utilisé + reliquat" : l'avoir initial (150 €) a été
+      // utilisé à hauteur de 115 € sur la facture CDM-2026-0004 (cf. paymentsSnapshot de cette
+      // facture), le reliquat de 35 € est un second avoir "actif" distinct, comme le ferait la vraie
+      // logique d'utilisation (aucune synchronisation, ce sont deux enregistrements figés).
+      { id: "demo-avoir-lou-1", clubId, date: "2026-05-29", amount: 150, reason: "Avoir commercial suite à chèque refusé", type: "crédit", status: "utilisé", invoiceId: "", contactId: "member-corvin-lou", note: "Avoir de 150,00 € utilisé à hauteur de 115,00 € sur la facture CDM-2026-0004. Reliquat de 35,00 € créé automatiquement.", createdAt: "2026-05-29T10:00:00.000Z", updatedAt: "2026-05-29T10:00:00.000Z" },
+      { id: "demo-avoir-lou-2", clubId, date: "2026-05-29", amount: 35, reason: "Reliquat d'avoir après utilisation sur facture CDM-2026-0004", type: "crédit", status: "actif", invoiceId: "", contactId: "member-corvin-lou", note: "Avoir initial demo-avoir-lou-1 de 150,00 €, utilisé à hauteur de 115,00 € sur la facture CDM-2026-0004. Reliquat créé automatiquement.", createdAt: "2026-05-29T10:00:00.000Z", updatedAt: "2026-05-29T10:00:00.000Z" },
     ];
 
     const notes = [
@@ -17701,8 +18727,6 @@
     ];
 
     // --- Modules sport : exemples (groupes, planning, présences) ---
-    const today = new Date();
-    const plusDays = (d) => { const x = new Date(today); x.setDate(x.getDate() + d); return x.toISOString().slice(0, 10); };
     const groups = [
       { id: "demo-group-judo-enfants", clubId, name: "Judo enfants", type: "Enfants", discipline: "Judo enfant", coach: "Laurent", ageMin: 6, ageMax: 11, maxMembers: 16, color: "#3a7d44", notes: "", archived: false },
       { id: "demo-group-judo-adultes", clubId, name: "Judo adultes", type: "Adultes", discipline: "Judo adulte", coach: "Laurent", ageMin: 16, ageMax: "", maxMembers: 20, color: "#4d5966", notes: "", archived: false },
@@ -17723,6 +18747,21 @@
     setDoc("demo-membership-noe-judo", { licenseNumber: "FFJDA-100245", licenseFederation: "FFJDA", licenseStartDate: plusDays(-200), licenseEndDate: plusDays(160), medicalCertificateEndDate: plusDays(15), rulesSigned: true });
     setDoc("demo-membership-lino-judo", { licenseNumber: "FFJDA-100612", licenseFederation: "FFJDA", licenseEndDate: plusDays(-12), medicalCertificateEndDate: plusDays(-12) });
     setDoc("demo-membership-maelys-judo", { licenseNumber: "FFJDA-100777", licenseFederation: "FFJDA", licenseEndDate: plusDays(280), medicalCertificateEndDate: plusDays(280), rulesSigned: true, imageRights: true });
+    // Lot Démo Club (réduction du bruit) — licence ajoutée sur quelques memberships déjà par
+    // ailleurs complètes (certificat OK, assurance déjà choisie), pour obtenir des dossiers
+    // totalement propres et démontrables. Autorisation parentale/droit à l'image/règlement signé
+    // ne sont PAS ajoutés ici : ces 3 champs vivent désormais sur le contact (cf. lots
+    // Contact/Dossier V2), pas sur la membership.
+    setDoc("demo-membership-mila-self", { licenseNumber: "FFJDA-100301", licenseFederation: "FFJDA", licenseEndDate: plusDays(210) });
+    setDoc("demo-membership-mila-taiso", { licenseNumber: "FFJDA-100302", licenseFederation: "FFJDA", licenseEndDate: plusDays(210) });
+    setDoc("demo-membership-nina-self", { licenseNumber: "FFJDA-100401", licenseFederation: "FFJDA", licenseEndDate: plusDays(220) });
+    setDoc("demo-membership-eliott-judo", { licenseNumber: "FFJDA-100402", licenseFederation: "FFJDA", licenseEndDate: plusDays(230) });
+    setDoc("demo-membership-zoe-prepa", { licenseNumber: "FFJDA-100403", licenseFederation: "FFJDA", licenseEndDate: plusDays(240) });
+    setDoc("demo-membership-paul-judo", { licenseNumber: "FFJDA-100404", licenseFederation: "FFJDA", licenseEndDate: plusDays(250) });
+    setDoc("demo-membership-sara-judo", { licenseNumber: "FFJDA-100405", licenseFederation: "FFJDA", licenseEndDate: plusDays(260) });
+    setDoc("demo-membership-marc-judo", { licenseNumber: "FFJDA-100406", licenseFederation: "FFJDA", licenseEndDate: plusDays(270) });
+    setDoc("demo-membership-eva-judo", { licenseNumber: "FFJDA-100407", licenseFederation: "FFJDA", licenseEndDate: plusDays(300) });
+    setDoc("demo-membership-tess-self", { licenseNumber: "FFJDA-100408", licenseFederation: "FFJDA", licenseEndDate: plusDays(320) });
     const coaches = [
       { id: "demo-coach-laurent", clubId, lastName: "Martin", firstName: "Laurent", phone: "06 10 20 30 40", email: "laurent.martin@example.test", type: "Salarié", specialties: ["Judo enfant", "Judo adulte", "Self-défense"], availability: [{ day: "Lundi", start: "18:00", end: "21:00" }, { day: "Mercredi", start: "14:00", end: "18:00" }, { day: "Samedi", start: "09:00", end: "12:00" }], unavailabilities: [{ id: "demo-unav-laurent", startDate: "2026-06-05", endDate: "2026-06-05", startTime: "", endTime: "", reason: "Stage fédéral" }, { id: "demo-unav-laurent-2", startDate: plusDays(1), endDate: plusDays(8), startTime: "", endTime: "", reason: "Arrêt — entorse du genou" }], notes: "" },
       { id: "demo-coach-sophie", clubId, lastName: "Bernard", firstName: "Sophie", phone: "06 11 22 33 44", email: "sophie.bernard@example.test", type: "Bénévole", specialties: ["Baby judo", "Taïso"], availability: [{ day: "Mardi", start: "17:00", end: "20:00" }, { day: "Jeudi", start: "18:00", end: "21:00" }], unavailabilities: [], notes: "" },
@@ -18302,6 +19341,24 @@
     if (ui.view === "rooms") return roomsPdfPayload(generatedAt);
     if (ui.view === "stock") return stockPdfPayload(generatedAt);
     if (ui.view === "stats") return statsPdfPayload(generatedAt);
+    // Lot Impression/PDF — Présences : le bouton dédié « Imprimer la feuille » (dans le dialogue
+    // d'une séance) construit déjà la vraie feuille d'émargement via attendanceSheetPayload() et
+    // l'état COURANT du formulaire (statuts/notes visibles, cf. attendanceSessionFromForm). Le
+    // bouton PDF générique de la barre d'outils n'avait aucun cas "attendance" et retombait sur
+    // l'extraction DOM brute de la LISTE des séances (page différente). Si un dialogue de séance
+    // est ouvert, on réutilise exactement la même reconstruction que le bouton dédié, pour que le
+    // PDF générique reflète la même feuille que "Imprimer" verrait à cet instant. Aucune séance
+    // ouverte (vue liste) -> aucun changement, repli générique existant inchangé.
+    if (ui.view === "attendance") {
+      const printBtn = document.querySelector("dialog[open] [data-action='print-attendance']");
+      if (printBtn) {
+        const form = printBtn.closest("form");
+        const session = form
+          ? attendanceSessionFromForm(form, attendanceSessionById(printBtn.dataset.id))
+          : attendanceSessionById(printBtn.dataset.id);
+        if (session) return attendanceSheetPayload(session);
+      }
+    }
     const clubName = (typeof activeClub === "function" && activeClub() && activeClub().name) || asText(settings && settings.clubName) || "";
     // Chaque section est NETTOYÉE de ses contrôles interactifs avant extraction (cf. stripInteractiveForPrint).
     const sections = [...app.querySelectorAll(".view .band, .view .kpi-grid, .view .cockpit-hero")]
@@ -19365,7 +20422,7 @@
     const correctedBalance = cashBalance + customTotal - avoirTotal;  // Solde corrigé
     const taxRows = taxDeclarationRows();
     const moduleNames = accountingModuleNames();
-    const typeLabels = { "réduction": "Réduction", "crédit": "Crédit", "annulation": "Annulation" };
+    const typeLabels = { "réduction": "Avoir / crédit", "crédit": "Crédit à valoir", "annulation": "Annulation" };
     const statusLabels = { "actif": "Actif", "utilisé": "Utilisé", "annulé": "Annulé" };
 
     const m = (v) => esc(money(v));
@@ -20305,6 +21362,36 @@
       }
     }
     if (target.dataset.displaySetting) {
+      // Lot 1 Modules désactivables — couper Boutique/Stages (modules FONCTIONNELS) retire
+      // leurs paiements de À faire, de l'agenda et de la comptabilité : refusé tant que des
+      // données actives existent (reste dû, stage à venir), sinon des dettes réelles
+      // deviendraient invisibles sans avertissement. Même gabarit que les suppressions
+      // protégées (disciplines/coachs/salles/groupes). Historique soldé : non bloquant.
+      // Garde AVANT recordHistory : un refus ne doit pas polluer l'undo. render() re-coche
+      // la case (le réglage n'ayant pas changé).
+      if (target.dataset.displaySetting === "showBoutique" && !target.checked) {
+        const activeOrders = (state.shopOrders || []).filter((order) => calcOrder(order).restDue > 0.005).length;
+        if (activeOrders) {
+          alert(`Impossible de désactiver le module Boutique : ${activeOrders} commande(s) ont encore un paiement à régulariser. Encaissez ou soldez-les d'abord.`);
+          render();
+          return;
+        }
+      }
+      if (target.dataset.displaySetting === "showStages" && !target.checked) {
+        const upcoming = (state.tariffs.stages || []).filter((s) => !stageIsPast(s)).length;
+        const unpaid = Object.values(state.stageRegistrations || {})
+          .flat()
+          .filter((row) => calcRegistration(row).restDue > 0.005).length;
+        if (upcoming || unpaid) {
+          const impacts = [
+            upcoming ? `${upcoming} stage(s) à venir` : "",
+            unpaid ? `${unpaid} inscription(s) avec paiement à régulariser` : "",
+          ].filter(Boolean).join(" et ");
+          alert(`Impossible de désactiver le module Stages : ${impacts}. Terminez ou soldez ces éléments d'abord.`);
+          render();
+          return;
+        }
+      }
       recordHistory();
       settings.display = normalizeDisplaySettings(settings.display);
       settings.display[target.dataset.displaySetting] = Boolean(target.checked);
@@ -20557,16 +21644,35 @@
       return;
     }
     if (action === "edit-current-email-template") {
+      // Lot E-mails/Paramètres — "Modifier ce modèle" va directement au bon endroit :
+      // ouvre directement en édition (le bouton l'annonce, plus besoin d'un second clic
+      // sur "✏️ Modifier ce modèle" une fois dans Paramètres) et fait défiler jusqu'à la
+      // section "Messages e-mail" après le rendu — réutilise flashVigilanceTargets, déjà
+      // utilisée par le routage Vigilance -> Planning, aucun nouveau mécanisme de scroll.
       ui.emailTemplateKey = selectedNewsletterTemplateKey();
-      ui.emailTemplateEditing = false;
+      ui.emailTemplateEditing = true;
       resetEmailTemplateDraft(ui.emailTemplateKey);
       ui.settingsPanels = { ...(ui.settingsPanels || {}), emails: true };
       navigateTo({ view: "settings" });
+      // Cible l'EN-TÊTE de la section plutôt que le panneau entier : une fois déplié, le
+      // panneau "Messages e-mail" est très long (liste des variables incluse) — centrer le
+      // panneau entier centrerait un point au milieu de cette liste, pas le formulaire
+      // d'édition. Centrer l'en-tête amène l'en-tête ET le formulaire juste en dessous.
+      if (typeof flashVigilanceTargets === "function") flashVigilanceTargets('[data-action="toggle-settings-panel"][data-panel="emails"]');
       return;
     }
     if (action === "open-payment-reminders") {
-      ui.view = "tasks";
-      ui.saveMessage = "Relances paiement : consulte les post-it et utilise Relancer pour préparer les e-mails.";
+      // Lot E-mails — Relance paiement 1a : reste sur E-mails et présélectionne l'audience
+      // "late" + le modèle "reminder" (tous deux déjà existants), au lieu de renvoyer vers
+      // À faire. newsletterManualOnly désactivé sinon le changement d'audience serait sans
+      // effet (newsletterRecipients() donne priorité à la sélection manuelle). Exclusions
+      // remises à zéro pour éviter qu'une ancienne sélection (autre audience) reste cachée.
+      ui.view = "newsletter";
+      ui.newsletterManualOnly = false;
+      ui.newsletterAudience = "late";
+      ui.newsletterTemplateKey = "reminder";
+      ui.newsletterExcludedEmails = [];
+      ui.saveMessage = "Relances paiement : les contacts en retard sont présélectionnés.";
       render();
       return;
     }
@@ -20718,7 +21824,10 @@
       return;
     }
     if (action === "new-invoice") return openNewInvoiceContactChooser();
-    if (action === "open-invoice") return openInvoiceEditor(state.invoices.find((invoice) => invoice.id === button.dataset.id));
+    if (action === "open-invoice") {
+      // Swap propre (ferme la courante si verrouillée, protège les brouillons) centralisé dans le helper.
+      return openInvoiceWithSwap(state.invoices.find((invoice) => invoice.id === button.dataset.id), button);
+    }
     if (action === "print-invoice") {
       const invoice = await validateDraftInvoiceForOutput(state.invoices.find((item) => item.id === button.dataset.id), button);
       if (invoice) printInvoice(invoice);
@@ -20730,6 +21839,75 @@
       return;
     }
     if (action === "add-invoice-payment") return openInvoicePaymentDialog(state.invoices.find((invoice) => invoice.id === button.dataset.id));
+    if (action === "use-credit-note-payment") {
+      const invoiceId = button.dataset.invoiceId;
+      const creditNoteId = button.dataset.creditNoteId;
+      // Lot B3b — lecture centralisée, appelée avant ET après la confirmation (montant utilisable
+      // recalculé à chaud à chaque fois : jamais de valeur figée avant l'attente utilisateur).
+      const readUsableCreditNote = () => {
+        const inv = state.invoices.find((item) => item.id === invoiceId);
+        const cn = (state.creditNotes || []).find((c) => c.id === creditNoteId);
+        if (!inv || !cn || cn.status !== "actif") return null;
+        if (asText(cn.contactId) !== asText(inv.contactId)) return null;
+        if (inv.status === "draft" || inv.status === "cancelled") return null;
+        const restDue = asNumber(invoiceTotalsFromLines(inv.lines || [], inv.paymentsSnapshot || []).restDue);
+        if (!(restDue > 0.005)) return null;
+        const usedAmount = Math.min(asNumber(cn.amount), restDue);
+        if (!(usedAmount > 0.005)) return null;
+        const remainder = asNumber(cn.amount) - usedAmount;
+        return { invoice: inv, creditNote: cn, usedAmount, remainder };
+      };
+      const initial = readUsableCreditNote();
+      if (!initial) return;
+      if (initial.remainder > 0.005) {
+        const confirmed = await requestConfirm({
+          title: "Utiliser un avoir",
+          message: `Cet avoir de ${money(initial.creditNote.amount)} sera utilisé à hauteur de ${money(initial.usedAmount)}. Un nouvel avoir de ${money(initial.remainder)} sera créé pour ce contact.`,
+          confirmLabel: "Confirmer",
+        });
+        if (!confirmed) return;
+      }
+      // Relecture après l'attente utilisateur (le confirm est asynchrone) : l'avoir, la facture
+      // ou le reste dû ont pu changer entre-temps (autre onglet, autre action, double-clic).
+      const fresh = readUsableCreditNote();
+      if (!fresh) return;
+      recordHistory();
+      const now = new Date().toISOString();
+      const { invoice: freshTarget, creditNote: freshCn, usedAmount, remainder } = fresh;
+      const payment = normalizePayment({ check: "avoir", amount: usedAmount, state: "Payé", date: dateInputValue(new Date()), creditNoteId: freshCn.id });
+      freshTarget.paymentsSnapshot = normalizePayments([...(freshTarget.paymentsSnapshot || []), payment]);
+      freshTarget.totals = invoiceTotalsFromLines(freshTarget.lines || [], freshTarget.paymentsSnapshot);
+      freshTarget.status = computedInvoiceStatus(freshTarget);
+      freshTarget.updatedAt = now;
+      upsertInvoice(freshTarget);
+      // Avoir initial : passe "utilisé", invoiceId conservé tel quel (jamais réécrit vers la
+      // facture de règlement — il garde son origine, cf. bloc "Avoirs liés à cette facture").
+      const updatedCn = { ...freshCn, status: "utilisé", updatedAt: now };
+      const cnIdx = state.creditNotes.findIndex((c) => c.id === updatedCn.id);
+      if (cnIdx >= 0) state.creditNotes[cnIdx] = updatedCn;
+      if (remainder > 0.005) {
+        const nextCreditNote = {
+          id: id("avoir"),
+          date: dateInputValue(new Date()),
+          amount: remainder,
+          reason: `Reliquat d'avoir après utilisation sur facture ${freshTarget.number || "—"}`,
+          type: freshCn.type,
+          status: "actif",
+          invoiceId: "",
+          contactId: freshCn.contactId,
+          note: `Avoir initial ${freshCn.reason || freshCn.id} de ${money(freshCn.amount)}, utilisé à hauteur de ${money(usedAmount)} sur la facture ${freshTarget.number || "—"}. Reliquat créé automatiquement.`,
+          createdAt: now,
+          updatedAt: now,
+        };
+        state.creditNotes = state.creditNotes || [];
+        upsert(state.creditNotes, nextCreditNote);
+      }
+      button.closest("dialog")?.close();
+      persist(remainder > 0.005 ? `Avoir utilisé partiellement sur la facture ${freshTarget.number || ""}` : `Avoir utilisé sur la facture ${freshTarget.number || ""}`);
+      render();
+      setTimeout(() => openInvoiceEditor(freshTarget), 0);
+      return;
+    }
     if (action === "set-invoice-filter") {
       ui.invoiceFilter = button.dataset.filter || "all";
       render();
@@ -21157,9 +22335,19 @@
     if (action === "delete-group") {
       const grp = getGroupById(button.dataset.id);
       if (!grp) return;
-      const linked = getMembersByGroup(button.dataset.id).length;
-      if (linked > 0) {
-        alert(`${linked} adhérent(s) sont liés à ce groupe : suppression définitive impossible. Archive-le ou retire d'abord les adhérents.`);
+      // Lot 4 Dépendances — l'ancien blocage ne couvrait que les adhérents liés : un groupe
+      // sans membre mais encore planifié (planningCourses.groupId) pouvait être supprimé,
+      // laissant des créneaux orphelins et des appels pré-remplis cassés. Périmètre actif
+      // uniquement : les feuilles de présence passées (attendanceSessions.groupId,
+      // historique) ne bloquent pas — l'archivage les couvre.
+      const members = getMembersByGroup(button.dataset.id).length;
+      const courses = (state.planningCourses || []).filter((c) => c.groupId === button.dataset.id && !c.archived).length;
+      if (members || courses) {
+        const impacts = [
+          members ? `${members} adhérent(s)` : "",
+          courses ? `${courses} créneau(x) planning` : "",
+        ].filter(Boolean).join(", ");
+        alert(`Impossible de supprimer le groupe « ${grp.name} » : il est encore utilisé par ${impacts}. Archivez-le ou retirez-le d'abord des adhérents ou du planning.`);
         return;
       }
       if (!await requestConfirm({ title: "Supprimer le groupe", message: `Supprimer définitivement le groupe « ${grp.name} » ?`, confirmLabel: "Supprimer", danger: true })) return;
@@ -21254,8 +22442,23 @@
     if (action === "delete-coach") {
       const c = coachById(button.dataset.id);
       if (!c) return;
-      const linked = coursesForCoach(button.dataset.id).length;
-      if (linked > 0) { alert(`Ce coach est affecté à ${linked} créneau(x). Retire-le d'abord du planning ou archive-le.`); return; }
+      // Lot 2 Dépendances — l'ancien blocage ne couvrait que le Planning : un coach encadrant
+      // un groupe (group.coachId) ou lié à un stage à venir (stage.coachId, cf. le module
+      // Disponibilités qui le traite déjà comme bloqueur) pouvait être supprimé, laissant un
+      // encadrant fantôme. Périmètre actif/futur uniquement : les présences passées
+      // (attendanceSessions.coachId, historique) ne bloquent pas — l'archivage les couvre.
+      const courses = coursesForCoach(button.dataset.id).length;
+      const groups = (state.groups || []).filter((g) => !g.archived && g.coachId === button.dataset.id).length;
+      const stages = (state.tariffs.stages || []).filter((s) => s.coachId === button.dataset.id && !stageIsPast(s)).length;
+      if (courses || groups || stages) {
+        const impacts = [
+          courses ? `${courses} créneau(x) planning` : "",
+          groups ? `${groups} groupe(s)` : "",
+          stages ? `${stages} stage(s) à venir` : "",
+        ].filter(Boolean).join(", ");
+        alert(`Impossible de supprimer ${coachFullName(c)} : il est encore utilisé par ${impacts}. Archivez-le ou retirez-le d'abord des créneaux, groupes ou stages concernés.`);
+        return;
+      }
       if (!await requestConfirm({ title: "Supprimer le coach", message: `Supprimer définitivement ${coachFullName(c)} ?`, confirmLabel: "Supprimer", danger: true })) return;
       recordHistory(); removeById(state.coaches, button.dataset.id); persist("Coach supprimé"); render();
       return;
@@ -21307,8 +22510,20 @@
     if (action === "delete-room") {
       const r = roomById(button.dataset.id);
       if (!r) return;
-      const linked = (state.planningCourses || []).filter((c) => c.roomId === button.dataset.id && !c.archived).length;
-      if (linked > 0) { alert(`Cette salle est affectée à ${linked} créneau(x). Retire-la d'abord du planning ou archive-la.`); return; }
+      // Lot 3 Dépendances — même complément que pour les coachs : l'ancien blocage ne
+      // couvrait que le Planning, une salle liée à un stage à venir (stage.roomId, que le
+      // module Disponibilités traite déjà comme bloqueur) pouvait être supprimée, laissant
+      // un stage sans lieu. Périmètre actif/futur uniquement : les stages passés ne bloquent pas.
+      const courses = (state.planningCourses || []).filter((c) => c.roomId === button.dataset.id && !c.archived).length;
+      const stages = (state.tariffs.stages || []).filter((s) => s.roomId === button.dataset.id && !stageIsPast(s)).length;
+      if (courses || stages) {
+        const impacts = [
+          courses ? `${courses} créneau(x) planning` : "",
+          stages ? `${stages} stage(s) à venir` : "",
+        ].filter(Boolean).join(", ");
+        alert(`Impossible de supprimer ${roomName(r)} : elle est encore utilisée par ${impacts}. Archivez-la ou retirez-la d'abord des créneaux ou stages concernés.`);
+        return;
+      }
       if (!await requestConfirm({ title: "Supprimer la salle", message: `Supprimer définitivement ${roomName(r)} ?`, confirmLabel: "Supprimer", danger: true })) return;
       recordHistory(); removeById(state.rooms, button.dataset.id); persist("Salle supprimée"); render();
       return;
@@ -21357,8 +22572,18 @@
       render();
       return;
     }
-    if (action === "add-credit-note") { openCreditNoteDialog(); return; }
+    if (action === "add-credit-note") { openCreditNoteDialog({ invoiceId: button.dataset.invoiceId || "", contactId: button.dataset.contactId || "" }); return; }
     if (action === "edit-credit-note") { openCreditNoteDialog((state.creditNotes || []).find((c) => c.id === button.dataset.id) || {}); return; }
+    if (action === "print-credit-note") {
+      const cn = (state.creditNotes || []).find((c) => c.id === button.dataset.id);
+      if (cn) printCreditNote(cn);
+      return;
+    }
+    if (action === "export-credit-note-pdf") {
+      const cn = (state.creditNotes || []).find((c) => c.id === button.dataset.id);
+      if (cn) await exportCreditNotePdf(cn);
+      return;
+    }
     if (action === "delete-credit-note") {
       const cn = (state.creditNotes || []).find((x) => x.id === button.dataset.id);
       if (!cn) return;
@@ -21446,7 +22671,7 @@
       render();
       return;
     }
-    if (action === "open-feedback") { openFeedbackDialog(); return; }
+    if (action === "open-feedback") { openFeedbackDialog(button.dataset.feedbackCategory || ""); return; }
     if (action === "assistant-launch-tour") {
       // Visite interactive (halo/bulle) si segments, sinon dialogue descriptif. Reste relançable.
       startAssistantTour(button.dataset.tourId || "");
@@ -21534,6 +22759,11 @@
       state.attendanceSessions = state.attendanceSessions || [];
       upsert(state.attendanceSessions, next);
       persist("Feuille d'appel appliquée");
+      // Audit refresh — asymétrie avec delete-attendance (juste en dessous) qui appelle déjà
+      // render() : sans cet appel, la page Présences (stats assiduité) derrière la popup reste
+      // obsolète. render() ne régénère que app.innerHTML, pas la popup <dialog> elle-même — elle
+      // reste ouverte exactement comme avant.
+      render();
       return;
     }
     if (action === "delete-attendance") {
@@ -21881,8 +23111,30 @@
       return;
     }
     if (action === "delete-tariff-discipline") {
-      recordHistory();
+      // Lot 1 Dépendances — la discipline est référencée PAR NOM dans tout le modèle
+      // (inscriptions, groupes, planning...) : la supprimer alors qu'elle est utilisée
+      // laisserait ces données pointer vers un nom fantôme, sans rien casser visiblement.
+      // Blocage si références actives (même modèle que delete-group), sinon confirmation
+      // explicite (il n'y en avait aucune). Pas d'archivage discipline dans ce lot.
       const index = Number(button.dataset.index);
+      const disc = state.tariffs.disciplines[index];
+      const name = asText(disc?.name);
+      if (name) {
+        const memberships = (state.memberships || []).filter((m) => asText(m.discipline) === name).length;
+        const groups = (state.groups || []).filter((g) => !g.archived && asText(g.discipline) === name).length;
+        const courses = (state.planningCourses || []).filter((c) => !c.archived && asText(c.discipline) === name).length;
+        if (memberships || groups || courses) {
+          const impacts = [
+            memberships ? `${memberships} inscription(s)` : "",
+            groups ? `${groups} groupe(s)` : "",
+            courses ? `${courses} créneau(x) planning` : "",
+          ].filter(Boolean).join(", ");
+          alert(`Impossible de supprimer la discipline « ${name} » : elle est encore utilisée par ${impacts}. Retirez-la d'abord des inscriptions, groupes ou créneaux concernés.`);
+          return;
+        }
+      }
+      if (!await requestConfirm({ title: "Supprimer la discipline", message: `Supprimer définitivement la discipline « ${name || "sans nom"} » ?`, confirmLabel: "Supprimer", danger: true })) return;
+      recordHistory();
       if (ui.tariffEditKey === tariffKey("discipline", index)) ui.tariffEditKey = "";
       state.tariffs.disciplines.splice(index, 1);
       persist("Discipline supprimée");
@@ -23049,9 +24301,13 @@
     else if (certStatus === "expired") issues.push({ key: "certificate-expired", label: "Certificat médical expiré", level: "expired" });
     else if (certStatus === "soon") issues.push({ key: "certificate-soon", label: "Certificat médical expire bientôt", level: "soon" });
 
-    if (isMinor(member) && !member.parentalAuthorization) issues.push({ key: "parental-missing", label: "Autorisation parentale manquante", level: "missing" });
-    if (!member.imageRights) issues.push({ key: "image-missing", label: "Droit à l'image non renseigné", level: "soon" });
-    if (!member.rulesSigned) issues.push({ key: "rules-missing", label: "Règlement intérieur non signé", level: "soon" });
+    // Lot Contact/Dossier V2 — autorisation parentale, droit à l'image et règlement signé sont
+    // désormais centralisés sur le contact (source de vérité, comme le responsable légal) ;
+    // l'assurance reste évaluée depuis la membership, inchangée dans ce lot.
+    const contact = contactForMembership(member) || {};
+    if (isMinor(member) && !contact.parentalAuthorization) issues.push({ key: "parental-missing", label: "Autorisation parentale manquante", level: "missing" });
+    if (!contact.imageRights) issues.push({ key: "image-missing", label: "Droit à l'image non renseigné", level: "soon" });
+    if (!contact.rulesSigned) issues.push({ key: "rules-missing", label: "Règlement intérieur non signé", level: "soon" });
     return issues;
   }
 
@@ -23323,7 +24579,8 @@
       const { licStatus, certStatus } = memberDocStatuses(m);
       if (certStatus === "missing") certMissing += 1; else if (certStatus === "expired") certExpired += 1; else if (certStatus === "soon") certSoon += 1;
       if (licStatus === "missing") licMissing += 1; else if (licStatus === "expired") licExpired += 1; else if (licStatus === "soon") licSoon += 1;
-      if (isMinor(m) && !m.parentalAuthorization) parentalMissing += 1;
+      // Lot Contact/Dossier V2 — autorisation parentale lue depuis le contact (source de vérité).
+      if (isMinor(m) && !(contactForMembership(m) || {}).parentalAuthorization) parentalMissing += 1;
     });
     const groups = (state.groups || []).filter((g) => !g.archived);
     let groupsFull = 0, groupsAlmost = 0, placesAvailable = 0;
@@ -23441,7 +24698,11 @@
     const disciplines = ["", ...(state.tariffs.disciplines || []).map((d) => d.name)];
     const body = [
       field("name", "Nom du groupe *", group.name || "", "text", "required"),
-      selectField("type", "Type", group.type || "Autre", types),
+      // Lot V1 Niveaux/Groupes — "Type" n'a jamais été qu'un repère d'affichage (cf. audit
+      // Niveaux/Groupes/Disciplines) : jamais lu pour un filtre/calcul, aucun lien avec
+      // membership.level, practiceType ou ageMin/ageMax. Libellé clarifié uniquement ;
+      // mêmes valeurs, même donnée stockée (group.type), aucun automatisme ajouté.
+      selectField("type", "Type de groupe (repère)", group.type || "Autre", types),
       selectField("discipline", "Discipline", group.discipline || "", disciplines),
       `<div data-coach-field>${coachPickerHtml(group.coachId, group.discipline, group.coach, "Coach / encadrant")}</div>`,
       `<div class="form-grid compact">
@@ -23719,6 +24980,7 @@
       ["minor-incomplete", "Mineurs incomplets"],
       ["license-missing", "Licence manquante"],
       ["certificate-missing", "Certificat manquant"],
+      ["insurance-unverified", "Assurance à vérifier"],
     ];
   }
 
@@ -23740,6 +25002,11 @@
       case "minor-incomplete": return isMinor(m) && issues.length > 0;
       case "license-missing": return licStatus === "missing";
       case "certificate-missing": return certStatus === "missing";
+      // Lot Documents/Assurance — distinct du champ "insurance" (case à cocher simple, affichée
+      // en colonne) : insuranceChoice est le choix d'assurance tarifée, celui déjà utilisé par
+      // Vigilance Documents orange ("Assurance à vérifier") et par la facturation. Ce filtre suit
+      // la même source que Vigilance pour que les deux se correspondent enfin.
+      case "insurance-unverified": return !asText(m.insuranceChoice);
       default: return true;
     }
   }
@@ -23747,7 +25014,7 @@
   function renderSportDocuments() {
     const members = (state.memberships || []).filter((m) => asText(m.discipline));
     const filter = ui.docFilter || "all";
-    let complete = 0, missing = 0, expired = 0, soon = 0;
+    let complete = 0, missing = 0, expired = 0, soon = 0, insuranceUnverified = 0;
     members.forEach((m) => {
       const { licStatus, certStatus } = memberDocStatuses(m);
       const issues = getMissingDocuments(m);
@@ -23755,10 +25022,14 @@
       if (issues.some((i) => i.level === "missing")) missing += 1;
       if (licStatus === "expired" || certStatus === "expired") expired += 1;
       if (licStatus === "soon" || certStatus === "soon") soon += 1;
+      if (!asText(m.insuranceChoice)) insuranceUnverified += 1;
     });
     const rows = members.filter((m) => memberMatchesDocFilter(m, filter)).map((m) => {
       const { licStatus, certStatus } = memberDocStatuses(m);
       const group = getGroupById(m.groupId);
+      // Lot Contact/Dossier V2 — autorisation parentale, droit à l'image et règlement signé lus
+      // depuis le contact (assurance : reste lue depuis la membership, inchangée).
+      const contact = contactForMembership(m) || {};
       return `<tr class="clickable-row" data-action="edit-membership" data-id="${esc(m.id)}">
         <td>${esc(personLabel(m))}${isMinor(m) ? ' <span class="doc-badge doc-soon">Mineur</span>' : ""}</td>
         <td>${esc(m.discipline || "")}</td>
@@ -23769,9 +25040,9 @@
         <td>${docStatusBadge(licStatus)}</td>
         <td>${m.medicalCertificateEndDate ? esc(dateDisplay(m.medicalCertificateEndDate)) : "—"}</td>
         <td>${docStatusBadge(certStatus)}</td>
-        <td>${docStatusBadge(isMinor(m) ? (m.parentalAuthorization ? "ok" : "missing") : "none", isMinor(m) ? (m.parentalAuthorization ? "OK" : "Manquant") : "N/A")}</td>
-        <td>${docStatusBadge(m.imageRights ? "ok" : "none", m.imageRights ? "OK" : "—")}</td>
-        <td>${docStatusBadge(m.rulesSigned ? "ok" : "none", m.rulesSigned ? "OK" : "—")}</td>
+        <td>${docStatusBadge(isMinor(m) ? (contact.parentalAuthorization ? "ok" : "missing") : "none", isMinor(m) ? (contact.parentalAuthorization ? "OK" : "Manquant") : "N/A")}</td>
+        <td>${docStatusBadge(contact.imageRights ? "ok" : "none", contact.imageRights ? "OK" : "—")}</td>
+        <td>${docStatusBadge(contact.rulesSigned ? "ok" : "none", contact.rulesSigned ? "OK" : "—")}</td>
         <td>${docStatusBadge(m.insurance ? "ok" : "none", m.insurance ? "OK" : "—")}</td>
       </tr>`;
     }).join("") || (members.length === 0 ? `<tr><td colspan="13">${emptyStateHtml("documents")}</td></tr>` : `<tr><td colspan="13" class="empty">Aucun adhérent ne correspond à ce filtre.</td></tr>`);
@@ -23785,6 +25056,7 @@
           <div class="kpi ${missing ? "kpi-alert" : ""}"><span>Documents manquants</span><strong>${missing}</strong></div>
           <div class="kpi ${expired ? "kpi-alert" : ""}"><span>Documents expirés</span><strong>${expired}</strong></div>
           <div class="kpi ${soon ? "kpi-warn" : ""}"><span>Expirent bientôt</span><strong>${soon}</strong></div>
+          <div class="kpi ${insuranceUnverified ? "kpi-warn" : ""}"><span>Assurance à vérifier</span><strong>${insuranceUnverified}</strong></div>
         </div>
         <div class="doc-filters">${filterBtns}</div>
         <div class="doc-table-scroll"><table class="editable-table doc-table">
@@ -25069,7 +26341,7 @@
     const periodLabel = periodEnd && periodEnd !== periodStart ? `${dateDisplay(periodStart)} au ${dateDisplay(periodEnd)}` : dateDisplay(periodStart);
     const cause = impact && impact.archived
       ? `${original ? esc(coachFullName(original)) : "Le coach"} a été archivé${impact.reason ? " · " + esc(impact.reason) : ""}.`
-      : `${original ? esc(coachFullName(original)) : "Le coach"} indisponible : ${esc(periodLabel)}${impact && impact.reason ? " · " + esc(impact.reason) : ""}.`;
+      : `${original ? esc(coachFullName(original)) : "Le coach"} indisponible du ${esc(periodLabel)}${impact && impact.reason ? " · " + esc(impact.reason) : ""}.`;
     // Contact du coach concerné : e-mail et/ou téléphone selon ce qui est renseigné
     // (réutilise les champs existants de la fiche coach), message clair si rien.
     const cEmail = asText(original && original.email);
@@ -25410,6 +26682,15 @@
 
   // Champ "salle" du créneau : liste déroulante filtrée + message si aucune + saisie libre.
   function planningRoomFieldHtml(course = {}) {
+    // Module Salles masqué (ex. mode Simple) : pas de sélecteur de salle — l'utilisateur ne peut de
+    // toute façon pas gérer de salles via le menu. On PRÉSERVE une roomId déjà posée (créneau créé en
+    // mode Avancé) via un input caché, pour ne pas l'effacer à l'enregistrement (le save relit
+    // data.get("roomId")), et on garde le champ « lieu » en saisie libre. Salle jamais obligatoire.
+    const roomsVisible = typeof isViewVisible === "function" ? isViewVisible("rooms") : true;
+    if (!roomsVisible) {
+      return `${course.roomId ? `<input type="hidden" name="roomId" value="${esc(course.roomId)}" />` : ""}
+      ${field("location", "Lieu (saisie libre)", course.location || "")}`;
+    }
     const eligible = eligibleRoomsForCourse(course);
     const selectedId = course.roomId || "";
     const selected = selectedId ? roomById(selectedId) : null;
@@ -25585,7 +26866,7 @@
     const periodLabel = periodEnd && periodEnd !== periodStart ? `${dateDisplay(periodStart)} au ${dateDisplay(periodEnd)}` : dateDisplay(periodStart);
     const cause = impact && impact.archived
       ? `${original ? esc(roomName(original)) : "La salle"} a été archivée${impact.reason ? " · " + esc(impact.reason) : ""}.`
-      : `${original ? esc(roomName(original)) : "La salle"} indisponible : ${esc(periodLabel)}${impact && impact.reason ? " · " + esc(impact.reason) : ""}.`;
+      : `${original ? esc(roomName(original)) : "La salle"} indisponible du ${esc(periodLabel)}${impact && impact.reason ? " · " + esc(impact.reason) : ""}.`;
     // Contact du responsable de la salle : e-mail et/ou téléphone selon ce qui est renseigné
     // (réutilise les champs existants de la fiche salle), message clair si rien.
     const rEmail = asText(original && original.managerEmail);
@@ -25895,6 +27176,28 @@
       done: () => ((state.tariffs && state.tariffs.disciplines) || []).length > 0,
     },
     {
+      // Lot Onboarding — la discipline principale créée par le wizard démarre à 0 €
+      // (src/16-settings-themes.js, seedMainDiscipline) : sans cette étape, l'Assistant
+      // considère la configuration terminée dès qu'une discipline existe, même si son
+      // tarif n'a jamais été renseigné (risque de factures à 0 €, cf. audit Onboarding).
+      // Priorité entre "first-discipline" (95) et "first-member" (90) : configurer le
+      // prix est la suite naturelle de la création de la discipline, avant d'inscrire
+      // qui que ce soit. Compte uniquement `price` (le champ seedé à 0, celui qui nourrit
+      // la cotisation facturée) — pas `license`, un tarif souvent nul à raison (toutes
+      // les disciplines n'ont pas de licence fédérale), pour rester sur le seul signal
+      // fiable de risque réel.
+      id: "tariffs-configured",
+      category: "organisation",
+      label: "Configurer vos tarifs",
+      why: "La discipline créée à l'installation démarre avec un tarif à 0 €. Remplacez-le par le vrai prix de votre club pour que vos factures reflètent les bons montants.",
+      priority: 93,
+      difficulty: "facile",
+      estimateMinutes: 1,
+      view: "disciplines",
+      visibleIf: ["module-visible", "step-incomplete"],
+      done: () => ((state.tariffs && state.tariffs.disciplines) || []).some((d) => asNumber(d.price) > 0.005),
+    },
+    {
       id: "first-coach",
       category: "organisation",
       label: "Créer votre premier coach",
@@ -25919,6 +27222,24 @@
       cta: { action: "add-group", label: "Créer un groupe" },
       visibleIf: ["module-visible", "step-incomplete"],
       done: () => (state.groups || []).length > 0,
+    },
+    {
+      // Lot Onboarding — les salles ne sont pas indispensables à tous les clubs (un seul
+      // dojo n'en a pas besoin), donc étape sobre, priorité modeste : après coachs (70)
+      // et groupes (65), avant le planning (55) qu'elle aide à compléter (créneau + salle).
+      // Réutilise activeRooms() (src/25-rooms.js), déjà la source de vérité utilisée par
+      // Planning/Disponibilités (salles archivées exclues, comme partout ailleurs).
+      id: "first-room",
+      category: "organisation",
+      label: "Configurer vos salles",
+      why: "Les salles permettent de préparer un planning complet et de suivre les disponibilités.",
+      priority: 58,
+      difficulty: "facile",
+      estimateMinutes: 1,
+      view: "rooms",
+      cta: { action: "add-room", label: "Créer une salle" },
+      visibleIf: ["module-visible", "step-incomplete"],
+      done: () => (typeof activeRooms === "function" ? activeRooms() : (state.rooms || [])).length > 0,
     },
     {
       id: "first-course",
@@ -26119,6 +27440,8 @@
           title: "Choisir la discipline", body: "La discipline sert de modèle : elle contient déjà la cotisation, la licence et l'assurance que vous avez définies une fois pour toutes. En la choisissant, MonGestaClub applique automatiquement ces tarifs à cette inscription. En clair : vous réglez vos tarifs une seule fois en début de saison, et chaque nouvelle inscription les reprend toute seule — fini de retaper le même montant des dizaines de fois." },
         { view: "disciplines", anchor: "[data-membership-tariff-summary]", prepare: openMembershipDialogForTour,
           title: "Le tarif, calculé tout seul", body: "Plus besoin d'additionner à la main : cotisation, licence et assurance sont reprises de la discipline, la remise éventuelle est déduite, et le total se met à jour à chaque changement. C'est ce montant qui pourra ensuite être facturé." },
+        { view: "disciplines", anchor: "input[name='level']", prepare: openMembershipDialogForTour,
+          title: "Le niveau ou grade (facultatif)", body: "Ce champ est une note libre : Débutant, Confirmé, Ceinture jaune… ce que vous voulez. Elle s'affiche dans le récapitulatif de cette inscription, mais ce n'est ni un filtre automatique, ni une entité reliée aux groupes, aux tarifs ou aux présences." },
         { view: "disciplines", anchor: "[data-membership-tariff-summary]", prepare: openMembershipDialogForTour, final: true,
           title: "Vous savez préparer une inscription", body: "Vous savez maintenant comment préparer une inscription. Rien n'est enregistré tant que vous ne validez pas volontairement." },
       ] },
@@ -26148,6 +27471,8 @@
           title: "À quoi sert un groupe", body: "Un groupe rassemble des adhérents qui s'entraînent ensemble (par âge, niveau ou activité). Ça vous fera gagner du temps pour l'appel et le planning. Pour en créer un, cliquez sur « Nouveau groupe ». Rien n'est enregistré tant que vous ne validez pas, et vous pouvez quitter quand vous voulez." },
         { view: "groups", anchor: "input[name='name']", prepare: openGroupDialogForTour,
           title: "Le nom du groupe", body: "Ce nom vous suivra dans le planning et sur les feuilles d'appel. Choisissez-le parlant (« Judo enfants », « Compétition ») pour reconnaître le groupe d'un coup d'œil." },
+        { view: "groups", anchor: "select[name='type']", prepare: openGroupDialogForTour,
+          title: "Le type de groupe (repère)", body: "Ce champ sert seulement de repère pour classer vos groupes (Débutants, Confirmés, Enfants, Adultes, Loisir, Compétition…). Ce n'est pas un niveau automatique : il ne pilote ni les inscriptions ni les tarifs." },
         { view: "groups", anchor: "select[name='discipline']", prepare: openGroupDialogForTour,
           title: "La discipline", body: "Relier le groupe à une discipline indique l'activité qu'il pratique. MonGestaClub s'en sert pour ne proposer que des coachs compatibles, et pour relier ensuite ce groupe aux bons créneaux du planning." },
         { view: "groups", anchor: "[data-coach-field]", prepare: openGroupDialogForTour,
@@ -27336,10 +28661,14 @@
     return c && c.icon ? `<span class="feedback-cat-ico" aria-hidden="true">${esc(c.icon)}</span>` : "";
   }
 
-  function openFeedbackDialog() {
+  // Lot Feedback — raccourci "Signaler un bug" : réutilise tel quel le dialogue "Donner mon
+  // avis" (mêmes catégories, mêmes questions, même envoi mailto/copie), seule la catégorie
+  // Bug est précochée à l'ouverture. sync() (déjà appelée plus bas) se charge, sans aucune
+  // logique nouvelle, de révéler son bloc de questions et d'activer les boutons d'envoi.
+  function openFeedbackDialog(initialCategory = "") {
     const prefillEmail = asText((typeof activeClub === "function" && activeClub() && activeClub().email) || "");
     const catChips = FEEDBACK_CATEGORIES.map((c) =>
-      `<label class="feedback-chip"><input type="checkbox" data-feedback-cat="${c.id}"><span>${feedbackCatIconHtml(c)}${esc(c.label)}</span></label>`
+      `<label class="feedback-chip"><input type="checkbox" data-feedback-cat="${c.id}" ${c.id === initialCategory ? "checked" : ""}><span>${feedbackCatIconHtml(c)}${esc(c.label)}</span></label>`
     ).join("");
     const moduleChips = FEEDBACK_MODULES.map((m) =>
       `<label class="feedback-chip feedback-chip-soft"><input type="checkbox" data-feedback-module value="${esc(m)}"><span>${esc(m)}</span></label>`
@@ -27411,7 +28740,7 @@
           <span class="assistant-hero-kicker"><span class="assistant-hero-ico" aria-hidden="true">${getIconSvg("assistant")}</span>${esc(ASSISTANT_IDENTITY.name)}</span>
           <h2>${esc(ASSISTANT_STRINGS.centerTitle)}</h2>
           <p class="muted">Un collègue expérimenté à vos côtés, jamais imposé. Retrouvez vos visites et votre progression, et relancez l'accompagnement quand vous le souhaitez.</p>
-          <button type="button" class="feedback-cta" data-action="open-feedback"><span class="feedback-cta-icon" aria-hidden="true">${getIconSvg("assistant-feedback")}</span> Donner mon avis</button>
+          <button type="button" class="feedback-cta" data-action="open-feedback"><span class="feedback-cta-icon" aria-hidden="true">${getIconSvg("assistant-feedback")}</span> Donner mon avis / signaler un bug</button>
         </div>
         ${global.total ? `<div class="assistant-hero-stat" title="Configuration du club, d'après vos données réelles">
           <div class="assistant-hero-stat-head"><span>configuration du club</span><strong>${global.pct} %</strong></div>
@@ -27713,6 +29042,13 @@
     if (typeof assistantDisplayEnabled === "function" && !assistantDisplayEnabled()) return;
     const tour = tourById(id);
     if (!tour) return;
+    // Micro-lot Assistant — garde défensive centrale : allAssistantTours() filtre déjà le
+    // catalogue affiché avec assistantTourVisible(), mais un CTA de suggestion peut appeler
+    // cette fonction directement avec un id de visite dont la vue/le module n'est plus
+    // pertinent (ex. suggestion mal alignée sur une autre vue que celle de la visite ciblée).
+    // ui.tour n'est fixé que plus bas (après ce point) : rien à nettoyer, un simple retour
+    // suffit à empêcher le lancement et la navigation vers une vue masquée qui s'ensuivrait.
+    if (!assistantTourVisible(tour)) return;
     const segs = tourSegments(tour);
     if (!segs.length) {
       setAssistantItemState(tour.id, "done");
@@ -28123,14 +29459,17 @@
   }
 
   // Carte « Aujourd'hui » complète (renvoie "" si mode discret ou rien à montrer).
+  // Lot Accueil V2 — ne montre plus que le message principal (conseil humain / priorité du
+  // jour). Les puces factuelles (assistantTodayItems) recalculaient et répétaient des chiffres
+  // déjà visibles ailleurs sur l'accueil (KPI, cartes Vigilance) : supprimées ici, sans toucher
+  // à assistantTodayItems() lui-même ni à aucune autre source de données.
   function assistantTodayCardHtml() {
     if (isAssistantQuiet()) return "";
     const headline = assistantTodayHeadline();
-    const items = assistantTodayItems();
-    if (!headline && !items.length) return "";
+    if (!headline) return "";
     const first = assistantPresidentFirstName();
     const hello = first ? `Bonjour ${esc(first)}` : "Aujourd'hui";
-    const headlineHtml = headline ? `<div class="assistant-today-headline assistant-today-${esc(headline.type)}">
+    const headlineHtml = `<div class="assistant-today-headline assistant-today-${esc(headline.type)}">
         <div class="assistant-today-icon" aria-hidden="true">${headline.icon}</div>
         <div class="assistant-today-text">
           <strong>${headline.title}</strong>
@@ -28139,14 +29478,10 @@
           <div class="assistant-today-actions">${headline.actions || ""}</div>
           ${headline.note ? `<p class="assistant-today-note">${headline.note}</p>` : ""}
         </div>
-      </div>` : "";
-    const itemsHtml = items.length ? `<ul class="assistant-today-items">
-        ${items.map((it) => `<li><button type="button" ${it.view ? `data-action="open-dashboard-target" data-target="${esc(it.view)}"` : `data-action="${esc(it.action)}"`}>${esc(it.label)}</button></li>`).join("")}
-      </ul>` : "";
+      </div>`;
     return `<section class="band assistant-today">
       <div class="band-title"><h2>${esc(hello)}</h2><button type="button" class="assistant-today-link" data-action="open-dashboard-target" data-target="assistant">Centre d'accompagnement</button></div>
       ${headlineHtml}
-      ${itemsHtml}
     </section>`;
   }
 
@@ -28404,22 +29739,29 @@
     const freeRoom = roomDim ? availEligibleRooms(probe).length : 0;
     const overlap = (state.planningCourses || []).filter((c) =>
       !c.archived && asText(c.day) === day && coursesOverlap(probe, c)).length;
-    // Capacité = ressource la plus contraignante (une dimension ne compte que si
-    // le module est activé ET au moins une ressource déclarée). On raisonne en
-    // nombre absolu de ressources libres, plus parlant qu'un ratio.
-    const slack = [];
-    if (coachDim) slack.push(freeCoach);
-    if (roomDim) slack.push(freeRoom);
-    let level;
-    if (!slack.length) {
-      // Club sans coach ni salle déclarés : on se base sur la charge en créneaux.
-      level = overlap === 0 ? "free" : overlap === 1 ? "some" : "tight";
-    } else {
-      // 0 libre = impossible ; 1 libre = dernière combinaison (presque complet) ;
-      // ≥2 libres = on peut placer un cours : vert si rien n'est encore programmé,
-      // jaune s'il y a déjà une activité sur la tranche.
-      const free = Math.min.apply(null, slack);
-      level = free === 0 ? "full" : free === 1 ? "tight" : overlap === 0 ? "free" : "some";
+    // Lot « vrai correctif produit » — le niveau reflète désormais le nombre d'ACTIVITÉS
+    // réellement organisables (mêmes disciplines/logique que la modale détail), pas
+    // seulement une profondeur de ressources : un vert ne doit plus jamais cacher des
+    // disciplines bloquées. La grille n'a pas de discipline ciblée : on évalue donc
+    // toutes les disciplines actives du club (cas « aucune discipline sélectionnée »).
+    // Repli sur l'ancienne heuristique resource-only UNIQUEMENT si le club n'a aucune
+    // discipline déclarée (rien à évaluer par activité, comportement inchangé pour ce cas).
+    const activity = availSlotActivitySummary({ discipline: "" }, day, startMin, startMin + 60);
+    let level = activity.level;
+    if (!level) {
+      // Capacité = ressource la plus contraignante (une dimension ne compte que si
+      // le module est activé ET au moins une ressource déclarée). On raisonne en
+      // nombre absolu de ressources libres, plus parlant qu'un ratio.
+      const slack = [];
+      if (coachDim) slack.push(freeCoach);
+      if (roomDim) slack.push(freeRoom);
+      if (!slack.length) {
+        // Club sans coach ni salle déclarés : on se base sur la charge en créneaux.
+        level = overlap === 0 ? "free" : overlap === 1 ? "some" : "tight";
+      } else {
+        const free = Math.min.apply(null, slack);
+        level = free === 0 ? "full" : free === 1 ? "tight" : overlap === 0 ? "free" : "some";
+      }
     }
     return { level, freeCoach, freeRoom, overlap };
   }
@@ -28445,6 +29787,31 @@
       }
     }
     return { ok: reasons.length === 0, reasons };
+  }
+
+  // ---- Résumé « par activité » d'un créneau (Lot vrai correctif produit) --------
+  // Source unique de vérité pour ce que « vert/jaune/orange/rouge » veut dire désormais :
+  // plus une profondeur de ressources abstraite, mais le nombre d'ACTIVITÉS réellement
+  // organisables. « Activités pertinentes » = la discipline ciblée dans l'assistant si
+  // une l'est, sinon toutes les disciplines actives du club (même périmètre que l'ancien
+  // panorama de la modale détail, dont c'est ici l'extraction — aucune duplication).
+  // total=0 (club sans discipline déclarée) → level=null : les appelants doivent alors
+  // se rabattre sur leur propre repli (aucune activité à évaluer, pas une absence totale).
+  function availSlotActivitySummary(f, day, startMin, endMin) {
+    const target = (f && asText(f.discipline)) ? [asText(f.discipline)] : (state.tariffs.disciplines || []).map((d) => d.name).filter(Boolean);
+    const total = target.length;
+    const possible = [];
+    const unavailable = [];
+    target.forEach((disc) => {
+      const st = availDisciplineStatus(disc, day, startMin, endMin);
+      if (st.ok) possible.push(disc); else unavailable.push({ name: disc, reasons: st.reasons });
+    });
+    if (!total) return { total: 0, possible, unavailable, level: null, label: "" };
+    const level = !possible.length ? "full" : possible.length === total ? "free" : possible.length === 1 ? "tight" : "some";
+    const label = !possible.length ? "Aucune activité possible"
+      : possible.length === total ? "Toutes les activités possibles"
+        : `${possible.length}/${total} activité${possible.length > 1 ? "s" : ""} possible${possible.length > 1 ? "s" : ""}`;
+    return { total, possible, unavailable, level, label };
   }
 
   // ---- Le créneau colle-t-il aux critères de l'assistant ? ----
@@ -28645,6 +30012,20 @@
     return parts.length ? parts.join(" · ") : availSlotCapacityText(day, startMin, f.duration, f.discipline);
   }
 
+  // Résumé « par activité » du créneau recommandé (Lot vrai correctif produit) — affiché
+  // AVANT la checklist ressources : évite la fausse promesse « vert = tout va bien » quand
+  // seule une partie des activités pertinentes est possible. `best.activity` est déjà calculé
+  // par availCompatibleSlots (même source que la couleur retenue pour ce créneau).
+  function availRecoActivityHtml(best) {
+    const act = best.activity;
+    if (!act || !act.total) return "";
+    if (!act.unavailable.length) return `<p class="avail-reco-msg">${esc(act.label)}</p>`;
+    const possibleText = act.possible.length ? `Possible pour : ${availNamesText(act.possible, 4)}` : act.label;
+    const unavailableNames = availNamesText(act.unavailable.map((u) => u.name), 4);
+    return `<p class="avail-reco-msg">${esc(possibleText)}</p>`
+      + `<p><span class="avail-detail-why">${esc(`Non disponible : ${unavailableNames}`)}</span></p>`;
+  }
+
   // Lignes de la recommandation : NOMS concrets des coachs/salles compatibles +
   // état du groupe (modules activés seulement). Remplace les compteurs abstraits.
   function availRecoChecklist(best, f) {
@@ -28688,9 +30069,18 @@
     return { cap, overlap: ev.overlap, score };
   }
 
+  // Rang de couleur pour le tri du meilleur créneau (le score continu seul pouvait faire
+  // gagner un créneau à forte capacité mais partiellement indisponible contre un créneau où
+  // tout est possible). "full" ne devrait jamais apparaître ici (un créneau où aucune
+  // activité pertinente n'est possible échoue déjà à `matches`), gardé en repli par sécurité.
+  const AVAIL_LEVEL_RANK = { free: 0, some: 1, tight: 2, full: 3 };
+
   // Tous les créneaux compatibles avec les critères, CLASSÉS du meilleur au moins bon.
   // Pipeline des 3 blocs : générer les candidats → évaluer (moteur) → garder les compatibles
-  // → scorer → trier. Sortie et ordre identiques à l'ancienne implémentation.
+  // → scorer → trier. Tri en deux temps : d'abord par niveau PAR ACTIVITÉ (vert = toutes les
+  // activités pertinentes possibles, cf. availSlotActivitySummary — plus seulement une
+  // profondeur de ressources), puis par score à l'intérieur d'un même niveau — le score ne
+  // départage plus que des créneaux déjà équivalents en activités possibles.
   function availCompatibleSlots(f) {
     const out = [];
     // Sélection de jours explicitement vide (l'utilisateur a tout décoché) → aucun candidat.
@@ -28700,9 +30090,18 @@
       const ev = availEvaluateSlot(f, slot.day, slot.start, slot.end);
       if (!ev.matches) return;
       const { cap, overlap, score } = availScoreSlot(f, slot, ev);
-      out.push({ day: slot.day, di: slot.di, start: slot.start, end: slot.end, cap, overlap, score });
+      const activity = availSlotActivitySummary(f, slot.day, slot.start, slot.end);
+      // Repli sur l'ancienne heuristique resource-only si le club n'a aucune discipline
+      // déclarée (rien à évaluer par activité) — comportement inchangé pour ce cas rare.
+      const level = activity.level || availCapLevel(cap, overlap);
+      out.push({ day: slot.day, di: slot.di, start: slot.start, end: slot.end, cap, overlap, score, level, activity });
     });
-    return out.sort((a, b) => b.score - a.score);
+    return out.sort((a, b) => {
+      const ar = AVAIL_LEVEL_RANK[a.level] ?? 3;
+      const br = AVAIL_LEVEL_RANK[b.level] ?? 3;
+      if (ar !== br) return ar - br;
+      return b.score - a.score;
+    });
   }
 
   // Boutons d'action d'un créneau, libellés naturels : créer le cours (création
@@ -28745,6 +30144,7 @@
       <div class="avail-reco-head"><span class="avail-reco-ico">${getIconSvg("availability-recommendation")}</span><strong>MonGestaClub vous recommande</strong></div>
       <p class="avail-reco-msg">Le meilleur créneau pour ${esc(availTypeWord(f.type))} :</p>
       <div class="avail-reco-slot">${esc(best.day)} ${esc(availMinutesToTime(best.start))} → ${esc(availMinutesToTime(best.end))}</div>
+      ${availRecoActivityHtml(best)}
       <ul class="avail-reco-check">${checklist}</ul>
       <p class="avail-reco-basis">${esc(availAnalysisBasis())}</p>
       <div class="avail-reco-actions">${availSlotActionsHtml(f, best.day, best.start, true)}</div>
@@ -28752,18 +30152,34 @@
     return `<div class="avail-summary"><div class="avail-stats">${stats}</div>${reco}</div>`;
   }
 
-  // Autres créneaux compatibles (le meilleur est déjà mis en avant dans la synthèse).
-  function availResultsHtml(f, compatible) {
-    const others = compatible.slice(1);
-    if (!others.length) return "";
+  // Sections de qualité pour « Autres créneaux compatibles » (Lot vrai correctif produit) —
+  // un vert ne doit plus se retrouver noyé au milieu des oranges. "full" omis : un créneau
+  // sans aucune activité possible échoue déjà à `matches`, il n'apparaît jamais ici.
+  const AVAIL_RESULT_SECTIONS = [["free", "Très favorables"], ["some", "Possibles avec contraintes"], ["tight", "Très limités"]];
+
+  // Une section de niveau : mêmes lignes jour/heure qu'avant, juste regroupées par niveau
+  // au lieu d'un unique bloc mélangé. Réutilise .avail-detail-sec-title (classe existante).
+  function availResultsSectionHtml(f, label, slots) {
+    if (!slots.length) return "";
     const byDay = {};
-    others.forEach((s) => { (byDay[s.day] = byDay[s.day] || []).push(s); });
+    slots.forEach((s) => { (byDay[s.day] = byDay[s.day] || []).push(s); });
     const rows = PLANNING_DAYS.filter((d) => byDay[d]).map((d) => `<div class="avail-result-row">
         <span class="avail-result-day">${esc(d)}</span>
         <div class="avail-result-chips">${byDay[d].sort((a, b) => a.start - b.start).map((s) =>
-          `<button type="button" class="avail-chip lvl-${availCapLevel(s.cap, s.overlap)}" data-action="avail-slot-detail" data-day="${esc(d)}" data-start="${s.start}" title="${esc(availSlotTooltip(f, d, s.start))}">${esc(availMinutesToTime(s.start))}<small>→ ${esc(availMinutesToTime(s.end))}</small></button>`).join("")}</div>
+          `<button type="button" class="avail-chip lvl-${s.level}" data-action="avail-slot-detail" data-day="${esc(d)}" data-start="${s.start}" title="${esc(availSlotTooltip(f, d, s.start))}">${esc(availMinutesToTime(s.start))}<small>→ ${esc(availMinutesToTime(s.end))}</small></button>`).join("")}</div>
       </div>`).join("");
-    return `<details class="avail-others" open><summary>Autres créneaux compatibles (${others.length})</summary>${rows}</details>`;
+    return `<div class="avail-result-section"><div class="avail-detail-sec-title">${esc(label)} (${slots.length})</div>${rows}</div>`;
+  }
+
+  // Autres créneaux compatibles (le meilleur est déjà mis en avant dans la synthèse),
+  // désormais groupés par niveau plutôt qu'en un seul tas mélangé par jour.
+  function availResultsHtml(f, compatible) {
+    const others = compatible.slice(1);
+    if (!others.length) return "";
+    const sections = AVAIL_RESULT_SECTIONS
+      .map(([level, label]) => availResultsSectionHtml(f, label, others.filter((s) => s.level === level)))
+      .filter(Boolean).join("");
+    return `<details class="avail-others" open><summary>Autres créneaux compatibles (${others.length})</summary>${sections}</details>`;
   }
 
   function availEmptyHtml() {
@@ -28904,15 +30320,13 @@
       }
     } else {
       // Pas de discipline ciblée : panorama « possible » / « indisponible » par discipline.
-      const disciplines = (state.tariffs.disciplines || []).map((d) => d.name).filter(Boolean);
-      if (disciplines.length) {
-        const ok = [], ko = [];
-        disciplines.forEach((disc) => {
-          const st = availDisciplineStatus(disc, day, startMin, endMin);
-          if (st.ok) ok.push(disc); else ko.push({ disc, reasons: st.reasons });
-        });
-        if (ok.length) parts.push(`<div class="avail-detail-sec"><div class="avail-detail-sec-title">Vous pouvez organiser</div><div class="avail-detail-tags">${ok.map((d) => `<span class="avail-detail-tag good">${esc(d)}</span>`).join("")}</div></div>`);
-        if (ko.length) parts.push(`<div class="avail-detail-sec"><div class="avail-detail-sec-title">Indisponible pour l'instant</div><div class="avail-detail-rows">${ko.map((k) => `<div class="avail-detail-row"><span class="avail-detail-row-name">${esc(k.disc)}</span><span class="avail-detail-row-reasons">${k.reasons.map((r) => `<span class="avail-detail-why">${esc(r)}</span>`).join("")}</span></div>`).join("")}</div></div>`);
+      // Extrait dans availSlotActivitySummary (Lot vrai correctif produit) — SOURCE UNIQUE
+      // partagée avec la couleur du créneau (grille, chips, recommandation) : la modale ne
+      // peut donc plus contredire la couleur, les deux lisent exactement le même calcul.
+      const activity = availSlotActivitySummary(f, day, startMin, endMin);
+      if (activity.total) {
+        if (activity.possible.length) parts.push(`<div class="avail-detail-sec"><div class="avail-detail-sec-title">Vous pouvez organiser</div><div class="avail-detail-tags">${activity.possible.map((d) => `<span class="avail-detail-tag good">${esc(d)}</span>`).join("")}</div></div>`);
+        if (activity.unavailable.length) parts.push(`<div class="avail-detail-sec"><div class="avail-detail-sec-title">Indisponible pour l'instant</div><div class="avail-detail-rows">${activity.unavailable.map((k) => `<div class="avail-detail-row"><span class="avail-detail-row-name">${esc(k.name)}</span><span class="avail-detail-row-reasons">${k.reasons.map((r) => `<span class="avail-detail-why">${esc(r)}</span>`).join("")}</span></div>`).join("")}</div></div>`);
       } else {
         const probe = availProbe(day, startMin, endMin);
         const rows = [];

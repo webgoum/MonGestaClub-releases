@@ -325,6 +325,31 @@
   font-family: "Segoe UI Variable", "Segoe UI", Inter, ui-sans-serif, system-ui, sans-serif;
 }
 
+/* Lot Thème — Contraste élevé : fond blanc, texte noir, bordures nettement marquées,
+   aucune texture ni gradient décoratif (cf. audit Thème Accessibilité / Daltonisme).
+   La hiérarchie visuelle passe par --line-strong plutôt que par des ombres portées :
+   --shadow neutralisé pour ne rien faire dépendre d'un effet flottant peu contrasté. */
+:root[data-theme="high-contrast"] {
+  color-scheme: light;
+  --bg: #ffffff;
+  --surface: #ffffff;
+  --surface-2: #f0f0f0;
+  --surface-3: #fafafa;
+  --surface-soft: var(--surface-2);
+  --ink: #000000;
+  --muted: #3d3d3d;
+  --line: #666666;
+  --line-strong: #000000;
+  --accent: #0047ab;
+  --accent-2: #b30000;
+  --accent-3: #8a5a00;
+  --accent-4: #333333;
+  --on-accent: #ffffff;
+  --danger: #b30000;
+  --success: #0a6b2f;
+  --shadow: none;
+}
+
 /* Thèmes sombres : --accent est volontairement CLAIR (texte/lien sur fond sombre).
    Utilisé comme FOND plein (bouton primaire, chip active, badge), le texte doit être
    foncé pour rester lisible. Variable sémantique, pas de rustine par composant. */
@@ -427,6 +452,34 @@ button.icon {
   padding: 0;
   font-size: 18px;
   line-height: 1;
+}
+
+/* Lot Accessibilité — état désactivé fiable sur tous les thèmes : couleurs explicites
+   (pas d'opacité, qui ferait disparaître le bouton en thème sombre plutôt que le rendre
+   simplement inactif) via les variables déjà utilisées pour le texte/fond secondaires.
+   !important nécessaire : plusieurs thèmes (Cuir/Inox, Graphite, Multi-sport) redéfinissent
+   :root[data-theme="..."] button.primary avec une spécificité plus forte (texture/image de
+   fond) qui l'emporterait sinon sur un bouton désactivé portant la classe .primary/.danger. */
+button:disabled,
+button[disabled] {
+  background: var(--surface-2) !important;
+  background-image: none !important;
+  color: var(--muted) !important;
+  border-color: var(--line) !important;
+  cursor: not-allowed !important;
+  box-shadow: none !important;
+  text-shadow: none !important;
+  filter: none !important;
+}
+
+button:disabled:hover,
+button[disabled]:hover,
+button:disabled:active,
+button[disabled]:active {
+  background: var(--surface-2) !important;
+  border-color: var(--line) !important;
+  transform: none !important;
+  filter: none !important;
 }
 
 input,
@@ -1608,6 +1661,9 @@ tfoot td {
 
 .sidebar-toggle {
   flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   width: 38px;
   min-height: 38px;
   padding: 0;
@@ -2273,11 +2329,8 @@ tfoot td {
 .vigilance-card {
   display: flex; flex-direction: column; gap: 6px; text-align: left;
   padding: 14px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface);
-  cursor: pointer; font: inherit; color: inherit;
-  transition: transform 0.08s ease, box-shadow 0.12s ease;
+  font: inherit; color: inherit;
 }
-.vigilance-card:hover { transform: translateY(-1px); box-shadow: var(--shadow); }
-.vigilance-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .vigilance-card-head { display: flex; align-items: center; gap: 8px; }
 .vigilance-card-icon { font-size: 1.25rem; line-height: 1; flex: 0 0 auto; }
 .vigilance-card-icon .mgc-icon { display: block; width: 26px; height: 26px; }
@@ -2290,7 +2343,19 @@ tfoot td {
 .vigilance-card.vigilance-red .vigilance-card-verb { color: color-mix(in srgb, var(--danger) 75%, var(--ink)); }
 .vigilance-card.vigilance-amber .vigilance-card-verb { color: color-mix(in srgb, var(--accent-3) 75%, var(--ink)); }
 .vigilance-card-qualifier { color: var(--muted); font-size: 0.82rem; line-height: 1.2; }
-.vigilance-card-cta { margin-top: auto; font-weight: 700; font-size: 0.86rem; color: var(--accent); }
+.vigilance-card-cta {
+  margin-top: auto; align-self: flex-start;
+  font-weight: 700; font-size: 0.86rem; font-family: inherit; text-align: left;
+  color: var(--accent);
+  /* Petit bouton discret (même logique que .task-postit button dans « À faire ») : chrome léger,
+     laissé volontairement soumis à la cascade des thèmes (Graphite, etc.) pour rester cohérent
+     avec les autres boutons de l'appli plutôt que de ressembler à un lien texte isolé. */
+  padding: 5px 10px; min-height: 0; border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--surface) 55%, transparent);
+  border: 1px solid color-mix(in srgb, var(--line) 65%, transparent);
+  cursor: pointer;
+}
+.vigilance-card-cta:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .vigilance-card.vigilance-red { border-color: color-mix(in srgb, var(--danger) 45%, var(--line)); background: color-mix(in srgb, var(--danger) 8%, var(--surface)); }
 .vigilance-card.vigilance-red .vigilance-card-cta { color: color-mix(in srgb, var(--danger) 70%, var(--ink)); }
 .vigilance-card.vigilance-amber { border-color: color-mix(in srgb, var(--accent-3) 48%, var(--line)); background: color-mix(in srgb, var(--accent-3) 9%, var(--surface)); }
@@ -2644,12 +2709,12 @@ tfoot td {
   place-items: center;
   border-radius: 8px;
   background: var(--accent);
-  color: var(--accent-contrast);
+  color: var(--on-accent);
   font-weight: 850;
 }
 
 .membership-letter-title strong {
-  color: var(--muted);
+  color: var(--ink);
   font-size: 0.78rem;
   text-transform: uppercase;
 }
@@ -3051,8 +3116,14 @@ tfoot td {
   padding: 0 7px;
 }
 
+/* Lettres cliquables (contacts existants) : couleur de texte principale pour rester lisibles sur
+   fond sombre. Les lettres sans contact (span, ci-dessus) restent volontairement estompées. */
+.membership-alpha-tabs button:not(.active) {
+  color: var(--ink);
+}
+
 .membership-alpha-tabs button.active {
-  color: var(--accent-contrast);
+  color: var(--on-accent);
   background: var(--accent);
 }
 
@@ -4479,7 +4550,7 @@ input[type="number"]::-webkit-outer-spin-button {
   border: 1px solid var(--surface);
   border-radius: 999px;
   background: var(--accent);
-  color: var(--accent-contrast);
+  color: var(--on-accent);
   font-size: 0.62rem;
   font-weight: 900;
   line-height: 1;
@@ -4880,6 +4951,11 @@ input[type="number"]::-webkit-outer-spin-button {
   gap: 10px;
 }
 
+.registration-total-grid div {
+  display: grid;
+  gap: 4px;
+}
+
 .registration-total-grid span {
   color: var(--muted);
   font-size: 0.75rem;
@@ -5164,6 +5240,13 @@ input.locked-price {
 .kpi.kpi-alert strong { color: #a13b32; }
 .kpi.kpi-warn strong { color: #9a5a16; }
 .doc-table th, .doc-table td { white-space: nowrap; }
+/* État vide dans une cellule de tableau (bloc d'aide "Pourquoi ?" : Documents, Présences, Stock,
+   Factures...) : la règle globale `th, td { white-space: nowrap }` est sinon héritée par ce bloc,
+   qui déborde horizontalement au lieu de revenir à la ligne dans son cadre. Ciblé sur la classe
+   du bloc lui-même (jamais présente dans une cellule de données normale) : ne touche aucune
+   cellule de données ni le nowrap voulu ailleurs, quelle que soit la table qui l'accueille. */
+td .assistant-empty,
+td .assistant-empty * { white-space: normal; }
 
 /* ===== Planning ===== */
 /* Barre de navigation des semaines (Phase A) */
@@ -5448,7 +5531,7 @@ input.locked-price {
 .avail-overview { padding: 12px 16px 16px; display: flex; flex-direction: column; gap: 12px; }
 .avail-legend { display: flex; flex-wrap: wrap; gap: 14px; align-items: center; }
 .avail-legend-item { display: inline-flex; align-items: center; gap: 6px; font-size: 0.82rem; color: var(--muted); font-weight: 600; }
-.avail-swatch { width: 14px; height: 14px; border-radius: 4px; }
+.avail-swatch { width: 14px; height: 14px; border-radius: 4px; border: 1px solid transparent; }
 .avail-grid { display: grid; grid-template-columns: auto repeat(7, minmax(30px, 1fr)); gap: 4px; align-items: stretch; }
 .avail-grid-head { text-align: center; font-weight: 800; font-size: 0.76rem; color: var(--muted); padding: 2px 0; align-self: center; }
 .avail-grid-corner { min-width: 38px; }
@@ -5465,10 +5548,15 @@ input.locked-price {
 .avail-cell-dot { width: 6px; height: 6px; border-radius: 999px; background: currentColor; opacity: 0.85; }
 .avail-legend-dot .avail-cell-dot { color: var(--muted); }
 /* 4 niveaux : vert / jaune / orange / rouge — bien plus saturés qu'avant, tokens du thème */
-.avail-cell.lvl-free, .avail-swatch.lvl-free { background-color: color-mix(in srgb, var(--avail-good) 50%, var(--surface)) !important; background-image: none !important; border-color: color-mix(in srgb, var(--avail-good) 64%, var(--line)) !important; color: color-mix(in srgb, var(--avail-good) 42%, var(--ink)) !important; }
-.avail-cell.lvl-some, .avail-swatch.lvl-some { background-color: color-mix(in srgb, var(--avail-mid) 54%, var(--surface)) !important; background-image: none !important; border-color: color-mix(in srgb, var(--avail-mid) 66%, var(--line)) !important; color: color-mix(in srgb, var(--avail-mid) 40%, var(--ink)) !important; }
-.avail-cell.lvl-tight, .avail-swatch.lvl-tight { background-color: color-mix(in srgb, var(--avail-low) 52%, var(--surface)) !important; background-image: none !important; border-color: color-mix(in srgb, var(--avail-low) 64%, var(--line)) !important; color: color-mix(in srgb, var(--avail-low) 40%, var(--ink)) !important; }
-.avail-cell.lvl-full, .avail-swatch.lvl-full { background-color: color-mix(in srgb, var(--avail-full) 48%, var(--surface)) !important; background-image: none !important; border-color: color-mix(in srgb, var(--avail-full) 62%, var(--line)) !important; color: color-mix(in srgb, var(--avail-full) 42%, var(--ink)) !important; }
+/* Lot Daltonisme — repère non-couleur en plus de la teinte : densité de hachures croissante
+   (absent → discret → visible → dense) et bordure tiret pour "tight", afin qu'un profil
+   daltonien puisse distinguer les niveaux au balayage visuel, sans dépendre du hover/title
+   déjà présents. Motifs en color-mix() sur la couleur du niveau lui-même (pas de nouvelle
+   variable), donc cohérents avec chaque thème, y compris sombres et "Contraste élevé". */
+.avail-cell.lvl-free, .avail-swatch.lvl-free { background-color: color-mix(in srgb, var(--avail-good) 50%, var(--surface)) !important; background-image: none !important; border-color: color-mix(in srgb, var(--avail-good) 64%, var(--line)) !important; border-style: solid !important; color: color-mix(in srgb, var(--avail-good) 42%, var(--ink)) !important; }
+.avail-cell.lvl-some, .avail-swatch.lvl-some { background-color: color-mix(in srgb, var(--avail-mid) 54%, var(--surface)) !important; background-image: repeating-linear-gradient(135deg, color-mix(in srgb, var(--avail-mid) 38%, transparent) 0 1px, transparent 1px 6px) !important; border-color: color-mix(in srgb, var(--avail-mid) 66%, var(--line)) !important; border-style: solid !important; color: color-mix(in srgb, var(--avail-mid) 40%, var(--ink)) !important; }
+.avail-cell.lvl-tight, .avail-swatch.lvl-tight { background-color: color-mix(in srgb, var(--avail-low) 52%, var(--surface)) !important; background-image: repeating-linear-gradient(135deg, color-mix(in srgb, var(--avail-low) 42%, transparent) 0 2px, transparent 2px 5px) !important; border-color: color-mix(in srgb, var(--avail-low) 64%, var(--line)) !important; border-style: dashed !important; color: color-mix(in srgb, var(--avail-low) 40%, var(--ink)) !important; }
+.avail-cell.lvl-full, .avail-swatch.lvl-full { background-color: color-mix(in srgb, var(--avail-full) 48%, var(--surface)) !important; background-image: repeating-linear-gradient(135deg, color-mix(in srgb, var(--avail-full) 46%, transparent) 0 3px, transparent 3px 4px) !important; border-color: color-mix(in srgb, var(--avail-full) 62%, var(--line)) !important; border-style: solid !important; color: color-mix(in srgb, var(--avail-full) 42%, var(--ink)) !important; }
 .assistant-empty-cta-row { display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; }
 @media (max-width: 640px) {
   .avail-grid { grid-template-columns: auto repeat(7, minmax(24px, 1fr)); gap: 3px; }
@@ -5497,12 +5585,14 @@ input.locked-price {
 .form-check-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 8px; margin: 8px 0; }
 .form-check { display: flex; align-items: center; gap: 8px; font-weight: 600; }
 .form-check input { width: auto; }
-/* Dossier sportif : .form-grid/.form-check ont un display explicite qui prime sur [hidden] ;
-   ces règles garantissent que les champs parental/responsable légal disparaissent vraiment
-   quand l'adhérent est majeur (bascule enfant/adulte au changement de contact). */
+/* Dossier sportif / fiche contact : .form-grid/.form-check ont un display explicite qui prime
+   sur [hidden] ; ces règles garantissent que les champs parental/responsable légal disparaissent
+   vraiment quand l'adhérent est majeur (bascule enfant/adulte au changement de contact ou de
+   date de naissance). data-contact-parental = case "Autorisation parentale" de la fiche contact. */
 [data-dossier-guardian][hidden],
 [data-dossier-parental][hidden],
-[data-dossier-adult-note][hidden] { display: none; }
+[data-dossier-adult-note][hidden],
+[data-contact-parental][hidden] { display: none; }
 /* Lien inline (ex. « Tarifs ») : toujours un vrai lien souligné, jamais un bouton encadré,
    quel que soit le thème (sinon le mot se retrouve serré dans une boîte de 36px sans marge). */
 .link-button {
@@ -6996,6 +7086,103 @@ small.email-variable-chip:hover {
   .welcome-choice-grid {
     grid-template-columns: 1fr;
   }
+}
+
+/* Écran de choix « Créer / Démo » enrichi (présentation produit). Réutilise .welcome-card. */
+.welcome-card-intro {
+  width: min(640px, 100%);
+}
+
+.welcome-headline {
+  display: grid;
+  gap: 8px;
+  text-align: center;
+}
+
+.welcome-subtitle {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.5;
+  font-size: 0.92rem;
+}
+
+.welcome-benefits {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.welcome-benefits li {
+  position: relative;
+  padding-left: 22px;
+  color: var(--ink);
+  font-size: 0.9rem;
+  line-height: 1.45;
+}
+
+.welcome-benefits li::before {
+  content: "";
+  position: absolute;
+  left: 4px;
+  top: 0.5em;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.welcome-modules {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  justify-content: center;
+}
+
+.welcome-module-chip {
+  padding: 4px 11px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.welcome-demo-note {
+  display: grid;
+  gap: 5px;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--accent) 6%, var(--surface-2));
+}
+
+.welcome-demo-note strong {
+  color: var(--ink);
+  font-size: 0.9rem;
+}
+
+.welcome-demo-note p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.85rem;
+  line-height: 1.45;
+}
+
+.welcome-demo-try {
+  font-style: italic;
+}
+
+.welcome-reassurance {
+  margin: 0;
+  text-align: center;
+  color: var(--muted);
+  font-size: 0.8rem;
 }
 
 .password-card label {
@@ -9188,7 +9375,10 @@ summary {
 .assistant-tour-next-title { font-weight: 600; margin: 0 0 8px; }
 .assistant-tour-next-list { display: flex; flex-wrap: wrap; gap: 8px; }
 /* En savoir plus (lien vers l'aide). */
-.assistant-learn-more { display: inline-block; margin-top: 8px; background: transparent; border: none; color: var(--accent); cursor: pointer; padding: 0; font-size: 13px; text-decoration: underline; }
+/* Blocs "Pourquoi ?" — padding interne ajouté (était 0) : le texte touchait les bords du
+   bouton, cible tactile trop serrée. Classe dédiée (jamais réutilisée pour un bouton principal),
+   donc sans impact sur "Nouvelle salle"/"PDF"/"CSV"/etc. Reste un lien discret (pas de bordure). */
+.assistant-learn-more { display: inline-block; margin-top: 8px; background: transparent; border: none; color: var(--accent); cursor: pointer; padding: 4px 8px; margin-left: -8px; font-size: 13px; text-decoration: underline; }
 .assistant-why-actions { margin-top: 4px; }
 
 /* Carte « Aujourd'hui » (accueil). */
@@ -9785,7 +9975,7 @@ summary {
 .club-wizard-steps button.active {
   background: var(--accent);
   border-color: var(--accent);
-  color: var(--accent-contrast);
+  color: var(--on-accent);
 }
 
 .club-wizard-actions {
@@ -10282,6 +10472,29 @@ input[type="checkbox"]:focus-visible {
   justify-content: flex-start;
 }
 
+.invoice-credit-note-section {
+  grid-column: 1 / -1;
+}
+.invoice-credit-note-section h4 {
+  margin: 0 0 8px;
+}
+.credit-note-use-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+}
+.credit-note-use-row:last-child {
+  border-bottom: none;
+}
+.credit-note-use-info {
+  font-weight: 500;
+}
+.credit-note-use-row--disabled .credit-note-use-info {
+  opacity: 0.6;
+}
 .invoice-payment-form {
   grid-column: 1 / -1;
   display: grid;
