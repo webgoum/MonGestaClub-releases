@@ -5302,6 +5302,7 @@ td .assistant-empty * { white-space: normal; }
 .course-time { font-weight: 800; min-width: 92px; }
 .course-info { flex: 1 1 220px; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
 .course-info span, .course-info .course-enrollment-btn { font-size: 0.82rem; overflow-wrap: anywhere; }
+.course-info .course-enrollment-btn { align-self: flex-start; margin-top: 2px; }
 .course-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
 .planning-week { display: grid; grid-template-columns: repeat(7, 1fr); gap: 8px; padding: 0 16px 12px; align-items: start; }
 .planning-week-col { min-width: 0; display: flex; flex-direction: column; gap: 7px; }
@@ -5322,26 +5323,39 @@ td .assistant-empty * { white-space: normal; }
 .pws-line { display: flex; align-items: flex-start; justify-content: space-between; gap: 5px; }
 .pws-title { flex: 1 1 auto; min-width: 0; font-weight: 600; line-height: 1.3; }
 .pws-meta { display: flex; flex-direction: column; gap: 1px; }
-.pws-meta span, .pws-meta .course-enrollment-btn { opacity: 0.74; line-height: 1.3; }
+.pws-meta span { opacity: 0.74; line-height: 1.3; }
+.pws-meta .course-enrollment-btn { margin-top: 2px; align-self: flex-start; }
 .pws-badges { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; margin-top: 1px; }
 .pws-note { font-style: italic; opacity: 0.8; line-height: 1.3; }
-/* Indicateur d'effectif cliquable (cartes planning, vues Semaine et Liste) : même rendu
-   discret que le texte "muted" environnant, juste rendu interactif (curseur, soulignement
-   au survol/focus). all:unset retire l'apparence native du <button>, mais les règles de
-   thème (ex. ":root[data-theme=...] button", bordure/fond "papier") sont plus spécifiques
-   qu'une simple classe : !important nécessaire sur ces propriétés précises pour rester du
-   texte discret dans tous les thèmes. */
+/* Indicateur d'effectif cliquable (cartes planning, vues Semaine et Liste) : petit badge
+   discret (même famille visuelle que .avail-day-chip) plutôt qu'un texte simple, pour que
+   l'action "voir les inscrits" soit identifiable sans deviner. all:unset retire l'apparence
+   native du <button> ; les règles de thème (ex. ":root[data-theme=...] button", bordure/fond
+   "papier") sont plus spécifiques qu'une simple classe : !important nécessaire sur ces
+   propriétés précises pour garder EXACTEMENT le badge voulu dans tous les thèmes. */
 .course-enrollment-btn {
   all: unset;
   cursor: pointer;
-  text-align: left;
-  border: none !important;
-  background: transparent !important;
-  border-radius: 0 !important;
-  padding: 0 !important;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  font: inherit;
+  line-height: 1.3;
+  color: var(--muted) !important;
+  border: 1px solid var(--line) !important;
+  border-radius: var(--radius-sm, 7px) !important;
+  background: var(--surface-soft, var(--surface)) !important;
+  padding: 2px 7px !important;
   min-height: auto !important;
+  transition: border-color 0.14s ease, background 0.14s ease, color 0.14s ease;
 }
-.course-enrollment-btn:hover, .course-enrollment-btn:focus-visible { text-decoration: underline; }
+.course-enrollment-btn::after { content: "\203a"; opacity: 0.7; }
+.course-enrollment-btn:hover, .course-enrollment-btn:focus-visible {
+  border-color: var(--line-strong) !important;
+  background: var(--surface) !important;
+  color: var(--ink) !important;
+}
+.course-enrollment-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 /* Exceptions par date (Phase C1) : séance annulée / note ce jour */
 .course-line.course-cancelled .course-time,
 .course-line.course-cancelled .course-info strong { text-decoration: line-through; }
