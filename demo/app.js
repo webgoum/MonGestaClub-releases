@@ -15275,7 +15275,9 @@
       </div>
       ${empty}
       ${contactMinorGuardianHtml(contact, kind)}
-      ${contactRecapSection("Disciplines", memberships, contactRecapMembership)}
+      ${contactRecapSection("Disciplines", memberships, contactRecapMembership, "", contact.id && kind === "members" && isViewVisible("disciplines")
+        ? `<button type="button" data-action="add-contact-membership" data-contact-link="${esc(`${kind === "members" ? "member" : "prospect"}:${contact.id}`)}" title="Ajouter une nouvelle inscription discipline/groupe pour ce contact">+ discipline</button>`
+        : "")}
       ${contactRecapSection("Boutique", orders, contactRecapOrder, isModuleEnabled("boutique") ? "" : "Module désactivé — historique conservé. Réactivez le module pour ajouter de nouvelles données.")}
       ${contactRecapSection("Stages", registrations, contactRecapRegistration, isModuleEnabled("stages") ? "" : "Module désactivé — historique conservé. Réactivez le module pour ajouter de nouvelles données.")}
       ${invoiceRows.length ? `<section class="contact-recap-section">
@@ -15291,10 +15293,10 @@
     </div>`;
   }
 
-  function contactRecapSection(title, entries, renderer, note = "") {
+  function contactRecapSection(title, entries, renderer, note = "", headerExtra = "") {
     if (!entries.length) return "";
     return `<section class="contact-recap-section">
-      <h4>${esc(title)}</h4>
+      ${headerExtra ? `<div class="dialog-mini-title"><h4>${esc(title)}</h4>${headerExtra}</div>` : `<h4>${esc(title)}</h4>`}
       ${note ? `<p class="muted">${esc(note)}</p>` : ""}
       <div class="contact-recap-list">${entries.map(renderer).join("")}</div>
     </section>`;
@@ -15324,9 +15326,15 @@
       row.insuranceChoice ? `Assurance ${membershipInsurancePrice(row) ? money(membershipInsurancePrice(row)) : ""}` : "",
       row.medicalCertificate ? "Certificat OK" : "Certificat non renseigné",
     ].filter(Boolean).join(" · ");
-    return `<article class="contact-recap-row">
+    // Un contact peut avoir plusieurs inscriptions (memberships) : le groupe est affiché à côté
+    // de la discipline pour que la fiche distingue clairement chaque inscription (ex. "Judo —
+    // Judo enfants" vs "Self-défense — Self-défense ados"), sans quoi deux inscriptions à la
+    // même discipline mais des groupes différents seraient indiscernables.
+    const group = getGroupById(row.groupId);
+    const titleText = [row.discipline || "Discipline non renseignée", group?.name || ""].filter(Boolean).join(" — ");
+    return `<article class="contact-recap-row clickable-card" data-action="edit-membership" data-id="${esc(row.id)}" title="Ouvrir cette inscription">
       <div class="contact-recap-main">
-        <strong>${esc(row.discipline || "Discipline non renseignée")}</strong>
+        <strong>${esc(titleText)}</strong>
         <span>${esc(subtitle || "Inscription discipline")}</span>
       </div>
       ${contactRecapStatus(entry.calc)}
@@ -17232,6 +17240,15 @@
           : `${personLabel(next)} est enregistré en non-adhérent`;
       }
       next.contactId = syncMemberContact(next, row);
+      // Un même adhérent ne doit pas cumuler deux inscriptions dont les cours hebdomadaires se
+      // chevauchent le même jour (ex. Judo enfants + Self-défense au même horaire) : blocage à
+      // l'enregistrement, avant toute écriture dans state.memberships. row.id exclut l'inscription
+      // en cours d'édition (ne jamais se bloquer elle-même).
+      const scheduleConflictMessage = memberScheduleConflictMessage(next.contactId, next.groupId, row.id);
+      if (scheduleConflictMessage) {
+        alert(scheduleConflictMessage);
+        return false;
+      }
       const promoted = contactLink.kind === "prospect" && promoteProspectContactToMember(contactLink.contactId, next.contactId);
       upsert(state.memberships, next);
       return promoted ? {
@@ -22335,6 +22352,14 @@
     }
     if (action === "add-membership") return openMembershipDialog();
     if (action === "edit-membership") return openMembershipDialog(state.memberships.find((row) => row.id === button.dataset.id));
+    // Depuis la fiche contact : ajoute toujours une NOUVELLE inscription (jamais celle déjà
+    // ouverte via le raccourci "Disciplines", qui ne réaffiche que la première trouvée) — permet
+    // à un même contact d'avoir plusieurs disciplines/groupes sans passer par la liste globale.
+    if (action === "add-contact-membership") {
+      const contact = contactByLink(button.dataset.contactLink);
+      if (!contact) return;
+      return openMembershipDialog(registrationSeedFromContact(contact, button.dataset.contactLink));
+    }
     // ---- Modules sport : Groupes / Planning / Présences / Documents ----
     if (action === "add-group") return openGroupDialog();
     if (action === "edit-group") return openGroupDialog(getGroupById(button.dataset.id));
@@ -24533,6 +24558,53 @@
     return (state.planningCourses || []).some((other) =>
       other.id !== course.id && !other.archived && other.groupId === groupId &&
       asText(other.day) === asText(course.day) && asText(course.day) && coursesShareAnyOccurrence(course, other) && coursesOverlap(course, other));
+  }
+
+  // Brique « conflit de planning pour un même adhérent » — un contact ne doit pas cumuler deux
+  // inscriptions actives (discipline + groupe renseignés) dont les cours hebdomadaires se
+  // chevauchent le même jour (ex. Judo enfants mercredi 14h-15h30 + Self-défense mercredi
+  // 14h30-15h30). Réutilise EXACTEMENT les mêmes briques que groupCourseConflict/coachCourseConflict
+  // /roomCourseConflict (coursesOverlap + coursesShareAnyOccurrence) plutôt que d'inventer une
+  // nouvelle logique de chevauchement. Une membership sans groupId (non-adhérent/prospect) ou un
+  // groupe sans cours n'a rien à comparer -> jamais de conflit dans ces cas. La membership en cours
+  // d'édition (excludeMembershipId) est exclue pour ne jamais se bloquer elle-même.
+  function memberScheduleConflicts(contactId, groupId, excludeMembershipId) {
+    if (!asText(contactId) || !groupId) return [];
+    const candidateCourses = (state.planningCourses || []).filter((c) => c.groupId === groupId && !c.archived);
+    if (!candidateCourses.length) return [];
+    const conflicts = [];
+    (state.memberships || [])
+      .filter((m) => m.id !== excludeMembershipId && asText(m.contactId) === asText(contactId) && asText(m.discipline) && asText(m.groupId))
+      .forEach((other) => {
+        const otherCourses = (state.planningCourses || []).filter((c) => c.groupId === other.groupId && !c.archived);
+        otherCourses.forEach((otherCourse) => {
+          candidateCourses.forEach((candidateCourse) => {
+            if (!asText(candidateCourse.day) || asText(otherCourse.day) !== asText(candidateCourse.day)) return;
+            if (!coursesShareAnyOccurrence(candidateCourse, otherCourse)) return;
+            if (!coursesOverlap(candidateCourse, otherCourse)) return;
+            conflicts.push({ membership: other, course: otherCourse });
+          });
+        });
+      });
+    return conflicts;
+  }
+
+  // Message clair, prêt à afficher, ou "" si aucun conflit. Un même cours en conflit n'est cité
+  // qu'une fois même s'il chevauche plusieurs créneaux du groupe candidat.
+  function memberScheduleConflictMessage(contactId, groupId, excludeMembershipId) {
+    const conflicts = memberScheduleConflicts(contactId, groupId, excludeMembershipId);
+    if (!conflicts.length) return "";
+    const seen = new Set();
+    const lines = [];
+    conflicts.forEach(({ membership, course }) => {
+      if (seen.has(course.id)) return;
+      seen.add(course.id);
+      const group = getGroupById(course.groupId);
+      const name = group?.name || membership.discipline || "un autre cours";
+      lines.push(`"${name}", qui a cours le ${asText(course.day).toLowerCase()} de ${course.startTime} à ${course.endTime}`);
+    });
+    if (lines.length === 1) return `Inscription impossible : cet adhérent est déjà inscrit à ${lines[0]}.`;
+    return `Inscription impossible : cet adhérent est déjà inscrit à des cours en conflit d'horaire :\n- ${lines.join("\n- ")}`;
   }
 
   // C2c-a : conflits PAR DATE pour l'affichage du planning. On compare l'occurrence RÉSOLUE
