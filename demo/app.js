@@ -25452,7 +25452,14 @@
     const members = getMembersByGroup(group.id);
     const rows = members.map((m) => {
       const contactLine = [m.mobile || m.phone, m.email].filter((v) => asText(v)).map(esc).join(" · ");
-      return `<li><strong>${esc(personLabel(m))}</strong>${contactLine ? `<br><span class="muted">${contactLine}</span>` : ""}</li>`;
+      // Nom cliquable vers la fiche contact quand contactForMembership() (helper existant,
+      // déjà utilisé pour le dossier sportif) le retrouve de façon fiable ; sinon texte simple,
+      // jamais de correspondance approximative inventée ici.
+      const contact = typeof contactForMembership === "function" ? contactForMembership(m) : null;
+      const nameHtml = contact && contact.id
+        ? `<button type="button" class="contact-link-btn" data-action="edit-contact" data-kind="members" data-id="${esc(contact.id)}" title="Ouvrir la fiche contact">${esc(personLabel(m))}</button>`
+        : `<strong>${esc(personLabel(m))}</strong>`;
+      return `<li>${nameHtml}${contactLine ? `<br><span class="muted">${contactLine}</span>` : ""}</li>`;
     }).join("");
     const body = `
       <p><strong>${esc(course.name)}</strong>${dayLabel || timeLabel ? `<br><span class="muted">${[dayLabel, timeLabel].filter(Boolean).join(" · ")}</span>` : ""}</p>

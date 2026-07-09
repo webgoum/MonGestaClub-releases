@@ -5356,6 +5356,20 @@ td .assistant-empty * { white-space: normal; }
   color: var(--ink) !important;
 }
 .course-enrollment-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+/* Nom cliquable vers la fiche contact dans "Inscrits à la séance" : garde le poids visuel d'un
+   <strong> (même famille que le reste de la liste), juste avec un indice d'interactivité discret
+   au survol/focus plutôt qu'un badge (la ligne reste lisible, pas de gros bouton). */
+.contact-link-btn {
+  all: unset;
+  cursor: pointer;
+  font-weight: 700;
+  color: var(--ink) !important;
+  border: none !important;
+  background: transparent !important;
+  padding: 0 !important;
+}
+.contact-link-btn:hover, .contact-link-btn:focus-visible { color: var(--accent) !important; text-decoration: underline; }
+.contact-link-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 /* Exceptions par date (Phase C1) : séance annulée / note ce jour */
 .course-line.course-cancelled .course-time,
 .course-line.course-cancelled .course-info strong { text-decoration: line-through; }
