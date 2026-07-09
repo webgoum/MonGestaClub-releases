@@ -5671,9 +5671,11 @@ td .assistant-empty * { white-space: normal; }
 .newsletter-picker > .muted { flex: 0 0 100%; margin: 0 0 2px; }
 .newsletter-picker .form-check { margin: 0; }
 .newsletter-missing { margin-top: 10px; padding-top: 8px; border-top: 1px dashed var(--line); font-size: 0.85em; line-height: 1.45; }
-/* Boutons e-mail (cartes + pieds de dialogue) : icônes en trait monochromes, alignées au texte */
-button[data-action="email-coach"], button[data-action="email-room"] { display: inline-flex; align-items: center; gap: 6px; }
-button[data-action="email-coach"] .tool-icon, button[data-action="email-room"] .tool-icon { width: 14px; height: 14px; flex: 0 0 auto; }
+/* Boutons e-mail (cartes + pieds de dialogue) : icônes en trait monochromes, alignées au texte.
+   email-coach-replacement (bouton "Remplacement" du dialogue Coach à remplacer) suit la même
+   règle : sans elle, .tool-icon (display:block par défaut) passe au-dessus du libellé. */
+button[data-action="email-coach"], button[data-action="email-room"], button[data-action="email-coach-replacement"] { display: inline-flex; align-items: center; gap: 6px; }
+button[data-action="email-coach"] .tool-icon, button[data-action="email-room"] .tool-icon, button[data-action="email-coach-replacement"] .tool-icon { width: 14px; height: 14px; flex: 0 0 auto; }
 /* Sur les cartes : actions secondaires, plus légères que Modifier/Archiver, même rayon que le reste */
 .card-email-actions { display: flex; flex-wrap: wrap; gap: 6px; margin: 12px 0 2px; }
 .card-email-actions button { font-size: 0.78rem; padding: 5px 11px; line-height: 1.2; border-radius: var(--radius); border: 1px solid var(--line); background: transparent; color: var(--muted); cursor: pointer; }
