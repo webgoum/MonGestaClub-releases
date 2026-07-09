@@ -22474,8 +22474,20 @@
       prepareEntityEmail({ coachId: button.dataset.id, templateKey: button.dataset.template, courseId: button.dataset.courseId, periodStart: button.dataset.ps, periodEnd: button.dataset.pe, statut: button.dataset.statut });
       return;
     }
+    if (action === "email-coach-replacement") {
+      // Contrairement à email-coach, aucun data-id figé : le destinataire est le coach
+      // actuellement choisi dans le <select name="replacementCoachId"> du dialogue "Coach à
+      // remplacer", lu au moment du clic (jamais le coach original indisponible, jamais une
+      // sélection périmée si l'utilisateur a changé d'avis avant de cliquer).
+      const dialog = button.closest("dialog");
+      const select = dialog ? dialog.querySelector('select[name="replacementCoachId"]') : null;
+      const coachId = asText(select && select.value);
+      if (!coachId) { alert("Choisis d'abord un coach remplaçant."); return; }
+      prepareEntityEmail({ coachId, templateKey: button.dataset.template, courseId: button.dataset.courseId, periodStart: button.dataset.ps, periodEnd: button.dataset.pe, statut: button.dataset.statut });
+      return;
+    }
     if (action === "email-room") {
-      prepareEntityEmail({ roomId: button.dataset.id, templateKey: button.dataset.template, courseId: button.dataset.courseId, periodStart: button.dataset.ps, statut: button.dataset.statut });
+      prepareEntityEmail({ roomId: button.dataset.id, templateKey: button.dataset.template, courseId: button.dataset.courseId, periodStart: button.dataset.ps, periodEnd: button.dataset.pe, statut: button.dataset.statut });
       return;
     }
     if (action === "course-conflict-detail") {
@@ -26393,8 +26405,18 @@
       </select></label>`,
     ].join("");
     const originalCoachId = original ? original.id : course.coachId;
-    const footer = (originalCoachId && cEmail) ? `<button type="button" data-action="email-coach" data-id="${esc(originalCoachId)}" data-template="coachSimple" data-course-id="${esc(courseId)}" data-ps="${esc(periodStart)}" data-pe="${esc(periodEnd)}" data-statut="Coach à remplacer" title="Préparer un e-mail au coach concerné">${actionMailIcon()} Coach</button>
-      <button type="button" data-action="email-coach" data-id="${esc(originalCoachId)}" data-template="coachReplacement" data-course-id="${esc(courseId)}" data-ps="${esc(periodStart)}" data-pe="${esc(periodEnd)}" data-statut="Coach à remplacer" title="Préparer une demande de remplacement">${actionSwapIcon()} Remplacement</button>` : "";
+    // Bouton "Coach" (email-coach + data-id figé) : contacte TOUJOURS le coach original
+    // indisponible — c'est son rôle, inchangé.
+    // Bouton "Remplacement" (email-coach-replacement, SANS data-id) : le destinataire n'est
+    // connu qu'au moment du clic, en lisant le <select name="replacementCoachId"> du dialogue
+    // (jamais une valeur figée au rendu, donc jamais désynchronisé si l'utilisateur change son
+    // choix). Masqué si candidates.length === 0 : sans remplaçant disponible, il n'y a personne
+    // de valide à qui adresser une demande de remplacement (avant ce correctif, les deux boutons
+    // partageaient data-id="${originalCoachId}", envoyant la demande au coach absent lui-même).
+    const footer = [
+      (originalCoachId && cEmail) ? `<button type="button" data-action="email-coach" data-id="${esc(originalCoachId)}" data-template="coachSimple" data-course-id="${esc(courseId)}" data-ps="${esc(periodStart)}" data-pe="${esc(periodEnd)}" data-statut="Coach à remplacer" title="Préparer un e-mail au coach concerné">${actionMailIcon()} Coach</button>` : "",
+      candidates.length ? `<button type="button" data-action="email-coach-replacement" data-template="coachReplacement" data-course-id="${esc(courseId)}" data-ps="${esc(periodStart)}" data-pe="${esc(periodEnd)}" data-statut="Coach à remplacer" title="Préparer une demande de remplacement au coach sélectionné ci-dessus">${actionSwapIcon()} Remplacement</button>` : "",
+    ].filter(Boolean).join(" ");
     showDialog("Coach à remplacer", body, (data) => {
       const choice = data.get("decision") || (candidates.length ? "replace" : "cancel");
       const originalId = original ? original.id : course.coachId;
@@ -26919,8 +26941,8 @@
       </select></label>`,
     ].join("");
     const originalRoomId = original ? original.id : course.roomId;
-    const footer = (originalRoomId && rEmail) ? `<button type="button" data-action="email-room" data-id="${esc(originalRoomId)}" data-template="roomSimple" data-course-id="${esc(courseId)}" data-ps="${esc(periodStart)}" data-statut="Salle à remplacer" title="Préparer un e-mail au responsable">${actionMailIcon()} Responsable</button>
-      <button type="button" data-action="email-room" data-id="${esc(originalRoomId)}" data-template="roomChange" data-course-id="${esc(courseId)}" data-ps="${esc(periodStart)}" data-statut="Salle à remplacer" title="Prévenir d'une modification / annulation">${actionWarnIcon()} Prévenir</button>` : "";
+    const footer = (originalRoomId && rEmail) ? `<button type="button" data-action="email-room" data-id="${esc(originalRoomId)}" data-template="roomSimple" data-course-id="${esc(courseId)}" data-ps="${esc(periodStart)}" data-pe="${esc(periodEnd)}" data-statut="Salle à remplacer" title="Préparer un e-mail au responsable">${actionMailIcon()} Responsable</button>
+      <button type="button" data-action="email-room" data-id="${esc(originalRoomId)}" data-template="roomChange" data-course-id="${esc(courseId)}" data-ps="${esc(periodStart)}" data-pe="${esc(periodEnd)}" data-statut="Salle à remplacer" title="Prévenir d'une modification / annulation">${actionWarnIcon()} Prévenir</button>` : "";
     showDialog("Salle à remplacer", body, (data) => {
       const choice = data.get("decision") || (candidates.length ? "replace" : "cancel");
       const originalId = original ? original.id : course.roomId;
