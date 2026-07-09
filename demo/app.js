@@ -22742,6 +22742,7 @@
     if (action === "add-course") return openCourseDialog();
     if (action === "edit-course") return openCourseDialog(getCourseById(button.dataset.id), button.dataset.date || "");
     if (action === "manage-course-date") return openCourseDateDialog(button.dataset.id, button.dataset.date);
+    if (action === "show-course-enrollment") return openCourseEnrollmentDialog(button.dataset.courseId, button.dataset.date);
     if (action === "delete-course") {
       if (!await requestConfirm({ title: "Supprimer le créneau", message: "Supprimer ce créneau du planning ?", confirmLabel: "Supprimer", danger: true })) return;
       recordHistory(); removeById(state.planningCourses, button.dataset.id); persist("Créneau supprimé"); render();
@@ -25435,6 +25436,41 @@
     return capacity !== null ? `${enrolled} / ${capacity} inscrit${plural}` : `${enrolled} inscrit${plural}`;
   }
 
+  // Fiche "Inscrits à la séance" : liste les membres du groupe lié au cours (mêmes personnes que
+  // celles comptées par courseEnrollmentLabel — aucune notion de présence/occurrence individuelle
+  // inventée ici, seulement les adhésions actives du groupe). Dialogue en lecture seule
+  // (showInfoDialog, pas showDialog) : consulter cette liste ne doit ni journaliser un point
+  // d'historique (Undo/Redo) ni afficher un faux message de sauvegarde.
+  function openCourseEnrollmentDialog(courseId, dateInput = "") {
+    const course = getCourseById(courseId);
+    if (!course) { alert("Créneau introuvable."); return; }
+    const group = getGroupById(course.groupId);
+    if (!group) { alert("Ce créneau n'est lié à aucun groupe."); return; }
+    const shown = dateInput ? resolveCourseForDate(course, dateInput) : course;
+    const dayLabel = [asText(course.day), dateInput ? dateDisplay(dateInput) : ""].filter(Boolean).join(" ");
+    const timeLabel = [shown.startTime, shown.endTime].filter(Boolean).join("–");
+    const members = getMembersByGroup(group.id);
+    const rows = members.map((m) => {
+      const contactLine = [m.mobile || m.phone, m.email].filter((v) => asText(v)).map(esc).join(" · ");
+      return `<li><strong>${esc(personLabel(m))}</strong>${contactLine ? `<br><span class="muted">${contactLine}</span>` : ""}</li>`;
+    }).join("");
+    const body = `
+      <p><strong>${esc(course.name)}</strong>${dayLabel || timeLabel ? `<br><span class="muted">${[dayLabel, timeLabel].filter(Boolean).join(" · ")}</span>` : ""}</p>
+      <p class="muted">${esc(group.name)} · ${esc(courseEnrollmentLabel(course, group))}</p>
+      ${members.length ? `<ul class="course-enrollment-list">${rows}</ul>` : `<p class="muted">Aucun inscrit dans ce groupe pour le moment.</p>`}
+    `;
+    showInfoDialog("Inscrits à la séance", body);
+  }
+
+  // Rendu commun (vues Semaine ET Liste) de l'indicateur d'effectif, cliquable pour ouvrir la
+  // fiche "Inscrits à la séance". Vide si le cours n'a pas de groupe exploitable (cohérent avec
+  // courseEnrollmentLabel : jamais de bouton pour un faux effectif).
+  function courseEnrollmentButtonHtml(course, group, dateInput, extraClass = "") {
+    const label = courseEnrollmentLabel(course, group);
+    if (!label) return "";
+    return `<button type="button" class="course-enrollment-btn${extraClass ? " " + extraClass : ""}" data-action="show-course-enrollment" data-course-id="${esc(course.id)}" data-date="${esc(dateInput || "")}" title="Voir les inscrits">${esc(label)}</button>`;
+  }
+
   function courseLineHtml(course, dateInput = "") {
     const group = getGroupById(course.groupId);
     const conflict = getCourseConflictsForDate(course, dateInput).length > 0;
@@ -25450,7 +25486,7 @@
       <div class="course-info">
         <strong>${esc(course.name)}${recurrenceBadgeHtml(course)}</strong>
         <span class="muted">${[course.discipline, group ? group.name : "", courseCoachLabel(shown) ? "Coach " + courseCoachLabel(shown) : "", courseRoomLabel(shown)].filter(Boolean).map(esc).join(" · ")}</span>
-        ${courseEnrollmentLabel(course, group) ? `<span class="muted">${esc(courseEnrollmentLabel(course, group))}</span>` : ""}
+        ${courseEnrollmentButtonHtml(course, group, dateInput, "muted")}
       </div>
       <div class="course-actions">
         ${courseExceptionBadgeHtml(course, dateInput)}
@@ -25489,12 +25525,11 @@
           const ex = planningExceptionFor(c.id, di); const cancelled = Boolean(ex && ex.cancelled);
           const shown = resolveCourseForDate(c, di);
           const coachLbl = courseCoachLabel(shown); const roomLbl = courseRoomLabel(shown);
-          const enrollmentLbl = courseEnrollmentLabel(c, g);
           const metaHtml = [
             coachLbl ? `<span class="pws-coach">${esc(coachLbl)}</span>` : "",
             roomLbl ? `<span class="pws-room">${esc(roomLbl)}</span>` : "",
             g ? `<span class="pws-group">${esc(g.name)}</span>` : "",
-            enrollmentLbl ? `<span class="pws-enrollment">${esc(enrollmentLbl)}</span>` : "",
+            courseEnrollmentButtonHtml(c, g, di, "pws-enrollment"),
           ].filter(Boolean).join("");
           const badgesHtml = `${courseExceptionBadgeHtml(c, di)}${courseAlertsHtml(c, di)}`;
           const groupColor = g && asText(g.color) ? g.color : "";
