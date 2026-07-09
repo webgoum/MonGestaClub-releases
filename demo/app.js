@@ -14306,6 +14306,7 @@
       host.dialog.close();
       render();
       if (host.dialog !== dialog) refreshOpenContactDialog();
+      if (typeof refreshOpenCourseEnrollmentDialogs === "function") refreshOpenCourseEnrollmentDialogs();
       refreshOpenInvoiceEditor();
       refreshOpenDossierDialog();
       if (typeof refreshOpenVigilanceResolver === "function") refreshOpenVigilanceResolver();
@@ -14356,6 +14357,7 @@
     applyClickableTooltips(targetDialog);
     enhanceNumberSteppers(targetDialog);
     showFloatingDialog(targetDialog, "[data-dialog-close], button:not([disabled])", targetDialog);
+    return targetDialog;
   }
 
   function showContactDocumentDialog(name, dataUrl) {
@@ -15176,24 +15178,33 @@
     </div>`;
   }
 
+  // Une fiche contact peut être le dialogue PRIMAIRE (ouverte directement depuis Contacts) ou un
+  // dialogue EMPILÉ (ouverte depuis "Inscrits à la séance"/planning, via dialogForNewWindow qui crée
+  // un ".stacked-dialog" par-dessus). Ne rafraîchir que `dialog` (primaire) laissait une fiche
+  // empilée périmée après ajout/retrait de discipline : la donnée était bien enregistrée
+  // immédiatement, mais son affichage ne se mettait à jour qu'en fermant/rouvrant la fiche (d'où
+  // l'impression qu'il fallait cliquer sur "Enregistrer" pour valider). On rafraîchit maintenant
+  // CHAQUE dialogue ouvert (primaire + tous les stacked) qui porte le marqueur fiche contact.
   function refreshOpenContactDialog() {
-    if (!dialog.open) return;
-    const marker = dialog.querySelector("[data-contact-dialog-kind][data-contact-dialog-id]");
-    if (!marker) return;
-    const kind = marker.dataset.contactDialogKind;
-    const contact = state.contacts[kind]?.find((row) => row.id === marker.dataset.contactDialogId);
-    if (!contact) return;
-    const recap = dialog.querySelector(".contact-recap");
-    const nextRecap = contactActivitySummary(kind, contact);
-    if (recap && nextRecap) {
-      recap.outerHTML = nextRecap;
-    } else if (!recap && nextRecap) {
-      const actions = dialog.querySelector(".contact-dialog-actions");
-      actions?.insertAdjacentHTML("beforebegin", nextRecap);
-    }
-    const footer = dialog.querySelector(".dialog-footer-left");
-    if (footer) footer.innerHTML = contactModuleLinks(kind, contact);
-    applyClickableTooltips(dialog);
+    const candidates = [dialog, ...document.querySelectorAll(".stacked-dialog")].filter((dlg) => dlg && dlg.open);
+    candidates.forEach((dlg) => {
+      const marker = dlg.querySelector("[data-contact-dialog-kind][data-contact-dialog-id]");
+      if (!marker) return;
+      const kind = marker.dataset.contactDialogKind;
+      const contact = state.contacts[kind]?.find((row) => row.id === marker.dataset.contactDialogId);
+      if (!contact) return;
+      const recap = dlg.querySelector(".contact-recap");
+      const nextRecap = contactActivitySummary(kind, contact);
+      if (recap && nextRecap) {
+        recap.outerHTML = nextRecap;
+      } else if (!recap && nextRecap) {
+        const actions = dlg.querySelector(".contact-dialog-actions");
+        actions?.insertAdjacentHTML("beforebegin", nextRecap);
+      }
+      const footer = dlg.querySelector(".dialog-footer-left");
+      if (footer) footer.innerHTML = contactModuleLinks(kind, contact);
+      applyClickableTooltips(dlg);
+    });
   }
 
   function refreshOpenInvoiceEditor() {
@@ -22856,8 +22867,10 @@
       // Si l'action vient du bouton "Retirer" de la fiche contact (dialog encore ouvert derrière
       // la confirmation empilée), son récapitulatif Disciplines doit refléter la suppression tout
       // de suite (sinon la ligne juste retirée resterait affichée jusqu'à réouverture manuelle).
-      // No-op si aucune fiche contact n'est ouverte (cas de la liste globale Disciplines).
+      // No-op si aucune fiche contact n'est ouverte (cas de la liste globale Disciplines). Même
+      // besoin pour "Inscrits à la séance" si elle reste ouverte pendant ce retrait.
       refreshOpenContactDialog();
+      refreshOpenCourseEnrollmentDialogs();
       return;
     }
     if (action === "add-order") return isModuleEnabled("boutique") ? openOrderDialog() : undefined;
@@ -25549,11 +25562,11 @@
   // inventée ici, seulement les adhésions actives du groupe). Dialogue en lecture seule
   // (showInfoDialog, pas showDialog) : consulter cette liste ne doit ni journaliser un point
   // d'historique (Undo/Redo) ni afficher un faux message de sauvegarde.
-  function openCourseEnrollmentDialog(courseId, dateInput = "") {
-    const course = getCourseById(courseId);
-    if (!course) { alert("Créneau introuvable."); return; }
-    const group = getGroupById(course.groupId);
-    if (!group) { alert("Ce créneau n'est lié à aucun groupe."); return; }
+  // Construction du contenu, séparée de l'ouverture : réutilisée telle quelle par
+  // refreshOpenCourseEnrollmentDialogs() pour remettre à jour un dialogue déjà ouvert (ajout/retrait
+  // d'une discipline pendant que la fiche "Inscrits à la séance" reste affichée en dessous), sans
+  // dupliquer la logique d'affichage ni changer le calcul des effectifs/inscrits.
+  function courseEnrollmentDialogBodyHtml(course, group, dateInput) {
     const shown = dateInput ? resolveCourseForDate(course, dateInput) : course;
     const dayLabel = [asText(course.day), dateInput ? dateDisplay(dateInput) : ""].filter(Boolean).join(" ");
     const timeLabel = [shown.startTime, shown.endTime].filter(Boolean).join("–");
@@ -25569,7 +25582,7 @@
         : `<strong>${esc(personLabel(m))}</strong>`;
       return `<li class="course-enrollment-person">${nameHtml}${contactLine ? `<span class="course-enrollment-person-meta muted">${contactLine}</span>` : ""}</li>`;
     }).join("");
-    const body = `
+    return `
       <div class="course-enrollment-dialog">
         <div class="course-enrollment-summary">
           <p class="course-enrollment-title">${esc(course.name)}</p>
@@ -25582,7 +25595,34 @@
           : `<p class="course-enrollment-empty muted">Aucun inscrit dans ce groupe pour le moment.</p>`}
       </div>
     `;
-    showInfoDialog("Inscrits à la séance", body);
+  }
+
+  function openCourseEnrollmentDialog(courseId, dateInput = "") {
+    const course = getCourseById(courseId);
+    if (!course) { alert("Créneau introuvable."); return; }
+    const group = getGroupById(course.groupId);
+    if (!group) { alert("Ce créneau n'est lié à aucun groupe."); return; }
+    const dlg = showInfoDialog("Inscrits à la séance", courseEnrollmentDialogBodyHtml(course, group, dateInput));
+    dlg.dataset.courseEnrollmentCourseId = courseId;
+    dlg.dataset.courseEnrollmentDate = dateInput || "";
+  }
+
+  // Même besoin que refreshOpenContactDialog : si "Inscrits à la séance" reste ouvert (primaire ou
+  // empilé) pendant qu'on ajoute/retire une discipline depuis la fiche contact ouverte par-dessus,
+  // sa liste de participants doit refléter le changement sans qu'il soit nécessaire de la fermer
+  // et la rouvrir. Mise à jour en place (même dialogue), jamais une nouvelle fenêtre créée.
+  function refreshOpenCourseEnrollmentDialogs() {
+    const candidates = [dialog, ...document.querySelectorAll(".stacked-dialog")].filter((dlg) => dlg && dlg.open && dlg.dataset.courseEnrollmentCourseId);
+    candidates.forEach((dlg) => {
+      const course = getCourseById(dlg.dataset.courseEnrollmentCourseId);
+      if (!course) return;
+      const group = getGroupById(course.groupId);
+      if (!group) return;
+      const bodyEl = dlg.querySelector(".dialog-body");
+      if (!bodyEl) return;
+      bodyEl.innerHTML = courseEnrollmentDialogBodyHtml(course, group, dlg.dataset.courseEnrollmentDate || "");
+      applyClickableTooltips(dlg);
+    });
   }
 
   // Rendu commun (vues Semaine ET Liste) de l'indicateur d'effectif, cliquable pour ouvrir la
