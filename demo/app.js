@@ -18388,7 +18388,14 @@
     const plusDays = (d) => { const x = new Date(today); x.setDate(x.getDate() + d); return x.toISOString().slice(0, 10); };
     const members = [
       ["member-solane-mila", "SOLANE", "Mila", "2009-04-12", "22 avenue des Platanes", "47300", "Villeneuve-sur-Lot", "06 00 00 00 01", "mila.solane@example.test"],
-      ["member-rivory-noe", "RIVORY", "Noé", "2015-11-03", "4 impasse des Érables", "47300", "Le Lédat", "06 00 00 00 02", "noe.rivory@example.test"],
+      // "Le Lédat" n'est pas reconnu par l'autocomplétion adresse (API géo officielle, cf.
+      // setupAddressAutocomplete) quel que soit le code postal essayé : au chargement du
+      // formulaire, elle vide silencieusement le champ Ville dès qu'elle ne retrouve pas la
+      // ville saisie parmi les communes réelles — un adhérent sans ville bloquait alors toute
+      // nouvelle inscription sportive (validation native du formulaire). Remplacé par
+      // "Villeneuve-sur-Lot" (déjà utilisée ailleurs dans ce seed, vérifiée fonctionnelle).
+      // Donnée démo corrigée ici uniquement ; la logique d'autocomplétion n'est pas touchée.
+      ["member-rivory-noe", "RIVORY", "Noé", "2015-11-03", "4 impasse des Érables", "47300", "Villeneuve-sur-Lot", "06 00 00 00 02", "noe.rivory@example.test"],
       ["member-alden-maelys", "ALDEN", "Maëlys", "1994-07-18", "18 rue des Lilas", "47110", "Sainte-Livrade-sur-Lot", "06 00 00 00 03", "maelys.alden@example.test"],
       ["member-virel-yanis", "VIREL", "Yanis", "2012-02-25", "7 chemin du Stade", "47440", "Casseneuil", "06 00 00 00 04", "yanis.virel@example.test"],
       ["member-corvin-lou", "CORVIN", "Lou", "1988-09-08", "31 boulevard Voltaire", "47300", "Bias", "06 00 00 00 05", "lou.corvin@example.test"],
@@ -18421,6 +18428,21 @@
       ["member-toldo-axel", "TOLDO", "Axel", "2011-06-30", "11 rue du Stade", "47140", "Penne-d'Agenais", "06 00 00 02 18", "axel.toldo@example.test"],
       ["member-ucha-romy", "UCHA", "Romy", "2016-05-05", "2 rue des Mésanges", "47300", "Bias", "06 00 00 02 19", "romy.ucha@example.test"],
       ["member-valdo-tess", "VALDO", "Tess", "2006-03-15", "16 rue des Acacias", "47300", "Villeneuve-sur-Lot", "06 00 00 02 20", "tess.valdo@example.test"],
+      // --- Membres ajoutés pour repeupler la démo (multi-disciplines, effectifs plus réalistes,
+      // groupe Taïso et Baby judo) : villes reprises parmi celles déjà utilisées ci-dessus et
+      // vérifiées fonctionnelles avec l'autocomplétion adresse (cf. correction "Le Lédat" plus haut).
+      ["member-perrin-yuna", "PERRIN", "Yuna", "2020-03-15", "6 rue des Cigognes", "47300", "Villeneuve-sur-Lot", "06 00 00 03 01", "yuna.perrin@example.test"],
+      ["member-roques-nael", "ROQUES", "Naël", "2020-06-01", "10 rue des Pinsons", "47300", "Bias", "06 00 00 03 02", "nael.roques@example.test"],
+      ["member-sabatier-lena", "SABATIER", "Léna", "2011-05-20", "3 rue des Fauvettes", "47110", "Sainte-Livrade-sur-Lot", "06 00 00 03 03", "lena.sabatier@example.test"],
+      ["member-tisserand-adam", "TISSERAND", "Adam", "2002-08-10", "17 avenue du Lot", "47440", "Casseneuil", "06 00 00 03 04", "adam.tisserand@example.test"],
+      ["member-brunel-ilan", "BRUNEL", "Ilan", "2018-02-14", "22 rue des Coquelicots", "47300", "Pujols", "06 00 00 03 05", "ilan.brunel@example.test"],
+      ["member-cadieux-anna", "CADIEUX", "Anna", "2017-09-05", "5 impasse des Bleuets", "47260", "Castelmoron-sur-Lot", "06 00 00 03 06", "anna.cadieux@example.test"],
+      ["member-dufour-nolan", "DUFOUR", "Nolan", "2019-01-22", "9 rue des Genêts", "47140", "Penne-d'Agenais", "06 00 00 03 07", "nolan.dufour@example.test"],
+      ["member-esteban-clara", "ESTEBAN", "Clara", "1991-04-18", "14 rue du Lavoir", "47300", "Villeneuve-sur-Lot", "06 00 00 03 08", "clara.esteban@example.test"],
+      ["member-fontaine-marius", "FONTAINE", "Marius", "1981-11-30", "2 rue des Amandiers", "47300", "Bias", "06 00 00 03 09", "marius.fontaine@example.test"],
+      // Adhérent volontairement sans aucune inscription sportive : cas vide de la section
+      // "Disciplines" de la fiche contact (aucune membershipRow créée pour ce contact plus bas).
+      ["member-garrigue-alix", "GARRIGUE", "Alix", "1998-07-07", "11 rue de la Fontaine", "47110", "Sainte-Livrade-sur-Lot", "06 00 00 03 10", "alix.garrigue@example.test"],
     ].map(([idValue, lastName, firstName, birthDate, address, postalCode, city, mobile, email]) => demoContact({ id: idValue, lastName, firstName, birthDate, address, postalCode, city, mobile, email }, clubId));
 
     // Lot Démo Club — responsable légal renseigné sur le CONTACT (source de vérité, cf. lots
@@ -18435,6 +18457,10 @@
     setContactGuardian("member-rivory-noe", { legalGuardianName: "Camille RIVORY", legalGuardianPhone: "06 00 00 05 01", legalGuardianEmail: "camille.rivory@example.test" });
     setContactGuardian("member-solane-mila", { legalGuardianName: "Thomas SOLANE", legalGuardianPhone: "06 00 00 05 02", legalGuardianEmail: "thomas.solane@example.test" });
     setContactGuardian("member-virel-yanis", { legalGuardianName: "Delphine Marchand", legalGuardianPhone: "06 00 00 05 03", legalGuardianEmail: "delphine.marchand@example.test" });
+    // Un seul des nouveaux mineurs multi-disciplines a un responsable légal renseigné (cas
+    // positif) ; les autres nouveaux mineurs (Naël, Léna, Ilan, Anna, Nolan) restent volontairement
+    // sans responsable légal, cohérent avec le choix existant ci-dessus (ne pas surcharger).
+    setContactGuardian("member-perrin-yuna", { legalGuardianName: "Karim PERRIN", legalGuardianPhone: "06 00 00 05 04", legalGuardianEmail: "karim.perrin@example.test" });
 
     // Lot Démo Club (réalignement) — quelques contacts pour lesquels ces informations administratives
     // sont désormais complètes, pour retrouver des cas positifs démontrables (dossier mineur complet,
@@ -18535,6 +18561,26 @@
       ["demo-membership-axel-self", "member-toldo-axel", "Self-défense", true, "0:0", 0, []],
       ["demo-membership-romy-self", "member-ucha-romy", "Self-défense", true, "0:0", 0, []],
       ["demo-membership-tess-self", "member-valdo-tess", "Self-défense", true, "0:0", 0, []],
+      // --- Repeuplement : adhérents multi-disciplines (2 ou 3 disciplines chacun), tous vérifiés
+      // sans chevauchement horaire entre leurs groupes (cf. commentaire sur les nouveaux cours
+      // Taïso/Baby judo plus haut). Variation volontaire des statuts certificat/paiement pour
+      // couvrir les cas d'affichage (OK, manquant, complet, partiel, aucun paiement).
+      ["demo-membership-yuna-judo", "member-perrin-yuna", "Judo enfant", true, "0:0", 0, [demoPaid("card", 110, "2026-05-15")]],
+      ["demo-membership-yuna-baby", "member-perrin-yuna", "Baby judo", false, "", 0, []],
+      ["demo-membership-yuna-taiso", "member-perrin-yuna", "Taïso", true, "", 0, [demoPayment("cash", 40, { date: plusDays(18) })]],
+      ["demo-membership-nael-judo", "member-roques-nael", "Judo enfant", true, "0:0", 0, [demoPaid("transfer", 110, "2026-05-16")]],
+      ["demo-membership-nael-baby", "member-roques-nael", "Baby judo", true, "", 0, [demoPaid("cash", 60, "2026-05-16")]],
+      ["demo-membership-nael-taiso", "member-roques-nael", "Taïso", false, "", 0, [demoPayment("check", 30, { date: plusDays(22), checkNumber: "100010" })]],
+      ["demo-membership-lena-self", "member-sabatier-lena", "Self-défense", true, "1:0", 0, [demoPaid("card", 120, "2026-05-17")]],
+      ["demo-membership-lena-taiso", "member-sabatier-lena", "Taïso", true, "", 0, [demoPayment("cash", 40, { date: plusDays(24) })]],
+      ["demo-membership-adam-judo", "member-tisserand-adam", "Judo adulte", true, "0:0", 0, [demoPaid("transfer", 140, "2026-05-18")]],
+      ["demo-membership-adam-taiso", "member-tisserand-adam", "Taïso", true, "", 0, []],
+      ["demo-membership-ilan-judo", "member-brunel-ilan", "Judo enfant", true, "0:0", 0, [demoPaid("card", 110, "2026-05-19")]],
+      ["demo-membership-anna-judo", "member-cadieux-anna", "Judo enfant", false, "0:0", 0, [demoPayment("check", 50, { date: plusDays(26), checkNumber: "100011" })]],
+      ["demo-membership-nolan-judo", "member-dufour-nolan", "Judo enfant", true, "0:0", 0, []],
+      ["demo-membership-clara-taiso", "member-esteban-clara", "Taïso", true, "", 0, [demoPaid("cash", 80, "2026-05-20")]],
+      ["demo-membership-marius-taiso", "member-fontaine-marius", "Taïso", true, "", 0, [demoPayment("check", 40, { date: plusDays(28), checkNumber: "100012" })]],
+      // member-garrigue-alix : aucune membershipRow -> cas vide de la section Disciplines.
     ].map(([rowId, contactId, discipline, medicalCertificate, insuranceChoice, discount, payments]) => {
       const contact = members.find((member) => member.id === contactId) || {};
       const choice = demoInsuranceChoice(insuranceChoice) || {};
@@ -18782,16 +18828,31 @@
       { id: "demo-group-judo-enfants", clubId, name: "Judo enfants", type: "Enfants", discipline: "Judo enfant", coach: "Laurent", ageMin: 6, ageMax: 11, maxMembers: 16, color: "#3a7d44", notes: "", archived: false },
       { id: "demo-group-judo-adultes", clubId, name: "Judo adultes", type: "Adultes", discipline: "Judo adulte", coach: "Laurent", ageMin: 16, ageMax: "", maxMembers: 20, color: "#4d5966", notes: "", archived: false },
       { id: "demo-group-self-ados", clubId, name: "Self-défense ados", type: "Confirmés", discipline: "Self-défense", coach: "Karim", ageMin: 12, ageMax: 17, maxMembers: 12, color: "#9a5148", notes: "", archived: false },
+      // Lot Démo Club (repeuplement) — Taïso ouvert à tous âges (pratique courante pour ce type de
+      // discipline gymnique douce), pour rester cohérent avec des adhérents multi-disciplines aussi
+      // bien enfants qu'adultes (cf. memberships plus bas).
+      { id: "demo-group-taiso", clubId, name: "Taïso", type: "Tous niveaux", discipline: "Taïso", coach: "Sophie", ageMin: "", ageMax: "", maxMembers: 20, color: "#7d5ba6", notes: "", archived: false },
+      // Petit groupe volontairement peu rempli : sert de cas "faible effectif" pour tester
+      // l'affichage planning/inscrits avec peu d'inscrits.
+      { id: "demo-group-baby-judo", clubId, name: "Baby judo", type: "Enfants", discipline: "Baby judo", coach: "Sophie", ageMin: "", ageMax: 6, maxMembers: 10, color: "#e0a458", notes: "", archived: false },
     ];
-    const groupByDiscipline = { "Judo enfant": "demo-group-judo-enfants", "Judo adulte": "demo-group-judo-adultes", "Self-défense": "demo-group-self-ados" };
+    const groupByDiscipline = {
+      "Judo enfant": "demo-group-judo-enfants",
+      "Judo adulte": "demo-group-judo-adultes",
+      "Self-défense": "demo-group-self-ados",
+      "Taïso": "demo-group-taiso",
+      "Baby judo": "demo-group-baby-judo",
+    };
     membershipRows.forEach((m) => { m.groupId = groupByDiscipline[m.discipline] || ""; });
     // Inscriptions de test laissées hors groupe : elles apparaissent comme « candidats »
-    // dans le dialogue « Membres du groupe » (à ajouter manuellement pour la démo).
+    // dans le dialogue « Membres du groupe » (à ajouter manuellement pour la démo). Lot Démo Club
+    // (repeuplement) — la majorité des candidats Judo enfant/Judo adulte/Self-défense sont
+    // désormais affectés directement (effectifs plus réalistes) ; un candidat par groupe reste
+    // volontairement non affecté pour continuer à tester ce dialogue.
     const demoUnassignedMembershipIds = [
-      "demo-membership-tom-judo", "demo-membership-jade-judo", "demo-membership-noa-judo", "demo-membership-lila-judo", "demo-membership-tim-judo",
-      "demo-membership-paul-judo", "demo-membership-sara-judo", "demo-membership-marc-judo", "demo-membership-eva-judo", "demo-membership-leo-judo",
-      "demo-membership-ines-self", "demo-membership-hugo-self", "demo-membership-lea-self", "demo-membership-theo-self", "demo-membership-mae-self",
-      "demo-membership-sam-self", "demo-membership-emy-self", "demo-membership-axel-self", "demo-membership-romy-self", "demo-membership-tess-self",
+      "demo-membership-tim-judo",
+      "demo-membership-leo-judo",
+      "demo-membership-emy-self", "demo-membership-axel-self", "demo-membership-romy-self", "demo-membership-tess-self",
     ];
     demoUnassignedMembershipIds.forEach((mid) => { const m = membershipRows.find((x) => x.id === mid); if (m) m.groupId = ""; });
     const setDoc = (mid, fields) => { const m = membershipRows.find((x) => x.id === mid); if (m) Object.assign(m, fields); };
@@ -18845,6 +18906,12 @@
       { id: "demo-course-prepa", clubId, name: "Préparation compétition", discipline: "Préparation physique", groupId: "", coachId: "demo-coach-emma", coach: "Emma Durand", day: "Lundi", startTime: "10:00", endTime: "11:00", roomId: "demo-room-muscu", location: "Salle de musculation", maxPlaces: 12, notes: "", archived: false, recurrence: { type: "weekly", interval: 2, start: "", monthlyMode: "weekday", ordinal: 1, dayOfMonth: "" } },
       { id: "demo-course-kata", clubId, name: "Stage kata", discipline: "Judo adulte", groupId: "", coachId: "demo-coach-laurent", coach: "Laurent Martin", day: "Samedi", startTime: "10:00", endTime: "12:00", roomId: "demo-room-dojo", location: "Dojo principal", maxPlaces: 20, notes: "", archived: false, recurrence: { type: "monthly", monthlyMode: "weekday", ordinal: 1, start: "", interval: 1, dayOfMonth: "" } },
       { id: "demo-course-decouverte", clubId, name: "Cours découverte", discipline: "Taïso", groupId: "", coachId: "demo-coach-sophie", coach: "Sophie Bernard", day: "", startTime: "18:00", endTime: "19:00", roomId: "demo-room-polyvalente", location: "Salle polyvalente", maxPlaces: 15, notes: "", archived: false, recurrence: { type: "monthly", monthlyMode: "date", dayOfMonth: 15, start: "", interval: 1, ordinal: 1 } },
+      // Lot Démo Club (repeuplement) — créneaux hebdomadaires des nouveaux groupes Taïso / Baby
+      // judo. Vendredi et samedi matin sont des jours libres dans le planning existant : aucun
+      // chevauchement possible avec les cours déjà en place, y compris pour les adhérents
+      // multi-disciplines (cf. memberships plus bas, tous vérifiés sans conflit d'horaire).
+      { id: "demo-course-taiso", clubId, name: "Taïso adultes", discipline: "Taïso", groupId: "demo-group-taiso", coachId: "", coach: "Sophie Bernard", day: "Vendredi", startTime: "18:00", endTime: "19:00", roomId: "demo-room-polyvalente", location: "Salle polyvalente", maxPlaces: 20, notes: "", archived: false },
+      { id: "demo-course-baby", clubId, name: "Baby judo", discipline: "Baby judo", groupId: "demo-group-baby-judo", coachId: "", coach: "Sophie Bernard", day: "Samedi", startTime: "09:00", endTime: "09:45", roomId: "demo-room-dojo", location: "Dojo principal", maxPlaces: 10, notes: "", archived: false },
     ];
     // UNE exception réaliste (démo) : un mercredi à venir, Laurent accompagne les compétiteurs
     // à un tournoi, c'est Hugo (coach polyvalent) qui assure le cours « Judo enfants ».
