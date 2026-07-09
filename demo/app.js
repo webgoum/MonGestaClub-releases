@@ -7305,10 +7305,17 @@
   }
 
   // Contexte de séance (variables planning) à partir d'un créneau + période/statut éventuels.
-  function sessionContextFromCourse(course = {}, periodStart = "", statut = "") {
+  function sessionContextFromCourse(course = {}, periodStart = "", periodEnd = "", statut = "") {
+    // periodStart/periodEnd sont la fenêtre d'indisponibilité du coach (ex. "du 06/07 au
+    // 13/07"), PAS la date de la séance : on cherche la date réelle du jour de la semaine du
+    // cours à l'intérieur de cette fenêtre (occurrence exacte), sinon on retombe sur l'ancien
+    // comportement (début de la fenêtre, ou juste le nom du jour si aucune période fournie).
+    const occurrence = (periodStart && typeof courseOccurrenceDateInPeriod === "function")
+      ? courseOccurrenceDateInPeriod(course, periodStart, periodEnd)
+      : null;
     return {
       discipline: asText(course.discipline),
-      dateSeance: periodStart ? dateDisplay(periodStart) : asText(course.day),
+      dateSeance: occurrence ? dateDisplay(occurrence) : (periodStart ? dateDisplay(periodStart) : asText(course.day)),
       heureDebut: asText(course.startTime),
       heureFin: asText(course.endTime),
       lieu: (typeof courseRoomLabel === "function" ? courseRoomLabel(course) : asText(course.location)),
@@ -7364,7 +7371,7 @@
     ui.newsletterSubject = "";
     ui.newsletterBody = "";
     const course = opts.courseId ? (state.planningCourses || []).find((c) => c.id === opts.courseId) : null;
-    ui.newsletterSessionContext = course ? sessionContextFromCourse(course, asText(opts.periodStart), asText(opts.statut)) : {};
+    ui.newsletterSessionContext = course ? sessionContextFromCourse(course, asText(opts.periodStart), asText(opts.periodEnd), asText(opts.statut)) : {};
     if (course) trace += ` — séance ${asText(course.name)}`;
     [...document.querySelectorAll("dialog[open]")].forEach((d) => d.close());
     navigateToViewFromMenu("newsletter");
@@ -22464,7 +22471,7 @@
       return;
     }
     if (action === "email-coach") {
-      prepareEntityEmail({ coachId: button.dataset.id, templateKey: button.dataset.template, courseId: button.dataset.courseId, periodStart: button.dataset.ps, statut: button.dataset.statut });
+      prepareEntityEmail({ coachId: button.dataset.id, templateKey: button.dataset.template, courseId: button.dataset.courseId, periodStart: button.dataset.ps, periodEnd: button.dataset.pe, statut: button.dataset.statut });
       return;
     }
     if (action === "email-room") {
@@ -26232,6 +26239,25 @@
     return cs < ue && us < ce;
   }
 
+  // Date réelle de l'occurrence du cours (son jour de la semaine) à l'intérieur d'une période
+  // [periodStart, periodEnd] — même recherche que unavailabilityHitsCourse, mais renvoie la
+  // date trouvée au lieu d'un booléen. periodStart/periodEnd sont la fenêtre d'indisponibilité
+  // du coach (ex. "du 06/07 au 13/07"), PAS la date de la séance : sans ce calcul, un e-mail de
+  // remplacement affichait à tort le premier jour de cette fenêtre plutôt que le jeudi réel.
+  function courseOccurrenceDateInPeriod(course, periodStart, periodEnd) {
+    const target = COACH_DAYS.indexOf(asText(course.day));
+    if (target < 0) return null;
+    const sd = parseDate(periodStart); if (!sd) return null;
+    const ed = parseDate(periodEnd || periodStart) || sd;
+    const cur = new Date(sd); cur.setHours(0, 0, 0, 0);
+    const last = new Date(ed); last.setHours(0, 0, 0, 0);
+    for (let i = 0; i < 400 && cur <= last; i += 1) {
+      if (((cur.getDay() + 6) % 7) === target) return new Date(cur);
+      cur.setDate(cur.getDate() + 1);
+    }
+    return null;
+  }
+
   function coachReplacementDecision(courseId, periodStart, periodEnd) {
     return (state.coachReplacements || []).find((r) => r.courseId === courseId && r.periodStart === periodStart && r.periodEnd === periodEnd) || null;
   }
@@ -26367,8 +26393,8 @@
       </select></label>`,
     ].join("");
     const originalCoachId = original ? original.id : course.coachId;
-    const footer = (originalCoachId && cEmail) ? `<button type="button" data-action="email-coach" data-id="${esc(originalCoachId)}" data-template="coachSimple" data-course-id="${esc(courseId)}" data-ps="${esc(periodStart)}" data-statut="Coach à remplacer" title="Préparer un e-mail au coach concerné">${actionMailIcon()} Coach</button>
-      <button type="button" data-action="email-coach" data-id="${esc(originalCoachId)}" data-template="coachReplacement" data-course-id="${esc(courseId)}" data-ps="${esc(periodStart)}" data-statut="Coach à remplacer" title="Préparer une demande de remplacement">${actionSwapIcon()} Remplacement</button>` : "";
+    const footer = (originalCoachId && cEmail) ? `<button type="button" data-action="email-coach" data-id="${esc(originalCoachId)}" data-template="coachSimple" data-course-id="${esc(courseId)}" data-ps="${esc(periodStart)}" data-pe="${esc(periodEnd)}" data-statut="Coach à remplacer" title="Préparer un e-mail au coach concerné">${actionMailIcon()} Coach</button>
+      <button type="button" data-action="email-coach" data-id="${esc(originalCoachId)}" data-template="coachReplacement" data-course-id="${esc(courseId)}" data-ps="${esc(periodStart)}" data-pe="${esc(periodEnd)}" data-statut="Coach à remplacer" title="Préparer une demande de remplacement">${actionSwapIcon()} Remplacement</button>` : "";
     showDialog("Coach à remplacer", body, (data) => {
       const choice = data.get("decision") || (candidates.length ? "replace" : "cancel");
       const originalId = original ? original.id : course.coachId;
