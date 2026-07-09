@@ -18927,14 +18927,41 @@
     const planningExceptions = [
       { id: "demo-planex-1", clubId, courseId: "demo-course-1", date: demoExceptionDate, cancelled: false, note: "Laurent accompagne les compétiteurs au tournoi régional ce jour-là ; séance assurée par Hugo.", startTime: "", endTime: "", coachId: "demo-coach-hugo", coach: "Petit Hugo", roomId: "", location: "", createdAt: new Date().toISOString() },
     ];
+    // Lot Démo Club (repeuplement — réalignement présences) — ces deux feuilles d'appel
+    // couvraient encore les 2 seuls membres de l'ancien seed (Judo enfants n'en comptait que 2).
+    // Le groupe compte désormais 11 adhérents (cf. repeuplement plus haut) : la liste des lignes
+    // est régénérée pour couvrir tous les membres ACTUELS du groupe, avec des statuts variés
+    // (jamais tous "présent" par facilité) afin que le compteur "présents / inscrits" affiché dans
+    // le tableau des feuilles d'appel (calculé depuis rows.length, comportement normal pour une
+    // séance passée) corresponde à l'effectif réel dès le chargement, sans attendre l'ouverture de
+    // la séance (qui, elle, régénère déjà la liste depuis getMembersByGroup — seule la donnée figée
+    // du seed était en retard sur le repeuplement).
     const attendanceSessions = [
       { id: "demo-session-1", clubId, date: plusDays(-7), courseId: "demo-course-1", groupId: "demo-group-judo-enfants", coach: "Laurent", rows: [
         { memberId: "member-rivory-noe", status: "present", note: "" },
         { memberId: "member-kerval-lino", status: "absent", note: "Prévenu à l'avance" },
+        { memberId: "member-bahin-tom", status: "present", note: "" },
+        { memberId: "member-clermont-jade", status: "present", note: "" },
+        { memberId: "member-dahlia-noa", status: "late", note: "" },
+        { memberId: "member-evrard-lila", status: "present", note: "" },
+        { memberId: "member-perrin-yuna", status: "present", note: "" },
+        { memberId: "member-roques-nael", status: "excused", note: "Rendez-vous médical" },
+        { memberId: "member-brunel-ilan", status: "present", note: "" },
+        { memberId: "member-cadieux-anna", status: "injured", note: "Poignet, avis médical" },
+        { memberId: "member-dufour-nolan", status: "present", note: "" },
       ] },
       { id: "demo-session-2", clubId, date: plusDays(-2), courseId: "demo-course-1", groupId: "demo-group-judo-enfants", coach: "Laurent", rows: [
         { memberId: "member-rivory-noe", status: "present", note: "" },
         { memberId: "member-kerval-lino", status: "late", note: "" },
+        { memberId: "member-bahin-tom", status: "present", note: "" },
+        { memberId: "member-clermont-jade", status: "absent", note: "Malade" },
+        { memberId: "member-dahlia-noa", status: "present", note: "" },
+        { memberId: "member-evrard-lila", status: "present", note: "" },
+        { memberId: "member-perrin-yuna", status: "trial", note: "Séance d'essai" },
+        { memberId: "member-roques-nael", status: "present", note: "" },
+        { memberId: "member-brunel-ilan", status: "present", note: "" },
+        { memberId: "member-cadieux-anna", status: "present", note: "" },
+        { memberId: "member-dufour-nolan", status: "excused", note: "" },
       ] },
     ];
 
