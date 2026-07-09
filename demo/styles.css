@@ -5370,6 +5370,39 @@ td .assistant-empty * { white-space: normal; }
 }
 .contact-link-btn:hover, .contact-link-btn:focus-visible { color: var(--accent) !important; text-decoration: underline; }
 .contact-link-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+/* Fiche "Inscrits à la séance" : encadré résumé doux (même famille que .avail-detail-note) puis
+   participants en petites cartes (même famille que .avail-detail-res) au lieu d'une liste à puces. */
+.course-enrollment-dialog { display: flex; flex-direction: column; gap: 14px; }
+.course-enrollment-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface-soft, var(--surface));
+}
+.course-enrollment-title { margin: 0; font-weight: 800; }
+.course-enrollment-context, .course-enrollment-count { margin: 0; font-size: 0.85rem; color: var(--muted); }
+.course-enrollment-section-title { margin: 0; font-weight: 700; font-size: 0.9rem; }
+.course-enrollment-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.course-enrollment-person {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 7px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm, 7px);
+  background: var(--surface-soft, var(--surface));
+}
+.course-enrollment-person-meta { font-size: 0.8rem; color: var(--muted); }
+.course-enrollment-empty {
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius);
+  background: var(--surface-soft, var(--surface));
+}
 /* Exceptions par date (Phase C1) : séance annulée / note ce jour */
 .course-line.course-cancelled .course-time,
 .course-line.course-cancelled .course-info strong { text-decoration: line-through; }

@@ -25459,12 +25459,20 @@
       const nameHtml = contact && contact.id
         ? `<button type="button" class="contact-link-btn" data-action="edit-contact" data-kind="members" data-id="${esc(contact.id)}" title="Ouvrir la fiche contact">${esc(personLabel(m))}</button>`
         : `<strong>${esc(personLabel(m))}</strong>`;
-      return `<li>${nameHtml}${contactLine ? `<br><span class="muted">${contactLine}</span>` : ""}</li>`;
+      return `<li class="course-enrollment-person">${nameHtml}${contactLine ? `<span class="course-enrollment-person-meta muted">${contactLine}</span>` : ""}</li>`;
     }).join("");
     const body = `
-      <p><strong>${esc(course.name)}</strong>${dayLabel || timeLabel ? `<br><span class="muted">${[dayLabel, timeLabel].filter(Boolean).join(" · ")}</span>` : ""}</p>
-      <p class="muted">${esc(group.name)} · ${esc(courseEnrollmentLabel(course, group))}</p>
-      ${members.length ? `<ul class="course-enrollment-list">${rows}</ul>` : `<p class="muted">Aucun inscrit dans ce groupe pour le moment.</p>`}
+      <div class="course-enrollment-dialog">
+        <div class="course-enrollment-summary">
+          <p class="course-enrollment-title">${esc(course.name)}</p>
+          ${dayLabel || timeLabel ? `<p class="course-enrollment-context">${esc([dayLabel, timeLabel].filter(Boolean).join(" · "))}</p>` : ""}
+          <p class="course-enrollment-count">Groupe : ${esc(group.name)} · ${esc(courseEnrollmentLabel(course, group))}</p>
+        </div>
+        <p class="course-enrollment-section-title">Participants${members.length ? ` · ${members.length}` : ""}</p>
+        ${members.length
+          ? `<ul class="course-enrollment-list">${rows}</ul>`
+          : `<p class="course-enrollment-empty muted">Aucun inscrit dans ce groupe pour le moment.</p>`}
+      </div>
     `;
     showInfoDialog("Inscrits à la séance", body);
   }
