@@ -8918,6 +8918,20 @@ small.email-variable-chip:hover {
   font-size: 0.8rem;
 }
 
+/* Action "Retirer" imbriquée dans une ligne d'inscription : reste petite et discrète (pas un
+   gros bouton pleine largeur comme un bouton de formulaire), alignée à gauche sous le sous-titre. */
+.contact-recap-remove-btn {
+  justify-self: start;
+  margin-top: 2px;
+  padding: 2px 8px;
+  font-size: 0.76rem;
+  color: var(--muted);
+}
+.contact-recap-remove-btn:hover, .contact-recap-remove-btn:focus-visible {
+  color: var(--accent-2, #b5443a);
+  border-color: var(--accent-2, #b5443a);
+}
+
 .contact-recap-amounts {
   display: flex;
   justify-content: flex-end;

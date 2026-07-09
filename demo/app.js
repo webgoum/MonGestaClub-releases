@@ -8060,7 +8060,7 @@
       <td>${personCell(row)}</td><td>${paymentControls("membership", row.id, row.payments || [], { total: calc.total, defaultTaxRate: membershipDefaultTaxRate(row) })}</td><td>${esc(row.discipline)}</td>
       <td>${row.medicalCertificate ? "Oui" : "Non"}</td>
       <td class="money">${money(calc.total)}</td><td class="money">${money(calc.paid)}</td><td class="money">${money(calc.restDue)}</td>
-      <td><div class="actions"><button class="icon" title="Modifier" data-action="edit-membership" data-id="${row.id}">✎</button><button class="icon danger" title="Supprimer" data-action="delete-membership" data-id="${row.id}">×</button></div></td>
+      <td><div class="actions"><button class="icon" title="Modifier" data-action="edit-membership" data-id="${row.id}">✎</button><button class="icon danger" title="Retirer" data-action="delete-membership" data-id="${row.id}">×</button></div></td>
     </tr>`;
   }
 
@@ -15275,9 +15275,19 @@
       </div>
       ${empty}
       ${contactMinorGuardianHtml(contact, kind)}
-      ${contactRecapSection("Disciplines", memberships, contactRecapMembership, "", contact.id && kind === "members" && isViewVisible("disciplines")
-        ? `<button type="button" data-action="add-contact-membership" data-contact-link="${esc(`${kind === "members" ? "member" : "prospect"}:${contact.id}`)}" title="Ajouter une nouvelle inscription discipline/groupe pour ce contact">+ discipline</button>`
-        : "")}
+      ${kind === "members" && isViewVisible("disciplines")
+        // Disciplines sort ici du mécanisme générique contactRecapSection (qui masque toute la
+        // section, bouton d'ajout compris, dès que la liste est vide) : un adhérent sans discipline
+        // doit quand même voir "+ Ajouter une discipline" et comprendre comment en ajouter une,
+        // au lieu que la section disparaisse silencieusement (c'était la cause probable du "je ne
+        // trouve pas où ajouter une discipline" remonté par Thierry).
+        ? `<section class="contact-recap-section">
+            <div class="dialog-mini-title"><h4>Disciplines</h4>${contact.id ? `<button type="button" data-action="add-contact-membership" data-contact-link="${esc(`member:${contact.id}`)}" title="Ajouter une nouvelle inscription discipline/groupe pour ce contact">+ Ajouter une discipline</button>` : ""}</div>
+            ${memberships.length
+              ? `<p class="muted">Un adhérent peut avoir plusieurs disciplines, tant que les horaires ne se chevauchent pas.</p><div class="contact-recap-list">${memberships.map(contactRecapMembership).join("")}</div>`
+              : `<p class="contact-recap-empty">Aucune discipline enregistrée pour le moment.</p>`}
+          </section>`
+        : contactRecapSection("Disciplines", memberships, contactRecapMembership)}
       ${contactRecapSection("Boutique", orders, contactRecapOrder, isModuleEnabled("boutique") ? "" : "Module désactivé — historique conservé. Réactivez le module pour ajouter de nouvelles données.")}
       ${contactRecapSection("Stages", registrations, contactRecapRegistration, isModuleEnabled("stages") ? "" : "Module désactivé — historique conservé. Réactivez le module pour ajouter de nouvelles données.")}
       ${invoiceRows.length ? `<section class="contact-recap-section">
@@ -15332,10 +15342,16 @@
     // même discipline mais des groupes différents seraient indiscernables.
     const group = getGroupById(row.groupId);
     const titleText = [row.discipline || "Discipline non renseignée", group?.name || ""].filter(Boolean).join(" — ");
+    // Bouton "Retirer" imbriqué dans la ligne cliquable (edit-membership) : le delegate de clic
+    // résout via closest("[data-action]") en partant de l'élément cliqué, donc ce bouton intercepte
+    // le clic avant qu'il n'atteigne l'article parent -> pas de double action, pas besoin de
+    // stopPropagation. Réutilise tel quel l'action delete-membership déjà existante (confirmation,
+    // undo, contact jamais supprimé) : aucune nouvelle logique de suppression créée.
     return `<article class="contact-recap-row clickable-card" data-action="edit-membership" data-id="${esc(row.id)}" title="Ouvrir cette inscription">
       <div class="contact-recap-main">
         <strong>${esc(titleText)}</strong>
         <span>${esc(subtitle || "Inscription discipline")}</span>
+        <button type="button" class="contact-recap-remove-btn" data-action="delete-membership" data-id="${esc(row.id)}" title="Retirer cette discipline de la fiche">Retirer</button>
       </div>
       ${contactRecapStatus(entry.calc)}
       ${contactRecapAmounts(entry.calc)}
@@ -22817,11 +22833,31 @@
       return;
     }
     if (action === "delete-membership") {
-      if (!await requestConfirm({ title: "Supprimer l'inscription", message: "Supprimer cette inscription ?", confirmLabel: "Supprimer", danger: true })) return;
+      // Message explicite (discipline + groupe + nom de la personne) plutôt que le générique
+      // "Supprimer cette inscription ?" : Thierry doit voir précisément ce qui disparaît et que
+      // le contact, lui, est conservé. Avertit en plus si des paiements sont déjà enregistrés sur
+      // CETTE inscription (perdus avec elle si non facturés — une facture déjà émise reste
+      // intacte, son montant est figé indépendamment de la membership source).
+      const row = state.memberships.find((m) => m.id === button.dataset.id);
+      if (!row) return;
+      const group = getGroupById(row.groupId);
+      const label = [row.discipline || "Discipline non renseignée", group?.name || ""].filter(Boolean).join(" — ");
+      const calc = calcMembership(row);
+      const lines = [
+        `Retirer cette discipline de la fiche de ${personLabel(row)} ?`,
+        `Cette action supprimera l'inscription sportive "${label}". Le contact sera conservé.`,
+      ];
+      if (asNumber(calc.paid) > 0) lines.push(`Des paiements déjà enregistrés sur cette inscription (${money(calc.paid)}) seront supprimés avec elle.`);
+      if (!await requestConfirm({ title: "Retirer l'inscription", message: lines.join("\n"), confirmLabel: "Retirer", danger: true })) return;
       recordHistory();
-      removeById(state.memberships, button.dataset.id);
-      persist("Inscription supprimée");
+      removeById(state.memberships, row.id);
+      persist(`Inscription retirée : ${label}`);
       render();
+      // Si l'action vient du bouton "Retirer" de la fiche contact (dialog encore ouvert derrière
+      // la confirmation empilée), son récapitulatif Disciplines doit refléter la suppression tout
+      // de suite (sinon la ligne juste retirée resterait affichée jusqu'à réouverture manuelle).
+      // No-op si aucune fiche contact n'est ouverte (cas de la liste globale Disciplines).
+      refreshOpenContactDialog();
       return;
     }
     if (action === "add-order") return isModuleEnabled("boutique") ? openOrderDialog() : undefined;
