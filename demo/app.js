@@ -25422,6 +25422,19 @@
     return `<button type="button" class="course-date-btn" data-action="manage-course-date" data-id="${esc(course.id)}" data-date="${esc(dateInput)}" title="Exception au planning hebdomadaire : modifier SEULEMENT cette date — annuler, ou changer l'horaire, le coach ou la salle pour ce jour précis (le créneau récurrent n'est pas touché)."><span aria-hidden="true">📅</span> Modifier cette date</button>`;
   }
 
+  // Effectif prévu d'une séance : "X inscrits" ou "X / Y inscrits" si le cours a une capacité
+  // (course.maxPlaces). Vide si le cours n'est lié à aucun groupe exploitable — jamais de faux
+  // chiffre. "Inscrits" = getMembersByGroup (mêmes adhésions que la fiche groupe / la vue Liste),
+  // pas la capacité de la salle : un même local peut accueillir des groupes de tailles très
+  // différentes selon le créneau, sa capacité brute ne dit donc rien de fiable sur CE cours.
+  function courseEnrollmentLabel(course, group) {
+    if (!group) return "";
+    const enrolled = getMembersByGroup(group.id).length;
+    const capacity = asText(course.maxPlaces) !== "" ? asNumber(course.maxPlaces) : null;
+    const plural = enrolled > 1 ? "s" : "";
+    return capacity !== null ? `${enrolled} / ${capacity} inscrit${plural}` : `${enrolled} inscrit${plural}`;
+  }
+
   function courseLineHtml(course, dateInput = "") {
     const group = getGroupById(course.groupId);
     const conflict = getCourseConflictsForDate(course, dateInput).length > 0;
@@ -25437,7 +25450,7 @@
       <div class="course-info">
         <strong>${esc(course.name)}${recurrenceBadgeHtml(course)}</strong>
         <span class="muted">${[course.discipline, group ? group.name : "", courseCoachLabel(shown) ? "Coach " + courseCoachLabel(shown) : "", courseRoomLabel(shown)].filter(Boolean).map(esc).join(" · ")}</span>
-        ${group ? `<span class="muted">${getMembersByGroup(group.id).length} inscrit(s)${asText(course.maxPlaces) !== "" ? ` · ${Math.max(0, asNumber(course.maxPlaces) - getMembersByGroup(group.id).length)} place(s) dispo` : ""}</span>` : ""}
+        ${courseEnrollmentLabel(course, group) ? `<span class="muted">${esc(courseEnrollmentLabel(course, group))}</span>` : ""}
       </div>
       <div class="course-actions">
         ${courseExceptionBadgeHtml(course, dateInput)}
@@ -25476,10 +25489,12 @@
           const ex = planningExceptionFor(c.id, di); const cancelled = Boolean(ex && ex.cancelled);
           const shown = resolveCourseForDate(c, di);
           const coachLbl = courseCoachLabel(shown); const roomLbl = courseRoomLabel(shown);
+          const enrollmentLbl = courseEnrollmentLabel(c, g);
           const metaHtml = [
             coachLbl ? `<span class="pws-coach">${esc(coachLbl)}</span>` : "",
             roomLbl ? `<span class="pws-room">${esc(roomLbl)}</span>` : "",
             g ? `<span class="pws-group">${esc(g.name)}</span>` : "",
+            enrollmentLbl ? `<span class="pws-enrollment">${esc(enrollmentLbl)}</span>` : "",
           ].filter(Boolean).join("");
           const badgesHtml = `${courseExceptionBadgeHtml(c, di)}${courseAlertsHtml(c, di)}`;
           const groupColor = g && asText(g.color) ? g.color : "";
