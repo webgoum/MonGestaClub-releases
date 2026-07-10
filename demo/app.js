@@ -3681,13 +3681,20 @@
     };
   }
 
-  // Logo à utiliser dans un e-mail HTML : uniquement un logo réellement personnalisé par le
-  // club (jamais le logo générique MonGestaClub par défaut, qui n'a pas sa place dans un mail
-  // envoyé au nom d'un club tiers). Absent -> renderEmailHtml bascule sur le nom du club.
+  // Logo à utiliser dans un e-mail HTML : logo personnalisé du club actif, sinon logo global de
+  // l'app, sinon le logo MonGestaClub par défaut — EXACTEMENT la même priorité que les factures/
+  // PDF (invoiceDocumentPayload : club.logoDataUrl > settings.logoDataUrl > defaultLogoDataUrl()).
+  // Un lot précédent excluait volontairement ce dernier repli des e-mails ; corrigé ici (retour
+  // Thierry) car ça créait une incohérence — le logo visible sur facture/PDF et dans l'app
+  // disparaissait sans raison du mail dès qu'aucun logo personnalisé n'était configuré (cas de
+  // tout club neuf/démo). defaultLogoDataUrl() est déjà préchargé au démarrage
+  // (preloadDefaultLogoDataUrl) ; "" tant qu'il n'est pas encore prêt -> renderEmailHtml bascule
+  // proprement sur le nom du club, jamais d'image cassée.
   function resolveClubLogoForEmail(club = activeClub()) {
     const source = club || {};
-    const candidate = asText(source.logoDataUrl) || asText(settings?.logoDataUrl);
-    return (typeof isLogoDataUrl === "function" && isLogoDataUrl(candidate)) ? candidate : "";
+    if (typeof isLogoDataUrl === "function" && isLogoDataUrl(source.logoDataUrl)) return source.logoDataUrl;
+    if (typeof isLogoDataUrl === "function" && isLogoDataUrl(settings?.logoDataUrl)) return settings.logoDataUrl;
+    return (typeof defaultLogoDataUrl === "function" && defaultLogoDataUrl()) || "";
   }
 
   // Lignes de pied de mail (nom du club + coordonnées si renseignées). Une ligne par info
@@ -3899,6 +3906,25 @@
     return ui.smtpSecretStatus;
   }
 
+  // À appeler à CHAQUE changement de club actif (voir loadActiveClubFromStore, seul point commun
+  // à switchActiveClub / création+activation d'un club / suppression du club actif). Les réglages
+  // SMTP eux-mêmes (settings.smtp) et le secret (fichier main process indexé par clubId) sont déjà
+  // correctement isolés par club — le bug constaté (config du club précédent encore affichée) venait
+  // uniquement de deux caches côté UI qui ne se rechargent pas tout seuls quand `settings` change
+  // sous eux : le brouillon d'édition (ui.smtpDraft) et le statut du secret (ui.smtpSecretStatus).
+  // Sans ce reset, un club fraîchement activé affichait encore les champs ET le "mot de passe déjà
+  // enregistré" du club précédent, alors même que settings.smtp et le secret réel étaient déjà,
+  // eux, ceux du bon club. Remettre ui.smtpDraft à null a aussi pour effet secondaire voulu
+  // d'abandonner un brouillon non enregistré du club précédent (jamais enregistré par erreur dans
+  // le nouveau club actif).
+  function invalidateSmtpUiStateForClubSwitch() {
+    ui.smtpDraft = null;
+    ui.smtpSecretStatus = undefined;
+    ui.smtpTesting = false;
+    ui.smtpSending = false;
+    if (smtpShellAvailable()) refreshSmtpSecretStatus().then(() => render());
+  }
+
   // Brouillon d'édition des champs SMTP (Paramètres > E-mails) : initialisé depuis settings.smtp,
   // puis conservé tel quel entre deux rendus tant que l'utilisateur tape (évite qu'un re-render
   // écrase la saisie en cours). Le mot de passe n'est JAMAIS pré-rempli depuis settings (il n'y est
@@ -3967,6 +3993,47 @@
     }
   }
 
+  // TLD réservées par l'IANA (RFC 2606) : ne pointent JAMAIS vers une vraie boîte mail (utilisées
+  // par les données de démonstration de MonGestaClub, ex. contact.email = "...@example.test").
+  // Un serveur relais SMTP (Gmail, etc.) accepte généralement le RCPT TO au moment de l'envoi —
+  // l'échec de livraison ne survient qu'ensuite, en différé (rebond), jamais visible dans la
+  // réponse synchrone de nodemailer.sendMail(). D'où un avertissement explicite AVANT l'envoi,
+  // plutôt que de compter sur le résultat SMTP pour détecter le problème après coup.
+  const RESERVED_EMAIL_TLDS = ["test", "example", "invalid", "localhost"];
+  function isReservedDemoEmailDomain(email) {
+    const domain = asText(email).split("@")[1]?.toLowerCase() || "";
+    const tld = domain.split(".").pop();
+    return RESERVED_EMAIL_TLDS.includes(tld);
+  }
+
+  // Avertit avant un envoi réel vers un domaine manifestement fictif (voir isReservedDemoEmailDomain
+  // ci-dessus). N'empêche jamais l'envoi (l'utilisateur peut vouloir tester le mécanisme) : renvoie
+  // simplement false si l'utilisateur annule. Ne bloque jamais une adresse réelle.
+  async function confirmReservedDemoEmailIfNeeded(email) {
+    if (!isReservedDemoEmailDomain(email)) return true;
+    const domain = asText(email).split("@")[1] || "";
+    return requestConfirm({
+      title: "Adresse de démonstration",
+      message: `« ${email} » utilise un domaine réservé (${domain}), qui ne correspond à aucune vraie boîte mail. Le serveur SMTP peut répondre « accepté » sans que le message soit jamais réellement livré.\n\nEnvoyer quand même (pour tester le mécanisme), ou annuler ?`,
+      confirmLabel: "Envoyer quand même",
+    });
+  }
+
+  // Valide un résultat sendEmailIntegrated() pour UN destinataire unique (fiche contact, relance) :
+  // ok:true seul ne suffit pas — un serveur relais peut accepter la transaction SMTP tout en
+  // rejetant explicitement ce destinataire précis (adresse invalide, domaine inexistant détecté
+  // immédiatement...). On ne traite comme échec que le rejet EXPLICITE de cette adresse : si
+  // accepted/rejected sont tous deux vides (certains transports ne renseignent pas cette info), on
+  // fait confiance à `ok` (comportement historique, aucun blocage arbitraire d'un envoi qui a
+  // réellement réussi). Ce même helper est utilisé par le dialogue contact et pourra l'être par
+  // tout futur envoi individuel, pour ne jamais dupliquer cette logique de validation.
+  function singleRecipientSendSucceeded(result, email) {
+    if (!result || !result.ok) return false;
+    const rejected = result.rejected || [];
+    const normalized = asText(email).toLowerCase();
+    return !rejected.some((r) => asText(r).toLowerCase().includes(normalized));
+  }
+
   function mailtoHref(email, subject = "", body = "") {
     const recipient = asText(email);
     if (!recipient) return "";
@@ -3986,7 +4053,7 @@
     }).join("");
   }
 
-  function openContactEmailDialog(contact = {}, templateKey = "contact") {
+  function openContactEmailDialog(contact = {}, templateKey = "contact", extraContext = {}) {
     if (!asText(contact.email)) {
       alert("Ce contact n'a pas d'adresse e-mail.");
       return;
@@ -3999,6 +4066,7 @@
       date: dateDisplay(dateInputValue(new Date())),
       module: "",
       identifiant: license?.machineId || "",
+      ...extraContext,
     };
     const initial = renderEmailTemplate(templateKey, context);
     const initialHtml = renderEmailHtml(initial.subject, initial.body, { context });
@@ -4009,19 +4077,45 @@
       field("subject", "Objet", initial.subject),
       textareaField("body", "Message", initial.body),
       `<div class="email-model-help"><strong>Parties automatiques</strong><p>Les informations comme le nom, le prénom, l'e-mail, le téléphone, la date ou l'identifiant ordinateur sont insérées automatiquement depuis la fiche. Tu peux modifier le texte final avant l'envoi.</p></div>`,
-      !smtpReady && smtpShellAvailable() ? `<p class="muted smtp-hint">Envoi intégré non configuré. Configurez le SMTP dans Paramètres &gt; E-mails, ou utilisez le bouton ci-dessous pour ouvrir votre messagerie.</p>` : "",
+      !smtpReady && smtpShellAvailable() ? `<p class="muted smtp-hint">Envoi intégré non configuré. Configurez le SMTP dans Paramètres &gt; E-mails, ou utilisez le bouton « Ouvrir la messagerie externe » ci-dessous.</p>` : "",
       `<div class="email-html-preview" style="margin-top:12px">
         <strong style="display:block;font-size:.86rem;color:var(--muted);margin-bottom:6px">Aperçu de l'e-mail</strong>
         <iframe title="Aperçu de l'e-mail" sandbox="" style="width:100%;height:360px;border:1px solid var(--line);border-radius:8px;background:#eef0f2" srcdoc="${esc(initialHtml)}"></iframe>
       </div>`,
     ].join("");
-    const smtpFooterButton = smtpReady
-      ? `<button type="button" class="primary" data-action="dialog-send-smtp">Envoyer depuis MonGestaClub</button>`
+    // Hiérarchie des actions (retour Thierry après vidéo) : le bouton principal (à droite,
+    // position de validation habituelle, style .primary déjà fourni par showDialog via
+    // submitLabel) doit être l'envoi réellement effectué au clic — l'envoi SMTP intégré quand il
+    // est prêt, sinon l'ouverture de la messagerie externe (seule option alors fonctionnelle :
+    // pas de faux bouton d'envoi intégré désactivé). Quand le SMTP est prêt, la messagerie externe
+    // devient une action secondaire explicite (bouton neutre, zone gauche du pied de dialogue,
+    // jamais confondue avec l'action principale) plutôt que de disparaître.
+    const mailtoFallbackButton = smtpReady
+      ? `<button type="button" class="dialog-mailto-fallback" data-action="dialog-open-mailto" title="Ouvrir votre messagerie habituelle avec ce message déjà préparé">Ouvrir la messagerie externe</button>`
       : "";
-    showDialog("Envoyer un mail", body, (form) => {
+    const submitLabel = smtpReady ? "Envoyer depuis MonGestaClub" : "Ouvrir la messagerie externe";
+    showDialog("Envoyer un mail", body, async (form, formElement) => {
       const email = form.get("email");
       const subject = form.get("subject");
       const message = form.get("body");
+      if (smtpReady) {
+        if (!(await confirmReservedDemoEmailIfNeeded(email))) return false;
+        const submitBtn = formElement?.querySelector(".dialog-footer-actions button[type=\"submit\"]");
+        const originalLabel = submitBtn?.textContent;
+        if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = "Envoi..."; }
+        const result = await sendEmailIntegrated({
+          to: [email],
+          subject,
+          text: message,
+          html: renderEmailHtml(subject, message, { context }),
+        });
+        if (singleRecipientSendSucceeded(result, email)) return `E-mail envoyé à ${personLabel(contact)}`;
+        if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = originalLabel; }
+        alert(result.ok
+          ? `Le serveur a refusé cette adresse (${email}). L'e-mail n'a pas été envoyé.`
+          : `Échec de l'envoi : ${result.message || "erreur inconnue"}`);
+        return false;
+      }
       window.location.href = mailtoHref(email, subject, message);
       return `Préparation d'un e-mail à ${personLabel(contact)}`;
     }, (formElement) => {
@@ -4038,32 +4132,11 @@
       });
       formElement.elements.subject?.addEventListener("input", refreshPreview);
       formElement.elements.body?.addEventListener("input", refreshPreview);
-      const sendBtn = formElement.querySelector('[data-action="dialog-send-smtp"]');
-      sendBtn?.addEventListener("click", async () => {
-        const email = formElement.elements.email.value;
-        const subjectVal = formElement.elements.subject.value;
-        const bodyVal = formElement.elements.body.value;
-        if (!asText(email)) return;
-        sendBtn.disabled = true;
-        const originalLabel = sendBtn.textContent;
-        sendBtn.textContent = "Envoi...";
-        const result = await sendEmailIntegrated({
-          to: [email],
-          subject: subjectVal,
-          text: bodyVal,
-          html: renderEmailHtml(subjectVal, bodyVal, { context }),
-        });
-        if (result.ok) {
-          ui.saveMessage = `E-mail envoyé à ${personLabel(contact)}`;
-          formElement.closest("dialog")?.close();
-          render();
-        } else {
-          alert(`Échec de l'envoi : ${result.message || "erreur inconnue"}`);
-          sendBtn.disabled = false;
-          sendBtn.textContent = originalLabel;
-        }
+      const mailtoBtn = formElement.querySelector('[data-action="dialog-open-mailto"]');
+      mailtoBtn?.addEventListener("click", () => {
+        window.location.href = mailtoHref(formElement.elements.email.value, formElement.elements.subject.value, formElement.elements.body.value);
       });
-    }, smtpFooterButton, () => {}, "Ouvrir la messagerie");
+    }, mailtoFallbackButton, () => {}, submitLabel);
   }
 
   function money(value) {
@@ -5682,7 +5755,9 @@
           </div>
         </div>
         ${email || phone ? `<div class="due-card-contact">
-          ${email ? `<a href="mailto:${esc(email)}">${esc(email)}</a>` : ""}
+          ${email ? (contactLinkForRow(person)
+            ? `<button type="button" class="link-button" data-action="send-contact-email" data-contact-link="${esc(contactLinkForRow(person))}" title="Envoyer un mail à ce contact">${esc(email)}</button>`
+            : `<a href="mailto:${esc(email)}">${esc(email)}</a>`) : ""}
           ${phone ? `<span>${esc(phone)}</span>` : ""}
         </div>` : ""}
         <div class="due-card-items">${itemRows}</div>
@@ -7153,13 +7228,6 @@
     return asText(person.email || linked.email);
   }
 
-  function reminderMailtoForTask(task = {}, text = "") {
-    const email = asText(task.email || reminderEmailForPerson(task.person));
-    if (!email) return "";
-    const rendered = renderEmailTemplate("reminder", reminderContext(task));
-    return mailtoHref(email, rendered.subject, text || rendered.body);
-  }
-
   function reminderContext(task = {}) {
     const title = asText(task.title);
     const titleName = title.split("·")[0].trim();
@@ -7192,16 +7260,29 @@
     };
   }
 
+  // « Relancer » (À faire) ouvrait auparavant directement un <a href="mailto:...">, sans jamais
+  // passer par l'interface e-mail MonGestaClub (pas d'aperçu HTML, pas de choix de modèle, pas de
+  // bouton SMTP intégré). Corrigé pour réutiliser openContactEmailDialog (même dialogue que
+  // partout ailleurs), avec le contexte de relance (montant/date/module) déjà calculé par
+  // reminderContext() passé en surcharge. Si le contact ne peut pas être résolu par ID (ligne
+  // libre sans lien fiable), on construit un contact minimal à partir de task.person + l'e-mail
+  // connu, pour ne jamais perdre la fonctionnalité existante. Repli "copier le message" conservé
+  // seulement pour le cas réellement sans e-mail (SMS/messagerie manuelle).
   function openReminderDialog(taskId) {
     const task = taskRows().find((row) => row.id === taskId);
     if (!task) return;
+    const email = asText(task.email || reminderEmailForPerson(task.person));
+    if (email) {
+      const resolved = contactByLink(contactLinkForRow(task.person || {}));
+      const contact = resolved || { ...(task.person || {}), email };
+      openContactEmailDialog(contact, "reminder", reminderContext(task));
+      return;
+    }
     const text = reminderTextForTask(task);
-    const mailto = reminderMailtoForTask(task, text);
     showInfoDialog("Relance prête", `<div class="dialog-section reminder-dialog">
-      <p class="muted">${mailto ? `Un e-mail est renseigné : tu peux ouvrir directement la messagerie avec le message déjà préparé.` : `Aucun e-mail n'est renseigné : copie le message pour l'envoyer par SMS ou messagerie.`}</p>
+      <p class="muted">Aucun e-mail n'est renseigné : copie le message pour l'envoyer par SMS ou messagerie.</p>
       <textarea data-reminder-text>${esc(text)}</textarea>
       <div class="inline-actions">
-        ${mailto ? `<a class="button-like primary-link" href="${esc(mailto)}">Ouvrir l'e-mail</a>` : ""}
         <button type="button" data-action="copy-reminder">Copier le message</button>
       </div>
     </div>`);
@@ -7831,14 +7912,14 @@
           </label>
           <div class="newsletter-paper">${newsletterPreviewInnerHtml()}</div>
           <div class="inline-actions">
+            <button ${smtpReadyForSend() ? "" : `class="primary"`} type="button" data-action="open-newsletter-mail">Ouvrir la messagerie externe</button>
             ${smtpReadyForSend() ? `<button class="primary" type="button" data-action="send-newsletter-mail-integrated" ${ui.smtpSending ? "disabled" : ""}>${ui.smtpSending ? "Envoi en cours…" : "Envoyer depuis MonGestaClub"}</button>` : ""}
-            <button ${smtpReadyForSend() ? "" : `class="primary"`} type="button" data-action="open-newsletter-mail">Ouvrir la messagerie</button>
             <button type="button" data-action="copy-newsletter-emails">Copier les e-mails</button>
             <button type="button" data-action="copy-newsletter-message">Copier le message</button>
             <button type="button" data-action="reset-newsletter-template">Recharger le modèle</button>
             <button type="button" data-action="open-payment-reminders">Relances paiement</button>
           </div>
-          ${smtpReadyForSend() ? "" : `<p class="muted smtp-hint">Envoi intégré non configuré. Configurez le SMTP dans Paramètres &gt; E-mails, ou utilisez votre messagerie.</p>`}
+          ${smtpReadyForSend() ? "" : `<p class="muted smtp-hint">Envoi intégré non configuré. Configurez le SMTP dans Paramètres &gt; E-mails, ou utilisez le bouton « Ouvrir la messagerie externe » ci-dessus.</p>`}
           <p class="muted">Les adresses sont placées en copie cachée pour préserver la confidentialité. Pour de très grosses listes, il vaut mieux envoyer en plusieurs fois.</p>
         </div>
         <div class="band pad newsletter-recipients-panel">
@@ -8295,10 +8376,17 @@ ${esc(bodyText)}</pre>
     const tel = row.mobile || row.phone || "";
     const tone = contactPaymentTone(kind, row);
     const documentCount = normalizeContactDocuments(row.documents).length;
+    // L'adresse e-mail cliquable de la liste des contacts était un <a href="mailto:...">
+    // brut : elle ouvrait directement la messagerie externe sans jamais passer par le
+    // dialogue MonGestaClub (aperçu HTML, modèle, bouton SMTP intégré). C'est l'action
+    // qu'un utilisateur clique le plus naturellement pour « envoyer un mail à ce contact »
+    // depuis la liste — corrigé pour réutiliser exactement le même chemin que le bouton
+    // « Envoyer un mail » du bas de fiche (data-action="send-contact-email", déjà correct).
+    const contactLink = `${kind === "members" ? "member" : "prospect"}:${row.id}`;
     return `<article class="membership-card contact-line clickable-card ${tone ? `payment-${tone}` : ""}" data-action="edit-contact" data-kind="${esc(kind)}" data-id="${esc(row.id)}">
       <div>${personCell(row)}</div>
       <div class="membership-card-meta contact-line-info">
-        ${row.email ? `<a href="${esc(contactEmailHref(row))}">${esc(row.email)}</a>` : alertInfoBadge("E-mail non renseigné")}
+        ${row.email ? `<button type="button" class="link-button" data-action="send-contact-email" data-contact-link="${esc(contactLink)}" title="Envoyer un mail à ce contact">${esc(row.email)}</button>` : alertInfoBadge("E-mail non renseigné")}
         ${tel ? `<a href="tel:${esc(tel)}">${esc(tel)}</a>` : alertInfoBadge("Téléphone non renseigné")}
       </div>
       <div class="membership-card-meta">
@@ -11791,7 +11879,11 @@ ${esc(bodyText)}</pre>
     const cloneSource = options.cloneFromClubId && store.data[options.cloneFromClubId] ? store.data[options.cloneFromClubId] : null;
     store.data[normalizedClub.id] = cloneSource ? {
       state: scopeStateToClub(cloneSource.state || normalizeState({}), normalizedClub.id, { rebrand: true }),
-      settings: settingsForClub(cloneSource.settings || normalizeSettings({}), normalizedClub),
+      // La config SMTP (serveur/port/expéditeur...) n'est JAMAIS dupliquée automatiquement, même
+      // en "duplication avec données" : le secret (mot de passe) ne suit de toute façon jamais
+      // (stocké séparément par clubId côté main process, jamais copié) — dupliquer les seuls
+      // champs non sensibles laisserait un club affiché "configuré" mais incapable d'envoyer.
+      settings: settingsForClub({ ...(cloneSource.settings || normalizeSettings({})), smtp: undefined }, normalizedClub),
     } : {
       state: scopeStateToClub(previousPayload.state || normalizeState({}), normalizedClub.id),
       settings: settingsForClub(previousPayload.settings || normalizeSettings({}), normalizedClub),
@@ -11836,6 +11928,7 @@ ${esc(bodyText)}</pre>
     ui.disciplineLetter = "";
     ui.stageLetter = "";
     ui.query = "";
+    if (typeof invalidateSmtpUiStateForClubSwitch === "function") invalidateSmtpUiStateForClubSwitch();
     return true;
   }
 
@@ -12042,6 +12135,11 @@ ${esc(bodyText)}</pre>
     if (!latestClub) return;
     latest.clubs = latest.clubs.filter((row) => row.id !== latestClub.id);
     delete latest.data[latestClub.id];
+    // Nettoyage du secret SMTP de CE club uniquement (jamais celui des autres clubs) : évite de
+    // laisser un secret orphelin indéfiniment côté main process une fois le club supprimé.
+    if (typeof smtpShellAvailable === "function" && smtpShellAvailable()) {
+      window.monGestaClubShell.smtpClearSecret(latestClub.id).catch(() => {});
+    }
     if (latest.activeClubId === latestClub.id) {
       latest.activeClubId = latest.clubs.find((row) => !row.archived)?.id || latest.clubs[0]?.id || "";
     }
@@ -17066,13 +17164,27 @@ ${esc(bodyText)}</pre>
     const category = memberCategory(row) || row.category || "";
     const customPhoto = identityPhoto(row);
     const displayPhoto = identityPhotoDisplaySrc(row);
+    // Widget "Coordonnées" réutilisé (alertes vigilance, popover dans facture/inscription…) :
+    // le lien e-mail était un <a href="mailto:...") brut ("Envoyer un mail"), ouvrant la
+    // messagerie externe directement au lieu du dialogue MonGestaClub. contactLinkForRow()
+    // (déjà utilisé juste en dessous pour "Ouvrir la fiche contact / facture") résout le
+    // membre/prospect réel derrière cette ligne fusionnée (adhésion/commande/inscription) :
+    // réutilisé ici pour retrouver le contact complet et ouvrir le même dialogue e-mail que
+    // partout ailleurs. Repli sur le mailto direct seulement si la résolution échoue (cas
+    // très rare : ligne sans contact lié), pour ne jamais rendre l'adresse totalement inerte.
+    const contactLink = contactLinkForRow(row);
+    const emailAction = row.email
+      ? (contactLink
+        ? `<button type="button" class="contact-action-link" data-action="send-contact-email" data-contact-link="${esc(contactLink)}" title="Ouvrir la messagerie MonGestaClub"><span>${esc(row.email)}</span><strong>Envoyer un mail</strong></button>`
+        : `<a class="contact-action-link" href="${esc(contactEmailHref(row))}" title="Ouvrir la messagerie"><span>${esc(row.email)}</span><strong>Envoyer un mail</strong></a>`)
+      : `<span class="muted">Non renseigné</span>`;
     return `<div class="contact-card">
       <div class="contact-card-head">
         <button class="contact-card-photo ${customPhoto ? "" : "default-avatar"}" type="button" data-action="open-identity-photo" data-photo-src="${esc(customPhoto)}" data-avatar-src="${esc(displayPhoto)}" title="${customPhoto ? "Ouvrir la photo" : "Ouvrir la silhouette"}"><img src="${esc(displayPhoto)}" alt="${customPhoto ? "Photo" : "Silhouette"} de ${esc(personLabel(row) || "contact")}" /></button>
         <div>${personCell(row)}</div>
       </div>
       <dl>
-        <div><dt>E-mail</dt><dd>${row.email ? `<a class="contact-action-link" href="${esc(contactEmailHref(row))}" title="Ouvrir la messagerie"><span>${esc(row.email)}</span><strong>Envoyer un mail</strong></a>` : `<span class="muted">Non renseigné</span>`}</dd></div>
+        <div><dt>E-mail</dt><dd>${emailAction}</dd></div>
         <div><dt>Téléphone</dt><dd>${tel ? `<a class="contact-action-link" href="tel:${esc(tel)}" title="Appeler ce numéro"><span>${esc(tel)}</span><strong>Appeler</strong></a>` : `<span class="muted">Non renseigné</span>`}</dd></div>
         <div><dt>Adresse</dt><dd>${address ? esc(address) : `<span class="muted">Non renseignée</span>`}</dd></div>
         <div><dt>Date de naissance</dt><dd>${dateDisplay(row.birthDate) || `<span class="muted">Non renseignée</span>`}</dd></div>
