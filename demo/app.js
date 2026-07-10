@@ -3646,6 +3646,106 @@
     };
   }
 
+  // Logo à utiliser dans un e-mail HTML : uniquement un logo réellement personnalisé par le
+  // club (jamais le logo générique MonGestaClub par défaut, qui n'a pas sa place dans un mail
+  // envoyé au nom d'un club tiers). Absent -> renderEmailHtml bascule sur le nom du club.
+  function resolveClubLogoForEmail(club = activeClub()) {
+    const source = club || {};
+    const candidate = asText(source.logoDataUrl) || asText(settings?.logoDataUrl);
+    return (typeof isLogoDataUrl === "function" && isLogoDataUrl(candidate)) ? candidate : "";
+  }
+
+  // Lignes de pied de mail (nom du club + coordonnées si renseignées). Une ligne par info
+  // disponible ; les champs vides sont simplement omis (pas de coordonnée à moitié affichée).
+  function clubEmailFooterLines(club = activeClub()) {
+    const ctx = clubEmailContext(club);
+    const lines = [ctx.clubNom];
+    const coord = [ctx.clubAdresse, [ctx.clubCodePostal, ctx.clubVille].filter(Boolean).join(" ")].filter(Boolean).join(" — ");
+    if (coord) lines.push(coord);
+    const contactLine = [ctx.clubTelephone, ctx.clubEmail].filter(Boolean).join(" · ");
+    if (contactLine) lines.push(contactLine);
+    return lines;
+  }
+
+  // Bloc "Détails" structuré : n'affiche que les variables réellement renseignées dans le
+  // contexte du mail (séance, coach, groupe, montant...). Bloc entier omis si rien à montrer.
+  function emailDetailRows(context = {}) {
+    const rows = [];
+    const push = (label, value) => {
+      const v = safeTemplateValue(value);
+      if (v) rows.push([label, v]);
+    };
+    push("Discipline", context.discipline);
+    push("Date", context.dateSeance || context.date);
+    const horaire = [context.heureDebut, context.heureFin].filter((v) => safeTemplateValue(v)).join(" - ");
+    if (horaire) push("Horaire", horaire);
+    push("Lieu", context.lieu || context.salleNom);
+    const coach = [context.coachPrenom, context.coachNom].filter((v) => safeTemplateValue(v)).join(" ") || context.groupeCoach;
+    push("Coach", coach);
+    push("Groupe", context.groupeNom);
+    push("Statut", context.statutSeance || context.factureStatut);
+    push("Montant", context.montant || context.montantDu || context.factureReste);
+    return rows;
+  }
+
+  // Rendu HTML "carte e-mail" compatible Gmail/Outlook/Apple Mail/Thunderbird : tableaux HTML
+  // pour la structure, styles inline uniquement, largeur fixe ~600px, aucune image indispensable
+  // au contenu (logo optionnel, fallback nom du club). Utilisé pour l'aperçu en Lot 2 ; le même
+  // HTML sera réutilisable tel quel comme corps d'e-mail réel quand le SMTP sera ajouté (lot
+  // ultérieur) — le logo restera alors à remplacer par une pièce jointe inline CID plutôt qu'une
+  // image base64, mais la structure ne change pas.
+  function renderEmailHtml(subject = "", text = "", options = {}) {
+    const club = options.club || (typeof activeClub === "function" ? activeClub() : {});
+    const clubName = safeTemplateValue(options.clubName || club?.name || settings?.clubName || "MonGestaClub");
+    const logo = options.logoDataUrl !== undefined ? options.logoDataUrl : resolveClubLogoForEmail(club);
+    const details = options.details || emailDetailRows(options.context || {});
+    const footerLines = options.footerLines || clubEmailFooterLines(club);
+    const bodyHtml = esc(text).replace(/\n/g, "<br>");
+    const headerHtml = logo
+      ? `<img src="${esc(logo)}" alt="${esc(clubName)}" width="120" style="display:block;max-width:120px;height:auto;margin:0 auto;border:0;outline:none;" />`
+      : `<strong style="display:block;font-size:20px;color:#ffffff;letter-spacing:.3px;font-family:Arial,Helvetica,sans-serif;">${esc(clubName)}</strong>`;
+    const detailsHtml = details.length ? `
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:20px;border:1px solid #e2e2e2;border-radius:6px;border-collapse:collapse;">
+          <tr><td colspan="2" style="padding:8px 12px;background:#f4f4f2;font:bold 12px Arial,Helvetica,sans-serif;color:#555555;border-bottom:1px solid #e2e2e2;">Détails</td></tr>
+          ${details.map(([label, value]) => `<tr>
+            <td style="padding:7px 12px;font:13px Arial,Helvetica,sans-serif;color:#777777;width:38%;border-bottom:1px solid #f0f0f0;vertical-align:top;">${esc(label)}</td>
+            <td style="padding:7px 12px;font:13px Arial,Helvetica,sans-serif;color:#222222;border-bottom:1px solid #f0f0f0;">${esc(value)}</td>
+          </tr>`).join("")}
+        </table>` : "";
+    const footerHtml = footerLines.filter(Boolean).map(esc).join("<br>");
+    return `<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>${esc(subject)}</title>
+</head>
+<body style="margin:0;padding:0;background:#eef0f2;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#eef0f2;">
+    <tr><td align="center" style="padding:24px 12px;">
+      <table role="presentation" width="600" cellpadding="0" cellspacing="0" style="width:600px;max-width:600px;background:#ffffff;border:1px solid #dfe1e4;border-radius:10px;border-collapse:separate;">
+        <tr><td style="background:#2f3740;padding:22px 24px;border-radius:10px 10px 0 0;text-align:center;">
+          ${headerHtml}
+        </td></tr>
+        <tr><td style="padding:28px 28px 8px;">
+          <h1 style="margin:0 0 16px;font:bold 18px Arial,Helvetica,sans-serif;color:#20242a;">${esc(subject)}</h1>
+          <div style="font:14px/1.6 Arial,Helvetica,sans-serif;color:#333333;">${bodyHtml}</div>
+          ${detailsHtml}
+        </td></tr>
+        <tr><td style="padding:20px 28px 24px;">
+          <hr style="border:none;border-top:1px solid #ececec;margin:0 0 16px;" />
+          <p style="margin:0;font:12px/1.6 Arial,Helvetica,sans-serif;color:#8a8f98;text-align:center;">
+            ${footerHtml}<br>
+            <span style="color:#b7bbc2;">Message envoyé depuis MonGestaClub</span>
+          </p>
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>`;
+  }
+
   function emailContextForContact(row = {}) {
     const phone = asText(row.mobile || row.phone);
     const address = [row.address, row.address2].map(safeTemplateValue).filter(Boolean).join(", ");
@@ -3716,6 +3816,20 @@
     };
   }
 
+  // Rendu complet {subject, text, html} d'un modèle : le texte reste celui du moteur existant
+  // (inchangé, utilisé par mailto/copie), le HTML est le nouvel aperçu carte e-mail (Lot 2,
+  // aucun envoi réel). `text` est conservé sous ce nom (et pas `body`) pour bien distinguer ce
+  // triplet du couple {subject, body} historique de renderEmailTemplate.
+  function renderEmailFull(templateKey, values = {}, options = {}) {
+    const rendered = renderEmailTemplate(templateKey, values);
+    const context = emailTemplateContext(values, templateKey);
+    return {
+      subject: rendered.subject,
+      text: rendered.body,
+      html: renderEmailHtml(rendered.subject, rendered.body, { context, ...options }),
+    };
+  }
+
   function mailtoHref(email, subject = "", body = "") {
     const recipient = asText(email);
     if (!recipient) return "";
@@ -3750,12 +3864,17 @@
       identifiant: license?.machineId || "",
     };
     const initial = renderEmailTemplate(templateKey, context);
+    const initialHtml = renderEmailHtml(initial.subject, initial.body, { context });
     const body = [
       field("email", "Destinataire", contact.email, "email", "readonly"),
       `<label>Modèle<select name="templateKey" data-contact-email-template>${emailTemplateOptions(templateKey)}</select></label>`,
       field("subject", "Objet", initial.subject),
       textareaField("body", "Message", initial.body),
       `<div class="email-model-help"><strong>Parties automatiques</strong><p>Les informations comme le nom, le prénom, l'e-mail, le téléphone, la date ou l'identifiant ordinateur sont insérées automatiquement depuis la fiche. Tu peux modifier le texte final avant l'envoi.</p></div>`,
+      `<div class="email-html-preview" style="margin-top:12px">
+        <strong style="display:block;font-size:.86rem;color:var(--muted);margin-bottom:6px">Aperçu de l'e-mail</strong>
+        <iframe title="Aperçu de l'e-mail" sandbox="" style="width:100%;height:360px;border:1px solid var(--line);border-radius:8px;background:#eef0f2" srcdoc="${esc(initialHtml)}"></iframe>
+      </div>`,
     ].join("");
     showDialog("Envoyer un mail", body, (form) => {
       const email = form.get("email");
@@ -3764,11 +3883,19 @@
       window.location.href = mailtoHref(email, subject, message);
       return `Préparation d'un e-mail à ${personLabel(contact)}`;
     }, (formElement) => {
+      const preview = formElement.querySelector(".email-html-preview iframe");
+      const refreshPreview = () => {
+        if (!preview) return;
+        preview.srcdoc = renderEmailHtml(formElement.elements.subject.value, formElement.elements.body.value, { context });
+      };
       formElement.elements.templateKey?.addEventListener("change", () => {
         const rendered = renderEmailTemplate(formElement.elements.templateKey.value, context);
         formElement.elements.subject.value = rendered.subject;
         formElement.elements.body.value = rendered.body;
+        refreshPreview();
       });
+      formElement.elements.subject?.addEventListener("input", refreshPreview);
+      formElement.elements.body?.addEventListener("input", refreshPreview);
     });
   }
 
@@ -7531,11 +7658,7 @@
           <label>Message
             <textarea rows="13" data-newsletter-field="body">${esc(newsletterBody())}</textarea>
           </label>
-          <div class="newsletter-paper">
-            <span>Aperçu du message</span>
-            <strong>${esc(newsletterSubject())}</strong>
-            <p>${esc(newsletterBody()).replace(/\n/g, "<br>")}</p>
-          </div>
+          <div class="newsletter-paper">${newsletterPreviewInnerHtml()}</div>
           <div class="inline-actions">
             <button class="primary" type="button" data-action="open-newsletter-mail">Ouvrir la messagerie</button>
             <button type="button" data-action="copy-newsletter-emails">Copier les e-mails</button>
@@ -7566,12 +7689,27 @@
     </div>`;
   }
 
+  // Aperçu HTML "carte e-mail" (Lot 2) + texte brut conservé (utilisé pour mailto/copie,
+  // inchangé). Factorisé pour être identique au premier rendu et lors des mises à jour en
+  // direct (updateNewsletterPreview), sans dupliquer le calcul.
+  function newsletterPreviewInnerHtml() {
+    const subject = newsletterSubject();
+    const bodyText = newsletterBody();
+    const html = renderEmailHtml(subject, bodyText, { context: newsletterTemplateValues() });
+    return `<span>Aperçu de l'e-mail</span>
+      <iframe title="Aperçu de l'e-mail" sandbox="" style="width:100%;height:420px;border:1px solid var(--line);border-radius:8px;background:#eef0f2;margin-top:4px" srcdoc="${esc(html)}"></iframe>
+      <details style="margin-top:8px;font-size:.86rem;color:var(--muted)">
+        <summary>Texte brut (utilisé pour l'ouverture de la messagerie et la copie)</summary>
+        <pre style="white-space:pre-wrap;font-family:inherit;margin:8px 0 0;padding:8px;background:var(--surface-3);border-radius:6px;color:inherit">${esc(subject)}
+
+${esc(bodyText)}</pre>
+      </details>`;
+  }
+
   function updateNewsletterPreview() {
     const paper = app.querySelector(".newsletter-paper");
     if (!paper) return;
-    paper.innerHTML = `<span>Aperçu du message</span>
-      <strong>${esc(newsletterSubject())}</strong>
-      <p>${esc(newsletterBody()).replace(/\n/g, "<br>")}</p>`;
+    paper.innerHTML = newsletterPreviewInnerHtml();
   }
 
   function updateNewsletterGeneratedFields() {
