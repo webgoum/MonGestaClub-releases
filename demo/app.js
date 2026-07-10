@@ -45,6 +45,14 @@
   const CLUBS_KEY = storageKey("mongestaclub-clubs-v1");
   const ACTIVE_CLUB_KEY = storageKey("mongestaclub-active-club-v1");
   const CLUB_MIGRATION_BACKUP_KEY = storageKey("mongestaclub-pre-multiclub-backup-v1");
+  const USERS_KEY = storageKey("mongestaclub-users-v1");
+  const ACTIVE_USER_KEY = storageKey("mongestaclub-active-user-v1");
+  // Identifiant stable et non re-généré de l'utilisateur système interne (migrations, imports,
+  // opérations automatiques) : jamais affiché dans le sélecteur, jamais désactivable.
+  const SYSTEM_USER_ID = "system";
+  // Journal d'activité (Lot 2) — global à l'installation, chaque événement porte son propre
+  // clubId (voir src/29-audit-log.js pour le choix d'architecture détaillé).
+  const AUDIT_LOG_KEY = storageKey("mongestaclub-audit-log-v1");
   const VAT20_MIGRATION_KEY = storageKey("mongestaclub-vat20-initial-data-v1");
   const LEGACY_STORAGE_KEY = storageKey(["bu", "do", "gestion", "state", "v1"].join("-"));
   const LEGACY_SETTINGS_KEY = storageKey(["bu", "do", "gestion", "settings", "v1"].join("-"));
@@ -118,6 +126,7 @@
     ["due-payments", "Paiements dus"],
     ["notes", "Notes"],
     ["history", "Historique"],
+    ["audit-log", "Journal d'activité"],
     ["help", "Aide"],
     ["assistant", "Accompagnement"],
   ];
@@ -152,6 +161,7 @@
     ["club-settings", "Paramètres du club"],
     ["notes", "Notes"],
     ["history", "Historique"],
+    ["audit-log", "Journal d'activité"],
     ["help", "Aide"],
   ];
 
@@ -163,7 +173,7 @@
     "dashboard", "tasks", "search", "contacts", "invoices", "newsletter", "disciplines",
     "groups", "coaches", "rooms", "planning", "availability", "attendance", "documents", "stages", "boutique",
     "stock", "clubs", "settings", "club-settings", "tarifs", "stats", "accounting",
-    "due-payments", "notes", "history", "help",
+    "due-payments", "notes", "history", "audit-log", "help",
   ];
   // Valeurs par défaut du mode Personnalisé (et base de migration).
   const DISPLAY_VISIBLE_DEFAULTS = {
@@ -171,7 +181,7 @@
     disciplines: true, groups: false, coaches: false, rooms: false, planning: false, availability: false, attendance: false,
     documents: false, stages: true, boutique: true, stock: false, clubs: true, settings: true,
     "club-settings": true, tarifs: true, stats: false, accounting: false, "due-payments": true,
-    notes: false, history: false, help: true,
+    notes: false, history: false, "audit-log": false, help: true,
   };
   // Modules affichés en mode Simple (interface allégée pour les petits clubs).
   const DISPLAY_SIMPLE_MODULES = [
@@ -351,6 +361,7 @@
     accounting: iconSvg("M4 7h16", "M6 7v12h12V7", "M9 11h6", "M9 15h6", "M8 3h8"),
     notes: iconSvg("M5 4h14v16H5z", "M8 8h8", "M8 12h8", "M8 16h5"),
     history: iconSvg("M3 12a9 9 0 1 0 3-6.7", "M3 4v6h6", "M12 7v6l4 2"),
+    "audit-log": iconSvg("M6 3h9l3 3v15H6z", "M15 3v3h3", "M9 11h6", "M9 15h6", "M9 7h3"),
     help: `<svg class="tool-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5" style="fill:currentColor;fill-opacity:.12;stroke:none"/><circle cx="12" cy="12" r="8.5"/><path d="M9.6 9.4a2.5 2.5 0 0 1 4.7 1c0 1.7-2.3 2-2.3 3.5"/><circle cx="12" cy="16.6" r=".7" style="fill:currentColor;stroke:none"/></svg>`,
     assistant: `<svg class="tool-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12.5c0 4.2 3.7 6.5 8 6.5s8-2.3 8-6.5" style="fill:currentColor;fill-opacity:.12;stroke:none"/><circle cx="12" cy="7" r="2.2"/><path d="M9.4 12.4a2.6 2.6 0 0 1 5.2 0"/><path d="M4 12.5c0 4.2 3.7 6.7 8 6.7s8-2.5 8-6.7"/></svg>`,
   };
@@ -635,12 +646,20 @@
     sidebarNavScroll: 0,
     helpTarget: "",
     saveMessage: "Enregistrement automatique actif",
+    auditLogFilter: "active",
   };
 
   let settings = startupMeasure("loadSettings", loadSettings);
   let state = startupMeasure("loadState", loadState);
   let clubStore = null;
   clubStore = startupMeasure("ensureClubStoreInitialized", ensureClubStoreInitialized);
+  // Doit s'exécuter APRÈS le club store : la migration du premier utilisateur associe
+  // "Administrateur local" à tous les clubs déjà présents (clubStore.clubs).
+  let userStore = null;
+  userStore = startupMeasure("ensureUserStoreInitialized", ensureUserStoreInitialized);
+  // Journal d'activité : global à l'installation, indépendant du club/utilisateur actifs.
+  let auditLog = null;
+  auditLog = startupMeasure("ensureAuditLogInitialized", ensureAuditLogInitialized);
   let license = null;
   const history = { undo: [], redo: [] };
   const navigationHistory = { back: [], forward: [] };
@@ -5203,7 +5222,10 @@
               <span>${esc(settings.clubSubtitle || "Gestion de club")}</span>
             </div>
           </div>
-          ${clubSwitcherHtml(currentClub)}
+          <div class="side-switchers">
+            ${clubSwitcherHtml(currentClub)}
+            ${userSwitcherHtml()}
+          </div>
           <nav class="nav">
             ${visibleMain.map(([key, label]) => {
               const isParent = menuParentKeys().includes(key);
@@ -5800,6 +5822,7 @@
     if (ui.view === "due-payments") return renderDuePayments();
     if (ui.view === "notes") return renderNotes();
     if (ui.view === "history") return renderHistory();
+    if (ui.view === "audit-log") return renderAuditLog();
     if (ui.view === "help") return renderHelp();
     if (ui.view === "assistant") return renderAssistant();
     if (ui.view === "settings") return renderSettings();
@@ -11507,6 +11530,9 @@ ${esc(bodyText)}</pre>
       ${settingsCollapsibleBand("smtp", "Envoi d'e-mails (SMTP)", smtpStatusLabel().label, `<div class="settings-panel smtp-settings">
           ${smtpSettingsHtml()}
         </div>`)}
+      ${settingsCollapsibleBand("users", "Utilisateurs", activeUserDisplayName() || "Profils locaux", `<div class="settings-panel users-settings-panel">
+          ${usersSettingsHtml()}
+        </div>`)}
       ${settingsCollapsibleBand("data", "Données", "Sauvegarde et vidage", `<div class="settings-panel">
           <p class="muted">Ces boutons vident réellement les données enregistrées dans la catégorie choisie. Avant de supprimer, exporte une sauvegarde JSON.</p>
           <div class="dialog-section demo-data-settings">
@@ -11913,6 +11939,27 @@ ${esc(bodyText)}</pre>
       if (beforeActiveClubId) appStorage.setItem(ACTIVE_CLUB_KEY, beforeActiveClubId);
       throw new Error("Sécurité multi-club : la sauvegarde aurait supprimé un club existant.");
     }
+    if (typeof recordAuditEvent === "function") {
+      if (options.create) {
+        const sourceClub = cloneSource ? store.clubs.find((row) => row.id === options.cloneFromClubId) : null;
+        recordAuditEvent({
+          action: cloneSource ? "club.duplicated" : "club.created",
+          entityType: "club",
+          entityId: normalizedClub.id,
+          entityLabel: normalizedClub.name,
+          clubId: normalizedClub.id,
+          metadata: cloneSource ? { sourceClubId: options.cloneFromClubId, sourceClubLabel: sourceClub?.name || "" } : {},
+        });
+      } else {
+        recordAuditEvent({
+          action: "club.settings.updated",
+          entityType: "club",
+          entityId: normalizedClub.id,
+          entityLabel: normalizedClub.name,
+          clubId: normalizedClub.id,
+        });
+      }
+    }
     if (savedStore.activeClubId === normalizedClub.id) loadActiveClubFromStore(savedStore);
     return savedStore;
   }
@@ -11929,6 +11976,9 @@ ${esc(bodyText)}</pre>
     ui.stageLetter = "";
     ui.query = "";
     if (typeof invalidateSmtpUiStateForClubSwitch === "function") invalidateSmtpUiStateForClubSwitch();
+    // Mode permissif (Lot 1 utilisateurs) : garantit une appartenance de l'utilisateur actif
+    // sur le club désormais actif, sans jamais bloquer si elle n'existait pas encore.
+    if (typeof ensureActiveUserMembershipForActiveClub === "function") ensureActiveUserMembershipForActiveClub();
     return true;
   }
 
@@ -12101,6 +12151,9 @@ ${esc(bodyText)}</pre>
       workingStore.activeClubId = workingStore.clubs.find((row) => !row.archived && row.id !== workingClub.id)?.id || "";
     }
     writeClubStore(workingStore);
+    if (typeof recordAuditEvent === "function") {
+      recordAuditEvent({ action: "club.archived", entityType: "club", entityId: workingClub.id, entityLabel: workingClub.name, clubId: workingClub.id });
+    }
     loadActiveClubFromStore(workingStore);
     ui.saveMessage = `Club archivé : ${workingClub.name}`;
     render();
@@ -12113,6 +12166,9 @@ ${esc(bodyText)}</pre>
     club.archived = false;
     club.updatedAt = new Date().toISOString();
     writeClubStore(store);
+    if (typeof recordAuditEvent === "function") {
+      recordAuditEvent({ action: "club.unarchived", entityType: "club", entityId: club.id, entityLabel: club.name, clubId: club.id });
+    }
     ui.saveMessage = `Club réactivé : ${club.name}`;
     render();
   }
@@ -12144,6 +12200,20 @@ ${esc(bodyText)}</pre>
       latest.activeClubId = latest.clubs.find((row) => !row.archived)?.id || latest.clubs[0]?.id || "";
     }
     const saved = writeClubStore(latest);
+    // Événement journalisé AVANT que loadActiveClubFromStore() ne bascule le club actif : le
+    // club supprimé n'existe déjà plus dans clubStore.clubs à ce stade, mais `latestClub` (capturé
+    // plus haut, avant filtrage) garde son id/nom pour une trace lisible malgré la suppression.
+    if (typeof recordAuditEvent === "function") {
+      recordAuditEvent({ action: "club.deleted", entityType: "club", entityId: latestClub.id, entityLabel: latestClub.name, clubId: latestClub.id });
+    }
+    // Supprime uniquement les appartenances liées à CE club (jamais celles des autres clubs) ;
+    // les utilisateurs eux-mêmes restent, même s'ils n'ont plus aucun club (pas de désactivation
+    // automatique — voir Lot 1 utilisateurs).
+    if (typeof normalizeUserStore === "function") {
+      const uStore = normalizeUserStore(userStore || rawUserStoreFromStorage());
+      uStore.memberships = uStore.memberships.filter((row) => row.clubId !== latestClub.id);
+      writeUserStore(uStore);
+    }
     loadActiveClubFromStore(saved);
     ui.saveMessage = `Club supprimé : ${latestClub.name}`;
     render();
@@ -12352,7 +12422,7 @@ ${esc(bodyText)}</pre>
       main: ["dashboard", "tasks", "grp-gestion", "grp-sport", "boutique", "grp-outils", "grp-analyse", "settings"],
       "grp-gestion": ["contacts", "invoices", "due-payments", "tarifs"],
       "grp-sport": ["disciplines", "groups", "coaches", "rooms", "planning", "attendance", "documents", "stages"],
-      "grp-outils": ["search", "newsletter", "notes", "history"],
+      "grp-outils": ["search", "newsletter", "notes", "history", "audit-log"],
       "grp-analyse": ["stats", "accounting"],
       settings: ["clubs", "club-settings", "help"],
       boutique: boutiqueViews.map(([k]) => k),
@@ -18721,6 +18791,11 @@ ${esc(bodyText)}</pre>
       exportedAt: new Date().toISOString(),
       activeClubId: activeClubId(),
       clubStore: normalizeClubStore(clubStore || rawClubStoreFromStorage()),
+      // Utilisateurs/appartenances : données métier sauvegardables (décision produit), mais
+      // jamais l'utilisateur actif de LA machine ni le système (recréé par normalisation).
+      userStore: userStoreForExport(),
+      // Journal d'activité : données métier exportées intégralement (aucune session locale à exclure ici).
+      auditLog: auditLogForExport(),
       state: normalizeState(clone(state)),
       settings: normalizeSettings(backupSettings),
       assets: {
@@ -19802,6 +19877,14 @@ ${esc(bodyText)}</pre>
     if (payload?.clubStore?.clubs?.length) {
       const imported = normalizeClubStore(payload.clubStore);
       writeClubStore(imported);
+      // Fusion, jamais remplacement : les profils locaux déjà présents ne sont ni écrasés ni
+      // dupliqués (même ID -> version locale conservée) ; les profils/appartenances inédits de
+      // la sauvegarde sont ajoutés. Sans utilisateurs dans la sauvegarde, ne change rien ici.
+      writeUserStore(mergeImportedUserStore(payload.userStore));
+      // Fusion par ID également pour le journal : jamais de remplacement, jamais de doublon
+      // (un ré-import du même fichier n'ajoute rien de plus). Sans journal dans la sauvegarde
+      // (ancien format), le journal local reste inchangé.
+      writeAuditLog(mergeImportedAuditLog(payload.auditLog));
       loadActiveClubFromStore(imported);
       const clubCount = imported.clubs.length;
       const memberCount = Object.values(imported.data || {}).reduce((sum, d) => sum + (d?.state?.memberships?.length || 0), 0);
@@ -21915,6 +21998,19 @@ ${esc(bodyText)}</pre>
       if (switchActiveClub(target.value)) render();
       return;
     }
+    if (target.dataset.userSwitch !== undefined) {
+      if (setActiveUser(target.value)) render();
+      return;
+    }
+    if (target.dataset.userRoleField !== undefined) {
+      setUserMembershipRole(target.dataset.userId, target.dataset.clubId, target.value);
+      return;
+    }
+    if (target.dataset.auditLogFilter !== undefined) {
+      ui.auditLogFilter = target.value === "all" ? "all" : "active";
+      render();
+      return;
+    }
     if (target.dataset.toggleArchivedClubs !== undefined) {
       ui.showArchivedClubs = Boolean(target.checked);
       render();
@@ -22230,6 +22326,11 @@ ${esc(bodyText)}</pre>
     }
     if (action === "unarchive-club") return unarchiveClub(button.dataset.clubId);
     if (action === "save-club-settings") return saveClubSettingsFromPage();
+    if (action === "new-user") return createUserFromPrompt();
+    if (action === "rename-user") return renameUserFromPrompt(button.dataset.userId);
+    if (action === "deactivate-user") return deactivateUserWithChecks(button.dataset.userId);
+    if (action === "reactivate-user") return reactivateUserById(button.dataset.userId);
+    if (action === "add-user-membership") return addUserMembershipFromButton(button.dataset.userId, button.dataset.clubId);
     if (action === "clear-history") {
       if (!normalizeActivityLog(state.activityLog).length) return;
       if (!await requestConfirm({ title: "Effacer l'historique", message: "Effacer tout l'historique des actions ?", confirmLabel: "Effacer", danger: true })) return;
@@ -31329,6 +31430,701 @@ ${esc(bodyText)}</pre>
       discipline: f.discipline, groupId: availGroupDim() ? f.groupId : "",
       coachId, roomId,
     });
+  }
+  // Utilisateurs locaux (Lot 1) — socle uniquement : identité + appartenance aux clubs.
+  // Globaux à l'installation (mongestaclub-users-v1), séparés du clubStore, sur le même
+  // modèle que celui-ci (normalizeXxx / write.../ ensure...Initialized). Aucune permission
+  // réelle, aucun mot de passe, aucun journal d'audit ici : uniquement de quoi savoir, plus
+  // tard, qui a fait quoi (Lot 2).
+
+  function userRoleOptions() {
+    return [
+      ["admin", "Administrateur"],
+      ["president", "Président"],
+      ["secretary", "Secrétaire"],
+      ["treasurer", "Trésorier"],
+      ["coach", "Encadrant"],
+      ["readonly", "Lecture seule"],
+    ];
+  }
+
+  function userRoleLabel(role) {
+    return userRoleOptions().find(([value]) => value === role)?.[1] || asText(role) || "Administrateur";
+  }
+
+  function rawUserStoreFromStorage() {
+    return parseJsonSafe(appStorage.getItem(USERS_KEY), null);
+  }
+
+  function normalizeUserRow(source = {}) {
+    const now = new Date().toISOString();
+    return {
+      id: asText(source.id) || id("user"),
+      displayName: asText(source.displayName) || "Utilisateur",
+      active: source.active !== false,
+      isSystem: Boolean(source.isSystem),
+      createdAt: source.createdAt || now,
+      updatedAt: source.updatedAt || now,
+    };
+  }
+
+  function normalizeMembershipRow(source = {}) {
+    const now = new Date().toISOString();
+    return {
+      id: asText(source.id) || id("membership"),
+      userId: asText(source.userId),
+      clubId: asText(source.clubId),
+      role: asText(source.role) || "admin",
+      createdAt: source.createdAt || now,
+      updatedAt: source.updatedAt || now,
+    };
+  }
+
+  // Idempotente : répare une structure absente/partielle, garantit l'utilisateur système
+  // unique et au moins un utilisateur normal actif, déduplique par ID (jamais par nom, index
+  // ou rôle), et filtre les appartenances orphelines (utilisateur ou club inexistant).
+  function normalizeUserStore(source = {}) {
+    const knownClubIds = new Set((clubStore?.clubs || []).map((club) => club.id));
+
+    const seenUserIds = new Set();
+    let users = (Array.isArray(source?.users) ? source.users : [])
+      .map(normalizeUserRow)
+      .filter((user) => {
+        if (seenUserIds.has(user.id)) return false;
+        seenUserIds.add(user.id);
+        return true;
+      });
+
+    // Utilisateur système : un seul, id stable, jamais désactivé.
+    const systemUsers = users.filter((user) => user.isSystem);
+    users = users.filter((user) => !user.isSystem);
+    const systemUser = normalizeUserRow({
+      ...(systemUsers[0] || {}),
+      id: SYSTEM_USER_ID,
+      displayName: systemUsers[0]?.displayName || "Système",
+      isSystem: true,
+      active: true,
+    });
+    users.push(systemUser);
+
+    // Au moins un utilisateur normal actif (filet de sécurité si tout a été désactivé/perdu).
+    if (!users.some((user) => !user.isSystem && user.active)) {
+      const firstNormal = users.find((user) => !user.isSystem);
+      if (firstNormal) firstNormal.active = true;
+      else users.push(normalizeUserRow({ displayName: "Administrateur local" }));
+    }
+
+    const validUserIds = new Set(users.map((user) => user.id));
+    const seenMembershipKeys = new Set();
+    const memberships = (Array.isArray(source?.memberships) ? source.memberships : [])
+      .map(normalizeMembershipRow)
+      .filter((membership) => {
+        if (!membership.userId || !membership.clubId) return false;
+        if (!validUserIds.has(membership.userId)) return false;
+        if (knownClubIds.size && !knownClubIds.has(membership.clubId)) return false;
+        const key = `${membership.userId}:${membership.clubId}`;
+        if (seenMembershipKeys.has(key)) return false;
+        seenMembershipKeys.add(key);
+        return true;
+      });
+
+    return {
+      version: 1,
+      users,
+      memberships,
+      activeUserId: asText(source?.activeUserId),
+    };
+  }
+
+  function writeUserStore(store) {
+    const normalized = normalizeUserStore(store);
+    appStorage.setItem(USERS_KEY, JSON.stringify(normalized));
+    if (normalized.activeUserId) appStorage.setItem(ACTIVE_USER_KEY, normalized.activeUserId);
+    userStore = normalized;
+    return normalized;
+  }
+
+  function ensureUserStoreInitialized() {
+    try {
+      const rawStore = rawUserStoreFromStorage();
+      // Détecté AVANT normalisation : normalizeUserStore() garantit déjà, via son propre filet
+      // de sécurité, qu'un utilisateur normal actif existe toujours (ex. si tout a été
+      // désactivé/corrompu). Si on testait cette condition APRÈS normalisation, ce filet de
+      // sécurité aurait déjà créé "Administrateur local" et la migration ne se déclencherait
+      // jamais. D'où ce test sur les données BRUTES, avant tout traitement.
+      const hadNormalUserBeforeNormalize = Array.isArray(rawStore?.users) && rawStore.users.some((user) => user && !user.isSystem);
+      let store = normalizeUserStore(rawStore || {});
+      let storeChanged = !rawStore || rawStore.version !== 1 || !Array.isArray(rawStore.users);
+
+      // Migration silencieuse : première installation sans structure utilisateur -> le filet de
+      // sécurité ci-dessus a déjà créé "Administrateur local" ; on l'associe en admin à tous les
+      // clubs déjà existants et on en fait l'utilisateur actif.
+      if (!hadNormalUserBeforeNormalize) {
+        const admin = store.users.find((user) => !user.isSystem);
+        if (admin) {
+          store.memberships.push(...(clubStore?.clubs || []).map((club) => normalizeMembershipRow({
+            userId: admin.id,
+            clubId: club.id,
+            role: "admin",
+          })));
+          store.activeUserId = admin.id;
+          storeChanged = true;
+        }
+      }
+
+      store = normalizeUserStore(store);
+
+      // Utilisateur actif toujours valide : restaure le dernier actif s'il existe encore et
+      // est actif, sinon retombe sur le premier utilisateur normal actif. Jamais le système.
+      if (!store.activeUserId || !store.users.some((user) => user.id === store.activeUserId && !user.isSystem && user.active)) {
+        const fallbackId = store.users.find((user) => !user.isSystem && user.active)?.id || "";
+        if (store.activeUserId !== fallbackId) storeChanged = true;
+        store.activeUserId = fallbackId;
+      }
+
+      if (storeChanged) {
+        writeUserStore(store);
+      } else {
+        userStore = store;
+        if (store.activeUserId && appStorage.getItem(ACTIVE_USER_KEY) !== store.activeUserId) {
+          appStorage.setItem(ACTIVE_USER_KEY, store.activeUserId);
+        }
+      }
+      return store;
+    } catch (error) {
+      console.error(error);
+      return normalizeUserStore({});
+    }
+  }
+
+  function activeUserId() {
+    return userStore?.activeUserId || appStorage.getItem(ACTIVE_USER_KEY) || "";
+  }
+
+  // Utilisée par les opérations déclenchées automatiquement (démo, import, création de club)
+  // qui ont besoin d'un utilisateur valide même si, pour une raison quelconque, aucun n'est
+  // encore actif : retombe sur le premier utilisateur normal actif, jamais sur le système.
+  function activeUserIdOrFallback() {
+    const uid = activeUserId();
+    if (uid) return uid;
+    const store = userStore || normalizeUserStore(rawUserStoreFromStorage());
+    return store.users.find((user) => !user.isSystem && user.active)?.id || "";
+  }
+
+  function activeUser() {
+    const store = userStore || normalizeUserStore(rawUserStoreFromStorage());
+    return store.users.find((user) => user.id === store.activeUserId && !user.isSystem)
+      || store.users.find((user) => !user.isSystem && user.active)
+      || null;
+  }
+
+  function activeUserDisplayName() {
+    return activeUser()?.displayName || "";
+  }
+
+  function systemUser() {
+    const store = userStore || normalizeUserStore(rawUserStoreFromStorage());
+    return store.users.find((user) => user.isSystem) || null;
+  }
+
+  // Utilisateurs proposables dans un sélecteur : jamais le système, jamais un désactivé.
+  function selectableUsers() {
+    const store = userStore || normalizeUserStore(rawUserStoreFromStorage());
+    return store.users.filter((user) => !user.isSystem && user.active);
+  }
+
+  function allNormalUsers() {
+    const store = userStore || normalizeUserStore(rawUserStoreFromStorage());
+    return store.users.filter((user) => !user.isSystem);
+  }
+
+  function setActiveUser(userId) {
+    const store = normalizeUserStore(userStore || rawUserStoreFromStorage());
+    const user = store.users.find((row) => row.id === userId && !row.isSystem && row.active);
+    if (!user) return false;
+    store.activeUserId = user.id;
+    writeUserStore(store);
+    ensureActiveUserMembershipForActiveClub();
+    return true;
+  }
+
+  function userMembershipForClub(userId, clubId) {
+    const store = userStore || normalizeUserStore(rawUserStoreFromStorage());
+    return store.memberships.find((row) => row.userId === userId && row.clubId === clubId) || null;
+  }
+
+  // Crée une appartenance simple si elle n'existe pas encore. Mode permissif : n'échoue que si
+  // l'utilisateur ou le club n'existe pas ; ne bloque jamais la navigation par ailleurs.
+  function ensureUserMembership(userId, clubId, role = "admin") {
+    if (!userId || !clubId) return null;
+    const store = normalizeUserStore(userStore || rawUserStoreFromStorage());
+    if (!store.users.some((user) => user.id === userId)) return null;
+    if (!(clubStore?.clubs || []).some((club) => club.id === clubId)) return null;
+    let membership = store.memberships.find((row) => row.userId === userId && row.clubId === clubId);
+    if (membership) return membership;
+    membership = normalizeMembershipRow({ userId, clubId, role });
+    store.memberships.push(membership);
+    writeUserStore(store);
+    return membership;
+  }
+
+  // Point d'appel unique (changement de club, changement d'utilisateur, import, création/
+  // activation de club) : garantit que l'utilisateur actif a une appartenance sur le club
+  // actif, sans jamais bloquer si ce n'est pas encore le cas.
+  function ensureActiveUserMembershipForActiveClub() {
+    const uid = activeUserIdOrFallback();
+    const cid = typeof activeClubId === "function" ? activeClubId() : "";
+    if (uid && cid) ensureUserMembership(uid, cid, "admin");
+  }
+
+  // --- Sérialisation pour sauvegarde/export : les utilisateurs et appartenances sont des
+  // données métier (décision produit), mais jamais l'utilisateur actif de la machine (session
+  // locale) ni l'utilisateur système (recréé de façon déterministe par la normalisation).
+  function userStoreForExport() {
+    const store = normalizeUserStore(userStore || rawUserStoreFromStorage());
+    return {
+      version: store.version,
+      users: store.users.filter((user) => !user.isSystem),
+      memberships: store.memberships.filter((row) => row.userId !== SYSTEM_USER_ID),
+    };
+  }
+
+  // Fusionne un userStore importé dans le local : ne remplace jamais un utilisateur local
+  // existant (même ID), n'ajoute que les profils/appartenances inédits. Aucune collision d'ID
+  // possible : un ID déjà présent localement garde toujours sa version locale.
+  function mergeImportedUserStore(importedRaw) {
+    const localStore = normalizeUserStore(userStore || rawUserStoreFromStorage());
+    if (!importedRaw || !Array.isArray(importedRaw.users)) return localStore;
+
+    const localUserIds = new Set(localStore.users.map((user) => user.id));
+    const importedUsers = importedRaw.users
+      .map(normalizeUserRow)
+      .filter((user) => !user.isSystem && !localUserIds.has(user.id));
+    const mergedUsers = [...localStore.users, ...importedUsers];
+    const mergedUserIds = new Set(mergedUsers.map((user) => user.id));
+
+    const localMembershipKeys = new Set(localStore.memberships.map((row) => `${row.userId}:${row.clubId}`));
+    const importedMemberships = (Array.isArray(importedRaw.memberships) ? importedRaw.memberships : [])
+      .map(normalizeMembershipRow)
+      .filter((row) => mergedUserIds.has(row.userId) && !localMembershipKeys.has(`${row.userId}:${row.clubId}`));
+
+    return normalizeUserStore({
+      ...localStore,
+      users: mergedUsers,
+      memberships: [...localStore.memberships, ...importedMemberships],
+    });
+  }
+
+  // --- Actions déclenchées depuis Paramètres > Utilisateurs (voir handleAction) ---
+
+  async function createUserFromPrompt() {
+    const name = await requestTextInput({
+      title: "Créer un utilisateur",
+      label: "Nom affiché",
+      placeholder: "Ex. Secrétaire",
+      confirmLabel: "Créer",
+    });
+    if (!name) return;
+    const store = normalizeUserStore(userStore || rawUserStoreFromStorage());
+    const ambiguous = store.users.some((user) => !user.isSystem && user.displayName.toLowerCase() === name.toLowerCase());
+    const user = normalizeUserRow({ displayName: name });
+    store.users.push(user);
+    writeUserStore(store);
+    if (typeof recordAuditEvent === "function") {
+      recordAuditEvent({ action: "user.created", entityType: "user", entityId: user.id, entityLabel: user.displayName });
+    }
+    ui.saveMessage = ambiguous
+      ? `Utilisateur créé : ${user.displayName} (un autre profil porte déjà ce nom)`
+      : `Utilisateur créé : ${user.displayName}`;
+    render();
+  }
+
+  async function renameUserFromPrompt(userId) {
+    const store = normalizeUserStore(userStore || rawUserStoreFromStorage());
+    const user = store.users.find((row) => row.id === userId && !row.isSystem);
+    if (!user) return;
+    const name = await requestTextInput({
+      title: "Renommer l'utilisateur",
+      label: "Nom affiché",
+      value: user.displayName,
+      confirmLabel: "Enregistrer",
+    });
+    if (!name) return;
+    const ambiguous = store.users.some((row) => row.id !== user.id && !row.isSystem && row.displayName.toLowerCase() === name.toLowerCase());
+    const previousLabel = user.displayName;
+    user.displayName = name;
+    user.updatedAt = new Date().toISOString();
+    writeUserStore(store);
+    if (typeof recordAuditEvent === "function") {
+      recordAuditEvent({
+        action: "user.renamed",
+        entityType: "user",
+        entityId: user.id,
+        entityLabel: name,
+        metadata: { previousLabel, newLabel: name },
+      });
+    }
+    ui.saveMessage = ambiguous
+      ? `Utilisateur renommé : ${name} (un autre profil porte déjà ce nom)`
+      : `Utilisateur renommé : ${name}`;
+    render();
+  }
+
+  async function deactivateUserWithChecks(userId) {
+    const store = normalizeUserStore(userStore || rawUserStoreFromStorage());
+    const user = store.users.find((row) => row.id === userId && !row.isSystem);
+    if (!user) return;
+    if (user.id === activeUserId()) {
+      alert("Impossible de désactiver l'utilisateur actuellement actif. Choisis d'abord un autre profil actif.");
+      return;
+    }
+    const otherActiveExists = store.users.some((row) => !row.isSystem && row.active && row.id !== user.id);
+    if (!otherActiveExists) {
+      alert("Impossible de désactiver le dernier utilisateur actif. Crée ou réactive un autre profil avant.");
+      return;
+    }
+    const confirmed = await requestConfirm({
+      title: "Désactiver l'utilisateur",
+      message: `Désactiver ${user.displayName} ?\n\nSon profil et ses appartenances aux clubs restent conservés ; il disparaîtra seulement du sélecteur.`,
+      confirmLabel: "Désactiver",
+    });
+    if (!confirmed) return;
+    user.active = false;
+    user.updatedAt = new Date().toISOString();
+    writeUserStore(store);
+    if (typeof recordAuditEvent === "function") {
+      recordAuditEvent({ action: "user.deactivated", entityType: "user", entityId: user.id, entityLabel: user.displayName });
+    }
+    ui.saveMessage = `Utilisateur désactivé : ${user.displayName}`;
+    render();
+  }
+
+  function reactivateUserById(userId) {
+    const store = normalizeUserStore(userStore || rawUserStoreFromStorage());
+    const user = store.users.find((row) => row.id === userId && !row.isSystem);
+    if (!user) return;
+    user.active = true;
+    user.updatedAt = new Date().toISOString();
+    writeUserStore(store);
+    if (typeof recordAuditEvent === "function") {
+      recordAuditEvent({ action: "user.reactivated", entityType: "user", entityId: user.id, entityLabel: user.displayName });
+    }
+    ui.saveMessage = `Utilisateur réactivé : ${user.displayName}`;
+    render();
+  }
+
+  function addUserMembershipFromButton(userId, clubId) {
+    const membership = ensureUserMembership(userId, clubId, "admin");
+    if (!membership) return;
+    ui.saveMessage = "Appartenance ajoutée";
+    render();
+  }
+
+  function setUserMembershipRole(userId, clubId, role) {
+    const store = normalizeUserStore(userStore || rawUserStoreFromStorage());
+    const membership = store.memberships.find((row) => row.userId === userId && row.clubId === clubId);
+    if (!membership) return;
+    membership.role = asText(role) || "admin";
+    membership.updatedAt = new Date().toISOString();
+    writeUserStore(store);
+    render();
+  }
+
+  // --- Rendu : sélecteur discret (barre latérale) + panneau Paramètres > Utilisateurs ---
+
+  function userSwitcherHtml() {
+    const users = selectableUsers();
+    const current = activeUser();
+    if (users.length <= 1) {
+      return `<div class="user-switcher compact" title="Utilisateur actif">
+        <span>Utilisateur actif</span>
+        <strong>${esc(current?.displayName || "Administrateur local")}</strong>
+      </div>`;
+    }
+    return `<div class="user-switcher" title="Utilisateur actif">
+      <span>Utilisateur actif</span>
+      <select data-user-switch>
+        ${users.map((user) => `<option value="${esc(user.id)}" ${user.id === current?.id ? "selected" : ""}>${esc(user.displayName)}</option>`).join("")}
+      </select>
+    </div>`;
+  }
+
+  function userMembershipRowHtml(user, clubs, store) {
+    const rows = clubs.map((club) => {
+      const membership = store.memberships.find((row) => row.userId === user.id && row.clubId === club.id);
+      return `<label class="user-membership-row">
+        <span>${esc(club.name)}</span>
+        ${membership
+          ? `<select data-user-role-field data-user-id="${esc(user.id)}" data-club-id="${esc(club.id)}">
+              ${userRoleOptions().map(([value, label]) => `<option value="${esc(value)}" ${membership.role === value ? "selected" : ""}>${esc(label)}</option>`).join("")}
+            </select>`
+          : `<button type="button" data-action="add-user-membership" data-user-id="${esc(user.id)}" data-club-id="${esc(club.id)}">Ajouter à ce club</button>`}
+      </label>`;
+    }).join("");
+    return `<div class="user-memberships">${rows}</div>`;
+  }
+
+  function userCardHtml(user, clubs, store, options = {}) {
+    const isActive = user.id === activeUserId();
+    return `<div class="user-card ${isActive ? "active" : ""}">
+      <div class="user-card-head">
+        <strong>${esc(user.displayName)}</strong>
+        ${isActive ? `<em>Actif</em>` : ""}
+      </div>
+      <div class="inline-actions">
+        <button type="button" data-action="rename-user" data-user-id="${esc(user.id)}">Renommer</button>
+        ${options.deactivated
+          ? `<button type="button" class="primary" data-action="reactivate-user" data-user-id="${esc(user.id)}">Réactiver</button>`
+          : `<button type="button" data-action="deactivate-user" data-user-id="${esc(user.id)}">Désactiver</button>`}
+      </div>
+      ${userMembershipRowHtml(user, clubs, store)}
+    </div>`;
+  }
+
+  function usersSettingsHtml() {
+    const store = userStore || normalizeUserStore(rawUserStoreFromStorage());
+    const clubs = (clubStore?.clubs || []).filter((club) => !club.archived);
+    const normalUsers = store.users.filter((user) => !user.isSystem);
+    const activeUsers = normalUsers.filter((user) => user.active);
+    const inactiveUsers = normalUsers.filter((user) => !user.active);
+    return `<div class="users-settings">
+      <p class="muted">Chaque profil permet de distinguer qui utilise le logiciel sur cet ordinateur. Le rôle par club est mémorisé pour préparer un futur système de droits — il n'a aucun effet aujourd'hui.</p>
+      <div class="inline-actions">
+        <button type="button" class="primary" data-action="new-user">Créer un utilisateur</button>
+      </div>
+      <h4>Utilisateurs actifs</h4>
+      <div class="user-card-list">${activeUsers.map((user) => userCardHtml(user, clubs, store)).join("") || `<p class="muted">Aucun.</p>`}</div>
+      ${inactiveUsers.length ? `<h4>Utilisateurs désactivés</h4>
+      <div class="user-card-list">${inactiveUsers.map((user) => userCardHtml(user, clubs, store, { deactivated: true })).join("")}</div>` : ""}
+    </div>`;
+  }
+  // Journal d'activité (Lot 2) — socle uniquement : événements structurés, append-only,
+  // non modifiable/non supprimable depuis l'interface. Coexiste avec l'ancien fil "Historique"
+  // (state.activityLog, voir 07-history-nav.js) : ce dernier reste un fil de confort limité et
+  // effaçable pour l'utilisateur ; ce journal-ci est la source de vérité durable pour "qui a
+  // fait quoi", pensée pour l'export/import et un futur affichage filtrable.
+  //
+  // Architecture retenue : stockage GLOBAL à l'installation (mongestaclub-audit-log-v1),
+  // séparé de clubStore, chaque événement portant son propre `clubId`. Choisi plutôt qu'un
+  // journal imbriqué dans store.data[clubId] pour trois raisons concrètes :
+  //  1. Duplication de club (voir saveClub, options.cloneFromClubId) : scopeStateToClub()
+  //     copie tout le state source. Si le journal y vivait, il faudrait l'exclure explicitement
+  //     à CHAQUE copie pour ne pas dupliquer tout l'historique d'un club dans son clone.
+  //     Un stockage séparé rend ce risque structurellement impossible.
+  //  2. Suppression de club (deleteClub) : `delete latest.data[latestClub.id]` supprimerait
+  //     un journal imbriqué avec le club. Le stockage séparé garantit que l'événement
+  //     "club.deleted" (et tout l'historique passé de ce club) reste consultable après coup.
+  //  3. Consultation/export cross-club : un seul tableau, filtrable par clubId, sans avoir à
+  //     agréger N journaux séparés. Même précédent déjà utilisé pour userStore.memberships
+  //     (Lot 1) : données globales à l'installation, chaque ligne taguée par clubId.
+
+  const AUDIT_ROLE_ACTIONS = [
+    "user.created", "user.renamed", "user.deactivated", "user.reactivated",
+    "club.created", "club.duplicated", "club.archived", "club.unarchived", "club.deleted",
+    "club.settings.updated",
+  ];
+
+  function rawAuditLogFromStorage() {
+    return parseJsonSafe(appStorage.getItem(AUDIT_LOG_KEY), null);
+  }
+
+  // Idempotente : accepte une structure absente/partielle, ignore les événements invalides
+  // (sans action/entityType), déduplique par ID, garantit metadata comme objet simple.
+  // Ne recrée jamais un historique artificiel pour les données qui existaient déjà avant ce lot.
+  function normalizeAuditEvent(source = {}) {
+    if (!source || typeof source !== "object") return null;
+    const action = asText(source.action);
+    const entityType = asText(source.entityType);
+    if (!action || !entityType) return null;
+    // Horodatage ISO complet (date + heure) : ne PAS utiliser parseDate() ici, prévu pour des
+    // dates seules (naissance...) et qui tronquerait l'heure à minuit local.
+    const timestampMs = Date.parse(source.timestamp);
+    const metadata = (source.metadata && typeof source.metadata === "object" && !Array.isArray(source.metadata)) ? source.metadata : {};
+    return {
+      id: asText(source.id) || id("audit"),
+      timestamp: Number.isFinite(timestampMs) ? new Date(timestampMs).toISOString() : new Date().toISOString(),
+      clubId: asText(source.clubId),
+      actorId: asText(source.actorId) || SYSTEM_USER_ID,
+      actorNameSnapshot: asText(source.actorNameSnapshot) || "Système",
+      action,
+      entityType,
+      entityId: asText(source.entityId),
+      entityLabel: asText(source.entityLabel),
+      metadata,
+    };
+  }
+
+  function normalizeAuditLog(source) {
+    const rows = Array.isArray(source) ? source : (Array.isArray(source?.events) ? source.events : []);
+    const seenIds = new Set();
+    const events = rows
+      .map(normalizeAuditEvent)
+      .filter((event) => {
+        if (!event) return false;
+        if (seenIds.has(event.id)) return false;
+        seenIds.add(event.id);
+        return true;
+      });
+    return { version: 1, events };
+  }
+
+  function writeAuditLog(store) {
+    const normalized = normalizeAuditLog(store);
+    appStorage.setItem(AUDIT_LOG_KEY, JSON.stringify(normalized));
+    auditLog = normalized;
+    return normalized;
+  }
+
+  function ensureAuditLogInitialized() {
+    try {
+      const raw = rawAuditLogFromStorage();
+      const normalized = normalizeAuditLog(raw || {});
+      if (!raw || raw.version !== 1) {
+        writeAuditLog(normalized);
+      } else {
+        auditLog = normalized;
+      }
+      return normalized;
+    } catch (error) {
+      console.error(error);
+      return normalizeAuditLog({});
+    }
+  }
+
+  // Point d'écriture UNIQUE du journal : aucun autre module ne doit écrire directement dans
+  // AUDIT_LOG_KEY. `clubId`/`actorId`/`actorNameSnapshot` sont déductibles automatiquement
+  // (utilisateur/club actifs) mais peuvent être forcés explicitement — notamment pour la
+  // suppression d'un club, où le club n'existe déjà plus au moment de journaliser.
+  function recordAuditEvent({ action, entityType, entityId = "", entityLabel = "", metadata = {}, clubId, actorId, actorNameSnapshot } = {}) {
+    if (!action || !entityType) return null;
+    const resolvedActorId = actorId || (typeof activeUserIdOrFallback === "function" ? activeUserIdOrFallback() : "") || SYSTEM_USER_ID;
+    const resolvedActorName = actorNameSnapshot
+      || (typeof activeUserDisplayName === "function" ? activeUserDisplayName() : "")
+      || "Système";
+    const event = normalizeAuditEvent({
+      id: id("audit"),
+      timestamp: new Date().toISOString(),
+      clubId: asText(clubId) || (typeof activeClubId === "function" ? activeClubId() : ""),
+      actorId: resolvedActorId,
+      actorNameSnapshot: resolvedActorName,
+      action,
+      entityType,
+      entityId,
+      entityLabel,
+      metadata,
+    });
+    if (!event) return null;
+    const store = normalizeAuditLog(auditLog || rawAuditLogFromStorage());
+    store.events.push(event);
+    writeAuditLog(store);
+    return event;
+  }
+
+  // --- Export / import (Lot 2) ---
+
+  // Le journal est exporté intégralement : contrairement à userStore, aucun champ de session
+  // locale (type "utilisateur actif") n'existe ici à exclure.
+  function auditLogForExport() {
+    return normalizeAuditLog(auditLog || rawAuditLogFromStorage());
+  }
+
+  // Fusionne un journal importé dans le local : jamais de remplacement, jamais de doublon
+  // (déduplication par ID). Une sauvegarde sans journal (ancien format) ne change rien.
+  // Limite assumée : l'application ne propose actuellement qu'un remplacement complet du
+  // clubStore à l'import (pas d'import partiel d'un seul club dans une installation
+  // multi-club existante) ; aucun remappage de clubId/entityId n'est donc nécessaire ici.
+  // Si un import partiel de club est développé plus tard, ce remappage devra être ajouté.
+  function mergeImportedAuditLog(importedRaw) {
+    const local = normalizeAuditLog(auditLog || rawAuditLogFromStorage());
+    if (!importedRaw) return local;
+    const imported = normalizeAuditLog(importedRaw);
+    if (!imported.events.length) return local;
+    const localIds = new Set(local.events.map((event) => event.id));
+    const newEvents = imported.events.filter((event) => !localIds.has(event.id));
+    return normalizeAuditLog({ events: [...local.events, ...newEvents] });
+  }
+
+  // --- Rendu humain (séparé des données stockées, jamais l'inverse) ---
+
+  function auditEntityTypeLabelFr(entityType) {
+    if (entityType === "user") return "un utilisateur";
+    if (entityType === "club") return "un club";
+    return "un élément";
+  }
+
+  const AUDIT_EVENT_RENDERERS = {
+    "user.created": (actor, label) => `${actor} a créé l'utilisateur « ${label || "?"} »`,
+    "user.renamed": (actor, label, metadata) => {
+      const previous = asText(metadata.previousLabel);
+      const next = asText(metadata.newLabel) || label || "?";
+      return previous
+        ? `${actor} a renommé l'utilisateur « ${previous} » en « ${next} »`
+        : `${actor} a renommé l'utilisateur « ${next} »`;
+    },
+    "user.deactivated": (actor, label) => `${actor} a désactivé l'utilisateur « ${label || "?"} »`,
+    "user.reactivated": (actor, label) => `${actor} a réactivé l'utilisateur « ${label || "?"} »`,
+    "club.created": (actor, label) => `${actor} a créé le club « ${label || "?"} »`,
+    "club.duplicated": (actor, label, metadata) => {
+      const source = asText(metadata.sourceClubLabel);
+      return source
+        ? `${actor} a dupliqué le club « ${source} » en « ${label || "?"} »`
+        : `${actor} a dupliqué un club en « ${label || "?"} »`;
+    },
+    "club.archived": (actor, label) => `${actor} a archivé le club « ${label || "?"} »`,
+    "club.unarchived": (actor, label) => `${actor} a désarchivé le club « ${label || "?"} »`,
+    "club.deleted": (actor, label) => `${actor} a supprimé le club « ${label || "?"} »`,
+    "club.settings.updated": (actor, label) => `${actor} a modifié les paramètres du club « ${label || "?"} »`,
+  };
+
+  // Gère proprement : action inconnue, label absent, métadonnée manquante — jamais d'erreur,
+  // toujours une phrase lisible (repli générique par type d'entité).
+  function auditEventText(event) {
+    if (!event) return "";
+    const actor = asText(event.actorNameSnapshot) || "Quelqu'un";
+    const label = asText(event.entityLabel);
+    const renderer = AUDIT_EVENT_RENDERERS[event.action];
+    if (renderer) return renderer(actor, label, event.metadata || {});
+    return `${actor} a effectué une action sur ${auditEntityTypeLabelFr(event.entityType)}`;
+  }
+
+  // --- Consultation (Outils > Journal d'activité) ---
+
+  function auditLogClubLabel(clubId) {
+    if (!clubId) return "—";
+    const club = (clubStore?.clubs || []).find((row) => row.id === clubId);
+    return club ? club.name : "Club supprimé";
+  }
+
+  function auditLogRows() {
+    const store = auditLog || normalizeAuditLog(rawAuditLogFromStorage());
+    const filterClubId = ui.auditLogFilter === "all" ? "" : (typeof activeClubId === "function" ? activeClubId() : "");
+    const rows = filterClubId ? store.events.filter((event) => event.clubId === filterClubId) : store.events.slice();
+    return rows.sort((a, b) => (b.timestamp || "").localeCompare(a.timestamp || ""));
+  }
+
+  function renderAuditLog() {
+    const rows = auditLogRows();
+    return `<div class="band">
+      <div class="band-title">
+        <div><h2>Journal d'activité</h2><p class="muted">Qui a fait quoi, quand, sur quel club — utilisateurs, clubs et paramètres du club.</p></div>
+        <label>Affichage
+          <select data-audit-log-filter>
+            <option value="active" ${ui.auditLogFilter !== "all" ? "selected" : ""}>Club actif</option>
+            <option value="all" ${ui.auditLogFilter === "all" ? "selected" : ""}>Tous les clubs</option>
+          </select>
+        </label>
+      </div>
+      ${rows.length ? `<div class="table-wrap"><table class="editable-table">
+        <thead><tr><th>Date</th><th>Utilisateur</th><th>Club</th><th>Action</th><th>Élément concerné</th></tr></thead>
+        <tbody>${rows.map((event) => `<tr>
+          <td>${esc(formatDateTimeLocal(event.timestamp))}</td>
+          <td>${esc(event.actorNameSnapshot || "—")}</td>
+          <td>${esc(auditLogClubLabel(event.clubId))}</td>
+          <td>${esc(auditEventText(event))}</td>
+          <td>${esc(event.entityLabel || "—")}</td>
+        </tr>`).join("")}</tbody>
+      </table></div>` : `<div class="empty">Aucune activité enregistrée pour le moment.</div>`}
+    </div>`;
   }
   importFile.addEventListener("change", async (event) => {
     if (isDemoMode()) { event.target.value = ""; return; }
