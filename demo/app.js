@@ -6225,6 +6225,10 @@
     // Actions rapides (dialogues = toujours sûrs ; navigation pour Boutique/Factures).
     // Club tout neuf : on propose la mise en route (disciplines/tarifs + premiers pas guidés)
     // plutôt que des actions prématurées (encaisser, facturer).
+    // Chaque raccourci suit désormais isViewVisible() — le MÊME prédicat que le menu de
+    // navigation (mode simple/avancé/personnalisé + drapeau fonctionnel Stages/Boutique) —
+    // pour éviter qu'un raccourci reste affiché ici alors que son menu correspondant est
+    // masqué dans Paramètres > Affichage (cf. correctif déjà appliqué au bas de fiche contact).
     const quickActions = clubIsEmpty
       ? [
           // Club tout neuf : « Ajouter un adhérent » ouvre une fiche contact simple (add-contact),
@@ -6233,16 +6237,16 @@
           // adhérent » qui utilise déjà add-contact. L'inscription à une discipline reste accessible
           // ensuite depuis la fiche contact. La branche « club configuré » ci-dessous garde
           // add-membership (une discipline existe alors, pas d'impasse).
-          `<button class="primary" data-action="add-contact">Ajouter un adhérent</button>`,
-          `<button data-view="disciplines">Mes disciplines &amp; tarifs</button>`,
-          `<button data-action="open-dashboard-target" data-target="assistant">Premiers pas guidés</button>`,
-        ].join("")
+          isViewVisible("contacts") ? `<button class="primary" data-action="add-contact">Ajouter un adhérent</button>` : "",
+          isViewVisible("disciplines") ? `<button data-view="disciplines">Mes disciplines &amp; tarifs</button>` : "",
+          isViewVisible("assistant") ? `<button data-action="open-dashboard-target" data-target="assistant">Premiers pas guidés</button>` : "",
+        ].filter(Boolean).join("")
       : [
-          `<button class="primary" data-action="add-membership">Ajouter un adhérent</button>`,
-          `<button data-action="new-invoice">Créer une facture</button>`,
-          `<button data-action="show-payment-agenda">Encaisser un paiement</button>`,
-          stagesEnabled ? `<button data-action="add-stage">Créer un stage</button>` : "",
-          boutiqueEnabled ? `<button data-view="boutique">Accéder à la boutique</button>` : "",
+          isViewVisible("disciplines") ? `<button class="primary" data-action="add-membership">Ajouter un adhérent</button>` : "",
+          isViewVisible("invoices") ? `<button data-action="new-invoice">Créer une facture</button>` : "",
+          isViewVisible("due-payments") ? `<button data-action="show-payment-agenda">Encaisser un paiement</button>` : "",
+          isViewVisible("stages") ? `<button data-action="add-stage">Créer un stage</button>` : "",
+          isViewVisible("boutique") ? `<button data-view="boutique">Accéder à la boutique</button>` : "",
         ].filter(Boolean).join("");
 
     return `
