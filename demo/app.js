@@ -11342,7 +11342,7 @@ ${esc(bodyText)}</pre>
       ["Gestion du club", ["contacts", "invoices", "due-payments", "tarifs"]],
       ["Gestion sportive", ["disciplines", "groups", "coaches", "rooms", "planning", "attendance", "documents", "stages"]],
       ["Boutique", ["boutique", "stock"]],
-      ["Outils", ["search", "newsletter", "notes", "history"]],
+      ["Outils", ["search", "newsletter", "notes", "history", "audit-log"]],
       ["Analyse", ["stats", "accounting"]],
       ["Configuration", ["clubs", "club-settings", "settings", "help"]],
     ];
@@ -11939,26 +11939,19 @@ ${esc(bodyText)}</pre>
       if (beforeActiveClubId) appStorage.setItem(ACTIVE_CLUB_KEY, beforeActiveClubId);
       throw new Error("Sécurité multi-club : la sauvegarde aurait supprimé un club existant.");
     }
-    if (typeof recordAuditEvent === "function") {
-      if (options.create) {
-        const sourceClub = cloneSource ? store.clubs.find((row) => row.id === options.cloneFromClubId) : null;
-        recordAuditEvent({
-          action: cloneSource ? "club.duplicated" : "club.created",
-          entityType: "club",
-          entityId: normalizedClub.id,
-          entityLabel: normalizedClub.name,
-          clubId: normalizedClub.id,
-          metadata: cloneSource ? { sourceClubId: options.cloneFromClubId, sourceClubLabel: sourceClub?.name || "" } : {},
-        });
+    if (options.create) {
+      // La duplication peut avoir lieu SANS copie des données ("Identité seulement") : on se
+      // base sur duplicateSourceId (toujours renseigné en cas de duplication), pas sur
+      // cloneFromClubId (qui ne l'est que pour la copie "avec toutes les données").
+      const isDuplicateAction = Boolean(options.duplicateSourceId);
+      if (isDuplicateAction) {
+        const sourceClub = store.clubs.find((row) => row.id === options.duplicateSourceId);
+        audit.clubDuplicated(normalizedClub, options.duplicateSourceId, sourceClub);
       } else {
-        recordAuditEvent({
-          action: "club.settings.updated",
-          entityType: "club",
-          entityId: normalizedClub.id,
-          entityLabel: normalizedClub.name,
-          clubId: normalizedClub.id,
-        });
+        audit.clubCreated(normalizedClub);
       }
+    } else {
+      audit.clubSettingsUpdated(normalizedClub);
     }
     if (savedStore.activeClubId === normalizedClub.id) loadActiveClubFromStore(savedStore);
     return savedStore;
@@ -12015,7 +12008,11 @@ ${esc(bodyText)}</pre>
       }
       try {
         const cloneFromClubId = isDuplicate && options.withData && existing ? existing.id : "";
-        saveClub(club, { activate: !existing || isDuplicate || options.activate, create: !existing || isDuplicate, cloneFromClubId, seedMainDiscipline: !existing && !isDuplicate });
+        // Distinct de cloneFromClubId : renseigné dès qu'il s'agit d'une duplication, MÊME sans
+        // copie des données ("Identité seulement"), pour que la journalisation (club.duplicated
+        // vs club.created) reste correcte indépendamment du clonage effectif du state.
+        const duplicateSourceId = isDuplicate && existing ? existing.id : "";
+        saveClub(club, { activate: !existing || isDuplicate || options.activate, create: !existing || isDuplicate, cloneFromClubId, duplicateSourceId, seedMainDiscipline: !existing && !isDuplicate });
       } catch (error) {
         console.error(error);
         alert(error.message || "Impossible d'enregistrer le club sans conserver les clubs existants.");
@@ -12151,9 +12148,7 @@ ${esc(bodyText)}</pre>
       workingStore.activeClubId = workingStore.clubs.find((row) => !row.archived && row.id !== workingClub.id)?.id || "";
     }
     writeClubStore(workingStore);
-    if (typeof recordAuditEvent === "function") {
-      recordAuditEvent({ action: "club.archived", entityType: "club", entityId: workingClub.id, entityLabel: workingClub.name, clubId: workingClub.id });
-    }
+    audit.clubArchived(workingClub);
     loadActiveClubFromStore(workingStore);
     ui.saveMessage = `Club archivé : ${workingClub.name}`;
     render();
@@ -12166,9 +12161,7 @@ ${esc(bodyText)}</pre>
     club.archived = false;
     club.updatedAt = new Date().toISOString();
     writeClubStore(store);
-    if (typeof recordAuditEvent === "function") {
-      recordAuditEvent({ action: "club.unarchived", entityType: "club", entityId: club.id, entityLabel: club.name, clubId: club.id });
-    }
+    audit.clubUnarchived(club);
     ui.saveMessage = `Club réactivé : ${club.name}`;
     render();
   }
@@ -12203,9 +12196,7 @@ ${esc(bodyText)}</pre>
     // Événement journalisé AVANT que loadActiveClubFromStore() ne bascule le club actif : le
     // club supprimé n'existe déjà plus dans clubStore.clubs à ce stade, mais `latestClub` (capturé
     // plus haut, avant filtrage) garde son id/nom pour une trace lisible malgré la suppression.
-    if (typeof recordAuditEvent === "function") {
-      recordAuditEvent({ action: "club.deleted", entityType: "club", entityId: latestClub.id, entityLabel: latestClub.name, clubId: latestClub.id });
-    }
+    audit.clubDeleted(latestClub);
     // Supprime uniquement les appartenances liées à CE club (jamais celles des autres clubs) ;
     // les utilisateurs eux-mêmes restent, même s'ils n'ont plus aucun club (pas de désactivation
     // automatique — voir Lot 1 utilisateurs).
@@ -15631,6 +15622,7 @@ ${esc(bodyText)}</pre>
       totals: invoiceTotalsFromLines(invoice.lines || [], invoice.paymentsSnapshot || []),
     });
     upsertInvoice(next);
+    audit.invoiceIssued(next, invoiceContact(next.contactKind, next.contactId));
     return next;
   }
 
@@ -16920,6 +16912,10 @@ ${esc(bodyText)}</pre>
     }
     const issue = form.dataset.submitAction === "issue";
     if (issue && !(await confirmInvoiceIssue())) return { cancel: true };
+    // Note : sourceInvoice.id est TOUJOURS renseigné ici (openInvoiceEditor passe la facture par
+    // normalizeInvoice(), qui attribue un id même à un brouillon jamais persisté). Le seul signal
+    // fiable de « facture réellement nouvelle » est son absence de state.invoices à cet instant.
+    const wasNew = !state.invoices.some((item) => item.id === sourceInvoice.id);
     const paymentsSnapshot = selectedInvoicePayments(lines, billables);
     const totals = invoiceTotalsFromLines(lines, paymentsSnapshot);
     const now = new Date().toISOString();
@@ -16942,6 +16938,16 @@ ${esc(bodyText)}</pre>
       notes: data.get("notes") || "",
     });
     upsertInvoice(next);
+    // Un seul événement par sauvegarde : émission prioritaire sur création (facture créée ET
+    // émise en une seule opération -> invoice.issued uniquement, jamais les deux).
+    if (issue) {
+      audit.invoiceIssued(next, contact);
+    } else if (wasNew) {
+      audit.invoiceCreated(next, contact);
+    } else {
+      const changes = invoiceAuditChanges(sourceInvoice, next);
+      if (changes.length) audit.invoiceUpdated(next, contact, changes);
+    }
     return issue
       ? { message: `Facture ${next.number} émise pour ${personLabel(contact)}`, reopenInvoiceId: next.id }
       : `Brouillon de facture enregistré pour ${personLabel(contact)}`;
@@ -17065,6 +17071,7 @@ ${esc(bodyText)}</pre>
       target.status = computedInvoiceStatus(target);
       target.updatedAt = new Date().toISOString();
       upsertInvoice(target);
+      audit.invoicePaymentAttached(target, invoiceContact(target.contactKind, target.contactId), payment);
       return `Règlement ajouté sur la facture ${target.number || ""}`;
     }, (form) => {
       const select = form.elements.check;
@@ -22691,6 +22698,12 @@ ${esc(bodyText)}</pre>
         state.creditNotes = state.creditNotes || [];
         upsert(state.creditNotes, nextCreditNote);
       }
+      // Un seul événement pour l'action utilisateur complète (facture + avoir + reliquat éventuel).
+      audit.invoiceCreditApplied(freshTarget, invoiceContact(freshTarget.contactKind, freshTarget.contactId), {
+        creditNoteId: freshCn.id,
+        amountUsed: usedAmount,
+        remainingCredit: remainder > 0.005 ? remainder : 0,
+      });
       button.closest("dialog")?.close();
       persist(remainder > 0.005 ? `Avoir utilisé partiellement sur la facture ${freshTarget.number || ""}` : `Avoir utilisé sur la facture ${freshTarget.number || ""}`);
       render();
@@ -31730,9 +31743,7 @@ ${esc(bodyText)}</pre>
     const user = normalizeUserRow({ displayName: name });
     store.users.push(user);
     writeUserStore(store);
-    if (typeof recordAuditEvent === "function") {
-      recordAuditEvent({ action: "user.created", entityType: "user", entityId: user.id, entityLabel: user.displayName });
-    }
+    audit.userCreated(user);
     ui.saveMessage = ambiguous
       ? `Utilisateur créé : ${user.displayName} (un autre profil porte déjà ce nom)`
       : `Utilisateur créé : ${user.displayName}`;
@@ -31755,15 +31766,7 @@ ${esc(bodyText)}</pre>
     user.displayName = name;
     user.updatedAt = new Date().toISOString();
     writeUserStore(store);
-    if (typeof recordAuditEvent === "function") {
-      recordAuditEvent({
-        action: "user.renamed",
-        entityType: "user",
-        entityId: user.id,
-        entityLabel: name,
-        metadata: { previousLabel, newLabel: name },
-      });
-    }
+    audit.userRenamed(user, previousLabel);
     ui.saveMessage = ambiguous
       ? `Utilisateur renommé : ${name} (un autre profil porte déjà ce nom)`
       : `Utilisateur renommé : ${name}`;
@@ -31792,9 +31795,7 @@ ${esc(bodyText)}</pre>
     user.active = false;
     user.updatedAt = new Date().toISOString();
     writeUserStore(store);
-    if (typeof recordAuditEvent === "function") {
-      recordAuditEvent({ action: "user.deactivated", entityType: "user", entityId: user.id, entityLabel: user.displayName });
-    }
+    audit.userDeactivated(user);
     ui.saveMessage = `Utilisateur désactivé : ${user.displayName}`;
     render();
   }
@@ -31806,9 +31807,7 @@ ${esc(bodyText)}</pre>
     user.active = true;
     user.updatedAt = new Date().toISOString();
     writeUserStore(store);
-    if (typeof recordAuditEvent === "function") {
-      recordAuditEvent({ action: "user.reactivated", entityType: "user", entityId: user.id, entityLabel: user.displayName });
-    }
+    audit.userReactivated(user);
     ui.saveMessage = `Utilisateur réactivé : ${user.displayName}`;
     render();
   }
@@ -31922,6 +31921,9 @@ ${esc(bodyText)}</pre>
     "user.created", "user.renamed", "user.deactivated", "user.reactivated",
     "club.created", "club.duplicated", "club.archived", "club.unarchived", "club.deleted",
     "club.settings.updated",
+    // Lot 3A — cycle de vie facture (voir audit.invoiceXxx ci-dessous).
+    "invoice.created", "invoice.updated", "invoice.issued",
+    "invoice.payment.attached", "invoice.credit.applied",
   ];
 
   function rawAuditLogFromStorage() {
@@ -32020,6 +32022,194 @@ ${esc(bodyText)}</pre>
     return event;
   }
 
+  // --- Lot 3A — comparaison ciblée pour invoice.updated ---
+  // Liste blanche stricte : jamais les lignes complètes, jamais le contenu des notes. Chaque
+  // champ suivi n'apparaît dans `changes` que s'il a réellement changé (before !== after).
+
+  // Notes : jamais le contenu, seulement l'état de la transition (empty/set/changed/cleared).
+  function invoiceNotesChange(beforeNotes, afterNotes) {
+    const beforeSet = Boolean(asText(beforeNotes));
+    const afterSet = Boolean(asText(afterNotes));
+    if (!beforeSet && !afterSet) return null;
+    if (!beforeSet && afterSet) return { field: "notes", before: "empty", after: "set" };
+    if (beforeSet && !afterSet) return { field: "notes", before: "set", after: "cleared" };
+    if (asText(beforeNotes) !== asText(afterNotes)) return { field: "notes", before: "set", after: "changed" };
+    return null;
+  }
+
+  // Résumé non sensible des taux de TVA présents sur la facture (jamais les libellés de ligne).
+  function invoiceVatSummary(invoice) {
+    const rates = [...new Set((invoice.lines || []).map((line) => asNumber(line.vatRate)))].sort((a, b) => a - b);
+    return rates.map((rate) => `${rate}%`).join(",");
+  }
+
+  // Helper central de comparaison ciblée : ne retourne QUE les changements de la liste blanche
+  // (total, nombre de lignes, résumé TVA, état des notes). Jamais un dump avant/après des lignes
+  // ou de l'objet facture complet.
+  function invoiceAuditChanges(before = {}, after = {}) {
+    const changes = [];
+    const beforeTotal = asNumber(before.totals?.total);
+    const afterTotal = asNumber(after.totals?.total);
+    if (Math.abs(beforeTotal - afterTotal) > 0.005) {
+      changes.push({ field: "total", before: beforeTotal, after: afterTotal });
+    }
+    const beforeCount = (before.lines || []).length;
+    const afterCount = (after.lines || []).length;
+    if (beforeCount !== afterCount) {
+      changes.push({ field: "lineCount", before: beforeCount, after: afterCount });
+    }
+    const beforeVat = invoiceVatSummary(before);
+    const afterVat = invoiceVatSummary(after);
+    if (beforeVat !== afterVat) {
+      changes.push({ field: "vatSummary", before: beforeVat, after: afterVat });
+    }
+    const notesChange = invoiceNotesChange(before.notes, after.notes);
+    if (notesChange) changes.push(notesChange);
+    return changes;
+  }
+
+  // --- API dédiée aux modules métier (préparation Lot 3) ---
+  // Aucun module métier ne doit appeler recordAuditEvent(...) directement : passer par ces
+  // helpers spécialisés, un par action existante. Chaque helper construit lui-même le payload
+  // attendu par recordAuditEvent (mêmes champs, mêmes valeurs qu'avant ce refactor) ; c'est la
+  // SEULE surface que le reste du projet doit utiliser pour journaliser un événement.
+  const audit = {
+    userCreated(user) {
+      return recordAuditEvent({ action: "user.created", entityType: "user", entityId: user.id, entityLabel: user.displayName });
+    },
+    userRenamed(user, previousLabel) {
+      return recordAuditEvent({
+        action: "user.renamed",
+        entityType: "user",
+        entityId: user.id,
+        entityLabel: user.displayName,
+        metadata: { previousLabel, newLabel: user.displayName },
+      });
+    },
+    userDeactivated(user) {
+      return recordAuditEvent({ action: "user.deactivated", entityType: "user", entityId: user.id, entityLabel: user.displayName });
+    },
+    userReactivated(user) {
+      return recordAuditEvent({ action: "user.reactivated", entityType: "user", entityId: user.id, entityLabel: user.displayName });
+    },
+    clubCreated(club) {
+      return recordAuditEvent({ action: "club.created", entityType: "club", entityId: club.id, entityLabel: club.name, clubId: club.id });
+    },
+    clubDuplicated(club, sourceClubId, sourceClub) {
+      return recordAuditEvent({
+        action: "club.duplicated",
+        entityType: "club",
+        entityId: club.id,
+        entityLabel: club.name,
+        clubId: club.id,
+        metadata: { sourceClubId, sourceClubLabel: sourceClub?.name || "" },
+      });
+    },
+    clubArchived(club) {
+      return recordAuditEvent({ action: "club.archived", entityType: "club", entityId: club.id, entityLabel: club.name, clubId: club.id });
+    },
+    clubUnarchived(club) {
+      return recordAuditEvent({ action: "club.unarchived", entityType: "club", entityId: club.id, entityLabel: club.name, clubId: club.id });
+    },
+    clubDeleted(club) {
+      return recordAuditEvent({ action: "club.deleted", entityType: "club", entityId: club.id, entityLabel: club.name, clubId: club.id });
+    },
+    clubSettingsUpdated(club) {
+      return recordAuditEvent({ action: "club.settings.updated", entityType: "club", entityId: club.id, entityLabel: club.name, clubId: club.id });
+    },
+    // Lot 3A — cycle de vie facture. `contact` est optionnel (facture sans contact résolu) :
+    // contactLabel reste vide plutôt que de faire échouer l'événement.
+    invoiceCreated(invoice, contact) {
+      return recordAuditEvent({
+        action: "invoice.created",
+        entityType: "invoice",
+        entityId: invoice.id,
+        entityLabel: invoice.number || "Brouillon de facture",
+        clubId: invoice.clubId,
+        metadata: {
+          invoiceNumber: invoice.number || "",
+          contactId: invoice.contactId || "",
+          contactLabel: contact ? personLabel(contact) : "",
+          total: asNumber(invoice.totals?.total),
+          status: invoice.status,
+        },
+      });
+    },
+    // `changes` doit déjà être la liste ciblée (voir invoiceAuditChanges) ; l'appelant ne doit
+    // journaliser que si elle est non vide (aucun événement pour une sauvegarde sans changement réel).
+    invoiceUpdated(invoice, contact, changes) {
+      if (!Array.isArray(changes) || !changes.length) return null;
+      return recordAuditEvent({
+        action: "invoice.updated",
+        entityType: "invoice",
+        entityId: invoice.id,
+        entityLabel: invoice.number || "Brouillon de facture",
+        clubId: invoice.clubId,
+        metadata: {
+          invoiceNumber: invoice.number || "",
+          contactId: invoice.contactId || "",
+          contactLabel: contact ? personLabel(contact) : "",
+          total: asNumber(invoice.totals?.total),
+          status: invoice.status,
+          changes,
+        },
+      });
+    },
+    invoiceIssued(invoice, contact) {
+      return recordAuditEvent({
+        action: "invoice.issued",
+        entityType: "invoice",
+        entityId: invoice.id,
+        entityLabel: invoice.number || "Brouillon de facture",
+        clubId: invoice.clubId,
+        metadata: {
+          invoiceNumber: invoice.number || "",
+          contactId: invoice.contactId || "",
+          contactLabel: contact ? personLabel(contact) : "",
+          total: asNumber(invoice.totals?.total),
+        },
+      });
+    },
+    // Règlement ajouté DIRECTEMENT sur une facture émise (openInvoicePaymentDialog) — distinct
+    // des paiements-échéances des adhésions/commandes/inscriptions (Lot 3B, hors périmètre).
+    invoicePaymentAttached(invoice, contact, payment) {
+      return recordAuditEvent({
+        action: "invoice.payment.attached",
+        entityType: "invoice",
+        entityId: invoice.id,
+        entityLabel: invoice.number || "Brouillon de facture",
+        clubId: invoice.clubId,
+        metadata: {
+          invoiceNumber: invoice.number || "",
+          contactId: invoice.contactId || "",
+          contactLabel: contact ? personLabel(contact) : "",
+          amount: asNumber(payment?.amount),
+          method: invoicePaymentModeLabel(payment || {}),
+          status: paymentStatus(payment || {}),
+        },
+      });
+    },
+    // Un seul événement pour l'action utilisateur complète (facture + avoir + éventuel reliquat) :
+    // jamais un événement paiement séparé, ni un événement avoir modifié séparé.
+    invoiceCreditApplied(invoice, contact, { creditNoteId, amountUsed, remainingCredit = 0 } = {}) {
+      return recordAuditEvent({
+        action: "invoice.credit.applied",
+        entityType: "invoice",
+        entityId: invoice.id,
+        entityLabel: invoice.number || "Brouillon de facture",
+        clubId: invoice.clubId,
+        metadata: {
+          invoiceNumber: invoice.number || "",
+          contactId: invoice.contactId || "",
+          contactLabel: contact ? personLabel(contact) : "",
+          creditNoteId: creditNoteId || "",
+          amountUsed: asNumber(amountUsed),
+          remainingCredit: asNumber(remainingCredit),
+        },
+      });
+    },
+  };
+
   // --- Export / import (Lot 2) ---
 
   // Le journal est exporté intégralement : contrairement à userStore, aucun champ de session
@@ -32049,7 +32239,17 @@ ${esc(bodyText)}</pre>
   function auditEntityTypeLabelFr(entityType) {
     if (entityType === "user") return "un utilisateur";
     if (entityType === "club") return "un club";
+    if (entityType === "invoice") return "une facture";
     return "un élément";
+  }
+
+  // Libellé court d'un champ de `metadata.changes` (invoice.updated), pour le résumé humain.
+  function invoiceChangeFieldLabelFr(field) {
+    if (field === "total") return "montant";
+    if (field === "lineCount") return "nombre de lignes";
+    if (field === "vatSummary") return "TVA";
+    if (field === "notes") return "notes";
+    return field;
   }
 
   const AUDIT_EVENT_RENDERERS = {
@@ -32074,6 +32274,32 @@ ${esc(bodyText)}</pre>
     "club.unarchived": (actor, label) => `${actor} a désarchivé le club « ${label || "?"} »`,
     "club.deleted": (actor, label) => `${actor} a supprimé le club « ${label || "?"} »`,
     "club.settings.updated": (actor, label) => `${actor} a modifié les paramètres du club « ${label || "?"} »`,
+    "invoice.created": (actor, label, metadata) => {
+      const contactLabel = asText(metadata.contactLabel);
+      if (asText(metadata.invoiceNumber)) return `${actor} a créé la facture « ${label || "?"} »`;
+      return contactLabel ? `${actor} a créé une facture brouillon pour ${contactLabel}` : `${actor} a créé une facture brouillon`;
+    },
+    "invoice.updated": (actor, label, metadata) => {
+      const changes = Array.isArray(metadata.changes) ? metadata.changes : [];
+      if (!changes.length) return `${actor} a modifié la facture « ${label || "?"} »`;
+      if (changes.length === 1 && changes[0].field === "total") {
+        return `${actor} a modifié la facture « ${label || "?"} » : montant ${money(changes[0].before)} → ${money(changes[0].after)}`;
+      }
+      const fieldLabels = changes.map((change) => invoiceChangeFieldLabelFr(change.field));
+      const summary = fieldLabels.length > 1
+        ? `${fieldLabels.slice(0, -1).join(", ")} et ${fieldLabels[fieldLabels.length - 1]}`
+        : fieldLabels[0];
+      return `${actor} a modifié la facture « ${label || "?"} » : ${summary}`;
+    },
+    "invoice.issued": (actor, label, metadata) => {
+      const contactLabel = asText(metadata.contactLabel);
+      const total = money(metadata.total);
+      return contactLabel
+        ? `${actor} a émis la facture « ${label || "?"} » pour ${contactLabel}, d'un montant de ${total}`
+        : `${actor} a émis la facture « ${label || "?"} », d'un montant de ${total}`;
+    },
+    "invoice.payment.attached": (actor, label, metadata) => `${actor} a enregistré un règlement de ${money(metadata.amount)} sur la facture « ${label || "?"} »`,
+    "invoice.credit.applied": (actor, label, metadata) => `${actor} a appliqué un avoir de ${money(metadata.amountUsed)} sur la facture « ${label || "?"} »`,
   };
 
   // Gère proprement : action inconnue, label absent, métadonnée manquante — jamais d'erreur,
