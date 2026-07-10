@@ -1180,6 +1180,7 @@
       topbarHidden: Boolean(source.topbarHidden),
       menuOrder: normalizeMenuOrder(source.menuOrder),
       display: normalizeDisplaySettings(source.display),
+      smtp: normalizeSmtpSettings(source.smtp),
       security: normalizeSecuritySettings(source.security),
       season: normalizeSeasonSettings(source.season),
       emailTemplates: normalizeEmailTemplates(source.emailTemplates),
@@ -1487,6 +1488,28 @@
     };
   }
 
+  // Réglages d'envoi SMTP (MVP envoi intégré). Ne contient JAMAIS le mot de passe : celui-ci est
+  // stocké séparément côté main process (Electron safeStorage si disponible), jamais dans
+  // `settings` — donc jamais exporté dans une sauvegarde JSON. `lastTestOk`/`lastTestMessage`
+  // reflètent seulement le dernier test connu (affichage d'état), pas une garantie temps réel.
+  function normalizeSmtpSettings(source = {}) {
+    const src = source && typeof source === "object" ? source : {};
+    const validSecurity = ["ssl", "starttls", "none"];
+    return {
+      enabled: Boolean(src.enabled),
+      senderName: asText(src.senderName || ""),
+      senderEmail: asText(src.senderEmail || ""),
+      host: asText(src.host || ""),
+      port: src.port === undefined || src.port === "" ? 587 : (Math.max(1, Math.round(asNumber(src.port))) || 587),
+      security: validSecurity.includes(src.security) ? src.security : "starttls",
+      username: asText(src.username || ""),
+      testAddress: asText(src.testAddress || ""),
+      lastTestOk: src.lastTestOk === true ? true : src.lastTestOk === false ? false : null,
+      lastTestMessage: asText(src.lastTestMessage || ""),
+      lastTestAt: asText(src.lastTestAt || ""),
+    };
+  }
+
   function normalizeMenuOrder(value) {
     const validKeys = mainViews.map(([key]) => key);
     const order = Array.isArray(value) ? value.filter((k) => validKeys.includes(asText(k))) : [];
@@ -1600,6 +1623,18 @@
   function displaySettings() {
     settings.display = normalizeDisplaySettings(settings.display);
     return settings.display;
+  }
+
+  function smtpSettings() {
+    settings.smtp = normalizeSmtpSettings(settings.smtp);
+    return settings.smtp;
+  }
+
+  // SMTP prêt à l'emploi : activé, hôte, expéditeur renseignés. Ne préjuge pas de la présence
+  // réelle du mot de passe (stocké côté main process) — voir smtpSecretAvailable().
+  function smtpConfigured() {
+    const s = smtpSettings();
+    return Boolean(s.enabled && asText(s.host) && asText(s.senderEmail));
   }
 
   // Visibilité d'un module dans la NAVIGATION selon le mode (simple / avancé / personnalisé).
@@ -3720,10 +3755,14 @@
 <meta name="viewport" content="width=device-width,initial-scale=1" />
 <title>${esc(subject)}</title>
 </head>
-<body style="margin:0;padding:0;background:#eef0f2;">
-  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#eef0f2;">
+<body style="margin:0;padding:0;background:#eef0f2;overflow-x:hidden;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="width:100%;background:#eef0f2;">
     <tr><td align="center" style="padding:24px 12px;">
-      <table role="presentation" width="600" cellpadding="0" cellspacing="0" style="width:600px;max-width:600px;background:#ffffff;border:1px solid #dfe1e4;border-radius:10px;border-collapse:separate;">
+      <!-- width="600" = repli pour les moteurs qui ignorent le CSS (vieux Outlook/Word) ; le
+           style width:100%;max-width:600px rend la carte fluide (aperçu app + petits écrans mail)
+           sans jamais dépasser 600px sur un vrai client mail large. Technique email standard,
+           ne change rien à la compatibilité. -->
+      <table role="presentation" width="600" cellpadding="0" cellspacing="0" style="width:100%;max-width:600px;background:#ffffff;border:1px solid #dfe1e4;border-radius:10px;border-collapse:separate;">
         <tr><td style="background:#2f3740;padding:22px 24px;border-radius:10px 10px 0 0;text-align:center;">
           ${headerHtml}
         </td></tr>
@@ -3830,6 +3869,104 @@
     };
   }
 
+  // --- Envoi SMTP intégré (MVP, renderer) -----------------------------------------------------
+  // Le renderer ne manipule jamais le mot de passe SMTP : il prépare seulement destinataires,
+  // sujet, texte et HTML, puis délègue au main process via window.monGestaClubShell (IPC). Absent
+  // dans la version web budo-app (pas d'Electron) : smtpShellAvailable() protège tous les appels,
+  // le fallback mailto/copie reste alors la seule voie, exactement comme avant ce lot.
+  function smtpShellAvailable() {
+    return typeof window !== "undefined" && !!window.monGestaClubShell && typeof window.monGestaClubShell.smtpSend === "function";
+  }
+
+  function activeClubIdForSmtp() {
+    try {
+      return (typeof activeClub === "function" && activeClub()?.id) || "default";
+    } catch (error) {
+      return "default";
+    }
+  }
+
+  async function refreshSmtpSecretStatus() {
+    if (!smtpShellAvailable()) {
+      ui.smtpSecretStatus = { present: false, secure: false };
+      return ui.smtpSecretStatus;
+    }
+    try {
+      ui.smtpSecretStatus = await window.monGestaClubShell.smtpSecretStatus(activeClubIdForSmtp());
+    } catch (error) {
+      ui.smtpSecretStatus = { present: false, secure: false };
+    }
+    return ui.smtpSecretStatus;
+  }
+
+  // Brouillon d'édition des champs SMTP (Paramètres > E-mails) : initialisé depuis settings.smtp,
+  // puis conservé tel quel entre deux rendus tant que l'utilisateur tape (évite qu'un re-render
+  // écrase la saisie en cours). Le mot de passe n'est JAMAIS pré-rempli depuis settings (il n'y est
+  // de toute façon jamais stocké) : le champ reste vide, y compris après enregistrement.
+  function smtpDraftValues() {
+    const saved = smtpSettings();
+    ui.smtpDraft = { ...saved, password: "", ...(ui.smtpDraft || {}) };
+    if (ui.smtpDraft.password === undefined) ui.smtpDraft.password = "";
+    return ui.smtpDraft;
+  }
+
+  // Bouton "Envoyer depuis MonGestaClub" affiché seulement si tout est prêt : shell Electron
+  // disponible, envoi activé + hôte/expéditeur renseignés, ET un secret déjà enregistré côté main
+  // process (sans quoi l'envoi échouerait silencieusement — voir consigne produit du lot).
+  function smtpReadyForSend() {
+    return smtpShellAvailable() && smtpConfigured() && Boolean(ui.smtpSecretStatus?.present);
+  }
+
+  function smtpStatusLabel() {
+    const s = smtpSettings();
+    if (!smtpShellAvailable()) return { key: "unavailable", label: "Indisponible (version web)" };
+    if (!smtpConfigured() || !ui.smtpSecretStatus?.present) return { key: "unconfigured", label: "Non configuré" };
+    if (s.lastTestOk === true) return { key: "ok", label: "Test réussi" };
+    if (s.lastTestOk === false) return { key: "error", label: "Dernière erreur" };
+    return { key: "configured", label: "Configuré (non testé)" };
+  }
+
+  // Enregistre les champs non sensibles dans settings.smtp (persistSettings normal) et, si un
+  // nouveau mot de passe a été saisi, le transmet au main process pour stockage sécurisé — jamais
+  // conservé dans settings/les sauvegardes JSON. Utilisé par "Enregistrer" ET "Tester l'envoi"
+  // (qui enregistre d'abord, pour tester exactement la configuration affichée à l'écran).
+  async function commitSmtpDraftSettings() {
+    const draft = smtpDraftValues();
+    const password = asText(draft.password || "");
+    settings.smtp = normalizeSmtpSettings({
+      ...settings.smtp,
+      enabled: Boolean(draft.enabled),
+      senderName: draft.senderName,
+      senderEmail: draft.senderEmail,
+      host: draft.host,
+      port: draft.port,
+      security: draft.security,
+      username: draft.username,
+      testAddress: draft.testAddress,
+    });
+    persistSettings();
+    if (smtpShellAvailable() && password) {
+      const result = await window.monGestaClubShell.smtpSaveSecret(activeClubIdForSmtp(), password);
+      ui.smtpSecretStatus = { present: true, secure: Boolean(result?.secure) };
+    } else if (smtpShellAvailable()) {
+      await refreshSmtpSecretStatus();
+    }
+    draft.password = "";
+  }
+
+  // Envoi réel via SMTP (main process). Retourne toujours {ok, message?, accepted?, rejected?} —
+  // jamais d'exception qui remonterait jusqu'à l'appelant : un échec réseau/auth doit rester une
+  // réponse normale affichable, pas un crash.
+  async function sendEmailIntegrated({ to = [], bcc = [], subject = "", text = "", html = "" } = {}) {
+    if (!smtpShellAvailable()) return { ok: false, message: "Envoi intégré indisponible dans cette version." };
+    try {
+      const result = await window.monGestaClubShell.smtpSend(activeClubIdForSmtp(), smtpSettings(), { to, bcc, subject, text, html });
+      return result || { ok: false, message: "Réponse invalide du processus principal." };
+    } catch (error) {
+      return { ok: false, message: asText(error?.message) || "Erreur d'envoi inconnue." };
+    }
+  }
+
   function mailtoHref(email, subject = "", body = "") {
     const recipient = asText(email);
     if (!recipient) return "";
@@ -3865,17 +4002,22 @@
     };
     const initial = renderEmailTemplate(templateKey, context);
     const initialHtml = renderEmailHtml(initial.subject, initial.body, { context });
+    const smtpReady = smtpReadyForSend();
     const body = [
       field("email", "Destinataire", contact.email, "email", "readonly"),
       `<label>Modèle<select name="templateKey" data-contact-email-template>${emailTemplateOptions(templateKey)}</select></label>`,
       field("subject", "Objet", initial.subject),
       textareaField("body", "Message", initial.body),
       `<div class="email-model-help"><strong>Parties automatiques</strong><p>Les informations comme le nom, le prénom, l'e-mail, le téléphone, la date ou l'identifiant ordinateur sont insérées automatiquement depuis la fiche. Tu peux modifier le texte final avant l'envoi.</p></div>`,
+      !smtpReady && smtpShellAvailable() ? `<p class="muted smtp-hint">Envoi intégré non configuré. Configurez le SMTP dans Paramètres &gt; E-mails, ou utilisez le bouton ci-dessous pour ouvrir votre messagerie.</p>` : "",
       `<div class="email-html-preview" style="margin-top:12px">
         <strong style="display:block;font-size:.86rem;color:var(--muted);margin-bottom:6px">Aperçu de l'e-mail</strong>
         <iframe title="Aperçu de l'e-mail" sandbox="" style="width:100%;height:360px;border:1px solid var(--line);border-radius:8px;background:#eef0f2" srcdoc="${esc(initialHtml)}"></iframe>
       </div>`,
     ].join("");
+    const smtpFooterButton = smtpReady
+      ? `<button type="button" class="primary" data-action="dialog-send-smtp">Envoyer depuis MonGestaClub</button>`
+      : "";
     showDialog("Envoyer un mail", body, (form) => {
       const email = form.get("email");
       const subject = form.get("subject");
@@ -3896,7 +4038,32 @@
       });
       formElement.elements.subject?.addEventListener("input", refreshPreview);
       formElement.elements.body?.addEventListener("input", refreshPreview);
-    });
+      const sendBtn = formElement.querySelector('[data-action="dialog-send-smtp"]');
+      sendBtn?.addEventListener("click", async () => {
+        const email = formElement.elements.email.value;
+        const subjectVal = formElement.elements.subject.value;
+        const bodyVal = formElement.elements.body.value;
+        if (!asText(email)) return;
+        sendBtn.disabled = true;
+        const originalLabel = sendBtn.textContent;
+        sendBtn.textContent = "Envoi...";
+        const result = await sendEmailIntegrated({
+          to: [email],
+          subject: subjectVal,
+          text: bodyVal,
+          html: renderEmailHtml(subjectVal, bodyVal, { context }),
+        });
+        if (result.ok) {
+          ui.saveMessage = `E-mail envoyé à ${personLabel(contact)}`;
+          formElement.closest("dialog")?.close();
+          render();
+        } else {
+          alert(`Échec de l'envoi : ${result.message || "erreur inconnue"}`);
+          sendBtn.disabled = false;
+          sendBtn.textContent = originalLabel;
+        }
+      });
+    }, smtpFooterButton, () => {}, "Ouvrir la messagerie");
   }
 
   function money(value) {
@@ -7586,6 +7753,10 @@
   }
 
   function renderNewsletter() {
+    if (ui.smtpSecretStatus === undefined && typeof refreshSmtpSecretStatus === "function") {
+      ui.smtpSecretStatus = { present: false, secure: false };
+      refreshSmtpSecretStatus().then(() => render());
+    }
     const recipients = newsletterRecipients();
     const missingMembers = state.contacts.members.filter((contact) => !asText(contact.email)).length;
     const missingProspects = state.contacts.prospects.filter((contact) => !asText(contact.email)).length;
@@ -7660,12 +7831,14 @@
           </label>
           <div class="newsletter-paper">${newsletterPreviewInnerHtml()}</div>
           <div class="inline-actions">
-            <button class="primary" type="button" data-action="open-newsletter-mail">Ouvrir la messagerie</button>
+            ${smtpReadyForSend() ? `<button class="primary" type="button" data-action="send-newsletter-mail-integrated" ${ui.smtpSending ? "disabled" : ""}>${ui.smtpSending ? "Envoi en cours…" : "Envoyer depuis MonGestaClub"}</button>` : ""}
+            <button ${smtpReadyForSend() ? "" : `class="primary"`} type="button" data-action="open-newsletter-mail">Ouvrir la messagerie</button>
             <button type="button" data-action="copy-newsletter-emails">Copier les e-mails</button>
             <button type="button" data-action="copy-newsletter-message">Copier le message</button>
             <button type="button" data-action="reset-newsletter-template">Recharger le modèle</button>
             <button type="button" data-action="open-payment-reminders">Relances paiement</button>
           </div>
+          ${smtpReadyForSend() ? "" : `<p class="muted smtp-hint">Envoi intégré non configuré. Configurez le SMTP dans Paramètres &gt; E-mails, ou utilisez votre messagerie.</p>`}
           <p class="muted">Les adresses sont placées en copie cachée pour préserver la confidentialité. Pour de très grosses listes, il vaut mieux envoyer en plusieurs fois.</p>
         </div>
         <div class="band pad newsletter-recipients-panel">
@@ -11243,6 +11416,9 @@ ${esc(bodyText)}</pre>
             ${emailTemplateSettingsHtml()}
           </div>
         </div>`)}
+      ${settingsCollapsibleBand("smtp", "Envoi d'e-mails (SMTP)", smtpStatusLabel().label, `<div class="settings-panel smtp-settings">
+          ${smtpSettingsHtml()}
+        </div>`)}
       ${settingsCollapsibleBand("data", "Données", "Sauvegarde et vidage", `<div class="settings-panel">
           <p class="muted">Ces boutons vident réellement les données enregistrées dans la catégorie choisie. Avant de supprimer, exporte une sauvegarde JSON.</p>
           <div class="dialog-section demo-data-settings">
@@ -12490,6 +12666,66 @@ ${esc(bodyText)}</pre>
       ${emailTemplateCustomVariablesHtml(selected, draft, locked)}
       <div class="email-variable-help">${emailVariableHelp(def.variables)}</div>
     </section>`;
+  }
+
+  // Paramètres > Envoi d'e-mails (SMTP) — MVP. Le mot de passe n'est jamais relu depuis
+  // settings (il n'y est jamais stocké) : le champ reste vide, y compris après enregistrement ;
+  // seul un indicateur "déjà enregistré" (via ui.smtpSecretStatus, alimenté par IPC) informe
+  // l'utilisateur sans jamais réafficher le secret en clair.
+  function smtpSettingsHtml() {
+    if (!smtpShellAvailable()) {
+      return `<div class="muted-panel"><strong>Envoi intégré indisponible ici</strong><p class="muted">L'envoi SMTP intégré n'est disponible que dans la version de bureau (Electron) de MonGestaClub. MonGestaClub continue d'ouvrir votre messagerie habituelle pour les e-mails.</p></div>`;
+    }
+    const draft = smtpDraftValues();
+    const status = smtpStatusLabel();
+    const secretPresent = Boolean(ui.smtpSecretStatus?.present);
+    const secretSecure = Boolean(ui.smtpSecretStatus?.secure);
+    return `
+      <p class="muted">MonGestaClub peut envoyer vos e-mails directement, en se connectant au serveur SMTP de l'adresse mail du club (Gmail, Outlook, OVH…). Gmail et Outlook demandent souvent un <strong>mot de passe d'application</strong> plutôt que votre mot de passe habituel. Si rien n'est configuré ici, MonGestaClub continue d'ouvrir votre messagerie externe comme avant.</p>
+      <div class="smtp-status smtp-status-${esc(status.key)}"><strong>État :</strong> ${esc(status.label)}${draft.lastTestMessage ? ` — <span class="muted">${esc(draft.lastTestMessage)}</span>` : ""}</div>
+      <div class="form-grid compact">
+        <label>Envoi intégré
+          <select data-smtp-field="enabled">
+            <option value="0" ${!draft.enabled ? "selected" : ""}>Désactivé</option>
+            <option value="1" ${draft.enabled ? "selected" : ""}>Activé</option>
+          </select>
+        </label>
+        <label>Nom d'expéditeur
+          <input type="text" data-smtp-field="senderName" value="${esc(draft.senderName)}" placeholder="${esc(settings.clubName || "Mon club")}" />
+        </label>
+        <label>Adresse d'expéditeur
+          <input type="email" data-smtp-field="senderEmail" value="${esc(draft.senderEmail)}" placeholder="club@example.com" />
+        </label>
+        <label>Serveur SMTP
+          <input type="text" data-smtp-field="host" value="${esc(draft.host)}" placeholder="smtp.gmail.com" />
+        </label>
+        <label>Port
+          <input type="number" min="1" max="65535" data-smtp-field="port" value="${esc(String(draft.port ?? 587))}" />
+        </label>
+        <label>Sécurité
+          <select data-smtp-field="security">
+            <option value="starttls" ${draft.security === "starttls" ? "selected" : ""}>STARTTLS (recommandé, port 587)</option>
+            <option value="ssl" ${draft.security === "ssl" ? "selected" : ""}>SSL/TLS (port 465)</option>
+            <option value="none" ${draft.security === "none" ? "selected" : ""}>Aucune</option>
+          </select>
+        </label>
+        <label>Identifiant
+          <input type="text" data-smtp-field="username" value="${esc(draft.username)}" placeholder="${esc(draft.senderEmail || "identifiant")}" />
+        </label>
+        <label>Mot de passe ${secretPresent ? `<small class="muted">— déjà enregistré${secretSecure ? "" : ", non chiffré sur ce système"}</small>` : ""}
+          <input type="password" data-smtp-field="password" value="" autocomplete="new-password" placeholder="${secretPresent ? "•••••••• (laisser vide pour ne pas changer)" : "Mot de passe ou mot de passe d'application"}" />
+        </label>
+        <label>Adresse de test
+          <input type="email" data-smtp-field="testAddress" value="${esc(draft.testAddress)}" placeholder="toi@example.com" />
+        </label>
+      </div>
+      ${secretPresent && !secretSecure ? `<p class="muted smtp-warning">⚠ Le chiffrement sécurisé du système (trousseau) n'est pas disponible ici : le mot de passe est stocké hors des sauvegardes JSON, mais sans chiffrement fort. Évitez un mot de passe sensible si possible sur cette machine.</p>` : ""}
+      <div class="inline-actions">
+        <button type="button" class="primary" data-action="save-smtp-settings">Enregistrer</button>
+        <button type="button" data-action="test-smtp-settings" ${ui.smtpTesting ? "disabled" : ""}>${ui.smtpTesting ? "Test en cours…" : "Tester l'envoi"}</button>
+        <button type="button" class="danger" data-action="clear-smtp-settings" ${(draft.host || secretPresent) ? "" : "disabled"}>Supprimer la configuration SMTP</button>
+      </div>
+    `;
   }
 
   function emailTemplateCustomVariablesHtml(templateKey, draft = {}, locked = true) {
@@ -21457,6 +21693,13 @@ ${esc(bodyText)}</pre>
       updatePostitStyleControl(target);
       return;
     }
+    if (target.dataset.smtpField) {
+      // Champs texte/nombre/mot de passe : mise à jour du brouillon seulement (pas de render(),
+      // comme les autres champs de saisie libre) pour ne jamais perdre le focus pendant la frappe.
+      const draft = smtpDraftValues();
+      draft[target.dataset.smtpField] = target.value;
+      return;
+    }
     if (target.dataset.newsletterField) {
       const field = target.dataset.newsletterField;
       if (field === "audience") return;
@@ -21626,6 +21869,17 @@ ${esc(bodyText)}</pre>
     if (target.hasAttribute && target.hasAttribute("data-newsletter-group")) {
       recordHistory();
       ui.newsletterGroupId = target.value;
+      render();
+      return;
+    }
+    if (target.dataset.smtpField && target.tagName === "SELECT") {
+      // Uniquement les deux sélecteurs (Activé/Désactivé, Sécurité) : ils émettent "change", pas
+      // "input". Les champs texte/nombre/mot de passe sont déjà gérés par le listener "input"
+      // ci-dessus ; les laisser aussi passer ici déclencherait un render() intempestif qui peut
+      // interférer avec la saisie en cours (perte de focus/curseur).
+      const draft = smtpDraftValues();
+      const field = target.dataset.smtpField;
+      draft[field] = field === "enabled" ? target.value === "1" : target.value;
       render();
       return;
     }
@@ -21913,6 +22167,41 @@ ${esc(bodyText)}</pre>
         alert("La liste est grande. Si ta messagerie ne prend pas tout, utilise Copier les e-mails et envoie en plusieurs fois.");
       }
       window.location.href = href;
+      return;
+    }
+    if (action === "send-newsletter-mail-integrated") {
+      // Envoi groupé en UN SEUL message BCC (comme le mailto existant) plutôt qu'un envoi
+      // individualisé par destinataire : plus simple, plus sûr pour ce MVP (un seul point
+      // d'échec réseau/auth à gérer), et déjà cohérent avec le choix fait pour "Ouvrir la
+      // messagerie" sur cette même page (texte identique pour tous, pas de personnalisation
+      // par destinataire ici). nodemailer retourne malgré tout accepted/rejected PAR adresse
+      // (réponses SMTP individuelles), donc le résultat affiché reste un vrai compte-rendu.
+      const recipients = newsletterRecipients().map((c) => asText(c.email)).filter(Boolean);
+      if (!recipients.length) { alert("Aucun destinataire avec e-mail pour ce public."); return; }
+      if (recipients.length > 1) {
+        const confirmed = await requestConfirm({
+          title: "Envoyer à plusieurs destinataires",
+          message: `Envoyer cet e-mail à ${recipients.length} destinataires en copie cachée (BCC) ?`,
+          confirmLabel: "Envoyer",
+        });
+        if (!confirmed) return;
+      }
+      const subject = newsletterSubject();
+      const text = newsletterBody();
+      const html = renderEmailHtml(subject, text, { context: newsletterTemplateValues() });
+      ui.smtpSending = true;
+      render();
+      const result = await sendEmailIntegrated({ bcc: recipients, subject, text, html });
+      ui.smtpSending = false;
+      if (result.ok) {
+        const rejectedCount = (result.rejected || []).length;
+        const acceptedCount = (result.accepted || []).length || Math.max(0, recipients.length - rejectedCount);
+        const missing = newsletterMissingEmailNames().length;
+        ui.saveMessage = `E-mail envoyé : ${acceptedCount} réussi(s)${rejectedCount ? `, ${rejectedCount} échoué(s)` : ""}${missing ? `, ${missing} ignoré(s) (sans e-mail)` : ""}`;
+      } else {
+        alert(`Échec de l'envoi : ${result.message || "erreur inconnue"}`);
+      }
+      render();
       return;
     }
     if (action === "copy-email-variable") {
@@ -22583,6 +22872,60 @@ ${esc(bodyText)}</pre>
       const panel = button.dataset.panel;
       if (!ui.settingsPanels) ui.settingsPanels = {};
       ui.settingsPanels[panel] = !ui.settingsPanels[panel];
+      if (panel === "smtp" && ui.settingsPanels[panel] && typeof refreshSmtpSecretStatus === "function") {
+        refreshSmtpSecretStatus().then(() => render());
+      }
+      render();
+      return;
+    }
+    if (action === "save-smtp-settings") {
+      await commitSmtpDraftSettings();
+      ui.saveMessage = "Configuration e-mail enregistrée";
+      render();
+      return;
+    }
+    if (action === "test-smtp-settings") {
+      await commitSmtpDraftSettings();
+      const config = settings.smtp;
+      if (!config.host || !config.senderEmail) {
+        alert("Renseigne au minimum le serveur SMTP et l'adresse d'expéditeur avant de tester.");
+        render();
+        return;
+      }
+      if (!config.testAddress) {
+        alert("Renseigne une adresse de test pour recevoir l'e-mail d'essai.");
+        render();
+        return;
+      }
+      ui.smtpTesting = true;
+      render();
+      const result = smtpShellAvailable()
+        ? await window.monGestaClubShell.smtpTest(activeClubIdForSmtp(), config, config.testAddress)
+        : { ok: false, message: "Envoi intégré indisponible dans cette version." };
+      ui.smtpTesting = false;
+      settings.smtp.lastTestOk = Boolean(result?.ok);
+      settings.smtp.lastTestMessage = asText(result?.message || "");
+      settings.smtp.lastTestAt = new Date().toISOString();
+      persistSettings();
+      render();
+      return;
+    }
+    if (action === "clear-smtp-settings") {
+      const confirmed = await requestConfirm({
+        title: "Supprimer la configuration SMTP",
+        message: "Le mot de passe enregistré sera effacé et MonGestaClub reviendra à l'ouverture de votre messagerie habituelle pour les e-mails. Continuer ?",
+        confirmLabel: "Supprimer",
+        danger: true,
+      });
+      if (!confirmed) return;
+      settings.smtp = normalizeSmtpSettings({});
+      persistSettings();
+      ui.smtpDraft = null;
+      if (smtpShellAvailable()) {
+        await window.monGestaClubShell.smtpClearSecret(activeClubIdForSmtp());
+        await refreshSmtpSecretStatus();
+      }
+      ui.saveMessage = "Configuration SMTP supprimée";
       render();
       return;
     }
@@ -30986,6 +31329,9 @@ ${esc(bodyText)}</pre>
     startupMeasure("render", render);
     // Préchargement non bloquant du logo par défaut (data URL) pour les factures imprimées / PDF.
     preloadDefaultLogoDataUrl();
+    // Statut du secret SMTP (présent/chiffré ?) — non bloquant ; permet d'afficher tout de suite
+    // le bon bouton (envoi intégré ou mailto) sur la page E-mail sans attendre une navigation.
+    if (typeof refreshSmtpSecretStatus === "function") refreshSmtpSecretStatus().then(() => render());
   }
 
   initApp();
