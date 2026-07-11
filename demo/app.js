@@ -661,6 +661,14 @@
   let auditLog = null;
   auditLog = startupMeasure("ensureAuditLogInitialized", ensureAuditLogInitialized);
   let license = null;
+  // Authentification locale par PIN (Lot 4A) — état renderer, en mémoire uniquement, jamais
+  // persisté. `authSession` est le miroir de contrôle de l'UI : il n'est marqué `verified` qu'après
+  // une vérification réussie côté main process (et un commit autoritaire). Perdu à chaque
+  // rechargement du renderer -> réauthentification forcée. `authState` cache l'état des credentials
+  // (présence d'un PIN, mustChange) tel que rapporté par le main, sans aucun secret.
+  let authSession = { userId: "", verified: false };
+  let authState = { available: false, users: {}, hasRecovery: false };
+  let userSwitchInProgress = false;
   const history = { undo: [], redo: [] };
   const navigationHistory = { back: [], forward: [] };
   let contextTarget = null;
@@ -14765,6 +14773,10 @@ ${esc(bodyText)}</pre>
     };
     applyDialogClasses(targetDialog);
     const form = targetDialog.querySelector("form");
+    // Propriété du formulaire (Lot 4A) : on mémorise l'utilisateur qui l'a ouvert. À la soumission,
+    // si l'utilisateur authentifié a changé, la mutation est refusée (jamais attribuée à un autre
+    // profil). Sert aussi à repérer/fermer les formulaires de mutation lors d'un changement d'user.
+    form.dataset.openedBy = activeUserId();
     let saved = false;
     let minimized = false;
     // Fermeture (× / Annuler) : agit sur le dialogue hôte courant (peut changer après réduction/réouverture).
@@ -14818,6 +14830,13 @@ ${esc(bodyText)}</pre>
     }
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
+      // Garde d'authentification (Lot 4A) : session valide requise, et le formulaire doit être
+      // soumis par le même profil qui l'a ouvert. Sinon aucune mutation n'est enregistrée.
+      if (!requireAuthenticatedSession()) return;
+      if (authRequired() && form.dataset.openedBy && form.dataset.openedBy !== activeUserId()) {
+        alert("Ce formulaire a été ouvert sous un autre profil. Veuillez le rouvrir avec l'utilisateur actuellement authentifié.");
+        return;
+      }
       form.dataset.submitAction = event.submitter?.dataset.submitAction || "";
       const paymentMessage = validateFormPaymentBlocks(event.currentTarget);
       if (paymentMessage) {
@@ -16570,24 +16589,39 @@ ${esc(bodyText)}</pre>
     try { saveCurrentClubPayload({ reloadActive: false }); } catch { /* persistance silencieuse */ }
   }
 
-  function printInvoice(invoice = {}) {
+  // Impression NATIVE (correctif régression Lot 4A) : le durcissement des fenêtres Electron
+  // (setWindowOpenHandler refusant toute création de fenêtre par défaut) bloquait silencieusement
+  // window.open("", "_blank"), faisant tomber ce flux dans son repli « téléchargement HTML » à
+  // chaque impression. Le main process ouvre désormais lui-même une fenêtre sécurisée et appelle
+  // webContents.print() : boîte de dialogue d'impression native, jamais de fichier .html téléchargé,
+  // jamais de navigateur externe. Distinct de exportInvoicePdf (qui produit un vrai .pdf).
+  async function printInvoice(invoice = {}) {
     if (!invoice?.id) return;
     const payload = invoiceDocumentPayload(invoice, { duplicata: invoiceAlreadyPrinted(invoice) });
-    const printWindow = window.open("", "_blank");
-    if (!printWindow) {
-      // Repli NON bloquant (remplace un alert() qui gelait le renderer) : on télécharge la facture en
-      // HTML et on informe via le message d'état intégré (même mécanisme que exportInvoicePdf).
+    if (!window.monGestaClubShell?.printHtml) {
+      // Hors Electron (démo web) : aucune impression native possible, repli explicite en téléchargement
+      // HTML — comportement historique conservé uniquement pour ce contexte non-Electron.
       download(`${payload.title.replace(/[^a-z0-9-]+/gi, "-").toLowerCase()}.html`, payload.html, "text/html;charset=utf-8");
       markInvoicePrinted(invoice.id);
-      ui.saveMessage = "Impossible d'ouvrir la fenêtre d'impression. Vérifiez que les fenêtres ne sont pas bloquées, puis réessayez. La facture a été téléchargée au format HTML.";
+      ui.saveMessage = "L'impression native n'est disponible que dans la version de bureau. La facture a été téléchargée au format HTML.";
       render();
       return;
     }
-    printWindow.document.open();
-    printWindow.document.write(payload.html);
-    printWindow.document.close();
-    printWindow.focus();
     markInvoicePrinted(invoice.id);
+    ui.saveMessage = "Ouverture de l'impression...";
+    render();
+    try {
+      const result = await window.monGestaClubShell.printHtml(payload);
+      ui.saveMessage = result?.ok
+        ? "Facture envoyée à l'impression"
+        : result?.canceled
+          ? "Impression annulée"
+          : "Impression impossible pour le moment";
+    } catch (error) {
+      console.error(error);
+      ui.saveMessage = "Impression impossible pour le moment";
+    }
+    render();
   }
 
   async function exportInvoicePdf(invoice = {}) {
@@ -18787,17 +18821,40 @@ ${esc(bodyText)}</pre>
     }
   }
 
+  // Retire explicitement les secrets de sécurité d'un objet settings destiné à l'export (Lot 4A).
+  // Ne jamais exporter : hash/sel du mot de passe général, hash/sel du code de récupération. Les
+  // credentials PIN ne transitent de toute façon jamais par `settings` (fichier main process séparé).
+  // On ne se contente pas de « supposer qu'ils sont absents » : on les supprime activement.
+  function scrubSecuritySettingsForExport(settingsObj) {
+    if (!settingsObj || typeof settingsObj !== "object") return settingsObj;
+    const security = settingsObj.security && typeof settingsObj.security === "object" ? { ...settingsObj.security } : {};
+    delete security.passwordHash;
+    delete security.passwordSalt;
+    delete security.recoveryHash;
+    delete security.recoverySalt;
+    delete security.recoveryUpdatedAt;
+    settingsObj.security = security;
+    return settingsObj;
+  }
+
   async function backupPayload() {
     saveCurrentClubPayload({ reloadActive: false });
     const backupSettings = clone(settings);
     const activeLogo = settings.logoDataUrl || await imageSourceToDataUrl(DEFAULT_LOGO);
     if (!backupSettings.logoDataUrl && isLogoDataUrl(activeLogo)) backupSettings.logoDataUrl = activeLogo;
+    scrubSecuritySettingsForExport(backupSettings);
+    // Le clubStore embarque les settings de CHAQUE club (donc leurs secrets de sécurité par club) :
+    // on les scrub tous avant export, pas seulement ceux du club actif.
+    const exportClubStore = normalizeClubStore(clubStore || rawClubStoreFromStorage());
+    Object.values(exportClubStore.data || {}).forEach((payload) => {
+      if (payload && payload.settings) scrubSecuritySettingsForExport(payload.settings);
+    });
     return {
       kind: "mongestaclub-backup",
       version: 3,
       exportedAt: new Date().toISOString(),
       activeClubId: activeClubId(),
-      clubStore: normalizeClubStore(clubStore || rawClubStoreFromStorage()),
+      clubStore: exportClubStore,
       // Utilisateurs/appartenances : données métier sauvegardables (décision produit), mais
       // jamais l'utilisateur actif de LA machine ni le système (recréé par normalisation).
       userStore: userStoreForExport(),
@@ -19880,9 +19937,26 @@ ${esc(bodyText)}</pre>
     render();
   }
 
+  // Secrets de sécurité (Lot 4A) : à l'import, on n'écrase JAMAIS les secrets locaux (mot de passe
+  // général, code de récupération) et on n'importe JAMAIS d'ancien hash présent dans une sauvegarde.
+  // Pour chaque club importé, on réinjecte le secret LOCAL existant (ou vide si le club est inédit),
+  // en ignorant totalement le champ security de la sauvegarde. Les PIN vivent dans un fichier main
+  // process séparé, hors de tout import.
+  function preserveLocalSecurityOnImport(importedStore) {
+    const localStore = normalizeClubStore(clubStore || rawClubStoreFromStorage());
+    Object.entries(importedStore.data || {}).forEach(([clubId, payloadData]) => {
+      if (!payloadData || !payloadData.settings) return;
+      const localSecurity = localStore.data?.[clubId]?.settings?.security;
+      payloadData.settings.security = localSecurity && typeof localSecurity === "object"
+        ? localSecurity
+        : { passwordSalt: "", passwordHash: "", recoverySalt: "", recoveryHash: "", recoveryUpdatedAt: "", createdAt: "", updatedAt: "" };
+    });
+    return importedStore;
+  }
+
   function importBackupPayload(payload) {
     if (payload?.clubStore?.clubs?.length) {
-      const imported = normalizeClubStore(payload.clubStore);
+      const imported = preserveLocalSecurityOnImport(normalizeClubStore(payload.clubStore));
       writeClubStore(imported);
       // Fusion, jamais remplacement : les profils locaux déjà présents ne sont ni écrasés ni
       // dupliqués (même ID -> version locale conservée) ; les profils/appartenances inédits de
@@ -19901,7 +19975,9 @@ ${esc(bodyText)}</pre>
     }
     if (payload?.kind === "mongestaclub-backup" || payload?.kind === LEGACY_BACKUP_KIND || payload?.kind === LEGACY_SEASON_ARCHIVE_KIND || payload?.state) {
       state = normalizeState(payload.state || {});
-      settings = normalizeSettings({ ...settings, ...(payload.settings || {}) });
+      // Secrets de sécurité locaux préservés : le security importé n'écrase jamais le local.
+      const localSecurity = settings.security;
+      settings = normalizeSettings({ ...settings, ...(payload.settings || {}), security: localSecurity });
       if (!settings.logoDataUrl && isLogoDataUrl(payload.assets?.logoDataUrl)) settings.logoDataUrl = payload.assets.logoDataUrl;
       persistSettings();
       const memberCount = state.memberships?.length || 0;
@@ -22006,7 +22082,12 @@ ${esc(bodyText)}</pre>
       return;
     }
     if (target.dataset.userSwitch !== undefined) {
-      if (setActiveUser(target.value)) render();
+      // Changement d'utilisateur sécurisé (Lot 4A) : jamais d'activation directe depuis l'UI. On
+      // remet d'abord le select sur l'utilisateur courant (revert visuel) ; requestUserSwitch
+      // n'activera B qu'après vérification réussie de son PIN dans le main process.
+      const requestedId = target.value;
+      target.value = activeUserId();
+      requestUserSwitch(requestedId).catch((error) => console.error(error));
       return;
     }
     if (target.dataset.userRoleField !== undefined) {
@@ -22279,6 +22360,10 @@ ${esc(bodyText)}</pre>
   async function handleAction(button) {
     const action = button.dataset.action;
     if (!action) return;
+    // Garde centrale d'authentification (Lot 4A) : tant qu'une authentification est requise mais
+    // absente ou désynchronisée, aucune action (donc aucune mutation) n'est traitée — on ramène à
+    // l'écran d'authentification. En mono-utilisateur sans PIN et en démo web, la garde passe.
+    if (!requireAuthenticatedSession()) return;
     if (action === "save-now") {
       persist("Enregistré dans le logiciel");
       render();
@@ -22337,6 +22422,9 @@ ${esc(bodyText)}</pre>
     if (action === "rename-user") return renameUserFromPrompt(button.dataset.userId);
     if (action === "deactivate-user") return deactivateUserWithChecks(button.dataset.userId);
     if (action === "reactivate-user") return reactivateUserById(button.dataset.userId);
+    if (action === "configure-user-pin") return configureOwnPinFlow(button.dataset.userId);
+    if (action === "change-user-pin") return changeOwnPinFlow(button.dataset.userId);
+    if (action === "remove-user-pin") return removeOwnPinFlow(button.dataset.userId);
     if (action === "add-user-membership") return addUserMembershipFromButton(button.dataset.userId, button.dataset.clubId);
     if (action === "clear-history") {
       if (!normalizeActivityLog(state.activityLog).length) return;
@@ -31553,7 +31641,13 @@ ${esc(bodyText)}</pre>
     });
     users.push(systemUser);
 
-    // Au moins un utilisateur normal actif (filet de sécurité si tout a été désactivé/perdu).
+    // Au moins un utilisateur normal actif (filet anti-lockout si tout a été désactivé/perdu).
+    // Lot 4A — ce filet ne contourne JAMAIS l'authentification : le profil ainsi réactivé reste
+    // soumis à l'écran de PIN au démarrage (s'il en a un) ou, s'il n'en a pas et qu'il est seul,
+    // relève du mode mono-utilisateur (ouverture assumée). Il ne « déverrouille » donc rien par
+    // lui-même — il garantit seulement qu'une installation ne se retrouve jamais sans aucun profil
+    // sélectionnable. On ne rend jamais un credential valide silencieusement utilisable ici : la
+    // vérification du PIN reste entièrement du ressort du main process.
     if (!users.some((user) => !user.isSystem && user.active)) {
       const firstNormal = users.find((user) => !user.isSystem);
       if (firstNormal) firstNormal.active = true;
@@ -31833,13 +31927,28 @@ ${esc(bodyText)}</pre>
     render();
   }
 
-  function reactivateUserById(userId) {
+  async function reactivateUserById(userId) {
     const store = normalizeUserStore(userStore || rawUserStoreFromStorage());
     const user = store.users.find((row) => row.id === userId && !row.isSystem);
     if (!user) return;
+    // Confirmation explicite (Lot 4A) : la réactivation ne doit jamais être silencieuse — un ancien
+    // profil réutilisé (départ/retour, changement de titulaire) doit repasser par une activation
+    // locale avec un nouveau PIN.
+    const confirmed = await requestConfirm({
+      title: "Réactiver l'utilisateur",
+      message: `Réactiver ${user.displayName} ?\n\nPour des raisons de sécurité, ce profil devra définir un nouveau PIN à sa prochaine connexion.`,
+      confirmLabel: "Réactiver",
+    });
+    if (!confirmed) return;
     user.active = true;
     user.updatedAt = new Date().toISOString();
     writeUserStore(store);
+    // Rendre l'éventuel credential existant inutilisable tel quel (mustChange) : pas de réactivation
+    // silencieuse d'un ancien PIN encore valide. No-op hors Electron.
+    try {
+      const api = (typeof userAuthApi === "function") ? userAuthApi() : null;
+      if (api) { await api.requireNewPin(user.id); await refreshAuthState(); }
+    } catch (error) { console.error(error); }
     audit.userReactivated(user);
     ui.saveMessage = `Utilisateur réactivé : ${user.displayName}`;
     render();
@@ -31898,13 +32007,28 @@ ${esc(bodyText)}</pre>
 
   function userCardHtml(user, clubs, store, options = {}) {
     const isActive = user.id === activeUserId();
+    // Statut / gestion du PIN (Lot 4A) : uniquement dans la version de bureau (auth Electron
+    // disponible). La création/modification du PIN n'est proposée que pour l'utilisateur
+    // actuellement authentifié (chacun gère son propre PIN) ; le retrait n'est offert qu'en
+    // mono-utilisateur. Les autres profils se réinitialisent via le code de récupération.
+    const authOn = typeof userAuthAvailable === "function" && userAuthAvailable();
+    const hasPin = authOn && typeof userHasPin === "function" && userHasPin(user.id);
+    const pinChip = authOn && !options.deactivated
+      ? `<span class="user-pin-chip ${hasPin ? "ok" : "off"}">${hasPin ? "PIN configuré" : "Sans PIN"}</span>`
+      : "";
+    const pinActions = (authOn && isActive && !options.deactivated)
+      ? `<button type="button" data-action="${hasPin ? "change-user-pin" : "configure-user-pin"}" data-user-id="${esc(user.id)}">${hasPin ? "Changer le PIN" : "Configurer le PIN"}</button>
+         ${hasPin && interactiveUsers().length <= 1 ? `<button type="button" data-action="remove-user-pin" data-user-id="${esc(user.id)}">Retirer le PIN</button>` : ""}`
+      : "";
     return `<div class="user-card ${isActive ? "active" : ""}">
       <div class="user-card-head">
         <strong>${esc(user.displayName)}</strong>
         ${isActive ? `<em>Actif</em>` : ""}
+        ${pinChip}
       </div>
       <div class="inline-actions">
         <button type="button" data-action="rename-user" data-user-id="${esc(user.id)}">Renommer</button>
+        ${pinActions}
         ${options.deactivated
           ? `<button type="button" class="primary" data-action="reactivate-user" data-user-id="${esc(user.id)}">Réactiver</button>`
           : `<button type="button" data-action="deactivate-user" data-user-id="${esc(user.id)}">Désactiver</button>`}
@@ -31919,8 +32043,12 @@ ${esc(bodyText)}</pre>
     const normalUsers = store.users.filter((user) => !user.isSystem);
     const activeUsers = normalUsers.filter((user) => user.active);
     const inactiveUsers = normalUsers.filter((user) => !user.active);
+    const authOn = typeof userAuthAvailable === "function" && userAuthAvailable();
     return `<div class="users-settings">
       <p class="muted">Chaque profil permet de distinguer qui utilise le logiciel sur cet ordinateur. Le rôle par club est mémorisé pour préparer un futur système de droits — il n'a aucun effet aujourd'hui.</p>
+      ${authOn
+        ? `<p class="muted">La protection par PIN garantit que les actions du Journal d'activité sont bien attribuées à la bonne personne. Dès qu'au moins deux profils existent, chacun doit avoir un PIN.</p>`
+        : `<p class="muted">La protection des utilisateurs par PIN est disponible dans la version de bureau.</p>`}
       <div class="inline-actions">
         <button type="button" class="primary" data-action="new-user">Créer un utilisateur</button>
       </div>
@@ -31959,6 +32087,8 @@ ${esc(bodyText)}</pre>
     "invoice.payment.attached", "invoice.credit.applied",
     // Lot 3B — paiements-échéances intégrés (adhésions/commandes/inscriptions).
     "payment.validated", "payment.cancelled",
+    // Lot 4A — authentification locale par PIN (voir audit.userPinXxx / userSwitched ci-dessous).
+    "user.pin.configured", "user.pin.changed", "user.pin.reset", "user.pin.removed", "user.switched",
   ];
 
   function rawAuditLogFromStorage() {
@@ -32340,6 +32470,73 @@ ${esc(bodyText)}</pre>
         },
       });
     },
+    // --- Lot 4A — authentification locale par PIN ---
+    // Aucune valeur de PIN, hash, sel, code de récupération ou compteur d'échec n'est journalisé :
+    // uniquement l'identité concernée et le contexte minimal de l'action.
+    //
+    // Provisionnement initial (aucune identité n'était encore authentifiée) : l'événement est
+    // attribué honnêtement au Système, jamais au profil lui-même « par avance ».
+    userPinConfigured(user, { initialProvisioning = false } = {}) {
+      const systemAttribution = initialProvisioning
+        ? { actorId: SYSTEM_USER_ID, actorNameSnapshot: systemUser()?.displayName || "Système" }
+        : {};
+      return recordAuditEvent({
+        action: "user.pin.configured",
+        entityType: "user",
+        entityId: user.id,
+        entityLabel: user.displayName,
+        metadata: { targetUserId: user.id, targetUserLabel: user.displayName, initialProvisioning: Boolean(initialProvisioning) },
+        ...systemAttribution,
+      });
+    },
+    userPinChanged(user) {
+      return recordAuditEvent({
+        action: "user.pin.changed",
+        entityType: "user",
+        entityId: user.id,
+        entityLabel: user.displayName,
+        metadata: { targetUserId: user.id, targetUserLabel: user.displayName },
+      });
+    },
+    // Réinitialisation par code de récupération : aucune identité authentifiée -> acteur = Système,
+    // avec l'origine explicite. Ne jamais attribuer au profil réinitialisé.
+    userPinReset(user) {
+      return recordAuditEvent({
+        action: "user.pin.reset",
+        entityType: "user",
+        entityId: user.id,
+        entityLabel: user.displayName,
+        metadata: { targetUserId: user.id, targetUserLabel: user.displayName, origin: "installation-recovery-code" },
+        actorId: SYSTEM_USER_ID,
+        actorNameSnapshot: systemUser()?.displayName || "Système",
+      });
+    },
+    userPinRemoved(user) {
+      return recordAuditEvent({
+        action: "user.pin.removed",
+        entityType: "user",
+        entityId: user.id,
+        entityLabel: user.displayName,
+        metadata: { targetUserId: user.id, targetUserLabel: user.displayName },
+      });
+    },
+    // Changement d'utilisateur : créé UNIQUEMENT après authentification réussie du profil cible.
+    // Acteur = nouvel utilisateur authentifié (déjà actif au moment de journaliser).
+    userSwitched(fromUser, toUser) {
+      if (!toUser) return null;
+      return recordAuditEvent({
+        action: "user.switched",
+        entityType: "user",
+        entityId: toUser.id,
+        entityLabel: toUser.displayName,
+        metadata: {
+          fromUserId: fromUser?.id || "",
+          fromUserLabel: fromUser?.displayName || "",
+          toUserId: toUser.id,
+          toUserLabel: toUser.displayName,
+        },
+      });
+    },
   };
 
   // --- Export / import (Lot 2) ---
@@ -32443,6 +32640,28 @@ ${esc(bodyText)}</pre>
       const suffix = paymentEventPhraseSuffix(metadata);
       return `${actor} a annulé la validation d'un paiement de ${money(metadata.amount)}${suffix ? ` ${suffix}` : ""}`;
     },
+    "user.pin.configured": (actor, label, metadata) => {
+      const target = asText(metadata.targetUserLabel) || label || "?";
+      // Provisionnement initial : formulation honnête (aucune identité n'était vérifiée avant).
+      if (metadata.initialProvisioning) return `Le PIN du profil « ${target} » a été configuré sur cette installation`;
+      return `${actor} a configuré le PIN du profil « ${target} »`;
+    },
+    "user.pin.changed": (actor, label, metadata) => `${actor} a modifié son PIN`,
+    "user.pin.reset": (actor, label, metadata) => {
+      const target = asText(metadata.targetUserLabel) || label || "?";
+      return `L'accès du profil « ${target} » a été réinitialisé avec le code de récupération de l'installation`;
+    },
+    "user.pin.removed": (actor, label, metadata) => {
+      const target = asText(metadata.targetUserLabel) || label || "?";
+      return `${actor} a retiré le PIN du profil « ${target} »`;
+    },
+    "user.switched": (actor, label, metadata) => {
+      const from = asText(metadata.fromUserLabel);
+      const to = asText(metadata.toUserLabel) || label || "?";
+      return from
+        ? `${to} a ouvert une session (profil précédent : « ${from} »)`
+        : `${to} a ouvert une session`;
+    },
   };
 
   // Gère proprement : action inconnue, label absent, métadonnée manquante — jamais d'erreur,
@@ -32495,8 +32714,594 @@ ${esc(bodyText)}</pre>
       </table></div>` : `<div class="empty">Aucune activité enregistrée pour le moment.</div>`}
     </div>`;
   }
+  // Authentification locale par PIN (Lot 4A) — côté renderer.
+  //
+  // Le main process Electron est autoritaire : hash, vérification, compteurs d'échecs, code de
+  // récupération et session vérifiée vivent là-bas (voir budo-electron/main.js). Ce module ne fait
+  // que : présenter les écrans, orchestrer les flux (démarrage, changement d'utilisateur, gestion du
+  // PIN), et tenir un miroir de session en mémoire (`authSession`) pour garder l'interface cohérente.
+  //
+  // Dégradation honnête : hors Electron (démo web, navigateur), l'API d'authentification est absente.
+  // Aucune protection PIN n'est simulée — les profils fonctionnent comme avant, sans secret stocké.
+
+  function userAuthApi() {
+    const shell = (typeof window !== "undefined") ? window.monGestaClubShell : null;
+    return (shell && shell.auth && typeof shell.auth.verifyPin === "function") ? shell.auth : null;
+  }
+
+  function userAuthAvailable() {
+    return Boolean(userAuthApi());
+  }
+
+  async function refreshAuthState() {
+    const api = userAuthApi();
+    if (!api) {
+      authState = { available: false, corrupt: false, users: {}, hasRecovery: false };
+      return authState;
+    }
+    try {
+      const state = await api.getState();
+      authState = {
+        available: true,
+        // Mission 2 — stockage d'authentification corrompu : état fermé, jamais confondu avec
+        // « aucun PIN ». Le renderer bloque alors l'interface métier (voir requireUserAuthentication).
+        corrupt: Boolean(state && state.corrupt),
+        users: (state && state.users) ? state.users : {},
+        hasRecovery: Boolean(state && state.hasRecovery),
+      };
+    } catch (error) {
+      console.error(error);
+      // Échec IPC pur : on n'ouvre pas l'accès. On marque comme indisponible (pas « sans PIN »).
+      authState = { available: false, corrupt: false, users: {}, hasRecovery: false };
+    }
+    return authState;
+  }
+
+  function authStorageCorrupt() {
+    return Boolean(authState && authState.corrupt);
+  }
+
+  function userHasPin(userId) {
+    return Boolean(authState.users && authState.users[userId] && authState.users[userId].hasPin);
+  }
+
+  function userMustChangePin(userId) {
+    return Boolean(authState.users && authState.users[userId] && authState.users[userId].mustChange);
+  }
+
+  // Profils interactifs : jamais le système, jamais un désactivé (réutilise selectableUsers).
+  function interactiveUsers() {
+    return selectableUsers();
+  }
+
+  // Une authentification est requise dès qu'il existe au moins deux profils interactifs, ou dès que
+  // le profil actif possède un PIN. Un profil unique sans PIN (installation mono-poste) reste ouvert.
+  function authRequired() {
+    if (!userAuthAvailable()) return false;
+    const users = interactiveUsers();
+    if (users.length >= 2) return true;
+    const active = activeUser();
+    return active ? userHasPin(active.id) : false;
+  }
+
+  function isSessionAuthenticated() {
+    if (!authRequired()) return true;
+    return authSession.verified && authSession.userId === activeUserId();
+  }
+
+  // Garde centrale des mutations : autorise le mode mono-utilisateur sans PIN, refuse dès qu'une
+  // authentification est requise mais absente (ou désynchronisée) et ramène alors à l'écran d'auth.
+  // Stockage corrompu -> refus total (mode fermé) et écran de réparation.
+  function requireAuthenticatedSession() {
+    if (authStorageCorrupt()) { renderAuthCorruptScreen(); return false; }
+    if (isSessionAuthenticated()) return true;
+    ui.saveMessage = "Authentification requise";
+    requireUserAuthentication().then(() => render()).catch((error) => console.error(error));
+    return false;
+  }
+
+  // --- Validation locale (miroir du main, pour un retour immédiat à l'utilisateur) ---
+
+  const AUTH_PIN_TRIVIALS_CLIENT = new Set([
+    "000000", "111111", "222222", "333333", "444444", "555555",
+    "666666", "777777", "888888", "999999", "123456", "654321",
+  ]);
+
+  function authPinFormatValid(pin) {
+    return typeof pin === "string" && /^[0-9]{6}$/.test(pin);
+  }
+
+  function authPinTrivial(pin) {
+    if (AUTH_PIN_TRIVIALS_CLIENT.has(pin)) return true;
+    if (/^(\d)\1{5}$/.test(pin)) return true;
+    if (/^(\d{2})\1{2}$/.test(pin)) return true;
+    if (/^(\d{3})\1$/.test(pin)) return true;
+    return false;
+  }
+
+  function authPinValidationMessage(pin, confirmation) {
+    if (!authPinFormatValid(pin)) return "Le PIN doit contenir exactement 6 chiffres.";
+    if (authPinTrivial(pin)) return "Ce PIN est trop simple. Choisissez une combinaison moins évidente.";
+    if (confirmation !== undefined && pin !== confirmation) return "Les deux PIN ne correspondent pas.";
+    return "";
+  }
+
+  function authErrorMessage(res) {
+    if (res && res.error === "throttled") {
+      const seconds = Math.ceil((res.retryAfterMs || 0) / 1000);
+      return `Trop de tentatives. Réessayez dans ${seconds} seconde${seconds > 1 ? "s" : ""}.`;
+    }
+    // Message volontairement générique : ne révèle jamais si un profil possède ou non un PIN.
+    return "PIN incorrect ou accès temporairement différé.";
+  }
+
+  // --- Dialogues de saisie / création de PIN (fenêtres flottantes, par-dessus l'app rendue) ---
+
+  function pinFieldHtml(name, label) {
+    return `<label class="pin-field">${esc(label)}
+      <span class="pin-input-wrap">
+        <input type="password" inputmode="numeric" autocomplete="off" maxlength="6" name="${esc(name)}" data-pin-input />
+        <button type="button" class="pin-reveal" data-pin-reveal title="Afficher / masquer" aria-label="Afficher / masquer">👁</button>
+      </span>
+    </label>`;
+  }
+
+  function bindPinReveal(root) {
+    root.querySelectorAll("[data-pin-reveal]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const input = button.parentElement?.querySelector("[data-pin-input]");
+        if (!input) return;
+        input.type = input.type === "password" ? "text" : "password";
+        input.focus();
+      });
+    });
+  }
+
+  // Saisie d'un PIN existant. Résout avec la chaîne saisie, ou null si annulé.
+  function promptPinDialog({ title = "Saisir le PIN", intro = "", confirmLabel = "Valider" } = {}) {
+    return new Promise((resolve) => {
+      let settled = false;
+      const targetDialog = dialogForNewWindow();
+      targetDialog.classList.remove("has-identity-photo");
+      targetDialog.innerHTML = `<form class="password-confirm-form pin-form">
+        <div class="dialog-header"><h2>${esc(title)}</h2><button class="icon" type="button" data-dialog-close title="Fermer" aria-label="Fermer">×</button></div>
+        <div class="dialog-body"><div class="dialog-section">
+          ${intro ? `<p class="muted">${esc(intro)}</p>` : ""}
+          ${pinFieldHtml("pin", "Code PIN (6 chiffres)")}
+          <div class="form-error" data-pin-error hidden></div>
+        </div></div>
+        <div class="dialog-footer"><span></span><div class="dialog-footer-actions"><button type="button" data-dialog-close>Annuler</button><button class="primary" type="submit">${esc(confirmLabel)}</button></div></div>
+      </form>`;
+      const finish = (value) => { if (settled) return; settled = true; resolve(value); };
+      const form = targetDialog.querySelector("form");
+      bindPinReveal(form);
+      targetDialog.querySelectorAll("[data-dialog-close]").forEach((button) => button.addEventListener("click", () => { finish(null); targetDialog.close(); }));
+      targetDialog.addEventListener("close", () => finish(null), { once: true });
+      form.addEventListener("submit", (event) => {
+        event.preventDefault();
+        const pin = asText(form.elements.pin?.value);
+        const errorBox = form.querySelector("[data-pin-error]");
+        if (!authPinFormatValid(pin)) {
+          if (errorBox) { errorBox.textContent = "Le PIN doit contenir exactement 6 chiffres."; errorBox.hidden = false; }
+          form.elements.pin?.focus();
+          return;
+        }
+        finish(pin);
+        targetDialog.close();
+      });
+      showFloatingDialog(form, "input[name='pin']", targetDialog);
+    });
+  }
+
+  // Création / redéfinition d'un PIN (nouveau + confirmation). Résout avec le PIN, ou null si annulé.
+  function promptCreatePinDialog({ title = "Définir un PIN", intro = "" } = {}) {
+    return new Promise((resolve) => {
+      let settled = false;
+      const targetDialog = dialogForNewWindow();
+      targetDialog.classList.remove("has-identity-photo");
+      targetDialog.innerHTML = `<form class="password-confirm-form pin-form">
+        <div class="dialog-header"><h2>${esc(title)}</h2><button class="icon" type="button" data-dialog-close title="Fermer" aria-label="Fermer">×</button></div>
+        <div class="dialog-body"><div class="dialog-section">
+          ${intro ? `<p class="muted">${esc(intro)}</p>` : ""}
+          <p class="muted">Le PIN protège votre identité sur ce poste. Choisissez 6 chiffres que vous seul connaissez.</p>
+          ${pinFieldHtml("pin", "Nouveau PIN (6 chiffres)")}
+          ${pinFieldHtml("pin2", "Confirmer le PIN")}
+          <div class="form-error" data-pin-error hidden></div>
+        </div></div>
+        <div class="dialog-footer"><span></span><div class="dialog-footer-actions"><button type="button" data-dialog-close>Annuler</button><button class="primary" type="submit">Enregistrer le PIN</button></div></div>
+      </form>`;
+      const finish = (value) => { if (settled) return; settled = true; resolve(value); };
+      const form = targetDialog.querySelector("form");
+      bindPinReveal(form);
+      targetDialog.querySelectorAll("[data-dialog-close]").forEach((button) => button.addEventListener("click", () => { finish(null); targetDialog.close(); }));
+      targetDialog.addEventListener("close", () => finish(null), { once: true });
+      form.addEventListener("submit", (event) => {
+        event.preventDefault();
+        const pin = asText(form.elements.pin?.value);
+        const pin2 = asText(form.elements.pin2?.value);
+        const message = authPinValidationMessage(pin, pin2);
+        const errorBox = form.querySelector("[data-pin-error]");
+        if (message) {
+          if (errorBox) { errorBox.textContent = message; errorBox.hidden = false; }
+          return;
+        }
+        finish(pin);
+        targetDialog.close();
+      });
+      showFloatingDialog(form, "input[name='pin']", targetDialog);
+    });
+  }
+
+  // Affiche le code de récupération UNE SEULE FOIS. Résout après confirmation par l'utilisateur.
+  function showRecoveryCodeOnce(code) {
+    return new Promise((resolve) => {
+      let settled = false;
+      const targetDialog = dialogForNewWindow();
+      targetDialog.classList.remove("has-identity-photo");
+      targetDialog.innerHTML = `<div class="recovery-card">
+        <div class="dialog-header"><h2>Code de récupération</h2></div>
+        <div class="dialog-body"><div class="dialog-section">
+          <p class="muted">Ce code permet de réinitialiser l'accès d'un profil si un PIN est oublié. Il n'est affiché qu'une seule fois. Notez-le et conservez-le en lieu sûr, hors de l'application.</p>
+          ${recoveryCodeCardHtml(code)}
+        </div></div>
+        <div class="dialog-footer"><span></span><button type="button" class="primary" data-recovery-continue>J'ai noté ce code, continuer</button></div>
+      </div>`;
+      const finish = () => { if (settled) return; settled = true; resolve(); };
+      bindRecoveryCopy(targetDialog);
+      targetDialog.querySelector("[data-recovery-continue]")?.addEventListener("click", () => { finish(); targetDialog.close(); });
+      targetDialog.addEventListener("close", () => finish(), { once: true });
+      showFloatingDialog(targetDialog, "[data-recovery-continue]", targetDialog);
+    });
+  }
+
+  // Génère et affiche le code de récupération, puis confirme explicitement qu'il a été noté
+  // (Mission 5 + revue finale). Exige un jeton recovery-setup émis par le main (createRecoveryCode /
+  // confirmRecoveryCodeSaved refusent sans lui). Un code déjà CONFIRMÉ n'est jamais remplacé (le main
+  // renvoie recovery-already-configured) ; un code encore en attente est régénéré puis reconfirmé.
+  async function ensureRecoveryCode(recoverySetupId) {
+    const api = userAuthApi();
+    if (!api || !recoverySetupId) return;
+    try {
+      const res = await api.createRecoveryCode(recoverySetupId);
+      if (res && res.ok && res.code) {
+        await showRecoveryCodeOnce(res.code);
+        await api.confirmRecoveryCodeSaved(recoverySetupId);
+      }
+      await refreshAuthState();
+    } catch (error) {
+      console.error(error);
+    }
+  }
+
+  // --- Provisionnement / vérification (ne committe jamais la session : le commit est explicite) ---
+
+  // Fait créer un PIN pour `userId` (provisionnement initial ou redéfinition après mustChange).
+  // En cas de succès, renvoie { ok:true, verificationId } : un jeton d'ouverture de session à usage
+  // unique émis par le main process. `initialProvisioning` -> événement attribué au Système.
+  async function provisionPinFlow(userId, { initialProvisioning = false } = {}) {
+    const api = userAuthApi();
+    const target = allNormalUsers().find((user) => user.id === userId);
+    if (!api || !target) return { ok: false };
+    const pin = await promptCreatePinDialog({
+      title: `Définir le PIN de ${target.displayName}`,
+      intro: initialProvisioning ? "Ce profil n'a pas encore de PIN sur ce poste. Définissez-le pour l'activer." : "",
+    });
+    if (pin == null) return { ok: false };
+    let res;
+    try {
+      res = await api.configurePin(userId, pin);
+    } catch (error) {
+      console.error(error);
+      alert("Le service d'authentification est indisponible. Réessayez plus tard.");
+      return { ok: false };
+    }
+    if (!res || !res.ok) {
+      alert(res && res.error === "trivial" ? "Ce PIN est trop simple." : "Impossible d'enregistrer ce PIN.");
+      return { ok: false };
+    }
+    await refreshAuthState();
+    audit.userPinConfigured(target, { initialProvisioning });
+    if (res.recoverySetupRequired) await ensureRecoveryCode(res.recoverySetupId);
+    return { ok: true, verificationId: res.verificationId };
+  }
+
+  // Vérifie l'accès au profil cible SANS committer la session. Renvoie { ok, verificationId } : le
+  // jeton à usage unique à passer ensuite à commitSession (Mission 3). Gère aussi mustChange (récup.).
+  async function verifyProfileForAuth(userId) {
+    const api = userAuthApi();
+    const target = interactiveUsers().find((user) => user.id === userId);
+    if (!api || !target) return { ok: false };
+
+    if (!userHasPin(userId) || userMustChangePin(userId)) {
+      // Profil sans PIN (migration multi-utilisateurs / provisionnement) OU accès réinitialisé par
+      // code de récupération (mustChange) : création d'un nouveau PIN, sans redemander l'ancien.
+      return provisionPinFlow(userId, { initialProvisioning: true });
+    }
+
+    const pin = await promptPinDialog({ title: `PIN de ${target.displayName}` });
+    if (pin == null) return { ok: false };
+    let res;
+    try {
+      res = await api.verifyPin(userId, pin);
+    } catch (error) {
+      console.error(error);
+      alert("Le service d'authentification est indisponible. Réessayez plus tard.");
+      return { ok: false };
+    }
+    if (!res || !res.ok) {
+      alert(authErrorMessage(res));
+      return { ok: false };
+    }
+    if (res.mustChange) {
+      // Accès rétabli après récupération : un nouveau PIN doit être défini avant toute utilisation.
+      return provisionPinFlow(userId, { initialProvisioning: false });
+    }
+    // Authentification normale : si aucun code de récupération confirmé n'existe (ancienne
+    // installation, ou code affiché mais non confirmé avant un crash), le main a émis un jeton
+    // recovery-setup -> on (re)propose la configuration du code maintenant.
+    if (res.recoverySetupRequired) await ensureRecoveryCode(res.recoverySetupId);
+    return { ok: true, verificationId: res.verificationId };
+  }
+
+  // --- Écran d'authentification au démarrage (remplace tout #app : aucune donnée métier visible) ---
+
+  function requireUserAuthentication() {
+    if (!userAuthAvailable()) return Promise.resolve();
+    return refreshAuthState().then(() => new Promise((resolve) => {
+      // Mission 2 — stockage corrompu : mode fermé. On n'ouvre jamais l'interface métier, on ne
+      // considère aucun profil comme « sans PIN », on affiche un écran de réparation. Ne résout pas.
+      if (authStorageCorrupt()) { renderAuthCorruptScreen(resolve); return; }
+      const users = interactiveUsers();
+      // Mono-utilisateur sans PIN : ouverture automatique conservée.
+      if (users.length <= 1) {
+        const only = users[0] || activeUser();
+        if (!only || !userHasPin(only.id)) {
+          if (only && only.id !== activeUserId()) setActiveUser(only.id);
+          authSession = { userId: only ? only.id : activeUserId(), verified: true };
+          resolve();
+          return;
+        }
+      }
+      renderUserAuthGate(resolve);
+    }));
+  }
+
+  // Écran de réparation (Mission 2) : la protection locale est endommagée. Aucune donnée métier,
+  // aucun contenu de fichier ni erreur sensible affichés. Le bouton « Réessayer » relit le stockage
+  // (utile si un .bak a été restauré ou le fichier réparé hors application).
+  function renderAuthCorruptScreen(resolve) {
+    applyGateChrome();
+    app.innerHTML = `<main class="password-gate auth-gate">
+      <div class="license-card password-card">
+        <img src="${esc(appLogoSrc())}" alt="MonGestaClub" />
+        <h2>Protection locale endommagée</h2>
+        <p class="muted">Le fichier de protection des utilisateurs de cette installation est illisible ou incohérent. Par sécurité, l'accès aux données est bloqué tant qu'il n'est pas réparé.</p>
+        <p class="muted">Aucune donnée de votre club n'est affectée : elles restent stockées séparément. Restaurez une installation saine ou contactez le support, puis réessayez.</p>
+        <div class="auth-gate-actions">
+          <button type="button" class="primary" data-auth-retry>Réessayer</button>
+        </div>
+      </div>
+    </main>`;
+    app.querySelector("[data-auth-retry]")?.addEventListener("click", () => {
+      refreshAuthState().then(() => {
+        if (authStorageCorrupt()) { renderAuthCorruptScreen(resolve); return; }
+        // Stockage redevenu sain : reprendre le flux normal d'authentification.
+        if (typeof resolve === "function") requireUserAuthentication().then(() => { resolve(); render(); });
+        else requireUserAuthentication().then(() => render());
+      }).catch((error) => console.error(error));
+    });
+  }
+
+  function renderUserAuthGate(resolve, preselectId = "") {
+    applyGateChrome();
+    const users = interactiveUsers();
+    const lastId = preselectId || activeUserId();
+    const selectedId = users.some((user) => user.id === lastId) ? lastId : (users[0]?.id || "");
+    app.innerHTML = `<main class="password-gate auth-gate">
+      <div class="license-card password-card">
+        <img src="${esc(appLogoSrc())}" alt="MonGestaClub" />
+        <h2>Qui utilise MonGestaClub ?</h2>
+        <p class="muted">Choisissez votre profil puis saisissez votre PIN. Cela garantit que les actions du Journal d'activité sont bien attribuées à la bonne personne.</p>
+        <div class="auth-gate-users">
+          ${users.map((user) => `<button type="button" class="auth-gate-user ${user.id === selectedId ? "active" : ""}" data-auth-user="${esc(user.id)}">
+            <strong>${esc(user.displayName)}</strong>
+            <span>${userHasPin(user.id) ? "PIN requis" : "À activer"}</span>
+          </button>`).join("")}
+        </div>
+        <div class="auth-gate-actions">
+          <button type="button" class="primary" data-auth-continue>Continuer</button>
+          <button type="button" class="auth-gate-secondary" data-auth-forgot>PIN oublié ?</button>
+        </div>
+      </div>
+    </main>`;
+
+    let currentId = selectedId;
+    const markSelection = () => {
+      app.querySelectorAll("[data-auth-user]").forEach((button) => {
+        button.classList.toggle("active", button.dataset.authUser === currentId);
+      });
+    };
+    app.querySelectorAll("[data-auth-user]").forEach((button) => {
+      button.addEventListener("click", () => { currentId = button.dataset.authUser; markSelection(); });
+    });
+
+    const proceed = async () => {
+      if (!currentId) return;
+      const result = await verifyProfileForAuth(currentId);
+      if (!result.ok) { renderUserAuthGate(resolve, currentId); return; }
+      const api = userAuthApi();
+      let commit;
+      try { commit = await api.commitSession(currentId, result.verificationId); } catch (error) { commit = null; }
+      if (!commit || !commit.ok) { renderUserAuthGate(resolve, currentId); return; }
+      if (currentId !== activeUserId()) setActiveUser(currentId);
+      authSession = { userId: currentId, verified: true };
+      await refreshAuthState();
+      resolve();
+    };
+    app.querySelector("[data-auth-continue]")?.addEventListener("click", () => { proceed().catch((error) => console.error(error)); });
+    app.querySelector("[data-auth-forgot]")?.addEventListener("click", () => { runRecoveryFlow(currentId).then((done) => { if (done) renderUserAuthGate(resolve, currentId); }).catch((error) => console.error(error)); });
+  }
+
+  // Récupération via code d'installation : place le profil en mustChange (nouvelle activation exigée).
+  // L'événement user.pin.reset est attribué honnêtement au Système (aucune identité authentifiée).
+  async function runRecoveryFlow(userId) {
+    const api = userAuthApi();
+    if (!api) return false;
+    const target = interactiveUsers().find((user) => user.id === userId);
+    if (!target) { alert("Sélectionnez d'abord un profil."); return false; }
+    const status = await api.getRecoveryStatus();
+    if (!status || !status.present) {
+      alert("Aucun code de récupération n'a été généré sur cette installation.");
+      return false;
+    }
+    const code = await requestTextInput({
+      title: "Code de récupération",
+      label: "Saisissez le code de récupération de l'installation",
+      placeholder: "XXXX-XXXX-XXXX-XXXX",
+      confirmLabel: "Réinitialiser l'accès",
+    });
+    if (!code) return false;
+    let res;
+    try { res = await api.resetWithRecoveryCode(userId, code); } catch (error) { res = null; }
+    if (!res || !res.ok) {
+      alert("Code de récupération incorrect.");
+      return false;
+    }
+    await refreshAuthState();
+    audit.userPinReset(target);
+    alert(`L'accès du profil « ${target.displayName} » a été réinitialisé. Un nouveau PIN devra être défini à la prochaine connexion.`);
+    return true;
+  }
+
+  // --- Changement d'utilisateur sécurisé (depuis le sélecteur) ---
+
+  function hasOpenMutationForms() {
+    return Boolean(document.querySelector("dialog[open] form[data-opened-by]"));
+  }
+
+  function closeMutationForms() {
+    document.querySelectorAll("dialog[open] form[data-opened-by]").forEach((form) => {
+      const dlg = form.closest("dialog");
+      if (dlg && dlg.open) dlg.close();
+    });
+  }
+
+  async function requestUserSwitch(userId) {
+    const uid = asText(userId);
+    if (!uid || uid === activeUserId()) return;
+    if (userSwitchInProgress) return;
+    userSwitchInProgress = true;
+    try {
+      const target = interactiveUsers().find((user) => user.id === uid);
+      if (!target) { render(); return; } // profil désactivé / système / inconnu : on ignore.
+
+      // Démo web / hors Electron : comportement historique, aucun PIN.
+      if (!userAuthAvailable()) {
+        if (setActiveUser(uid)) render();
+        return;
+      }
+
+      const fromUser = activeUser();
+      // 1. Vérifier le profil cible (sans committer). Un échec conserve A actif et authentifié.
+      const result = await verifyProfileForAuth(uid);
+      if (!result.ok) { render(); return; }
+      const verificationId = result.verificationId;
+
+      // 2. Formulaires de mutation ouverts : demander confirmation AVANT de committer.
+      if (hasOpenMutationForms()) {
+        const confirmed = await requestConfirm({
+          title: "Changer d'utilisateur",
+          message: "Des fenêtres contiennent des modifications non enregistrées.\nContinuer les fermera sans enregistrer.",
+          confirmLabel: "Fermer et changer d'utilisateur",
+        });
+        if (!confirmed) {
+          // Refus : on ANNULE explicitement le jeton de vérification (Mission 3) -> un commit
+          // ultérieur avec ce jeton sera refusé. A reste actif et authentifié.
+          try { await userAuthApi().cancelVerification(verificationId); } catch (error) { /* rien */ }
+          render();
+          return;
+        }
+        closeMutationForms();
+      }
+
+      // 3. Commit autoritaire (consommation du jeton), puis activation effective + journalisation.
+      let commit;
+      try { commit = await userAuthApi().commitSession(uid, verificationId); } catch (error) { commit = null; }
+      if (!commit || !commit.ok) { render(); return; }
+      const toUser = interactiveUsers().find((user) => user.id === uid);
+      setActiveUser(uid);
+      authSession = { userId: uid, verified: true };
+      await refreshAuthState();
+      audit.userSwitched(fromUser, toUser);
+      render();
+    } finally {
+      userSwitchInProgress = false;
+    }
+  }
+
+  // --- Gestion de son propre PIN (depuis Paramètres > Utilisateurs) ---
+
+  async function configureOwnPinFlow(userId) {
+    const api = userAuthApi();
+    if (!api) return;
+    const target = allNormalUsers().find((user) => user.id === userId);
+    if (!target) return;
+    const result = await provisionPinFlow(userId, { initialProvisioning: !userHasPin(userId) });
+    if (result.ok) {
+      // L'utilisateur vient de créer/redéfinir son propre PIN : on aligne la session sur ce profil
+      // en consommant le jeton de vérification émis par le provisionnement.
+      try { const commit = await api.commitSession(userId, result.verificationId); if (commit && commit.ok) authSession = { userId, verified: true }; } catch (error) { /* rien */ }
+      ui.saveMessage = `PIN configuré : ${target.displayName}`;
+      render();
+    }
+  }
+
+  async function changeOwnPinFlow(userId) {
+    const api = userAuthApi();
+    if (!api) return;
+    const target = allNormalUsers().find((user) => user.id === userId);
+    if (!target) return;
+    if (!userHasPin(userId)) { await configureOwnPinFlow(userId); return; }
+    const currentPin = await promptPinDialog({ title: "PIN actuel", intro: "Confirmez votre PIN actuel pour le modifier." });
+    if (currentPin == null) return;
+    const newPin = await promptCreatePinDialog({ title: "Nouveau PIN" });
+    if (newPin == null) return;
+    let res;
+    try { res = await api.changePin(userId, currentPin, newPin); } catch (error) { res = null; }
+    if (!res || !res.ok) {
+      alert(res && res.error === "trivial" ? "Ce PIN est trop simple." : "PIN actuel incorrect ou nouveau PIN invalide.");
+      return;
+    }
+    await refreshAuthState();
+    audit.userPinChanged(target);
+    ui.saveMessage = `PIN modifié : ${target.displayName}`;
+    render();
+  }
+
+  async function removeOwnPinFlow(userId) {
+    const api = userAuthApi();
+    if (!api) return;
+    const target = allNormalUsers().find((user) => user.id === userId);
+    if (!target) return;
+    // Retrait autorisé uniquement en mono-utilisateur interactif (sinon on recrée l'usurpation).
+    if (interactiveUsers().length > 1) {
+      alert("Le PIN ne peut pas être retiré tant que plusieurs utilisateurs existent.");
+      return;
+    }
+    const currentPin = await promptPinDialog({ title: "PIN actuel", intro: "Confirmez votre PIN pour le retirer." });
+    if (currentPin == null) return;
+    let res;
+    try { res = await api.removePin(userId, currentPin); } catch (error) { res = null; }
+    if (!res || !res.ok) { alert("PIN actuel incorrect."); return; }
+    await refreshAuthState();
+    audit.userPinRemoved(target);
+    ui.saveMessage = `PIN retiré : ${target.displayName}`;
+    render();
+  }
   importFile.addEventListener("change", async (event) => {
     if (isDemoMode()) { event.target.value = ""; return; }
+    // Garde d'authentification (Lot 4A) : un import est une mutation majeure de l'état métier.
+    if (!requireAuthenticatedSession()) { event.target.value = ""; return; }
     const file = event.target.files?.[0];
     if (!file) return;
     let payload;
@@ -32598,6 +33403,11 @@ ${esc(bodyText)}</pre>
     const licenseStatusTask = startupMeasureAsync("refreshLicenseStatus", refreshLicenseStatus);
     await startupMeasureAsync("requirePasswordUnlock", requirePasswordUnlock);
     await startupMeasureAsync("requireInitialSetup", requireInitialSetup);
+    // Authentification locale par PIN (Lot 4A) — après le mot de passe général d'ouverture et la
+    // configuration initiale, mais AVANT le premier rendu métier : tant qu'un PIN est requis et non
+    // saisi, l'interface métier n'est jamais affichée. No-op hors Electron et en mono-utilisateur
+    // sans PIN.
+    await startupMeasureAsync("requireUserAuthentication", requireUserAuthentication);
     await licenseStatusTask;
     startupMeasure("ensureTarifsProtectionSetup", ensureTarifsProtectionSetup);
     // Réparation unique des factures boutique dont la remise avait été perdue avant le correctif
