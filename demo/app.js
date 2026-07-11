@@ -23160,11 +23160,17 @@ ${esc(bodyText)}</pre>
       const paymentContext = paymentContextFrom(button);
       const snapshot = snapshotState();
       recordHistory();
-      if (!validatePayment(button)) {
+      const validation = validatePayment(button);
+      if (!validation) {
         state = normalizeState(JSON.parse(snapshot));
         if (history.undo[history.undo.length - 1] === snapshot) history.undo.pop();
         return;
       }
+      // Journalisé seulement après mutation réussie, jamais avant : validated/cancelled distingués
+      // par le résultat réel de validatePayment(), jamais deviné depuis le texte du bouton.
+      const auditContext = paymentAuditContext(paymentContext);
+      if (validation.auditAction === "validated") audit.paymentValidated(auditContext, validation.payment);
+      else if (validation.auditAction === "cancelled") audit.paymentCancelled(auditContext, validation.payment);
       persist("Paiement enregistré");
       render();
       reopenPaymentBubble(paymentContext);
@@ -24466,6 +24472,33 @@ ${esc(bodyText)}</pre>
     return payments[index];
   }
 
+  // Lot 3B — résout le contexte métier (parent, contact, libellé) d'un paiement-échéance à partir
+  // du contexte DOM (paymentContextFrom). Vit ici (pas dans le module d'audit) car il a besoin de
+  // state/stageById/contactLinkForRow — le module d'audit ne connaît que la forme déjà résolue.
+  function paymentAuditContext(context) {
+    const moduleKind = context.module === "registration" && context.part === "lodging" ? "lodging" : context.module;
+    let parent = null;
+    let parentLabel = "";
+    if (context.module === "membership") {
+      parent = state.memberships.find((row) => row.id === context.id);
+      parentLabel = asText(parent?.discipline);
+    } else if (context.module === "order") {
+      parent = state.shopOrders.find((row) => row.id === context.id);
+    } else if (context.module === "registration") {
+      parent = (state.stageRegistrations[context.stageId] || []).find((row) => row.id === context.id);
+      parentLabel = asText(stageById(context.stageId)?.name);
+    }
+    const link = parent ? parseContactLink(contactLinkForRow(parent)) : { contactId: "" };
+    return {
+      moduleKind,
+      parentId: context.id,
+      paymentIndex: Number(context.index) || 0,
+      contactId: link.contactId || "",
+      contactLabel: parent ? personLabel(parent) : "",
+      parentLabel,
+    };
+  }
+
   function updatePaymentFromControl(control) {
     const payments = getPaymentList(control);
     const index = Number(control.dataset.index);
@@ -24534,7 +24567,7 @@ ${esc(bodyText)}</pre>
     if (cancelPaidPayment(payment)) {
       if (state) state.value = "";
       if (date) date.value = "";
-      return true;
+      return { ok: true, auditAction: "cancelled", payment, index };
     }
     if (!payment.amount && asNumber(button.dataset.paymentTotal)) {
       payment.amount = paymentSuggestion(payments, index, asNumber(button.dataset.paymentTotal));
@@ -24567,7 +24600,7 @@ ${esc(bodyText)}</pre>
     }
     payment.state = "Payé";
     if (state) state.value = "Payé";
-    return true;
+    return { ok: true, auditAction: "validated", payment, index };
   }
 
   // Déverrouille une ligne de paiement (form) après annulation : elle redevient éditable et la garde
@@ -31924,6 +31957,8 @@ ${esc(bodyText)}</pre>
     // Lot 3A — cycle de vie facture (voir audit.invoiceXxx ci-dessous).
     "invoice.created", "invoice.updated", "invoice.issued",
     "invoice.payment.attached", "invoice.credit.applied",
+    // Lot 3B — paiements-échéances intégrés (adhésions/commandes/inscriptions).
+    "payment.validated", "payment.cancelled",
   ];
 
   function rawAuditLogFromStorage() {
@@ -32068,6 +32103,56 @@ ${esc(bodyText)}</pre>
     return changes;
   }
 
+  // --- Lot 3B — identité stable d'un paiement-échéance ---
+  // Un paiement-échéance (membership/order/registration/lodging) n'a pas d'ID propre : il vit
+  // comme un élément positionnel d'un tableau `payments` appartenant à son parent. Identifiant
+  // composite documenté plutôt qu'une migration de schéma : `moduleKind:parentId:index`.
+  // Limite assumée (pas de refonte pour ce lot) : un réordonnancement du tableau ou l'insertion
+  // d'une échéance avant une autre changerait la signification de cet identifiant pour les
+  // anciens événements déjà journalisés — aucun code actuel ne réordonne ni n'insère au milieu
+  // (toujours push en fin de tableau), donc le risque réel est faible en pratique.
+  function paymentEntityId(moduleKind, parentId, index) {
+    return `${asText(moduleKind) || "payment"}:${asText(parentId)}:${Number.isFinite(index) ? index : 0}`;
+  }
+
+  // Libellé stable et non sensible : jamais la phrase d'action, seulement de quoi identifier
+  // l'échéance (numéro, parent, contact) — le renderer construit la phrase humaine à part.
+  function paymentModuleWordFr(moduleKind) {
+    if (moduleKind === "membership") return "Adhésion";
+    if (moduleKind === "order") return "Commande";
+    if (moduleKind === "registration" || moduleKind === "lodging") return "Stage";
+    return "";
+  }
+
+  function paymentEntityLabel({ paymentIndex = 0, moduleKind = "", parentLabel = "", contactLabel = "" } = {}) {
+    const parentPart = [paymentModuleWordFr(moduleKind), asText(parentLabel)].filter(Boolean).join(" ");
+    const parts = [`Échéance ${(Number(paymentIndex) || 0) + 1}`, parentPart, asText(contactLabel)].filter(Boolean);
+    return parts.join(" — ") || "Échéance";
+  }
+
+  // Membre de phrase commun à payment.validated / payment.cancelled ("pour l'adhésion de X",
+  // "pour l'inscription de X au stage « Y »"...) — jamais l'inverse (le renderer construit la
+  // phrase, aucune phrase n'est stockée comme donnée).
+  function paymentEventPhraseSuffix(metadata = {}) {
+    const contact = asText(metadata.contactLabel);
+    const parentLabel = asText(metadata.parentLabel);
+    if (metadata.moduleKind === "membership") {
+      return contact ? `pour l'adhésion de ${contact}` : "pour une adhésion";
+    }
+    if (metadata.moduleKind === "order") {
+      return contact ? `pour la commande de ${contact}` : "pour une commande boutique";
+    }
+    if (metadata.moduleKind === "registration") {
+      if (contact && parentLabel) return `pour l'inscription de ${contact} au stage « ${parentLabel} »`;
+      return contact ? `pour l'inscription de ${contact}` : "pour une inscription à un stage";
+    }
+    if (metadata.moduleKind === "lodging") {
+      if (contact && parentLabel) return `pour l'hébergement de ${contact} au stage « ${parentLabel} »`;
+      return contact ? `pour l'hébergement de ${contact}` : "pour un hébergement de stage";
+    }
+    return contact ? `pour ${contact}` : "";
+  }
+
   // --- API dédiée aux modules métier (préparation Lot 3) ---
   // Aucun module métier ne doit appeler recordAuditEvent(...) directement : passer par ces
   // helpers spécialisés, un par action existante. Chaque helper construit lui-même le payload
@@ -32208,6 +32293,53 @@ ${esc(bodyText)}</pre>
         },
       });
     },
+    // Lot 3B — paiements-échéances (adhésions/commandes/inscriptions). `context` est produit par
+    // paymentAuditContext() (21-handlers.js) : { moduleKind, parentId, paymentIndex, contactId,
+    // contactLabel, parentLabel }. `payment` est l'objet échéance déjà stamped avec son clubId
+    // (voir ensurePaymentAt/stampRecordClubId). Distinct des règlements attachés directement à une
+    // facture (invoice.payment.attached, Lot 3A) : jamais le même événement.
+    paymentValidated(context, payment) {
+      return recordAuditEvent({
+        action: "payment.validated",
+        entityType: "payment",
+        entityId: paymentEntityId(context.moduleKind, context.parentId, context.paymentIndex),
+        entityLabel: paymentEntityLabel(context),
+        clubId: payment?.clubId,
+        metadata: {
+          moduleKind: context.moduleKind || "",
+          parentId: context.parentId || "",
+          paymentIndex: Number(context.paymentIndex) || 0,
+          amount: asNumber(payment?.amount),
+          method: invoicePaymentModeLabel(payment || {}),
+          dueDate: asText(payment?.date),
+          contactId: context.contactId || "",
+          contactLabel: context.contactLabel || "",
+          parentLabel: context.parentLabel || "",
+        },
+      });
+    },
+    // "cancelled" = annulation de la validation (repasse à non payé), jamais une suppression, un
+    // refus ou un remboursement — voir auditEventText pour le libellé sans ambiguïté.
+    paymentCancelled(context, payment) {
+      return recordAuditEvent({
+        action: "payment.cancelled",
+        entityType: "payment",
+        entityId: paymentEntityId(context.moduleKind, context.parentId, context.paymentIndex),
+        entityLabel: paymentEntityLabel(context),
+        clubId: payment?.clubId,
+        metadata: {
+          moduleKind: context.moduleKind || "",
+          parentId: context.parentId || "",
+          paymentIndex: Number(context.paymentIndex) || 0,
+          amount: asNumber(payment?.amount),
+          method: invoicePaymentModeLabel(payment || {}),
+          dueDate: asText(payment?.date),
+          contactId: context.contactId || "",
+          contactLabel: context.contactLabel || "",
+          parentLabel: context.parentLabel || "",
+        },
+      });
+    },
   };
 
   // --- Export / import (Lot 2) ---
@@ -32240,6 +32372,7 @@ ${esc(bodyText)}</pre>
     if (entityType === "user") return "un utilisateur";
     if (entityType === "club") return "un club";
     if (entityType === "invoice") return "une facture";
+    if (entityType === "payment") return "un paiement";
     return "un élément";
   }
 
@@ -32300,6 +32433,16 @@ ${esc(bodyText)}</pre>
     },
     "invoice.payment.attached": (actor, label, metadata) => `${actor} a enregistré un règlement de ${money(metadata.amount)} sur la facture « ${label || "?"} »`,
     "invoice.credit.applied": (actor, label, metadata) => `${actor} a appliqué un avoir de ${money(metadata.amountUsed)} sur la facture « ${label || "?"} »`,
+    "payment.validated": (actor, label, metadata) => {
+      const suffix = paymentEventPhraseSuffix(metadata);
+      return `${actor} a validé un paiement de ${money(metadata.amount)}${suffix ? ` ${suffix}` : ""}`;
+    },
+    // "annulé la validation" — jamais "annulé un paiement" seul, pour ne jamais laisser croire à
+    // une suppression, un remboursement ou un refus (voir la décision produit du Lot 3B).
+    "payment.cancelled": (actor, label, metadata) => {
+      const suffix = paymentEventPhraseSuffix(metadata);
+      return `${actor} a annulé la validation d'un paiement de ${money(metadata.amount)}${suffix ? ` ${suffix}` : ""}`;
+    },
   };
 
   // Gère proprement : action inconnue, label absent, métadonnée manquante — jamais d'erreur,
