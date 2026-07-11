@@ -16494,20 +16494,12 @@ ${esc(bodyText)}</pre>
           .empty-payment{border:1px dashed #cbd5e1;border-radius:10px;padding:12px;color:#64748b;background:#fbfcfe;margin-bottom:10mm}
           footer{position:relative;z-index:1;margin-top:12mm;color:#64748b;border-top:1px solid #d9dee8;padding-top:8px;font-size:10.5px}
           footer div{margin:2px 0}
-          .invoice-preview-toolbar{position:fixed;top:0;left:0;right:0;height:50px;background:#1e293b;color:#f1f5f9;display:flex;align-items:center;gap:10px;padding:0 20px;font-family:system-ui,Arial,sans-serif;font-size:13px;z-index:9999;box-shadow:0 2px 8px rgba(0,0,0,.4)}
-          .invoice-preview-toolbar span{flex:1;font-weight:600}
-          .ipt-btn{border:none;border-radius:7px;padding:7px 18px;font-size:13px;font-weight:700;cursor:pointer}
-          .ipt-print{background:#2563eb;color:#fff}.ipt-print:hover{background:#1d4ed8}
-          .ipt-close{background:rgba(255,255,255,.1);color:#f1f5f9;border:1px solid rgba(255,255,255,.15)}.ipt-close:hover{background:rgba(255,255,255,.2)}
-          @media screen{body{padding-top:58px}}
           @media print{
-            body{print-color-adjust:exact;-webkit-print-color-adjust:exact;padding-top:0!important}
-            .invoice-preview-toolbar{display:none!important}
+            body{print-color-adjust:exact;-webkit-print-color-adjust:exact}
             .invoice-page{max-width:none;min-height:auto}
             table,.card,.total-box{break-inside:avoid}
           }
         </style></head><body>
-          <div class="invoice-preview-toolbar"><span>${esc(title)}</span><button class="ipt-btn ipt-print" onclick="window.print()">Imprimer</button><button class="ipt-btn ipt-close" onclick="window.close()">Fermer</button></div>
           ${draft ? `<div class="draft-watermark"><span>BROUILLON</span></div>` : ""}
           ${duplicata && !draft ? `<div class="doc-watermark"><span>DUPLICATA</span></div>` : ""}
           <main class="invoice-page">
@@ -16589,37 +16581,60 @@ ${esc(bodyText)}</pre>
     try { saveCurrentClubPayload({ reloadActive: false }); } catch { /* persistance silencieuse */ }
   }
 
-  // Impression NATIVE (correctif régression Lot 4A) : le durcissement des fenêtres Electron
-  // (setWindowOpenHandler refusant toute création de fenêtre par défaut) bloquait silencieusement
-  // window.open("", "_blank"), faisant tomber ce flux dans son repli « téléchargement HTML » à
-  // chaque impression. Le main process ouvre désormais lui-même une fenêtre sécurisée et appelle
-  // webContents.print() : boîte de dialogue d'impression native, jamais de fichier .html téléchargé,
-  // jamais de navigateur externe. Distinct de exportInvoicePdf (qui produit un vrai .pdf).
+  // Dispatcher léger previewId -> callback, abonné UNE SEULE FOIS au canal de résultat réel
+  // (jamais l'ouverture de l'aperçu) exposé par le preload privilégié. Une facture n'est marquée
+  // imprimée que lorsque son previewId reçoit success:true (webContents.print() réellement réussi,
+  // callback Electron). "closed" nettoie l'entrée quand l'aperçu se ferme, avec ou sans impression.
+  let previewPrintResultHandlers = null;
+  function previewPrintResultHandlerMap() {
+    if (previewPrintResultHandlers) return previewPrintResultHandlers;
+    previewPrintResultHandlers = new Map();
+    window.monGestaClubShell?.onPreviewPrintResult?.((data = {}) => {
+      const handler = previewPrintResultHandlers.get(data.previewId);
+      if (handler && data.success) handler(data);
+      if (data.closed) previewPrintResultHandlers.delete(data.previewId);
+    });
+    return previewPrintResultHandlers;
+  }
+
+  // Aperçu d'impression NATIF (correctif régression globale) : le durcissement des fenêtres
+  // Electron (setWindowOpenHandler refusant toute création de fenêtre par défaut) bloquait
+  // silencieusement window.open("", "_blank"). Le main process ouvre désormais une fenêtre
+  // d'aperçu sécurisée (socle partagé avec showPagePrintPreview) : le document s'affiche d'abord,
+  // la boîte d'impression native ne s'ouvre qu'après un clic explicite sur « Imprimer » DANS
+  // l'aperçu — jamais automatiquement. Distinct de exportInvoicePdf (qui produit un vrai .pdf).
+  //
+  // markInvoicePrinted() n'est PLUS appelé à l'ouverture de l'aperçu (l'ouverture seule ne prouve
+  // rien) : on attend le résultat RÉEL de webContents.print() via previewPrintResultHandlerMap,
+  // reçu de façon asynchrone et découplée de cette fonction (l'utilisateur peut fermer l'aperçu
+  // sans imprimer, annuler la boîte native, ou imprimer bien après le retour de cette fonction).
   async function printInvoice(invoice = {}) {
     if (!invoice?.id) return;
     const payload = invoiceDocumentPayload(invoice, { duplicata: invoiceAlreadyPrinted(invoice) });
     if (!window.monGestaClubShell?.printHtml) {
       // Hors Electron (démo web) : aucune impression native possible, repli explicite en téléchargement
-      // HTML — comportement historique conservé uniquement pour ce contexte non-Electron.
+      // HTML — comportement historique conservé uniquement pour ce contexte non-Electron. Pas de
+      // notion d'aperçu réel ici : le téléchargement EST l'action finale, donc marquer immédiatement
+      // reste correct (rien d'asynchrone à attendre derrière).
       download(`${payload.title.replace(/[^a-z0-9-]+/gi, "-").toLowerCase()}.html`, payload.html, "text/html;charset=utf-8");
       markInvoicePrinted(invoice.id);
       ui.saveMessage = "L'impression native n'est disponible que dans la version de bureau. La facture a été téléchargée au format HTML.";
       render();
       return;
     }
-    markInvoicePrinted(invoice.id);
-    ui.saveMessage = "Ouverture de l'impression...";
+    ui.saveMessage = "Ouverture de l'aperçu...";
     render();
     try {
       const result = await window.monGestaClubShell.printHtml(payload);
-      ui.saveMessage = result?.ok
-        ? "Facture envoyée à l'impression"
-        : result?.canceled
-          ? "Impression annulée"
-          : "Impression impossible pour le moment";
+      if (result?.ok && result?.previewId) {
+        previewPrintResultHandlerMap().set(result.previewId, () => { markInvoicePrinted(invoice.id); render(); });
+        ui.saveMessage = "Aperçu de la facture ouvert";
+      } else {
+        ui.saveMessage = "Aperçu impossible à ouvrir pour le moment";
+      }
     } catch (error) {
       console.error(error);
-      ui.saveMessage = "Impression impossible pour le moment";
+      ui.saveMessage = "Aperçu impossible à ouvrir pour le moment";
     }
     render();
   }
@@ -18382,6 +18397,13 @@ ${esc(bodyText)}</pre>
       state.stageRegistrations[next.id] = state.stageRegistrations[next.id] || [];
       syncStageTariffToRegistrations(next);
       ui.stageId = next.id;
+      // Lot 5A — journalisation : uniquement après réussite de la sauvegarde, jamais en cas
+      // d'échec de validation (retours "return false" ci-dessus, jamais atteints ici).
+      if (isNewStage) audit.stageCreated(next);
+      else {
+        const changes = stageAuditChanges(stage, next);
+        if (changes.length) audit.stageUpdated(next, changes);
+      }
     });
   }
 
@@ -18432,6 +18454,9 @@ ${esc(bodyText)}</pre>
   }
 
   function openRegistrationDialog(stageId, row = {}) {
+    // Lot 5A — capturée AVANT le merge d'affichage ci-dessous (qui complète les champs vides avec
+    // le contact lié pour préremplir le formulaire) : sert de "before" fidèle pour le diff d'audit.
+    const originalRegistration = row;
     const linkedContact = contactByLink(contactLinkForRow(row)) || {};
     row = {
       ...row,
@@ -18546,6 +18571,13 @@ ${esc(bodyText)}</pre>
       else next.prospectContactId = next.contactId ? "" : syncProspectContact(next, row);
       if (next.contactId || next.prospectContactId) updateLinkedContactCoordinates(next);
       upsert(state.stageRegistrations[stageId], next);
+      // Lot 5A — journalisation : uniquement après réussite de la sauvegarde (les "return false"
+      // de validation ci-dessus ne descendent jamais jusqu'ici).
+      if (!originalRegistration.id) audit.stageRegistrationCreated(next, stage);
+      else {
+        const changes = registrationAuditChanges(originalRegistration, next, stage);
+        if (changes.length) audit.stageRegistrationUpdated(next, stage, changes);
+      }
       const message = `${row.id ? "Modification de l'inscription stage" : "Inscription stage"} de ${personLabel(next)} au stage ${stage.name || "Stage"}`;
       // Bouton « Imprimer la facture » : l'inscription est désormais enregistrée -> on déclenche la
       // création/récupération puis l'impression de sa facture après la sauvegarde.
@@ -23918,6 +23950,8 @@ ${esc(bodyText)}</pre>
       recordHistory();
       stage.registrationReopened = action === "reactivate-stage";
       persist(stage.registrationReopened ? "Inscriptions stage réactivées" : "Inscriptions stage refermées");
+      if (stage.registrationReopened) audit.stageRegistrationsReopened(stage);
+      else audit.stageRegistrationsClosed(stage);
       render();
       return;
     }
@@ -23931,10 +23965,13 @@ ${esc(bodyText)}</pre>
       }
       if (!await requestConfirm({ title: "Supprimer le stage", message: `Supprimer le stage "${stage.name}" ?`, confirmLabel: "Supprimer", danger: true })) return;
       recordHistory();
+      // Capturé AVANT suppression : le Journal doit rester lisible même une fois le stage disparu.
+      const deletedStageSnapshot = { ...stage };
       removeById(state.tariffs.stages, stage.id);
       delete state.stageRegistrations[stage.id];
       ui.stageId = state.tariffs.stages[0]?.id || "";
       persist("Stage supprimé");
+      audit.stageDeleted(deletedStageSnapshot, { registrationCount: count });
       render();
       return;
     }
@@ -23953,15 +23990,20 @@ ${esc(bodyText)}</pre>
       recordHistory();
       removeById(state.stageRegistrations[stageId], registrationId);
       persist(`Participant stage supprimé : ${personLabel(registration)}`);
+      audit.stageRegistrationDeleted(registration, stageById(stageId));
       if (dialog.open) dialog.close();
       render();
       return;
     }
     if (action === "delete-registration") {
+      const stageId = button.dataset.stageId;
+      const registrationId = button.dataset.id;
+      const registration = (state.stageRegistrations[stageId] || []).find((row) => row.id === registrationId);
       if (!await requestConfirm({ title: "Supprimer l'inscription", message: "Supprimer cette inscription stage ?", confirmLabel: "Supprimer", danger: true })) return;
       recordHistory();
-      removeById(state.stageRegistrations[button.dataset.stageId], button.dataset.id);
+      removeById(state.stageRegistrations[stageId], registrationId);
       persist("Inscription stage supprimée");
+      if (registration) audit.stageRegistrationDeleted(registration, stageById(stageId));
       render();
       return;
     }
@@ -24343,10 +24385,22 @@ ${esc(bodyText)}</pre>
     if (menu) menu.hidden = true;
   }
 
+  // Socle partagé (correctif régression Lot 4A) : le durcissement des fenêtres Electron
+  // (setWindowOpenHandler refusant toute création de fenêtre par défaut) bloquait silencieusement
+  // window.open("", "_blank"), faisant tomber CHAQUE appelant (page générique, menu contextuel,
+  // avoirs, feuilles de présence) dans le repli window.print() — imprimant directement la fenêtre
+  // principale de l'app, sans aucun aperçu. En Electron, on délègue désormais au même aperçu
+  // sécurisé main-process que les factures (window.monGestaClubShell.printHtml). Hors Electron
+  // (démo web), le comportement window.open() existant est conservé à l'identique : il fonctionne
+  // très bien dans un navigateur, seul Electron bloquait la fenêtre.
   function showPagePrintPreview(payloadArg) {
+    const payload = payloadArg || pdfReportPayload();
+    if (window.monGestaClubShell?.printHtml) {
+      window.monGestaClubShell.printHtml(payload).catch((error) => console.error(error));
+      return;
+    }
     const previewWindow = window.open("", "_blank");
     if (!previewWindow) { window.print(); return; }
-    const payload = payloadArg || pdfReportPayload();
     const toolbarCss = `<style>
       .ppt{position:fixed;top:0;left:0;right:0;height:48px;background:#1e293b;color:#f1f5f9;display:flex;align-items:center;gap:10px;padding:0 20px;font-family:system-ui,sans-serif;font-size:13px;z-index:9999;box-shadow:0 2px 6px rgba(0,0,0,.4)}
       .ppt-title{flex:1;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -32089,6 +32143,14 @@ ${esc(bodyText)}</pre>
     "payment.validated", "payment.cancelled",
     // Lot 4A — authentification locale par PIN (voir audit.userPinXxx / userSwitched ci-dessous).
     "user.pin.configured", "user.pin.changed", "user.pin.reset", "user.pin.removed", "user.switched",
+    // Lot 5A — cycle de vie des stages et de leurs inscriptions (voir audit.stageXxx ci-dessous).
+    // "stage.registrations.closed/reopened" (pluriel) = fenêtre d'inscription du stage, distinct de
+    // "stage.registration.*" (singulier) = une inscription individuelle. Il n'existe aucun champ
+    // "statut" générique sur le stage : seul `registrationReopened` est stocké, le reste (passé,
+    // inscriptions closes...) est calculé à l'affichage à partir des dates — voir stageStatusLabel().
+    "stage.created", "stage.updated", "stage.deleted",
+    "stage.registrations.closed", "stage.registrations.reopened",
+    "stage.registration.created", "stage.registration.updated", "stage.registration.deleted",
   ];
 
   function rawAuditLogFromStorage() {
@@ -32281,6 +32343,61 @@ ${esc(bodyText)}</pre>
       return contact ? `pour l'hébergement de ${contact}` : "pour un hébergement de stage";
     }
     return contact ? `pour ${contact}` : "";
+  }
+
+  // --- Lot 5A — comparaison ciblée pour stage.updated / stage.registration.updated ---
+  // Même principe que invoiceAuditChanges : liste blanche stricte, jamais l'objet complet.
+
+  // Liste blanche des champs stage réellement éditables depuis openStageDialog (19-contact-dialogs.js).
+  // "registrationReopened" est volontairement exclu : il a son propre événement dédié
+  // (stage.registrations.closed/reopened), jamais mélangé à un stage.updated générique.
+  function stageAuditChanges(before = {}, after = {}) {
+    const changes = [];
+    const track = (field, beforeValue, afterValue) => {
+      if (beforeValue !== afterValue) changes.push({ field, before: beforeValue, after: afterValue });
+    };
+    track("name", asText(before.name), asText(after.name));
+    track("startDate", asText(before.startDate), asText(after.startDate));
+    track("endDate", asText(before.endDate), asText(after.endDate));
+    track("registrationDeadline", asText(before.registrationDeadline), asText(after.registrationDeadline));
+    track("publicAccess", normalizeStagePublicAccess(before.publicAccess), normalizeStagePublicAccess(after.publicAccess));
+    track("unitPrice", asNumber(before.unitPrice), asNumber(after.unitPrice));
+    track("investment", asNumber(before.investment), asNumber(after.investment));
+    track("lodgingName", asText(before.lodgingName), asText(after.lodgingName));
+    track("lodgingUnitPrice", asNumber(before.lodgingUnitPrice), asNumber(after.lodgingUnitPrice));
+    track("coachId", asText(before.coachId), asText(after.coachId));
+    track("roomId", asText(before.roomId), asText(after.roomId));
+    return changes;
+  }
+
+  // Montants synthétiques d'une inscription (segment stage + segment hébergement), même calcul que
+  // registrationTotalSummary() dans le dialogue — jamais un dump des lignes de paiement détaillées.
+  function registrationAuditAmounts(registration = {}, stage = {}) {
+    const event = registration.event || {};
+    const lodging = registration.lodging || {};
+    return {
+      eventAmount: calcStageSegment({ quantity: event.quantity, unitPrice: event.unitPrice ?? stage.unitPrice, discount: event.discount, payments: event.payments || [] }).subtotal,
+      lodgingAmount: calcStageSegment({ quantity: lodging.quantity, unitPrice: lodging.unitPrice ?? stage.lodgingUnitPrice, discount: lodging.discount, payments: lodging.payments || [] }).subtotal,
+    };
+  }
+
+  // Liste blanche des champs inscription réellement éditables depuis openRegistrationDialog. Le
+  // modèle d'inscription n'a ni statut propre ni dates propres (héritées du stage) : seuls le
+  // participant et les deux montants (stage/hébergement) sont suivis.
+  function registrationAuditChanges(before = {}, after = {}, stage = {}) {
+    const changes = [];
+    const beforeLabel = personLabel(before);
+    const afterLabel = personLabel(after);
+    if (beforeLabel !== afterLabel) changes.push({ field: "participant", before: beforeLabel, after: afterLabel });
+    const beforeAmounts = registrationAuditAmounts(before, stage);
+    const afterAmounts = registrationAuditAmounts(after, stage);
+    if (Math.abs(beforeAmounts.eventAmount - afterAmounts.eventAmount) > 0.005) {
+      changes.push({ field: "eventAmount", before: beforeAmounts.eventAmount, after: afterAmounts.eventAmount });
+    }
+    if (Math.abs(beforeAmounts.lodgingAmount - afterAmounts.lodgingAmount) > 0.005) {
+      changes.push({ field: "lodgingAmount", before: beforeAmounts.lodgingAmount, after: afterAmounts.lodgingAmount });
+    }
+    return changes;
   }
 
   // --- API dédiée aux modules métier (préparation Lot 3) ---
@@ -32537,6 +32654,128 @@ ${esc(bodyText)}</pre>
         },
       });
     },
+    // --- Lot 5A — cycle de vie des stages et de leurs inscriptions ---
+    stageCreated(stage) {
+      return recordAuditEvent({
+        action: "stage.created",
+        entityType: "stage",
+        entityId: stage.id,
+        entityLabel: stage.name || "Stage",
+        clubId: stage.clubId,
+        metadata: {
+          startDate: stage.startDate || "",
+          endDate: stage.endDate || "",
+          registrationDeadline: stage.registrationDeadline || "",
+          unitPrice: asNumber(stage.unitPrice),
+          publicAccess: normalizeStagePublicAccess(stage.publicAccess),
+        },
+      });
+    },
+    // `changes` doit déjà être la liste ciblée (stageAuditChanges) ; l'appelant ne journalise que
+    // si elle est non vide (aucun événement pour une sauvegarde sans changement réel).
+    stageUpdated(stage, changes) {
+      if (!Array.isArray(changes) || !changes.length) return null;
+      return recordAuditEvent({
+        action: "stage.updated",
+        entityType: "stage",
+        entityId: stage.id,
+        entityLabel: stage.name || "Stage",
+        clubId: stage.clubId,
+        metadata: { changes },
+      });
+    },
+    // Capturer AVANT la suppression : le libellé et le nombre d'inscriptions doivent rester lisibles
+    // dans le Journal après disparition du stage. `registrationCount` est fourni par l'appelant
+    // (stageParticipantCount au moment de la suppression) plutôt que recalculé ici.
+    stageDeleted(stage, { registrationCount = 0 } = {}) {
+      return recordAuditEvent({
+        action: "stage.deleted",
+        entityType: "stage",
+        entityId: stage.id,
+        entityLabel: stage.name || "Stage",
+        clubId: stage.clubId,
+        metadata: {
+          status: stageStatusLabel(stage),
+          startDate: stage.startDate || "",
+          endDate: stage.endDate || "",
+          registrationCount: Number(registrationCount) || 0,
+        },
+      });
+    },
+    stageRegistrationsClosed(stage) {
+      return recordAuditEvent({
+        action: "stage.registrations.closed",
+        entityType: "stage",
+        entityId: stage.id,
+        entityLabel: stage.name || "Stage",
+        clubId: stage.clubId,
+      });
+    },
+    stageRegistrationsReopened(stage) {
+      return recordAuditEvent({
+        action: "stage.registrations.reopened",
+        entityType: "stage",
+        entityId: stage.id,
+        entityLabel: stage.name || "Stage",
+        clubId: stage.clubId,
+      });
+    },
+    stageRegistrationCreated(registration, stage) {
+      const amounts = registrationAuditAmounts(registration, stage);
+      return recordAuditEvent({
+        action: "stage.registration.created",
+        entityType: "stageRegistration",
+        entityId: registration.id,
+        entityLabel: personLabel(registration),
+        clubId: registration.clubId,
+        metadata: {
+          stageId: stage.id || "",
+          stageLabel: stage.name || "",
+          contactId: registration.contactId || "",
+          prospectContactId: registration.prospectContactId || "",
+          eventAmount: amounts.eventAmount,
+          lodgingAmount: amounts.lodgingAmount,
+          hasLodging: amounts.lodgingAmount > 0,
+        },
+      });
+    },
+    // `changes` doit déjà être la liste ciblée (registrationAuditChanges) ; l'appelant ne journalise
+    // que si elle est non vide.
+    stageRegistrationUpdated(registration, stage, changes) {
+      if (!Array.isArray(changes) || !changes.length) return null;
+      return recordAuditEvent({
+        action: "stage.registration.updated",
+        entityType: "stageRegistration",
+        entityId: registration.id,
+        entityLabel: personLabel(registration),
+        clubId: registration.clubId,
+        metadata: {
+          stageId: stage.id || "",
+          stageLabel: stage.name || "",
+          changes,
+        },
+      });
+    },
+    // Capturer AVANT la suppression : libellé et montants doivent rester lisibles après disparition
+    // de l'inscription.
+    stageRegistrationDeleted(registration, stage) {
+      const amounts = registrationAuditAmounts(registration, stage);
+      return recordAuditEvent({
+        action: "stage.registration.deleted",
+        entityType: "stageRegistration",
+        entityId: registration.id,
+        entityLabel: personLabel(registration),
+        clubId: registration.clubId,
+        metadata: {
+          stageId: stage.id || "",
+          stageLabel: stage.name || "",
+          contactId: registration.contactId || "",
+          prospectContactId: registration.prospectContactId || "",
+          eventAmount: amounts.eventAmount,
+          lodgingAmount: amounts.lodgingAmount,
+        },
+      });
+    },
   };
 
   // --- Export / import (Lot 2) ---
@@ -32570,6 +32809,8 @@ ${esc(bodyText)}</pre>
     if (entityType === "club") return "un club";
     if (entityType === "invoice") return "une facture";
     if (entityType === "payment") return "un paiement";
+    if (entityType === "stage") return "un stage";
+    if (entityType === "stageRegistration") return "une inscription à un stage";
     return "un élément";
   }
 
@@ -32580,6 +32821,35 @@ ${esc(bodyText)}</pre>
     if (field === "vatSummary") return "TVA";
     if (field === "notes") return "notes";
     return field;
+  }
+
+  // Libellé court d'un champ de `metadata.changes` (stage.updated / stage.registration.updated).
+  function stageChangeFieldLabelFr(field) {
+    if (field === "name") return "nom";
+    if (field === "startDate") return "date de début";
+    if (field === "endDate") return "date de fin";
+    if (field === "registrationDeadline") return "date limite d'inscription";
+    if (field === "publicAccess") return "public autorisé";
+    if (field === "unitPrice") return "prix";
+    if (field === "investment") return "investissement";
+    if (field === "lodgingName") return "nom de l'hébergement";
+    if (field === "lodgingUnitPrice") return "prix de l'hébergement";
+    if (field === "coachId") return "coach";
+    if (field === "roomId") return "salle";
+    if (field === "participant") return "participant";
+    if (field === "eventAmount") return "montant stage";
+    if (field === "lodgingAmount") return "montant hébergement";
+    return field;
+  }
+
+  // Valeur lisible d'un changement stage/inscription : les champs monétaires passent par money(),
+  // "coachId"/"roomId" affichent le nom de la ressource (pas l'ID technique brut), le reste tel quel.
+  function stageChangeValueFr(field, value) {
+    if (["unitPrice", "investment", "lodgingUnitPrice", "eventAmount", "lodgingAmount"].includes(field)) return money(value);
+    if (field === "coachId") return value ? coachFullName(coachById(value)) : "aucun";
+    if (field === "roomId") return value ? roomName(roomById(value)) : "aucune";
+    if (field === "publicAccess") return stagePublicAccessLabel(value);
+    return asText(value) || "—";
   }
 
   const AUDIT_EVENT_RENDERERS = {
@@ -32661,6 +32931,52 @@ ${esc(bodyText)}</pre>
       return from
         ? `${to} a ouvert une session (profil précédent : « ${from} »)`
         : `${to} a ouvert une session`;
+    },
+    "stage.created": (actor, label) => `${actor} a créé le stage « ${label || "?"} »`,
+    "stage.updated": (actor, label, metadata) => {
+      const changes = Array.isArray(metadata.changes) ? metadata.changes : [];
+      if (!changes.length) return `${actor} a modifié le stage « ${label || "?"} »`;
+      if (changes.length === 1) {
+        const change = changes[0];
+        return `${actor} a modifié le ${stageChangeFieldLabelFr(change.field)} du stage « ${label || "?"} » de ${stageChangeValueFr(change.field, change.before)} à ${stageChangeValueFr(change.field, change.after)}`;
+      }
+      const fieldLabels = changes.map((change) => stageChangeFieldLabelFr(change.field));
+      const summary = `${fieldLabels.slice(0, -1).join(", ")} et ${fieldLabels[fieldLabels.length - 1]}`;
+      return `${actor} a modifié le stage « ${label || "?"} » : ${summary}`;
+    },
+    "stage.deleted": (actor, label, metadata) => {
+      const count = Number(metadata.registrationCount) || 0;
+      return count > 0
+        ? `${actor} a supprimé le stage « ${label || "?"} » (${count} inscription${count > 1 ? "s" : ""})`
+        : `${actor} a supprimé le stage « ${label || "?"} »`;
+    },
+    "stage.registrations.closed": (actor, label) => `${actor} a refermé les inscriptions du stage « ${label || "?"} »`,
+    "stage.registrations.reopened": (actor, label) => `${actor} a réactivé les inscriptions du stage « ${label || "?"} »`,
+    "stage.registration.created": (actor, label, metadata) => {
+      const stageLabel = asText(metadata.stageLabel);
+      return stageLabel
+        ? `${actor} a inscrit ${label || "un participant"} au stage « ${stageLabel} »`
+        : `${actor} a inscrit ${label || "un participant"} à un stage`;
+    },
+    "stage.registration.updated": (actor, label, metadata) => {
+      const stageLabel = asText(metadata.stageLabel);
+      const stagePart = stageLabel ? ` au stage « ${stageLabel} »` : "";
+      const changes = Array.isArray(metadata.changes) ? metadata.changes : [];
+      if (!changes.length) return `${actor} a modifié l'inscription de ${label || "un participant"}${stagePart}`;
+      if (changes.length === 1 && changes[0].field === "participant") {
+        return `${actor} a modifié le participant de l'inscription${stagePart} : ${changes[0].before || "?"} → ${changes[0].after || "?"}`;
+      }
+      const fieldLabels = changes.map((change) => stageChangeFieldLabelFr(change.field));
+      const summary = fieldLabels.length > 1
+        ? `${fieldLabels.slice(0, -1).join(", ")} et ${fieldLabels[fieldLabels.length - 1]}`
+        : fieldLabels[0];
+      return `${actor} a modifié l'inscription de ${label || "un participant"}${stagePart} : ${summary}`;
+    },
+    "stage.registration.deleted": (actor, label, metadata) => {
+      const stageLabel = asText(metadata.stageLabel);
+      return stageLabel
+        ? `${actor} a supprimé l'inscription de ${label || "un participant"} au stage « ${stageLabel} »`
+        : `${actor} a supprimé l'inscription de ${label || "un participant"}`;
     },
   };
 
