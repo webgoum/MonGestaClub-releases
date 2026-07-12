@@ -9042,6 +9042,9 @@ ${esc(bodyText)}</pre>
       sizeSection,
     ].join("");
     setNextWindowKey(isCreate ? null : `stock-article:${article.id}`);
+    // Snapshot AVANT mutation (Lot 5B) : uniquement en édition, l'article de création n'existe pas
+    // encore dans state.tariffs.articles. Capturé avant tout champ modifié ci-dessous.
+    const beforeSnapshot = isCreate ? null : shopItemSnapshot(article);
     showDialog(isCreate ? "Nouvel article" : "Modifier l'article", body, async (data, form) => {
       const nextName = data.get("name") || "Article";
       article.name = nextName;
@@ -9086,7 +9089,14 @@ ${esc(bodyText)}</pre>
       if (isCreate && !state.tariffs.articles.includes(article)) {
         ui.stockArticleDraft = null;
         state.tariffs.articles.push(article);
+        audit.shopItemCreated(article);
         return "Article créé";
+      }
+      // Édition : un seul événement, uniquement si une différence métier suivie existe réellement
+      // (voir shopItemAuditChanges — jamais pour une sauvegarde sans changement réel).
+      if (!isCreate) {
+        const changes = shopItemAuditChanges(beforeSnapshot, shopItemSnapshot(article));
+        audit.shopItemUpdated(article, changes);
       }
     }, setupSizeStockDialogTotal, "", () => {
       // Annulation/fermeture sans enregistrement : on jette le brouillon, rien n'est persisté.
@@ -9137,11 +9147,16 @@ ${esc(bodyText)}</pre>
         <p class="muted" data-size-stock-total>${intValue(row.available || 0)} en stock</p>
         <div data-size-stock-list>${sizeStockRows(article, row.availableBySize, { allowEmpty: true })}</div>
       </div>`;
+    // Chemin de sauvegarde SÉPARÉ du dialogue article (openStockArticleDialog) : même liste
+    // blanche, même événement (shop.item.updated), snapshot avant/après autour de la seule mutation
+    // réelle ici (saveArticleSizeStock).
+    const beforeSnapshot = shopItemSnapshot(article);
     showDialog("Stock par taille", body, (data, form) => {
       const next = readSizeStockForm(form);
       const msg = validateSizeStockForm(form, next, hasSizes);
       if (msg) { alert(msg); return false; }
       saveArticleSizeStock(article, next);
+      audit.shopItemUpdated(article, shopItemAuditChanges(beforeSnapshot, shopItemSnapshot(article)));
     }, setupSizeStockDialogTotal);
   }
 
@@ -10526,9 +10541,19 @@ ${esc(bodyText)}</pre>
       return;
     }
     recordHistory();
+    // Lot 5B : la page Tarifs modifie le MÊME state.tariffs.articles[] que le dialogue Boutique
+    // (nom, prix de vente/achat, TVA) — un seul type d'événement (shop.item.updated), jamais un
+    // "tariff.updated" séparé pour ces mêmes champs. Snapshot capturé avant que ui.tariffEditKey
+    // (format "kind:index") ne soit effacé, uniquement si la ligne éditée est un article.
+    const [editingKind, editingIndexRaw] = asText(ui.tariffEditKey).split(":");
+    const editingArticle = editingKind === "article" ? state.tariffs.articles[Number(editingIndexRaw)] : null;
+    const beforeSnapshot = editingArticle ? shopItemSnapshot(editingArticle) : null;
     row.querySelectorAll("[data-tariff]").forEach(updateTariff);
     ui.tariffEditKey = "";
     persist("Tarif enregistré");
+    if (editingArticle) {
+      audit.shopItemUpdated(editingArticle, shopItemAuditChanges(beforeSnapshot, shopItemSnapshot(editingArticle)));
+    }
     render();
   }
 
@@ -21977,6 +22002,48 @@ ${esc(bodyText)}</pre>
     }
   });
 
+  // --- Lot 5B (complément) — session d'édition directe des champs article inline (table Stock) ---
+  // Certains champs (data-stock) éditent l'article SANS dialogue ni bouton "Enregistrer" : la
+  // mutation + persist() a lieu à CHAQUE frappe ("input"), donc un événement par frappe est exclu.
+  // Le navigateur émet "change" exactement une fois par édition, à la perte de focus du champ (ou
+  // à un geste +/- complet, qui dispatche input+change en synchrone) — un signal de fin d'édition
+  // fiable, sans debounce temporel.
+  //
+  // Clé = l'ÉLÉMENT DOM lui-même (WeakMap), jamais une chaîne "articleId::champ" : deux éléments
+  // distincts (deux fenêtres, ou un nœud remplacé par render() pendant une édition en cours) ont
+  // chacun leur propre entrée, jamais partagée. Quand render() remplace un nœud, l'ancien élément
+  // n'est plus référencé nulle part ailleurs : sa session devient inaccessible (et éligible au
+  // ramasse-miettes) — aucun snapshot périmé ne peut jamais être réutilisé par le nouveau nœud.
+  //
+  // Cette machinerie appartient ICI (module UI, dépend du cycle de vie DOM/events), pas dans
+  // src/29-audit-log.js (qui ne connaît que des snapshots/diffs métier, jamais un élément DOM).
+  const shopItemInlineEditSessions = new WeakMap();
+
+  // Appelé en tout début du handler "input", AVANT la mutation existante. Idempotent sur les
+  // frappes suivantes du même élément : ne réécrit jamais un snapshot déjà capturé.
+  function beginShopItemInlineEdit(element, index, field) {
+    if (!element || shopItemInlineEditSessions.has(element)) return;
+    const article = state.tariffs.articles[Number(index)];
+    if (!article?.id) return;
+    shopItemInlineEditSessions.set(element, { articleId: article.id, field, beforeSnapshot: shopItemSnapshot(article) });
+  }
+
+  // Appelé en fin du handler "change" (ou en repli sur "focusout"/"blur"), APRÈS la mutation
+  // existante. Retire TOUJOURS l'entrée en premier (avant tout calcul), afin qu'un focusout suivant
+  // un change déjà traité ne retrouve rigoureusement rien. Résout l'article par son id stable (pas
+  // par l'index de tableau, qui peut avoir dérivé) et vérifie qu'il existe encore avant de journaliser.
+  function finalizeShopItemInlineEdit(element, field) {
+    if (!element) return;
+    const session = shopItemInlineEditSessions.get(element);
+    if (!session) return;
+    shopItemInlineEditSessions.delete(element);
+    if (session.field !== field) return;
+    const article = state.tariffs.articles.find((row) => row.id === session.articleId);
+    if (!article) return;
+    const changes = shopItemAuditChanges(session.beforeSnapshot, shopItemSnapshot(article));
+    if (changes.length) audit.shopItemUpdated(article, changes);
+  }
+
   app.addEventListener("input", (event) => {
     const target = event.target;
     if (target.dataset.themeColor) {
@@ -22090,10 +22157,16 @@ ${esc(bodyText)}</pre>
       persist();
     }
     if (target.dataset.stock) {
+      // Session Journal (Lot 5B) : amorcée au premier "input" d'une édition, jamais journalisée ici
+      // (une frappe n'est jamais un événement) — voir finalizeShopItemInlineEdit sur "change".
+      beginShopItemInlineEdit(target, target.dataset.index, target.dataset.stock);
       recordHistory();
       updateStockArticle(target);
       persist();
     }
+    // data-stock-size : jamais rendu nulle part dans l'interface (vérifié, voir rapport) — aucune
+    // session amorcée ici, la mutation existante (updateArticleSizeStock) reste inchangée si ce
+    // chemin est reconnecté un jour.
     if (target.dataset.stockSize !== undefined) {
       recordHistory();
       updateArticleSizeStock(target);
@@ -22115,6 +22188,9 @@ ${esc(bodyText)}</pre>
       persist("Note enregistrée");
       return;
     }
+    // data-memo-field : renderMemo() n'est appelé par AUCUN dispatcher de vue (vérifié, voir
+    // rapport) — la page Mémos entière est inaccessible depuis l'interface. Aucune session amorcée
+    // ici ; la mutation existante (updateMemoRow) reste inchangée si cet écran est reconnecté.
     if (target.dataset.memoField && target.tagName !== "SELECT") {
       recordHistory();
       updateMemoRow(target);
@@ -22407,6 +22483,9 @@ ${esc(bodyText)}</pre>
       recordHistory();
       updateStockArticle(target);
       persist();
+      // Fin d'édition naturelle (perte de focus, ou geste +/- complet) : finalise la session
+      // ouverte au premier "input" et journalise une seule fois si une différence réelle existe.
+      finalizeShopItemInlineEdit(target, target.dataset.stock);
       render();
     }
     if (target.dataset.noteCommand) {
@@ -22419,6 +22498,16 @@ ${esc(bodyText)}</pre>
       persist();
       render();
     }
+  });
+
+  // Repli de sécurité : si "change" n'a pas fini par se déclencher pour un champ data-stock (une
+  // session Journal reste ouverte), "focusout" (perte de focus réelle, capté même sans bouton
+  // dédié) finalise quand même l'édition. Le cas normal (change déjà passé) ne trouve plus aucune
+  // session ici — finalizeShopItemInlineEdit supprime toujours l'entrée avant tout calcul, donc un
+  // change suivi d'un focusout ne produit jamais qu'un seul événement.
+  app.addEventListener("focusout", (event) => {
+    const target = event.target;
+    if (target?.dataset?.stock) finalizeShopItemInlineEdit(target, target.dataset.stock);
   });
 
   async function handleAction(button) {
@@ -23875,9 +23964,13 @@ ${esc(bodyText)}</pre>
       const article = state.tariffs.articles[index];
       if (!article) return;
       recordHistory();
+      const beforeSnapshot = shopItemSnapshot(article);
       article.reference = makeArticleReference(article.name, index);
       article.referenceAuto = true;
       persist("Référence mise à jour");
+      // Un seul événement, uniquement si la référence a réellement changé (liste blanche partagée
+      // avec le dialogue article — jamais deux événements pour la même sauvegarde).
+      audit.shopItemUpdated(article, shopItemAuditChanges(beforeSnapshot, shopItemSnapshot(article)));
       render();
       return;
     }
@@ -23887,8 +23980,15 @@ ${esc(bodyText)}</pre>
       if (!article) return;
       if (!await requestConfirm({ title: "Supprimer l'article", message: `Supprimer l'article "${article.name}" ?`, confirmLabel: "Supprimer", danger: true })) return;
       recordHistory();
+      // Contexte AVANT suppression (Lot 5B) : purement informatif, aucun garde-fou ajouté, aucun
+      // événement créé sur les commandes historiques elles-mêmes.
+      const referencingOrders = state.shopOrders.filter((order) => (order.items || []).some((item) => item.articleId === article.id));
+      const orderQuantity = referencingOrders.reduce((sum, order) => sum + (order.items || [])
+        .filter((item) => item.articleId === article.id)
+        .reduce((lineSum, item) => lineSum + asNumber(item.quantity), 0), 0);
       state.tariffs.articles.splice(index, 1);
       persist("Article supprimé");
+      audit.shopItemDeleted(article, { orderCount: referencingOrders.length, orderQuantity });
       render();
       return;
     }
@@ -24132,7 +24232,7 @@ ${esc(bodyText)}</pre>
     }
     if (action === "add-tariff-article") {
       recordHistory();
-      state.tariffs.articles.push(stampRecordClubId({
+      const newArticle = stampRecordClubId({
         id: id("article"),
         name: "Nouvel article",
         reference: makeArticleReference("Nouvel article", state.tariffs.articles.length),
@@ -24147,9 +24247,13 @@ ${esc(bodyText)}</pre>
         stockInitial: 0,
         stockAlert: 0,
         active: true,
-      }));
+      });
+      state.tariffs.articles.push(newArticle);
       ui.tariffEditKey = tariffKey("article", state.tariffs.articles.length - 1);
       persist("Tarif article ajouté");
+      // Second chemin de création réel (même objet state.tariffs.articles[] que le dialogue
+      // Boutique) : même événement, jamais un "tariff.created" séparé.
+      audit.shopItemCreated(newArticle);
       render();
       return;
     }
@@ -24159,9 +24263,14 @@ ${esc(bodyText)}</pre>
       if (!article) return;
       if (!await requestConfirm({ title: "Supprimer l'article", message: `Supprimer l'article "${article.name}" ?`, confirmLabel: "Supprimer", danger: true })) return;
       recordHistory();
+      const referencingOrders = state.shopOrders.filter((order) => (order.items || []).some((item) => item.articleId === article.id));
+      const orderQuantity = referencingOrders.reduce((sum, order) => sum + (order.items || [])
+        .filter((item) => item.articleId === article.id)
+        .reduce((lineSum, item) => lineSum + asNumber(item.quantity), 0), 0);
       if (ui.tariffEditKey === tariffKey("article", index)) ui.tariffEditKey = "";
       state.tariffs.articles.splice(index, 1);
       persist("Tarif article supprimé");
+      audit.shopItemDeleted(article, { orderCount: referencingOrders.length, orderQuantity });
       render();
       return;
     }
@@ -25244,7 +25353,16 @@ ${esc(bodyText)}</pre>
       return true;
     }
     if (row.sourceType === "article") {
+      // Troisième chemin de suppression réel (Mémos > élément lié) : même contexte et même
+      // événement que delete-stock-article/delete-tariff-article, capturés avant la suppression.
+      const article = memoSource(row);
+      if (!article) return false;
+      const referencingOrders = state.shopOrders.filter((order) => (order.items || []).some((item) => item.articleId === article.id));
+      const orderQuantity = referencingOrders.reduce((sum, order) => sum + (order.items || [])
+        .filter((item) => item.articleId === article.id)
+        .reduce((lineSum, item) => lineSum + asNumber(item.quantity), 0), 0);
       removeById(state.tariffs.articles, row.sourceId);
+      audit.shopItemDeleted(article, { orderCount: referencingOrders.length, orderQuantity });
       return true;
     }
     if (row.sourceType === "discipline") {
@@ -32204,6 +32322,11 @@ ${esc(bodyText)}</pre>
     "stage.created", "stage.updated", "stage.deleted",
     "stage.registrations.closed", "stage.registrations.reopened",
     "stage.registration.created", "stage.registration.updated", "stage.registration.deleted",
+    // Lot 5B — articles boutique et stock manuel (voir audit.shopItemXxx ci-dessous). Le stock
+    // disponible affiché (stockInitial/sizeStock moins quantités déjà en commande) est une valeur
+    // DÉRIVÉE recalculée à l'affichage (voir stockRows()) : aucune vente ni suppression de commande
+    // ne produit d'événement ici, seule une modification manuelle des champs de l'article compte.
+    "shop.item.created", "shop.item.updated", "shop.item.deleted",
   ];
 
   function rawAuditLogFromStorage() {
@@ -32449,6 +32572,68 @@ ${esc(bodyText)}</pre>
     }
     if (Math.abs(beforeAmounts.lodgingAmount - afterAmounts.lodgingAmount) > 0.005) {
       changes.push({ field: "lodgingAmount", before: beforeAmounts.lodgingAmount, after: afterAmounts.lodgingAmount });
+    }
+    return changes;
+  }
+
+  // --- Lot 5B — comparaison ciblée pour shop.item.updated ---
+  // Snapshot compact et stable de l'article boutique (state.tariffs.articles[]), JAMAIS l'objet
+  // complet (pas d'images, pas d'index de tableau, pas de priceOptions brut). defaultPrice n'est
+  // PAS suivi séparément : il est toujours resynchronisé sur priceOptions[0] par tout le code qui
+  // écrit un prix (openStockArticleDialog, updateTariff) — un seul champ "priceSale" est suivi pour
+  // ne jamais produire deux lignes identiques pour le même prix.
+  function shopItemSnapshot(article = {}) {
+    const sizeStock = normalizeSizeStock(article.sizeStock);
+    const sizeKeys = Object.keys(sizeStock).sort((a, b) => a.localeCompare(b, "fr"));
+    return {
+      name: asText(article.name),
+      reference: asText(article.reference),
+      stockInitial: asNumber(article.stockInitial),
+      sizeStock: Object.fromEntries(sizeKeys.map((size) => [size, asNumber(sizeStock[size])])),
+      stockAlert: asNumber(article.stockAlert),
+      active: article.active !== false,
+      priceSale: asNumber(article.priceOptions?.[0] ?? article.defaultPrice ?? 0),
+      priceBuy: asNumber(article.priceOptions?.[1] ?? 0),
+      // null (pas de valeur spécifique -> taux par défaut du club), jamais 0 par défaut.
+      taxRate: hasSpecificTaxRate(article) ? asNumber(tariffTaxRate(article)) : null,
+    };
+  }
+
+  // Liste blanche des champs article réellement éditables, suivie identiquement quel que soit le
+  // chemin de sauvegarde (dialogue Boutique OU page Tarifs : même objet state.tariffs.articles[],
+  // donc un seul type d'événement, jamais deux). "stockInitial" n'est comparé QUE pour un article en
+  // compteur simple (sans tailles) : dès qu'un article utilise sizeStock, stockInitial en est le
+  // simple total dérivé (voir saveArticleSizeStock) et afficherait une différence redondante avec
+  // les lignes "stock taille X" — un utilisateur qui modifie une taille ne doit voir qu'UNE
+  // information, pas deux qui disent la même chose avec des mots différents.
+  function shopItemAuditChanges(before = {}, after = {}) {
+    const changes = [];
+    const track = (field, beforeValue, afterValue) => {
+      if (beforeValue !== afterValue) changes.push({ field, before: beforeValue, after: afterValue });
+    };
+    track("name", before.name, after.name);
+    track("reference", before.reference, after.reference);
+    const usesSizes = Object.keys(before.sizeStock || {}).length > 0 || Object.keys(after.sizeStock || {}).length > 0;
+    if (!usesSizes) track("stockInitial", before.stockInitial, after.stockInitial);
+    track("stockAlert", before.stockAlert, after.stockAlert);
+    track("active", before.active, after.active);
+    track("priceSale", before.priceSale, after.priceSale);
+    track("priceBuy", before.priceBuy, after.priceBuy);
+    track("taxRate", before.taxRate, after.taxRate);
+    // Présence de la clé ET quantité comparées séparément : une taille absente et une taille
+    // présente avec un stock de 0 sont deux états métier différents (l'une n'existe pas encore
+    // pour cet article, l'autre existe et affiche "0 en stock"). asNumber(undefined) valant 0 tout
+    // comme asNumber(0), une comparaison purement numérique les aurait confondues à tort. La
+    // sentinelle `null` représente "taille absente" dans `before`/`after` ci-dessous — jamais une
+    // vraie quantité, jamais exposée telle quelle au Journal (voir shopItemSizeChangeSentence).
+    const sizeKeys = [...new Set([...Object.keys(before.sizeStock || {}), ...Object.keys(after.sizeStock || {})])].sort((a, b) => a.localeCompare(b, "fr"));
+    for (const size of sizeKeys) {
+      const beforeHas = Object.prototype.hasOwnProperty.call(before.sizeStock || {}, size);
+      const afterHas = Object.prototype.hasOwnProperty.call(after.sizeStock || {}, size);
+      const beforeQty = beforeHas ? asNumber(before.sizeStock[size]) : null;
+      const afterQty = afterHas ? asNumber(after.sizeStock[size]) : null;
+      if (beforeQty === afterQty) continue;
+      changes.push({ field: `sizeStock:${size}`, before: beforeQty, after: afterQty });
     }
     return changes;
   }
@@ -32829,6 +33014,60 @@ ${esc(bodyText)}</pre>
         },
       });
     },
+    // Lot 5B — articles boutique et stock manuel. Un seul type d'événement pour les deux chemins de
+    // sauvegarde réels (dialogue Boutique ET page Tarifs, même objet state.tariffs.articles[]) :
+    // jamais un "tariff.updated" séparé pour les mêmes champs prix/TVA.
+    shopItemCreated(article) {
+      const snapshot = shopItemSnapshot(article);
+      return recordAuditEvent({
+        action: "shop.item.created",
+        entityType: "shopItem",
+        entityId: article.id,
+        entityLabel: article.name || "Article",
+        clubId: article.clubId,
+        metadata: {
+          reference: snapshot.reference,
+          stockInitial: snapshot.stockInitial,
+          usesSizeStock: Object.keys(snapshot.sizeStock).length > 0,
+          priceSale: snapshot.priceSale,
+          taxRate: snapshot.taxRate,
+        },
+      });
+    },
+    // `changes` doit déjà être la liste ciblée (shopItemAuditChanges) ; l'appelant ne journalise que
+    // si elle est non vide (aucun événement pour une sauvegarde sans changement réel).
+    shopItemUpdated(article, changes) {
+      if (!Array.isArray(changes) || !changes.length) return null;
+      return recordAuditEvent({
+        action: "shop.item.updated",
+        entityType: "shopItem",
+        entityId: article.id,
+        entityLabel: article.name || "Article",
+        clubId: article.clubId,
+        metadata: { changes },
+      });
+    },
+    // Capturer AVANT la suppression : libellé et référence doivent rester lisibles dans le Journal
+    // après disparition de l'article. orderCount/orderQuantity sont fournis par l'appelant (calculés
+    // au moment de la suppression), purement informatifs — aucun événement séparé n'est créé sur les
+    // commandes historiques concernées.
+    shopItemDeleted(article, { orderCount = 0, orderQuantity = 0 } = {}) {
+      const snapshot = shopItemSnapshot(article);
+      return recordAuditEvent({
+        action: "shop.item.deleted",
+        entityType: "shopItem",
+        entityId: article.id,
+        entityLabel: article.name || "Article",
+        clubId: article.clubId,
+        metadata: {
+          reference: snapshot.reference,
+          stockInitial: snapshot.stockInitial,
+          priceSale: snapshot.priceSale,
+          orderCount: Number(orderCount) || 0,
+          orderQuantity: Number(orderQuantity) || 0,
+        },
+      });
+    },
   };
 
   // --- Export / import (Lot 2) ---
@@ -32864,6 +33103,7 @@ ${esc(bodyText)}</pre>
     if (entityType === "payment") return "un paiement";
     if (entityType === "stage") return "un stage";
     if (entityType === "stageRegistration") return "une inscription à un stage";
+    if (entityType === "shopItem") return "un article boutique";
     return "un élément";
   }
 
@@ -32903,6 +33143,45 @@ ${esc(bodyText)}</pre>
     if (field === "roomId") return value ? roomName(roomById(value)) : "aucune";
     if (field === "publicAccess") return stagePublicAccessLabel(value);
     return asText(value) || "—";
+  }
+
+  // Libellé court d'un champ de `metadata.changes` (shop.item.updated). Les tailles utilisent un
+  // champ synthétique "sizeStock:<taille>" (voir shopItemAuditChanges) : le préfixe est retiré ici
+  // pour l'affichage, jamais montré tel quel à l'utilisateur.
+  function shopItemChangeFieldLabelFr(field) {
+    if (field === "name") return "nom";
+    if (field === "reference") return "référence";
+    if (field === "stockInitial") return "stock initial";
+    if (field === "stockAlert") return "seuil d'alerte";
+    if (field === "active") return "état";
+    if (field === "priceSale") return "prix de vente";
+    if (field === "priceBuy") return "prix d'achat";
+    if (field === "taxRate") return "TVA";
+    if (field.startsWith("sizeStock:")) return `stock taille ${field.slice("sizeStock:".length)}`;
+    return field;
+  }
+
+  // Valeur lisible d'un changement article : prix via money(), TVA en pourcentage (ou "taux par
+  // défaut" si aucun taux spécifique), état en Actif/Inactif, jamais un objet JSON brut.
+  function shopItemChangeValueFr(field, value) {
+    if (field === "priceSale" || field === "priceBuy") return money(value);
+    if (field === "taxRate") return (value === null || value === undefined || value === "") ? "taux par défaut" : `${asText(value)} %`;
+    if (field === "active") return value === false ? "Inactif" : "Actif";
+    // "absente" (sentinelle null, voir shopItemAuditChanges) : jamais confondue avec un stock de 0
+    // réellement présent — repli générique seulement, la phrase dédiée (shopItemSizeChangeSentence)
+    // couvre le cas normal d'un changement de taille unique dans le renderer principal.
+    if (field.startsWith("sizeStock:")) return value === null ? "absente" : intValue(value);
+    if (field === "stockInitial" || field === "stockAlert") return intValue(value);
+    return asText(value) || "—";
+  }
+
+  // Phrase dédiée pour UN changement de taille (avant/après déjà résolus en null="absente" ou en
+  // quantité, voir shopItemAuditChanges) : distingue ajout, retrait et simple changement de
+  // quantité, jamais un objet JSON brut ni une valeur technique exposée telle quelle.
+  function shopItemSizeChangeSentence(size, before, after) {
+    if (before === null && after !== null) return `taille ${size} ajoutée (stock ${intValue(after)})`;
+    if (before !== null && after === null) return `taille ${size} retirée`;
+    return `taille ${size} : ${intValue(before)} → ${intValue(after)}`;
   }
 
   const AUDIT_EVENT_RENDERERS = {
@@ -33030,6 +33309,31 @@ ${esc(bodyText)}</pre>
       return stageLabel
         ? `${actor} a supprimé l'inscription de ${label || "un participant"} au stage « ${stageLabel} »`
         : `${actor} a supprimé l'inscription de ${label || "un participant"}`;
+    },
+    "shop.item.created": (actor, label, metadata) => {
+      const ref = asText(metadata.reference);
+      return ref ? `${actor} a créé l'article « ${label || "?"} » (${ref})` : `${actor} a créé l'article « ${label || "?"} »`;
+    },
+    "shop.item.updated": (actor, label, metadata) => {
+      const changes = Array.isArray(metadata.changes) ? metadata.changes : [];
+      if (!changes.length) return `${actor} a modifié l'article « ${label || "?"} »`;
+      if (changes.length === 1) {
+        const change = changes[0];
+        if (change.field.startsWith("sizeStock:")) {
+          const size = change.field.slice("sizeStock:".length);
+          return `${actor} a modifié l'article « ${label || "?"} » : ${shopItemSizeChangeSentence(size, change.before, change.after)}`;
+        }
+        return `${actor} a modifié le ${shopItemChangeFieldLabelFr(change.field)} de l'article « ${label || "?"} » de ${shopItemChangeValueFr(change.field, change.before)} à ${shopItemChangeValueFr(change.field, change.after)}`;
+      }
+      const fieldLabels = changes.map((change) => shopItemChangeFieldLabelFr(change.field));
+      const summary = `${fieldLabels.slice(0, -1).join(", ")} et ${fieldLabels[fieldLabels.length - 1]}`;
+      return `${actor} a modifié l'article « ${label || "?"} » : ${summary}`;
+    },
+    "shop.item.deleted": (actor, label, metadata) => {
+      const orderCount = Number(metadata.orderCount) || 0;
+      return orderCount > 0
+        ? `${actor} a supprimé l'article « ${label || "?"} » (référencé dans ${orderCount} commande${orderCount > 1 ? "s" : ""})`
+        : `${actor} a supprimé l'article « ${label || "?"} »`;
     },
   };
 
