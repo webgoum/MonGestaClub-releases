@@ -10174,6 +10174,10 @@ ${esc(bodyText)}</pre>
     showPagePrintPreview(creditNoteDocumentPayload(creditNote));
   }
 
+  // Correctif "PDF honnête" (même principe que exportInvoicePdf) : hors Electron, ce bouton ouvre
+  // désormais l'aperçu partagé en mode "pdf" (libellé « Enregistrer en PDF » + aide dédiée) au lieu
+  // de réutiliser tel quel printCreditNote (qui affichait un bouton « Imprimer » trompeur sous une
+  // action nommée PDF). Jamais de téléchargement HTML, jamais de faux fichier renommé.
   async function exportCreditNotePdf(creditNote = {}) {
     if (!creditNote?.id) return;
     const payload = creditNoteDocumentPayload(creditNote);
@@ -10192,7 +10196,9 @@ ${esc(bodyText)}</pre>
       }
       return;
     }
-    printCreditNote(creditNote);
+    showPagePrintPreview(payload, { mode: "pdf" });
+    ui.saveMessage = "Aperçu ouvert : choisissez « Enregistrer en PDF » dans la nouvelle fenêtre.";
+    render();
   }
 
   // Section d'affichage : recettes custom + remboursements + avoirs, sans surcharger l'UI.
@@ -16612,13 +16618,17 @@ ${esc(bodyText)}</pre>
     if (!invoice?.id) return;
     const payload = invoiceDocumentPayload(invoice, { duplicata: invoiceAlreadyPrinted(invoice) });
     if (!window.monGestaClubShell?.printHtml) {
-      // Hors Electron (démo web) : aucune impression native possible, repli explicite en téléchargement
-      // HTML — comportement historique conservé uniquement pour ce contexte non-Electron. Pas de
-      // notion d'aperçu réel ici : le téléchargement EST l'action finale, donc marquer immédiatement
-      // reste correct (rien d'asynchrone à attendre derrière).
-      download(`${payload.title.replace(/[^a-z0-9-]+/gi, "-").toLowerCase()}.html`, payload.html, "text/html;charset=utf-8");
-      markInvoicePrinted(invoice.id);
-      ui.saveMessage = "L'impression native n'est disponible que dans la version de bureau. La facture a été téléchargée au format HTML.";
+      // Hors Electron (démo web) : aucune impression native possible. Repli sur le socle d'aperçu web
+      // partagé (showPagePrintPreview, mode "print") — jamais un téléchargement HTML : un document
+      // affiché avec un vrai bouton Imprimer, cohérent avec les avoirs/présences/page générique.
+      //
+      // markInvoicePrinted() n'est PAS appelé ici : un navigateur n'a aucun équivalent fiable au
+      // callback success de webContents.print() (ni window.onafterprint, qui se déclenche aussi
+      // après une annulation ou une simple fermeture de la boîte d'impression). Ouvrir l'aperçu ne
+      // prouve rien : mieux vaut une information incomplète mais honnête qu'un faux statut « imprimée ».
+      // Le statut imprimé/DUPLICATA reste une fonctionnalité fiable réservée à l'application Electron.
+      showPagePrintPreview(payload, { mode: "print" });
+      ui.saveMessage = "Aperçu de la facture ouvert dans une nouvelle fenêtre.";
       render();
       return;
     }
@@ -16639,26 +16649,46 @@ ${esc(bodyText)}</pre>
     render();
   }
 
+  // Correctif "PDF honnête" : hors Electron, ce bouton retombait sur printInvoice(), qui
+  // téléchargeait un fichier .html — un bouton nommé PDF ne doit jamais produire un fichier portant
+  // la mauvaise extension. Aucune bibliothèque de génération PDF n'existe dans le projet (vérifié) :
+  // seule la boîte d'impression du navigateur peut produire un vrai PDF ("Enregistrer au format
+  // PDF"), donc le repli web ouvre le même aperçu partagé que printInvoice, en mode "pdf" (libellé
+  // et aide dédiés) — jamais un téléchargement, jamais un faux fichier renommé.
   async function exportInvoicePdf(invoice = {}) {
     if (!invoice?.id) return;
     const payload = invoiceDocumentPayload(invoice, { duplicata: invoiceAlreadyPrinted(invoice) });
-    markInvoicePrinted(invoice.id);
     if (window.monGestaClubShell?.exportPdf) {
       ui.saveMessage = "Création du PDF facture...";
       render();
       try {
         const result = await window.monGestaClubShell.exportPdf(payload);
-        ui.saveMessage = result?.ok ? "PDF facture créé" : result?.message || "Export PDF facture annulé";
+        // Marquée UNIQUEMENT sur result.ok === true : succès explicite couvrant printToPDF, la boîte
+        // d'enregistrement non annulée ET l'écriture réelle du fichier (voir exportCurrentWindowPdf,
+        // main process — result structuré dans tous les cas, jamais une simple absence d'erreur).
+        // Annulation ou échec : aucune marque, aucun DUPLICATA prématuré.
+        if (result?.ok === true) {
+          markInvoicePrinted(invoice.id);
+          ui.saveMessage = "PDF facture créé";
+        } else if (result?.canceled) {
+          ui.saveMessage = "Export PDF annulé";
+        } else {
+          ui.saveMessage = result?.message || "Export PDF impossible pour le moment";
+        }
         render();
       } catch (error) {
         console.error(error);
-        ui.saveMessage = "Erreur PDF facture";
+        ui.saveMessage = "Export PDF impossible pour le moment";
         render();
         alert("Impossible de créer le PDF de la facture.");
       }
       return;
     }
-    printInvoice(invoice);
+    // Hors Electron : jamais de marquage (voir printInvoice ci-dessus pour la justification complète —
+    // aucun signal fiable de succès n'existe côté navigateur).
+    showPagePrintPreview(payload, { mode: "pdf" });
+    ui.saveMessage = "Aperçu ouvert : choisissez « Enregistrer en PDF » dans la nouvelle fenêtre.";
+    render();
   }
 
   async function validateDraftInvoiceForOutput(invoice = {}, sourceButton = null) {
@@ -20157,8 +20187,10 @@ ${esc(bodyText)}</pre>
       }
       return;
     }
-    ui.saveMessage = "Choisis Enregistrer en PDF dans la fenêtre d'impression";
-    window.print();
+    // Repli web (correctif "PDF honnête") : ouvre l'aperçu partagé du VRAI document formaté (pas la
+    // fenêtre principale de l'app telle quelle, qui aurait imprimé la barre latérale et les menus).
+    showPagePrintPreview(pdfReportPayload(), { mode: "pdf" });
+    ui.saveMessage = "Aperçu ouvert : choisissez « Enregistrer en PDF » dans la nouvelle fenêtre.";
     render();
   }
 
@@ -24385,32 +24417,53 @@ ${esc(bodyText)}</pre>
     if (menu) menu.hidden = true;
   }
 
-  // Socle partagé (correctif régression Lot 4A) : le durcissement des fenêtres Electron
-  // (setWindowOpenHandler refusant toute création de fenêtre par défaut) bloquait silencieusement
-  // window.open("", "_blank"), faisant tomber CHAQUE appelant (page générique, menu contextuel,
-  // avoirs, feuilles de présence) dans le repli window.print() — imprimant directement la fenêtre
-  // principale de l'app, sans aucun aperçu. En Electron, on délègue désormais au même aperçu
-  // sécurisé main-process que les factures (window.monGestaClubShell.printHtml). Hors Electron
-  // (démo web), le comportement window.open() existant est conservé à l'identique : il fonctionne
+  // Socle partagé WEB (correctif régression Lot 4A, puis extension "PDF honnête") : le durcissement
+  // des fenêtres Electron (setWindowOpenHandler refusant toute création de fenêtre par défaut)
+  // bloquait silencieusement window.open("", "_blank"), faisant tomber CHAQUE appelant (page
+  // générique, menu contextuel, avoirs, feuilles de présence) dans le repli window.print() —
+  // imprimant directement la fenêtre principale de l'app, sans aucun aperçu. En Electron, on délègue
+  // désormais au même aperçu sécurisé main-process que les factures (window.monGestaClubShell.printHtml).
+  // Hors Electron (démo web), le comportement window.open() existant est conservé : il fonctionne
   // très bien dans un navigateur, seul Electron bloquait la fenêtre.
-  function showPagePrintPreview(payloadArg) {
+  //
+  // options.mode ("print" par défaut, ou "pdf") : SEUL le rendu du bouton web change (libellé +
+  // aide courte). Aucune bibliothèque PDF n'existe dans le projet ni ses dépendances (vérifié :
+  // budo-app n'a pas de package.json, budo-electron ne dépend que de nodemailer) — en mode "pdf",
+  // le bouton déclenche donc window.print() comme en mode "print", SEULE la boîte d'impression du
+  // navigateur peut produire un vrai PDF ("Enregistrer au format PDF"), jamais un faux fichier
+  // renommé ni un téléchargement HTML. Sans effet côté Electron : le vrai export PDF natif
+  // (window.monGestaClubShell.exportPdf -> printToPDF) reste un chemin totalement séparé, jamais
+  // remplacé par cet aperçu.
+  function showPagePrintPreview(payloadArg, options = {}) {
     const payload = payloadArg || pdfReportPayload();
+    const mode = options.mode === "pdf" ? "pdf" : "print";
     if (window.monGestaClubShell?.printHtml) {
       window.monGestaClubShell.printHtml(payload).catch((error) => console.error(error));
       return;
     }
     const previewWindow = window.open("", "_blank");
     if (!previewWindow) { window.print(); return; }
+    const actionLabel = mode === "pdf" ? "Enregistrer en PDF" : "Imprimer";
+    const helpText = mode === "pdf" ? "Dans la fenêtre d'impression, choisissez « Enregistrer au format PDF »." : "";
     const toolbarCss = `<style>
-      .ppt{position:fixed;top:0;left:0;right:0;height:48px;background:#1e293b;color:#f1f5f9;display:flex;align-items:center;gap:10px;padding:0 20px;font-family:system-ui,sans-serif;font-size:13px;z-index:9999;box-shadow:0 2px 6px rgba(0,0,0,.4)}
+      .ppt{position:fixed;top:0;left:0;right:0;background:#1e293b;color:#f1f5f9;display:flex;flex-direction:column;justify-content:center;gap:2px;padding:8px 20px;font-family:system-ui,sans-serif;font-size:13px;z-index:9999;box-shadow:0 2px 6px rgba(0,0,0,.4)}
+      .ppt-row{display:flex;align-items:center;gap:10px}
       .ppt-title{flex:1;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+      .ppt-help{color:#cbd5e1;font-size:12px;white-space:normal}
       .ppt-btn{border:none;border-radius:7px;padding:7px 18px;font-size:13px;font-weight:700;cursor:pointer}
+      .ppt-btn:focus-visible{outline:2px solid #93c5fd;outline-offset:2px}
       .ppt-print{background:#2563eb;color:#fff}.ppt-print:hover{background:#1d4ed8}
       .ppt-close{background:rgba(255,255,255,.12);color:#f1f5f9;border:1px solid rgba(255,255,255,.18)}.ppt-close:hover{background:rgba(255,255,255,.22)}
-      @media screen{body{margin-top:56px!important}}
+      @media screen{body{margin-top:${helpText ? 76 : 56}px!important}}
       @media print{.ppt{display:none!important}body{margin-top:0!important}}
+      @media (max-width:640px){.ppt-title{display:none}}
     </style>`;
-    const toolbar = `<div class="ppt"><span class="ppt-title">${esc(payload.title)}</span><button class="ppt-btn ppt-print" onclick="window.print()">Imprimer</button><button class="ppt-btn ppt-close" onclick="window.close()">Fermer</button></div>`;
+    const toolbar = `<div class="ppt">` +
+      `<div class="ppt-row"><span class="ppt-title">${esc(payload.title)}</span>` +
+      `<button type="button" class="ppt-btn ppt-print" onclick="window.print()">${esc(actionLabel)}</button>` +
+      `<button type="button" class="ppt-btn ppt-close" onclick="window.close()">Fermer</button></div>` +
+      (helpText ? `<div class="ppt-row"><span class="ppt-help">${esc(helpText)}</span></div>` : "") +
+      `</div>`;
     const html = payload.html
       .replace("</head>", `${toolbarCss}</head>`)
       .replace("<body>", `<body>${toolbar}`);
