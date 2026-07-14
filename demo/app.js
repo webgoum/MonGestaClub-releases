@@ -889,6 +889,46 @@
     return normalized;
   }
 
+  // Fusion à l'import d'une sauvegarde, avec RESTAURATION réelle sur conflit de même ID (contrat
+  // produit documenté dans l'aide : « Importer JSON restaure une sauvegarde précédemment exportée »).
+  // - Club présent uniquement en local : conservé tel quel.
+  // - Club présent uniquement dans la sauvegarde : ajouté avec ses données.
+  // - Même clubId des deux côtés : l'identité et les données métier de la sauvegarde REMPLACENT la
+  //   version locale (sinon l'import ne restaurerait jamais un club déjà existant modifié/dégradé
+  //   localement — seuls les clubs entièrement absents localement en bénéficiaient auparavant).
+  //   Les secrets locaux (settings.security par club) restent protégés en amont par
+  //   preserveLocalSecurityOnImport, qui réinjecte la valeur locale avant cette fusion : ce
+  //   remplacement ne les expose donc jamais à ceux (vidés) de la sauvegarde.
+  function mergeImportedClubStore(importedStore) {
+    const localStore = normalizeClubStore(clubStore || rawClubStoreFromStorage());
+    if (!importedStore || !Array.isArray(importedStore.clubs)) return localStore;
+
+    const importedClubIds = new Set(importedStore.clubs.map((club) => club.id).filter(Boolean));
+    const localOnlyClubs = localStore.clubs.filter((club) => !importedClubIds.has(club.id));
+    const mergedClubs = [...localOnlyClubs, ...importedStore.clubs.filter((club) => club.id)];
+
+    const mergedData = { ...localStore.data };
+    importedStore.clubs.forEach((club) => {
+      if (club.id && importedStore.data?.[club.id]) mergedData[club.id] = importedStore.data[club.id];
+    });
+
+    // Club actif : priorité au local s'il reste valide (non archivé) après fusion, sinon celui de
+    // la sauvegarde s'il est valide, sinon le premier club non archivé, sinon le premier club.
+    const isValidActive = (id) => mergedClubs.some((club) => club.id === id && !club.archived);
+    const resolvedActiveClubId = isValidActive(localStore.activeClubId)
+      ? localStore.activeClubId
+      : isValidActive(importedStore.activeClubId)
+        ? importedStore.activeClubId
+        : mergedClubs.find((club) => !club.archived)?.id || mergedClubs[0]?.id || "";
+
+    return normalizeClubStore({
+      ...localStore,
+      clubs: mergedClubs,
+      data: mergedData,
+      activeClubId: resolvedActiveClubId,
+    });
+  }
+
   function backupLegacyLocalStorageBeforeClubMigration() {
     if (appStorage.getItem(CLUB_MIGRATION_BACKUP_KEY)) return;
     const backup = {
@@ -4340,6 +4380,10 @@
   }
 
   function paymentStatus(payment) {
+    // Annulé est un état canonique PERSISTÉ (payment.state === "Annulé"), traité avant tout calcul
+    // dérivé par montant/méthode/date : un chèque annulé (amount conservé, date vidée) ne doit jamais
+    // retomber dans le calcul "A encaisser"/"En cours" qui, lui, se fie uniquement à amount/date/méthode.
+    if (paymentIsCancelled(payment)) return "Annulé";
     const value = payment?.state;
     const normalized = normalizedPaymentValue(value);
     const amount = asNumber(payment?.amount);
@@ -4494,7 +4538,7 @@
   }
 
   function alertStatusForPayments(payments) {
-    const statuses = (payments || []).map(paymentStatus).filter((status) => status && status !== "OK");
+    const statuses = (payments || []).map(paymentStatus).filter((status) => status && status !== "OK" && status !== "Annulé");
     if (statuses.includes("Refusé")) return "Refusé";
     if (statuses.includes("A encaisser")) return "A encaisser";
     if (statuses.includes("En cours")) return "En cours";
@@ -4525,14 +4569,60 @@
     if (!normalized) return "";
     if (normalized === "paye" || normalized === "payee" || normalized === "ok") return "Payé";
     if (normalized === "refuse" || normalized === "alerter") return "Refusé";
+    // Reconnaît les variantes Annulé/Annule/Cancelled/Canceled (après normalisation : accents et
+    // casse retirés, "Annulé"/"Annule" convergent déjà vers "annule") -> valeur canonique "Annulé".
+    // Une valeur vide reste vide (jamais promue en Annulé) ; un ancien chèque sans état persisté
+    // reste vide lui aussi -> ne tombe JAMAIS dans cette branche (rien à normaliser).
+    if (normalized === "annule" || normalized === "cancelled" || normalized === "canceled") return "Annulé";
     if (parseDate(raw)) return "";
     return raw;
+  }
+
+  // État canonique d'annulation d'un paiement, indépendant de toute heuristique sur amount/date/
+  // méthode et indépendant du Journal (audit log) : uniquement payment.state, normalisé.
+  function paymentIsCancelled(payment = {}) {
+    return paymentStateValue(payment) === "Annulé";
+  }
+
+  // Un paiement "compte" dans la répartition/le calcul de couverture de l'échéancier (montant déjà
+  // couvert, pour suggérer/masquer les échéances suivantes) s'il représente un engagement réel :
+  // exclut Refusé ET Annulé, jamais seulement Refusé. Centralise ce qui était auparavant dispersé
+  // en plusieurs comparaisons textuelles "!== Refusé" (paymentSuggestion, visiblePaymentCount,
+  // paymentCoverageAmount).
+  function paymentCountsTowardSchedule(payment = {}) {
+    const status = paymentStateValue(payment);
+    return status !== "Refusé" && status !== "Annulé";
+  }
+
+  // Détecte, par index, les transitions de paiement RÉELLEMENT persistées entre un snapshot "avant
+  // ouverture" du formulaire et l'état final effectivement sauvegardé. Helper pur (aucun DOM, aucun
+  // appel d'audit direct) : les appelants ne l'invoquent que si le parent existait déjà avant
+  // l'ouverture (fiche neuve = aucun snapshot = aucun appel = aucune transition possible, jamais
+  // une chronologie inventée). Un index sans "avant" (échéance jamais touchée sur une fiche déjà
+  // persistée) est traité comme une ligne vide, pas comme une absence de comparaison : "vide -> Payé"
+  // doit produire une transition validated au même titre que "Annulé -> Payé".
+  function paymentAuditTransitions(beforePayments = [], afterPayments = []) {
+    const transitions = [];
+    afterPayments.forEach((after, index) => {
+      const before = beforePayments[index] || {};
+      const beforeStatus = paymentStatus(before);
+      const afterStatus = paymentStatus(after);
+      if (beforeStatus !== "OK" && afterStatus === "OK") {
+        transitions.push({ action: "validated", index, payment: after });
+      } else if (beforeStatus === "OK" && paymentIsCancelled(after)) {
+        transitions.push({ action: "cancelled", index, payment: after });
+      }
+    });
+    return transitions;
   }
 
   function paymentStateOptions(value, amount = 0) {
     const options = ["", "Refusé"];
     const normalized = paymentStateValue({ state: value });
-    const safeValue = normalized === "Refusé" ? normalized : "";
+    // "Annulé" peut apparaître comme valeur COURANTE (ligne déjà annulée) sans jamais être ajouté
+    // comme choix par défaut sur une ligne neuve : normalized ne vaut "Annulé" que si la ligne l'est
+    // réellement déjà, auquel cas le fallback ci-dessous l'ajoute à la liste et le sélectionne.
+    const safeValue = (normalized === "Refusé" || normalized === "Annulé") ? normalized : "";
     const allOptions = options.includes(safeValue) ? options : [...options, safeValue];
     return allOptions.map((option) => `<option value="${esc(option)}" ${safeValue === option ? "selected" : ""}>${option ? esc(option) : "-"}</option>`).join("");
   }
@@ -4591,7 +4681,7 @@
   function paymentSuggestion(rows, index, total = 0) {
     if (!total || hasPaymentContent(rows[index])) return 0;
     const previous = rows.slice(0, index).reduce((sum, payment) => {
-      return paymentStateValue(payment) === "Refusé" ? sum : sum + asNumber(payment.amount);
+      return paymentCountsTowardSchedule(payment) ? sum + asNumber(payment.amount) : sum;
     }, 0);
     return Math.max(0, total - previous);
   }
@@ -4602,25 +4692,49 @@
     }, 0);
   }
 
+  // La couverture financière ne détermine plus SEULE le nombre de lignes visibles (une ligne
+  // Refusé/Annulé/Payé/En cours/À encaisser antérieure au point de couverture ne doit jamais
+  // disparaître simplement parce qu'une autre ligne, plus loin, couvre déjà le total) : on
+  // parcourt TOUJOURS l'intégralité des index jusqu'à max (jamais d'arrêt anticipé sur la
+  // première ligne vide rencontrée, ni sur la couverture atteinte), afin de retrouver l'index le
+  // plus élevé contenant réellement une donnée (hasPaymentContent), qui fixe le plancher de
+  // visibilité. Une ligne vide supplémentaire n'est proposée qu'en complément, jamais en retrait.
   function visiblePaymentCount(rows, total = 0, maxChecks = paymentCheckCount(), showNextIfPartial = true) {
     const max = normalizePaymentCheckCount(maxChecks);
-    let count = 1;
+    let highestSignificant = -1;
     let covered = 0;
     for (let index = 0; index < max; index += 1) {
       const payment = rows[index] || {};
-      if (!hasPaymentContent(payment)) break;
-      count = index + 1;
-      if (paymentStateValue(payment) !== "Refusé") covered += asNumber(payment.amount);
-      if (total > 0 && covered >= total - 0.005) break;
-      if (total > 0 && covered < total - 0.005 && index + 1 < max && showNextIfPartial) {
-        count = index + 2;
-      }
+      if (hasSignificantPaymentIntent(payment, index)) highestSignificant = index;
+      if (paymentCountsTowardSchedule(payment)) covered += asNumber(payment.amount);
     }
+    let count = highestSignificant + 1;
+    const stillDue = total > 0 && covered < total - 0.005;
+    if (stillDue && count < max && showNextIfPartial) count += 1;
     return Math.min(max, Math.max(1, count));
   }
 
   function hasPaymentContent(payment = {}) {
     return Boolean(asNumber(payment.amount) || asText(payment.date) || asText(payment.state) || asText(payment.checkNumber));
+  }
+
+  // Ligne significative pour la VISIBILITÉ — notion distincte de la protection contre l'effacement
+  // (cf. isFormPaymentRowPurelyAutomatic dans 17-dialogs-forms.js, qui décide QUOI vider). Une
+  // ligne sans aucune donnée métier (hasPaymentContent) reste néanmoins significative si son moyen
+  // de paiement PERSISTÉ diffère de celui proposé par défaut pour cet index : cela suffit à prouver
+  // une intention utilisateur, même sans montant. La TVA spécifique n'est PAS évaluée ici : une fois
+  // qu'une ligne est passée une fois par le formulaire, readPayments écrit systématiquement un
+  // payment.taxRate défini (spécifique ou non), ce qui rend hasSpecificTaxRate structurellement
+  // inutilisable pour cette distinction au niveau du seul objet — la protection de visibilité de la
+  // TVA spécifique est donc portée par le marqueur DOM data-tax-significant (posé dans
+  // compactPaymentEditor par comparaison au taux par défaut réel, lu dans
+  // updatePaymentSplitDisplay), pas par ce helper pur (qui n'a pas accès au DOM et est aussi
+  // utilisé, via formPaymentRows, dans un contexte où la valeur .value du champ caché est de toute
+  // façon toujours définie).
+  function hasSignificantPaymentIntent(payment = {}, index = 0) {
+    if (hasPaymentContent(payment)) return true;
+    const check = asText(payment.check);
+    return Boolean(check) && normalizePaymentModeKey(check) !== normalizePaymentModeKey(defaultPaymentMethod(index));
   }
 
   function paymentMiniChip(payment = {}, index = 0, active = false, attrs = "", suggestedAmount = 0, hidden = false) {
@@ -4668,13 +4782,24 @@
     const dateInput = mode === "form"
       ? `<label class="payment-date-field">${immediate ? "Payé le" : "Encaisser le"}<input name="${esc(prefix)}${index}Date" type="date" value="${esc(dateVal)}"${lockI} /></label>`
       : `<label class="payment-date-field" title="${immediate ? "Date du paiement" : "Date d'encaissement"}">${immediate ? "Payé le" : "Encaisser le"}<input class="payment-date" type="date" value="${esc(dateVal)}" data-payment-field="date" data-index="${index}" ${attrs}${lockI} /></label>`;
+    // Marqueur de VISIBILITÉ distinct de data-auto-tax (inchangé, toujours utilisé tel quel par
+    // setDefaultPaymentTaxRate) : hasSpecificTaxRate ne teste que la PRÉSENCE d'un taxRate, or
+    // readPayments écrit systématiquement une valeur numérique (même 0) dès qu'une ligne passe une
+    // fois par ce formulaire — après quoi hasSpecificTaxRate renvoie toujours vrai, y compris pour
+    // une ligne jamais réellement personnalisée. data-tax-significant compare au contraire la valeur
+    // au taux par défaut RÉELLEMENT applicable à ce contexte (defaultTaxRate, recalculé à chaque
+    // rendu) : seul un écart réel rend la ligne significative pour la visibilité, une TVA qui
+    // coïncide avec le défaut ne l'est jamais, même après une sauvegarde antérieure.
+    const specificTaxRateRaw = payment.taxRate ?? payment.vatRate ?? payment.tva;
+    const isTaxSignificant = specificTaxRateRaw !== undefined && specificTaxRateRaw !== null && asText(specificTaxRateRaw) !== ""
+      && Math.abs(asNumber(specificTaxRateRaw) - asNumber(defaultTaxRate)) > 0.005;
     const taxInput = mode === "form"
-      ? `<input name="${esc(prefix)}${index}TaxRate" class="payment-tax" type="hidden" value="${esc(taxRateValue)}" data-auto-tax="${hasSpecificTaxRate(payment) ? "" : "true"}" />`
+      ? `<input name="${esc(prefix)}${index}TaxRate" class="payment-tax" type="hidden" value="${esc(taxRateValue)}" data-auto-tax="${hasSpecificTaxRate(payment) ? "" : "true"}" data-tax-significant="${isTaxSignificant ? "true" : ""}" />`
       : "";
     const stateInput = mode === "form"
       ? `<label class="payment-state-field">Statut
           <select data-form-payment-state data-prefix="${esc(prefix)}" data-index="${index}"${lockS}>
-            ${paymentStateOptions(stateValue === "Refusé" ? "Refusé" : "", amountNumber)}
+            ${paymentStateOptions(stateValue === "Refusé" || stateValue === "Annulé" ? stateValue : "", amountNumber)}
           </select>
           <input type="hidden" name="${esc(prefix)}${index}State" value="${esc(stateValue)}" />
         </label>`
@@ -4715,7 +4840,7 @@
 
   function paymentDisplayStatus(payment = {}, amount = 0, mode = "form") {
     const status = paymentStatus(payment);
-    if (status === "OK" || status === "Refusé" || status === "En cours") return status;
+    if (status === "OK" || status === "Refusé" || status === "Annulé" || status === "En cours") return status;
     if (amount <= 0) return status;
     if (isImmediatePayment(payment)) return "À payer";
     const date = parseDate(payment.date) || parseDate(payment.state);
@@ -8688,7 +8813,12 @@ ${esc(bodyText)}</pre>
     const clientName = [row.lastName, row.firstName].filter(Boolean).join(" ") || "Client sans nom";
     const contact = [row.phone, row.email].filter(Boolean).join(" · ");
     const address = [row.address, row.postalCode, row.city].filter(Boolean).join(" ");
-    const invoice = invoiceForShopOrder(row.id);
+    // Lot intégrité commandes : mêmes règles que les handlers edit-order/delete-order
+    // (shopOrderIntegrityState, 18-contacts-invoices.js) — un seul calcul, jamais dupliqué.
+    const integrity = shopOrderIntegrityState(row);
+    const invoice = integrity.invoice;
+    const editTitle = integrity.editBlocked ? ` title="${esc(shopOrderIntegrityMessage(integrity.editReasons))}"` : "";
+    const deleteTitle = integrity.deleteBlocked ? ` title="${esc(shopOrderIntegrityMessage(integrity.deleteReasons))}"` : "";
     return `<details class="shop-order-card ${calc.restDue > 0 ? "has-due" : "is-paid"}">
       <summary class="shop-order-summary">
         <span class="shop-order-client">
@@ -8719,11 +8849,11 @@ ${esc(bodyText)}</pre>
           ${paymentControls("order", row.id, row.payments || [], { total: calc.total, defaultTaxRate: orderDefaultTaxRate(row) })}
         </details>
         <div class="shop-order-actions">
-          <button data-action="edit-order" data-id="${esc(row.id)}">Modifier la commande</button>
+          <button data-action="edit-order" data-id="${esc(row.id)}" ${integrity.editBlocked ? "disabled" : ""}${editTitle}>Modifier la commande</button>
           <button data-action="open-order-invoice" data-id="${esc(row.id)}">${invoice ? "Ouvrir la facture" : "Créer / éditer la facture"}</button>
           <button data-action="print-order-invoice" data-id="${esc(row.id)}">Imprimer la facture</button>
           <button data-action="export-order-invoice-pdf" data-id="${esc(row.id)}">PDF facture</button>
-          <button class="danger" data-action="delete-order" data-id="${esc(row.id)}">Supprimer</button>
+          <button class="danger" data-action="delete-order" data-id="${esc(row.id)}" ${integrity.deleteBlocked ? "disabled" : ""}${deleteTitle}>Supprimer</button>
         </div>
       </div>
     </details>`;
@@ -14318,6 +14448,10 @@ ${esc(bodyText)}</pre>
     return form.elements[`${prefix}${index}TaxRate`] || null;
   }
 
+  function paymentMethodInput(form, prefix, index) {
+    return form.elements[`${prefix}${index}Check`] || null;
+  }
+
   function paymentBlock(form, prefix) {
     return [...form.querySelectorAll("[data-payment-prefix]")]
       .find((block) => block.dataset.paymentPrefix === prefix) || null;
@@ -14360,6 +14494,21 @@ ${esc(bodyText)}</pre>
 
   function canAutoFillPaymentAmount(input, changedInput = null) {
     return Boolean(input && input !== changedInput && input.dataset.userAmountEdited !== "true");
+  }
+
+  // Helper DOM (pas seulement l'objet paiement, car un montant "réel" et un montant "suggéré
+  // jamais touché" sont indiscernables au niveau de l'objet seul) : une ligne de formulaire est
+  // purement automatique si elle ne contient AUCUNE donnée métier saisie (state/date/checkNumber)
+  // et que son seul montant éventuel n'est qu'une suggestion jamais validée ni modifiée
+  // manuellement (data-auto-amount="true" ET data-user-amount-edited absent). C'est la SEULE
+  // condition qui autorise un recalcul de visibilité à vider les champs d'une ligne — jamais une
+  // ligne Refusée/Annulée/Payée/En cours/À encaisser, ni un montant/date/numéro de chèque saisi.
+  function isFormPaymentRowPurelyAutomatic(form, prefix, index, payment) {
+    if (asText(payment.state) || asText(payment.date) || asText(payment.checkNumber)) return false;
+    if (!asNumber(payment.amount)) return true;
+    const amountInput = form.elements[`${prefix}${index}Amount`];
+    if (!amountInput) return false;
+    return amountInput.dataset.autoAmount === "true" && amountInput.dataset.userAmountEdited !== "true";
   }
 
   function setDefaultPaymentTaxRate(form, prefix, rate = effectiveDefaultVatRate()) {
@@ -14435,7 +14584,25 @@ ${esc(bodyText)}</pre>
       const input = paymentAmountInput(form, prefix, index);
       return input && (input.dataset.autoAmount === "true" || input.dataset.userAmountEdited === "true");
     });
-    const visibleCount = visiblePaymentCount(rows, total, paymentBlockCount(form, prefix), showNextIfPartial);
+    const baseVisibleCount = visiblePaymentCount(rows, total, paymentBlockCount(form, prefix), showNextIfPartial);
+    // Complète le calcul pur (basé sur les données, cf. hasSignificantPaymentIntent) avec deux
+    // signaux fiables UNIQUEMENT au niveau du DOM : un moyen de paiement explicitement choisi par
+    // l'utilisateur PENDANT ce dialogue (data-user-method-edited — utile même quand la valeur
+    // choisie est identique au défaut, auquel cas rien ne le distingue plus au niveau de l'objet
+    // seul) et une TVA réellement spécifique posée au rendu (data-tax-significant — comparaison de
+    // valeur au taux par défaut réellement applicable, PAS data-auto-tax qui devient toujours vrai
+    // dès qu'une ligne a été sauvegardée au moins une fois par ce formulaire, cf. commentaire dans
+    // compactPaymentEditor). Cette complétion ne peut qu'ÉTENDRE visibleCount, jamais le réduire :
+    // aucune ligne significative au DOM n'est masquée.
+    let domSignificantHighest = -1;
+    blockIdx.forEach((index) => {
+      const methodInput = paymentMethodInput(form, prefix, index);
+      const taxInput = paymentTaxInput(form, prefix, index);
+      const domSignificant = (methodInput && methodInput.dataset.userMethodEdited === "true")
+        || (taxInput && taxInput.dataset.taxSignificant === "true");
+      if (domSignificant) domSignificantHighest = index;
+    });
+    const visibleCount = Math.max(baseVisibleCount, domSignificantHighest + 1);
     blockIdx.forEach((index) => {
       const payment = paymentObjectFromForm(form, prefix, index);
       const chip = block.querySelector(`[data-payment-tab="${index}"]`);
@@ -14473,11 +14640,27 @@ ${esc(bodyText)}</pre>
         if (immediate && checkNumberInput) checkNumberInput.value = "";
         const hiddenState = form.elements[`${prefix}${index}State`];
         const manualState = row.querySelector("[data-form-payment-state]");
+        // État canonique de référence AVANT toute mutation ci-dessous : sert à ne jamais effacer
+        // silencieusement un marqueur "Annulé"/"Refusé" persisté (le champ caché reste la source de
+        // vérité, mais le select manuel doit rester synchrone -> pas de confusion visuelle avec une
+        // ligne vide). "Refusé" n'est plus jamais réinitialisé automatiquement pour une méthode
+        // immédiate : cette réinitialisation (ancien comportement) effaçait silencieusement une
+        // donnée métier réelle à chaque recalcul, y compris à la simple ouverture du formulaire —
+        // exactement la suppression interdite par la décision produit. Un utilisateur qui souhaite
+        // réellement changer le statut d'une ligne reste libre de le faire via le select manuel.
+        const isCancelled = hiddenState ? paymentStateValue({ state: hiddenState.value }) === "Annulé" : false;
+        const isRefused = hiddenState ? paymentStateValue({ state: hiddenState.value }) === "Refusé" : false;
         if (immediate) {
-          if (hiddenState && paymentStateValue({ state: hiddenState.value }) === "Refusé") hiddenState.value = "";
-          if (manualState) manualState.value = "";
+          if (manualState && !isCancelled && !isRefused) manualState.value = "";
         } else if (hiddenState && paymentStateValue({ state: hiddenState.value }) === "Payé" && paymentStatus(payment) !== "OK") {
           hiddenState.value = "";
+        }
+        // Régénère les <option> du select manuel si nécessaire : la liste rendue initialement
+        // (paymentStateOptions au premier rendu) ne contient "Annulé" que si la ligne l'était déjà à
+        // ce moment-là ; sans cela, une simple affectation de .value échouerait silencieusement (aucune
+        // <option value="Annulé"> présente pour méthode immédiate OU chèque après ce point du cycle).
+        if (manualState && isCancelled && manualState.value !== "Annulé") {
+          manualState.innerHTML = paymentStateOptions("Annulé", amount);
         }
         const payButton = row.querySelector(".payment-ok");
         if (payButton) {
@@ -14490,7 +14673,14 @@ ${esc(bodyText)}</pre>
         }
         // Verrou de la ligne selon le statut (validée -> non éditable ; non validée -> éditable).
         syncFormPaymentRowLock(row, payment, status === "OK");
-        if (index >= visibleCount) {
+        // Une ligne devenue superflue (index >= visibleCount, ex. une échéance ultérieure alors
+        // qu'une ligne antérieure couvre déjà le total) ne peut être vidée QUE si elle est
+        // purement automatique (voir isFormPaymentRowPurelyAutomatic) : jamais une ligne
+        // Refusée/Annulée/Payée/En cours/À encaisser, ni une saisie manuelle (montant, date,
+        // numéro de chèque). visiblePaymentCount garantit déjà qu'une ligne significative reste de
+        // toute façon toujours < visibleCount (donc jamais masquée) ; ce garde-fou supplémentaire
+        // protège aussi contre un désaccord ponctuel entre les deux calculs.
+        if (index >= visibleCount && isFormPaymentRowPurelyAutomatic(form, prefix, index, payment)) {
           const amountInput = form.elements[`${prefix}${index}Amount`];
           if (checkNumberInput) checkNumberInput.value = "";
           if (amountInput) amountInput.value = "";
@@ -14553,6 +14743,19 @@ ${esc(bodyText)}</pre>
       input.dataset.autoTaxReady = "true";
       input.addEventListener("input", () => {
         input.dataset.autoTax = "";
+      });
+    });
+    // Marqueur DOM non persistant : pose data-user-method-edited UNIQUEMENT sur un véritable
+    // événement "change" déclenché par l'utilisateur sur le select du moyen — jamais au rendu
+    // initial ni lors d'une affectation automatique. Sert à garder une ligne accessible pendant CE
+    // dialogue même si la valeur choisie est identique au moyen par défaut (auquel cas rien ne le
+    // distingue plus après sauvegarde/réouverture — cf. hasSignificantPaymentIntent qui, lui,
+    // détecte déjà une valeur PERSISTÉE différente du défaut, avec ou sans ce marqueur).
+    paymentBlockIndexes(form, prefix).map((index) => paymentMethodInput(form, prefix, index)).forEach((input) => {
+      if (!input || input.dataset.autoMethodReady) return;
+      input.dataset.autoMethodReady = "true";
+      input.addEventListener("change", () => {
+        input.dataset.userMethodEdited = "true";
       });
     });
     block?.querySelectorAll("input, select").forEach((control) => {
@@ -14631,9 +14834,14 @@ ${esc(bodyText)}</pre>
     updatePaymentSplitDisplay(form, prefix);
   }
 
-  // Lors d'un recalcul lié au total (ex. remise appliquée), on ne laisse jamais
-  // la somme des paiements saisis dépasser le nouveau total : on rogne depuis le
-  // dernier paiement non refusé pour que le « reste à payer » suive le total.
+  // Lors d'un recalcul lié au total (ex. remise appliquée), on ne laisse jamais un montant
+  // PUREMENT AUTOMATIQUE (suggestion jamais saisie/validée manuellement) dépasser le nouveau
+  // total affiché : on le rogne, ou on le vide s'il devient nul. Ne rogne et ne vide JAMAIS un
+  // montant saisi manuellement, ni une ligne Payée/Annulée/En cours/À encaisser (même non
+  // Refusée) : si l'excédent subsiste après épuisement des lignes purement automatiques, on
+  // laisse l'incohérence visible plutôt que d'effacer une donnée réelle — les garde-fous de
+  // surpaiement existants (paymentOverpayMessage, finalCheckValidationMessage) restent chargés de
+  // bloquer une validation incohérente, jamais ce recalcul d'affichage.
   function capPaymentCoverageToTotal(form, prefix, inputs, total) {
     const expected = Math.max(0, asNumber(total));
     let coverage = inputs.reduce((sum, input, index) => {
@@ -14647,6 +14855,7 @@ ${esc(bodyText)}</pre>
       const input = inputs[index];
       if (!input || !asText(input.value)) continue;
       if (paymentStateValue(paymentObjectFromForm(form, prefix, index)) === "Refusé") continue;
+      if (input.dataset.autoAmount !== "true" || input.dataset.userAmountEdited === "true") continue;
       const value = asNumber(input.value);
       const reduced = Math.max(0, value - excess);
       excess -= value - reduced;
@@ -14655,6 +14864,7 @@ ${esc(bodyText)}</pre>
         input.dataset.autoAmount = "";
       } else {
         input.value = String(Math.round(reduced * 100) / 100);
+        input.dataset.autoAmount = "true";
       }
     }
   }
@@ -14662,7 +14872,7 @@ ${esc(bodyText)}</pre>
   function paymentCoverageAmount(payments = [], count = paymentCheckCount()) {
     return paymentIndexes(count).reduce((sum, index) => {
       const payment = payments[index] || {};
-      return paymentStateValue(payment) === "Refusé" ? sum : sum + asNumber(payment.amount);
+      return paymentCountsTowardSchedule(payment) ? sum + asNumber(payment.amount) : sum;
     }, 0);
   }
 
@@ -14748,7 +14958,10 @@ ${esc(bodyText)}</pre>
         amount: asNumber(form.get(`${prefix}${index}Amount`)),
         taxRate: Math.max(0, asNumber(form.get(`${prefix}${index}TaxRate`))),
         date: form.get(`${prefix}${index}Date`) || "",
-        state: ["Payé", "Refusé"].includes(paymentStateValue({ state: form.get(`${prefix}${index}State`) }))
+        // "Annulé" doit survivre à la lecture du formulaire au même titre que "Payé"/"Refusé" :
+        // sans cette entrée, une ligne annulée dans le formulaire puis enregistrée perdait son état
+        // canonique (retombait à vide, indiscernable d'une ligne jamais touchée).
+        state: ["Payé", "Refusé", "Annulé"].includes(paymentStateValue({ state: form.get(`${prefix}${index}State`) }))
           ? paymentStateValue({ state: form.get(`${prefix}${index}State`) })
           : "",
       };
@@ -15054,6 +15267,80 @@ ${esc(bodyText)}</pre>
     const prefix = shopOrderInvoiceSourcePrefix(orderId);
     if (!asText(orderId)) return null;
     return (state.invoices || []).find((invoice) => (invoice.lines || []).some((line) => asText(line.sourceKey).startsWith(prefix))) || null;
+  }
+
+  // Intégrité financière d'une commande boutique : verrous de suppression/modification, calculés
+  // uniquement à partir de données déjà persistées (facture liée + paiements de la commande),
+  // aucun nouveau champ, aucun statut de commande. Helper pur (pas de DOM, pas de HTML) réutilisé
+  // par le rendu des boutons (orderCard) ET par les handlers edit-order/delete-order, pour ne
+  // jamais dupliquer la règle. paymentStatus() est le SEUL classificateur de paiement réutilisé
+  // (déjà utilisé partout ailleurs dans l'app) : "OK" (payé), "A encaisser", "En cours" sont des
+  // engagements actifs ; "Refusé" et "" (vide, y compris un paiement annulé sur un mode immédiat)
+  // ne bloquent jamais. Une facture "cancelled" (statut existant mais jamais atteignable depuis
+  // l'UI actuelle) n'est traitée ni comme brouillon ni comme émise.
+  function shopOrderIntegrityState(order = {}) {
+    const invoice = invoiceForShopOrder(order.id);
+    const hasDraftInvoice = Boolean(invoice) && invoice.status === "draft";
+    const hasIssuedInvoice = Boolean(invoice) && invoice.status !== "draft" && invoice.status !== "cancelled";
+    // Un paiement Annulé (état canonique persistant, cf. paymentIsCancelled) n'est JAMAIS un
+    // engagement actif : paymentStatus() le classe désormais "Annulé", distinct de "OK"/"A
+    // encaisser"/"En cours" -> exclu naturellement de activePayments, jamais une raison de blocage.
+    const activePayments = (order.payments || []).filter((payment) => {
+      const status = paymentStatus(payment);
+      return status === "OK" || status === "A encaisser" || status === "En cours";
+    });
+    const hasPaidPayment = activePayments.some((payment) => paymentStatus(payment) === "OK");
+    const hasPendingPayment = activePayments.some((payment) => {
+      const status = paymentStatus(payment);
+      return status === "A encaisser" || status === "En cours";
+    });
+    // Informatif uniquement : n'ajoute jamais de raison de blocage, ne fait jamais partie d'activePayments.
+    const hasCancelledPayment = (order.payments || []).some((payment) => paymentIsCancelled(payment));
+    const deleteReasons = [];
+    if (hasDraftInvoice) deleteReasons.push("draftInvoice");
+    if (hasIssuedInvoice) deleteReasons.push("issuedInvoice");
+    if (hasPaidPayment) deleteReasons.push("paidPayment");
+    if (hasPendingPayment) deleteReasons.push("pendingPayment");
+    const editReasons = [];
+    if (hasIssuedInvoice) editReasons.push("issuedInvoice");
+    if (hasPaidPayment) editReasons.push("paidPayment");
+    if (hasPendingPayment) editReasons.push("pendingPayment");
+    return {
+      invoice,
+      hasDraftInvoice,
+      hasIssuedInvoice,
+      activePayments,
+      hasPaidPayment,
+      hasPendingPayment,
+      hasCancelledPayment,
+      deleteBlocked: deleteReasons.length > 0,
+      editBlocked: editReasons.length > 0,
+      deleteReasons,
+      editReasons,
+    };
+  }
+
+  // Message lisible et unique (jamais une liste technique de statuts) pour un blocage donné.
+  // reasons vient de shopOrderIntegrityState().deleteReasons/editReasons.
+  function shopOrderIntegrityMessage(reasons = []) {
+    const hasInvoiceReason = reasons.includes("draftInvoice") || reasons.includes("issuedInvoice");
+    const hasPaymentReason = reasons.includes("paidPayment") || reasons.includes("pendingPayment");
+    if (hasInvoiceReason && hasPaymentReason) {
+      return "Cette commande possède une facture et un paiement actif. Elle ne peut plus être modifiée ni supprimée.";
+    }
+    if (reasons.includes("issuedInvoice")) {
+      return "Cette commande possède une facture émise. Elle ne peut plus être modifiée ni supprimée.";
+    }
+    if (reasons.includes("paidPayment")) {
+      return "Cette commande contient un paiement validé. Elle ne peut plus être modifiée ni supprimée.";
+    }
+    if (reasons.includes("pendingPayment")) {
+      return "Cette commande contient un paiement en cours ou à encaisser. Terminez ou annulez ce paiement avant de modifier ou supprimer la commande.";
+    }
+    if (reasons.includes("draftInvoice")) {
+      return "Cette commande possède une facture brouillon. Supprimez d'abord ce brouillon depuis les factures avant de supprimer la commande.";
+    }
+    return "";
   }
 
   function contactAndKindForOrder(order = {}) {
@@ -17767,6 +18054,10 @@ ${esc(bodyText)}</pre>
   }
 
   function openMembershipDialog(row = {}) {
+    // Snapshot des paiements AVANT ouverture (copie profonde, jamais une référence vers state) —
+    // même principe que openOrderDialog : vide si l'inscription est neuve.
+    const originalMembershipId = row.id || "";
+    const beforeMembershipPayments = clone(row.payments || []);
     const contact = contactForMembership(row) || {};
     row = {
       ...row,
@@ -17949,6 +18240,11 @@ ${esc(bodyText)}</pre>
       }
       const promoted = contactLink.kind === "prospect" && promoteProspectContactToMember(contactLink.contactId, next.contactId);
       upsert(state.memberships, next);
+      // Journalisation UNIQUEMENT si l'inscription existait déjà avant l'ouverture (jamais pour une
+      // création, jamais dans la branche de démotion ci-dessus qui supprime l'inscription).
+      if (originalMembershipId) {
+        logPaymentAuditTransitions(paymentAuditTransitions(beforeMembershipPayments, next.payments), { module: "membership", id: next.id });
+      }
       return promoted ? {
         message: `Inscription de ${personLabel(next)} à la discipline ${next.discipline}`,
         notice: `${personLabel(next)} est devenu adhérent.`,
@@ -18091,6 +18387,12 @@ ${esc(bodyText)}</pre>
   }
 
   function openOrderDialog(row = {}) {
+    // Snapshot des paiements AVANT ouverture, pour journaliser (payment.validated/cancelled) les
+    // seules transitions réellement persistées à la sauvegarde finale — jamais le clic Payer/Annuler
+    // local. Copie profonde (jamais une référence vers state) ; vide si la commande est neuve
+    // (row.id absent), auquel cas aucune transition ne sera calculée plus bas.
+    const originalOrderId = row.id || "";
+    const beforeOrderPayments = clone(row.payments || []);
     const memberContact = contactForOrder(row);
     const prospectContact = prospectForOrder(row);
     const contact = memberContact || prospectContact || {};
@@ -18189,6 +18491,11 @@ ${esc(bodyText)}</pre>
       else next.prospectContactId = next.contactId ? "" : syncProspectContact(next, row);
       if (next.contactId || next.prospectContactId) updateLinkedContactCoordinates(next);
       upsert(state.shopOrders, next);
+      // Journalisation UNIQUEMENT si la commande existait déjà avant l'ouverture (jamais pour une
+      // création) et uniquement pour les transitions réellement persistées par cette sauvegarde.
+      if (originalOrderId) {
+        logPaymentAuditTransitions(paymentAuditTransitions(beforeOrderPayments, next.payments), { module: "order", id: next.id });
+      }
       return {
         message: `${row.id ? "Modification" : "Création"} : commande boutique de ${personLabel(next) || "client"}`,
         orderInvoiceFollowUpId: next.id,
@@ -18512,6 +18819,11 @@ ${esc(bodyText)}</pre>
     // Lot 5A — capturée AVANT le merge d'affichage ci-dessous (qui complète les champs vides avec
     // le contact lié pour préremplir le formulaire) : sert de "before" fidèle pour le diff d'audit.
     const originalRegistration = row;
+    // Snapshots des paiements événement/hébergement AVANT ouverture (copie profonde, jamais une
+    // référence vers state), pour journaliser payment.validated/cancelled à la sauvegarde finale.
+    const originalRegistrationId = row.id || "";
+    const beforeEventPayments = clone(row.event?.payments || []);
+    const beforeLodgingPayments = clone(row.lodging?.payments || []);
     const linkedContact = contactByLink(contactLinkForRow(row)) || {};
     row = {
       ...row,
@@ -18633,6 +18945,14 @@ ${esc(bodyText)}</pre>
         const changes = registrationAuditChanges(originalRegistration, next, stage);
         if (changes.length) audit.stageRegistrationUpdated(next, stage, changes);
       }
+      // Paiements événement/hébergement : journalisation UNIQUEMENT si l'inscription existait déjà
+      // avant l'ouverture, et uniquement pour les transitions réellement persistées. moduleKind
+      // "registration" pour l'événement, "lodging" pour l'hébergement (résolu par paymentAuditContext
+      // via context.part === "lodging" — jamais un moduleKind inventé).
+      if (originalRegistrationId) {
+        logPaymentAuditTransitions(paymentAuditTransitions(beforeEventPayments, next.event.payments), { module: "registration", id: next.id, stageId });
+        logPaymentAuditTransitions(paymentAuditTransitions(beforeLodgingPayments, next.lodging.payments), { module: "registration", part: "lodging", id: next.id, stageId });
+      }
       const message = `${row.id ? "Modification de l'inscription stage" : "Inscription stage"} de ${personLabel(next)} au stage ${stage.name || "Stage"}`;
       // Bouton « Imprimer la facture » : l'inscription est désormais enregistrée -> on déclenche la
       // création/récupération puis l'impression de sa facture après la sauvegarde.
@@ -18650,7 +18970,15 @@ ${esc(bodyText)}</pre>
       form.elements.contactLink?.addEventListener("change", () => {
         applyLinkedContactToForm(form);
       });
-      form.querySelectorAll("[name='eventQty'], [name='eventUnit'], [name='eventDiscount'], [name='lodgingQty'], [name='lodgingUnit'], [name='lodgingDiscount'], input[name^='eventPayment'], input[name^='lodgingPayment']").forEach((input) => {
+      // Uniquement les champs de segment (qté/prix/remise) : ils sont hors du bloc de paiement et
+      // doivent redéclencher un recalcul complet du total (via updateRegistrationPaymentSplits).
+      // Les champs de paiement eux-mêmes (montant/chèque/date/état) NE DOIVENT PAS être écoutés ici :
+      // setupAutoPaymentSplit leur attache déjà ses propres écouteurs avec le bon contexte
+      // "changedInput". Les réécouter ici en plus appelait distributePaymentSplit SANS changedInput
+      // à chaque frappe dans le champ montant lui-même, ce qui le vidait puis le regénérait avec la
+      // suggestion automatique — effaçant silencieusement une saisie manuelle en cours, exactement la
+      // suppression interdite par la décision produit.
+      form.querySelectorAll("[name='eventQty'], [name='eventUnit'], [name='eventDiscount'], [name='lodgingQty'], [name='lodgingUnit'], [name='lodgingDiscount']").forEach((input) => {
         input.addEventListener("input", () => updateRegistrationPaymentSplits(form, stage));
         input.addEventListener("change", () => updateRegistrationPaymentSplits(form, stage));
       });
@@ -20043,8 +20371,13 @@ ${esc(bodyText)}</pre>
 
   function importBackupPayload(payload) {
     if (payload?.clubStore?.clubs?.length) {
-      const imported = preserveLocalSecurityOnImport(normalizeClubStore(payload.clubStore));
-      writeClubStore(imported);
+      const incoming = preserveLocalSecurityOnImport(normalizeClubStore(payload.clubStore));
+      // Restauration réelle (voir mergeImportedClubStore) : un club uniquement local est conservé,
+      // un club uniquement importé est ajouté, et un club de même ID est restauré depuis la
+      // sauvegarde (identité + données métier) — les secrets locaux restent protégés en amont par
+      // preserveLocalSecurityOnImport, jamais remplacés par ceux (vidés) de la sauvegarde.
+      const merged = mergeImportedClubStore(incoming);
+      writeClubStore(merged);
       // Fusion, jamais remplacement : les profils locaux déjà présents ne sont ni écrasés ni
       // dupliqués (même ID -> version locale conservée) ; les profils/appartenances inédits de
       // la sauvegarde sont ajoutés. Sans utilisateurs dans la sauvegarde, ne change rien ici.
@@ -20053,9 +20386,9 @@ ${esc(bodyText)}</pre>
       // (un ré-import du même fichier n'ajoute rien de plus). Sans journal dans la sauvegarde
       // (ancien format), le journal local reste inchangé.
       writeAuditLog(mergeImportedAuditLog(payload.auditLog));
-      loadActiveClubFromStore(imported);
-      const clubCount = imported.clubs.length;
-      const memberCount = Object.values(imported.data || {}).reduce((sum, d) => sum + (d?.state?.memberships?.length || 0), 0);
+      loadActiveClubFromStore(merged);
+      const clubCount = merged.clubs.length;
+      const memberCount = Object.values(merged.data || {}).reduce((sum, d) => sum + (d?.state?.memberships?.length || 0), 0);
       const parts = [`${clubCount} club${clubCount > 1 ? "s" : ""}`];
       if (memberCount > 0) parts.push(`${memberCount} adhérent${memberCount > 1 ? "s" : ""}`);
       return `Sauvegarde importée — ${parts.join(", ")}`;
@@ -23927,8 +24260,28 @@ ${esc(bodyText)}</pre>
     }
     if (action === "add-order") return isModuleEnabled("boutique") ? openOrderDialog() : undefined;
     if (action === "sell-article") return isModuleEnabled("boutique") ? openArticleSaleDialog(button.dataset.articleId) : undefined;
-    if (action === "edit-order") return isModuleEnabled("boutique") ? openOrderDialog(state.shopOrders.find((row) => row.id === button.dataset.id)) : undefined;
+    if (action === "edit-order") {
+      if (!isModuleEnabled("boutique")) return;
+      const order = state.shopOrders.find((row) => row.id === button.dataset.id);
+      if (!order) return;
+      // Garde-fou obligatoire au niveau handler (pas seulement visuel) : reste efficace même si
+      // l'action est déclenchée depuis la console ou un DOM périmé, indépendamment de l'état
+      // disabled/aria-disabled du bouton (cf. orderCard).
+      const integrity = shopOrderIntegrityState(order);
+      if (integrity.editBlocked) {
+        alert(shopOrderIntegrityMessage(integrity.editReasons));
+        return;
+      }
+      return openOrderDialog(order);
+    }
     if (action === "delete-order") {
+      const order = state.shopOrders.find((row) => row.id === button.dataset.id);
+      if (!order) return;
+      const integrity = shopOrderIntegrityState(order);
+      if (integrity.deleteBlocked) {
+        alert(shopOrderIntegrityMessage(integrity.deleteReasons));
+        return;
+      }
       if (!await requestConfirm({ title: "Supprimer la commande", message: "Supprimer cette commande ?", confirmLabel: "Supprimer", danger: true })) return;
       recordHistory();
       removeById(state.shopOrders, button.dataset.id);
@@ -24803,6 +25156,19 @@ ${esc(bodyText)}</pre>
     };
   }
 
+  // Journalise, APRÈS la mutation/upsert réussie d'un formulaire (jamais au clic Payer/Annuler
+  // local, jamais avant sauvegarde), les transitions de paiement réellement persistées détectées
+  // par paymentAuditTransitions(). Réutilise paymentAuditContext (résolution du parent depuis
+  // state, donc appelé seulement une fois l'entité effectivement enregistrée) et exclusivement les
+  // deux actions d'audit existantes payment.validated/payment.cancelled — jamais une nouvelle action.
+  function logPaymentAuditTransitions(transitions, contextBase) {
+    transitions.forEach((transition) => {
+      const auditContext = paymentAuditContext({ ...contextBase, index: transition.index });
+      if (transition.action === "validated") audit.paymentValidated(auditContext, transition.payment);
+      else if (transition.action === "cancelled") audit.paymentCancelled(auditContext, transition.payment);
+    });
+  }
+
   function updatePaymentFromControl(control) {
     const payments = getPaymentList(control);
     const index = Number(control.dataset.index);
@@ -24823,9 +25189,15 @@ ${esc(bodyText)}</pre>
     }
     if (control.dataset.paymentField === "taxRate") payment.taxRate = Math.max(0, asNumber(control.value));
     if (control.dataset.paymentField === "state") {
-      const nextState = paymentStateValue({ state: control.value }) === "Refusé" ? "Refusé" : "";
+      const controlValue = paymentStateValue({ state: control.value });
+      // Préserve "Annulé" si le contrôle reflète déjà cette valeur (même logique que "Refusé" ci-
+      // dessous) : ne jamais réduire silencieusement une ligne Annulée à vide simplement parce que ce
+      // handler est invoqué avec le select encore positionné sur "Annulé".
+      const nextState = (controlValue === "Refusé" || controlValue === "Annulé") ? controlValue : "";
       // Réactivation CONTRÔLÉE : sortir de « Refusé » est interdit si le montant de ce paiement
       // dépasse le reste réellement dû (sinon la ligne « redevient payable » et induit un trop-perçu).
+      // Ne s'applique jamais à "Annulé" (aucune règle de réactivation limitée n'est demandée/à inventer
+      // pour ce statut : remettre à vide une ligne Annulée est toujours autorisé).
       if (paymentStateValue(payment) === "Refusé" && nextState === "" && !reactivateRefusedAllowed(payments, index, payment, paymentDueTotalFor(control))) {
         control.value = "Refusé";
         return;
@@ -24839,7 +25211,9 @@ ${esc(bodyText)}</pre>
 
   function cancelPaidPayment(payment = {}) {
     if (paymentStatus(payment) !== "OK") return false;
-    payment.state = "";
+    // État canonique persistant "Annulé" (jamais vide) : amount/check/checkNumber/taxRate conservés
+    // tels quels, seule la date est vidée (comportement existant conservé).
+    payment.state = "Annulé";
     payment.date = "";
     return true;
   }
@@ -24869,7 +25243,9 @@ ${esc(bodyText)}</pre>
     if (taxRate) payment.taxRate = Math.max(0, asNumber(taxRate.value));
     normalizeImmediatePayment(payment);
     if (cancelPaidPayment(payment)) {
-      if (state) state.value = "";
+      // Reflet transitoire avant le render() complet qui suit (celui-ci régénère les <option> du
+      // select via paymentStateOptions et affichera correctement "Annulé" comme valeur courante).
+      if (state) state.value = "Annulé";
       if (date) date.value = "";
       return { ok: true, auditAction: "cancelled", payment, index };
     }
@@ -24934,10 +25310,16 @@ ${esc(bodyText)}</pre>
     const currentPayment = paymentObjectFromForm(form, prefix, index);
     if (paymentStatus(currentPayment) === "OK") {
       // Annulation d'un paiement validé : on retire le verrou (la ligne redevient éditable) AVANT de
-      // vider le statut, sinon la garde côté sauvegarde restaurerait « Payé ».
+      // fixer le statut, sinon la garde côté sauvegarde restaurerait « Payé ». État canonique persisté
+      // = "Annulé" (jamais vide) : amount/check/checkNumber/taxRate conservés, seule la date est vidée.
       unlockFormPaymentRow(form, prefix, index);
-      if (state) state.value = "";
-      if (manualState) manualState.value = "";
+      if (state) state.value = "Annulé";
+      if (manualState) {
+        // Régénère les options du select manuel pour qu'"Annulé" y figure et soit sélectionné : la
+        // liste rendue au chargement (paymentStateOptions appelé avec "" tant que la ligne était
+        // Payée) ne contient pas encore cette valeur.
+        manualState.innerHTML = paymentStateOptions("Annulé", asNumber(currentPayment.amount));
+      }
       if (date) date.value = "";
       updatePaymentSplitDisplay(form, prefix);
       return;
