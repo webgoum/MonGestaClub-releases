@@ -1869,6 +1869,138 @@
     }
   }
 
+  // ===================================================================================
+  // Registre central des fonctionnalités par club (Lot 2A — encore totalement INERTE).
+  // ===================================================================================
+  // Ce module DÉCLARE les fonctionnalités reconnues, résout leurs clés/alias, et calcule leur état
+  // effectif à partir de settings.features (fondation posée au Lot 1). Il n'a AUCUN effet visuel ni
+  // métier dans cette phase : aucun appel de production n'utilise encore hasFeature, et ni
+  // isViewVisible ni isModuleEnabled ni le menu/KPI/recherche ne le consultent.
+  //
+  // Chargé juste après 04-settings-normalize.js (d'où le préfixe « 04b ») : il dépend de
+  // FEATURES_SCHEMA_VERSION (01) et de la variable `settings` (02), et se place avant tout futur
+  // consommateur (menu en 10+, dashboard en 11+, handlers en 21). Nommé 04b et non 05 car
+  // « 05-security-identity.js » occupe déjà ce numéro.
+  //
+  // Contrat respecté du Lot 1 : configured:false = « comportement historique » ; enabled est sparse ;
+  // les clés inconnues sont préservées mais JAMAIS exécutées ; la config est propre au club et
+  // indépendante de userStore / permissions / settings.display.
+
+  // Deux fonctionnalités seulement dans ce lot pilote : shop et stages (les deux domaines qui
+  // utilisent déjà le mécanisme adaptatif isModuleEnabled). Aucune autre taxonomie n'est figée ici.
+  const FEATURE_REGISTRY = Object.freeze({
+    shop: Object.freeze({
+      key: "shop",
+      label: "Boutique",
+      category: "management",
+      configurable: true,
+      // legacyEnabled : valeur effective quand le club n'est pas encore configuré (historique).
+      legacyEnabled: true,
+      // defaultEnabled : valeur effective quand configured===true mais aucune décision explicite.
+      defaultEnabled: true,
+      // « boutique » est la clé historique/d'appel existante -> alias de la clé canonique « shop ».
+      aliases: Object.freeze(["boutique"]),
+      views: Object.freeze(["boutique"]),
+    }),
+    stages: Object.freeze({
+      key: "stages",
+      label: "Stages",
+      category: "activities",
+      configurable: true,
+      legacyEnabled: true,
+      defaultEnabled: true,
+      aliases: Object.freeze([]),
+      views: Object.freeze(["stages"]),
+    }),
+  });
+
+  // Ordre canonique déterministe (ordre de déclaration). Ne contient que des clés canoniques.
+  const FEATURE_CANONICAL_KEYS = Object.freeze(["shop", "stages"]);
+
+  // Table de résolution clé/alias -> clé canonique. Construite depuis le registre (jamais deux
+  // fonctionnalités distinctes « shop » et « boutique » : boutique pointe vers shop).
+  const FEATURE_KEY_RESOLUTION = (() => {
+    const map = {};
+    FEATURE_CANONICAL_KEYS.forEach((canonical) => {
+      map[canonical] = canonical;
+      (FEATURE_REGISTRY[canonical].aliases || []).forEach((alias) => {
+        if (typeof alias === "string" && alias) map[alias] = canonical;
+      });
+    });
+    return Object.freeze(map);
+  })();
+
+  // Résout une clé (canonique ou alias) vers sa clé canonique. Chaîne vide = inconnue.
+  // Pur, sans exception, sans effet de bord ; aucune coercition de casse/accents.
+  function resolveFeatureKey(key) {
+    if (typeof key !== "string") return "";
+    const trimmed = key.trim();
+    if (!trimmed) return "";
+    return Object.prototype.hasOwnProperty.call(FEATURE_KEY_RESOLUTION, trimmed)
+      ? FEATURE_KEY_RESOLUTION[trimmed]
+      : "";
+  }
+
+  // Définition canonique d'une fonctionnalité (accepte clé canonique ou alias). null si inconnue.
+  // L'objet retourné est gelé (immuable) : impossible de muter le registre au travers.
+  function featureDefinition(key) {
+    const canonical = resolveFeatureKey(key);
+    return canonical ? FEATURE_REGISTRY[canonical] : null;
+  }
+
+  // Clés canoniques enregistrées, dans un ordre déterministe, sans alias ni doublon. Nouveau
+  // tableau à chaque appel : le muter ne modifie pas le registre.
+  function registeredFeatureKeys() {
+    return FEATURE_CANONICAL_KEYS.slice();
+  }
+
+  // true pour une clé canonique OU un alias reconnu ; false sinon.
+  function isRegisteredFeature(key) {
+    return resolveFeatureKey(key) !== "";
+  }
+
+  // Calcul PUR de l'état effectif d'une fonctionnalité pour un club donné (ses settings complets).
+  // Ne modifie NI settingsSource NI enabled. Tolère settingsSource absent / null / partiel /
+  // features invalide / enabled invalide / valeurs non booléennes / anciennes sauvegardes.
+  //
+  // Règles :
+  //  - clé inconnue -> false (une clé conservée dans enabled mais absente du registre n'est jamais
+  //    exécutée) ;
+  //  - configured !== true (club historique) -> legacyEnabled (le contenu de enabled ne prend PAS
+  //    effet tant que le club n'est pas explicitement configuré) ;
+  //  - configured === true -> priorité : (1) booléen explicite de la clé CANONIQUE ;
+  //    (2) booléen explicite d'un alias reconnu ; (3) defaultEnabled du registre.
+  function featureEnabledInSettings(key, settingsSource) {
+    const canonical = resolveFeatureKey(key);
+    if (!canonical) return false;
+    const def = FEATURE_REGISTRY[canonical];
+    const features = settingsSource && typeof settingsSource === "object" ? settingsSource.features : null;
+    const configured = Boolean(features && typeof features === "object" && features.configured === true);
+    if (!configured) return def.legacyEnabled === true;
+    const enabled = features.enabled && typeof features.enabled === "object" && !Array.isArray(features.enabled) ? features.enabled : {};
+    // (1) clé canonique explicite (gagne toujours sur un alias contradictoire).
+    if (Object.prototype.hasOwnProperty.call(enabled, canonical) && typeof enabled[canonical] === "boolean") {
+      return enabled[canonical];
+    }
+    // (2) premier alias reconnu portant un booléen explicite.
+    const aliases = def.aliases || [];
+    for (let i = 0; i < aliases.length; i += 1) {
+      const alias = aliases[i];
+      if (Object.prototype.hasOwnProperty.call(enabled, alias) && typeof enabled[alias] === "boolean") {
+        return enabled[alias];
+      }
+    }
+    // (3) défaut du registre (une config explicitement vide ne masque rien).
+    return def.defaultEnabled === true;
+  }
+
+  // Helper de contexte courant : lit UNIQUEMENT la variable `settings` du club actuellement chargé
+  // et délègue au calcul pur. Aucune autre logique : ne lit ni userStore, ni rôle, ni authSession,
+  // ni settings.display, ni visibleModules, ni le sport ; ne mute rien, ne persiste rien, ne
+  // journalise rien. INERTE dans ce lot : aucun appel de production ne l'utilise encore.
+  function hasFeature(key) {
+    return featureEnabledInSettings(key, settings);
+  }
   function hasAppPassword() {
     return Boolean(settings.security?.passwordSalt && settings.security?.passwordHash);
   }
