@@ -204,6 +204,13 @@
   // visible plutôt qu'un bug technique — décision produit, même mécanisme que Recherche/E-mails.
   const DISPLAY_FORCED_MODULES = ["dashboard", "settings", "help", "assistant", "search", "newsletter", "documents"];
 
+  // Fonctionnalités par club (Lot 1 — fondation invisible). Version de schéma de settings.features.
+  // Déclarée ici (tôt) car normalizeFeaturesSettings est appelée dès loadSettings au démarrage via
+  // normalizeSettings (évite une TDZ). Structure INERTE dans ce lot : aucune logique de l'app ne la
+  // consulte encore (ni menu, ni KPI, ni isViewVisible, ni isModuleEnabled). Elle ne fait que fournir
+  // un format durable et non destructeur pour une future configuration par club. Voir
+  // normalizeFeaturesSettings (04-settings-normalize.js).
+  const FEATURES_SCHEMA_VERSION = 1;
   // Assistant MonGestaClub — version de schéma de settings.assistant (migrations futures).
   // Déclarés ici (tôt) car normalizeAssistantSettings est appelée dès loadSettings au démarrage,
   // avant l'exécution de 26-assistant.js (évite une TDZ sur ces constantes).
@@ -1256,6 +1263,11 @@
       // Assistant MonGestaClub — réglages par club (choix + drapeaux « déjà vu »).
       // La progression n'est jamais stockée ici : elle est recalculée depuis state.
       assistant: normalizeAssistantSettings(source.assistant),
+      // Fonctionnalités utilisées par le club (Lot 1 — fondation invisible, encore INERTE).
+      // Placée APRÈS `...source` : la valeur normalisée écrase toujours la brute, donc chaque
+      // réassemblage de settings (settingsForClub, saveClub, import, duplication…) reproduit la
+      // même structure déterministe. Aucune logique de l'app ne consulte encore ce champ.
+      features: normalizeFeaturesSettings(source.features),
     };
   }
 
@@ -1582,6 +1594,36 @@
     const order = Array.isArray(value) ? value.filter((k) => validKeys.includes(asText(k))) : [];
     const missing = validKeys.filter((k) => !order.includes(k));
     return [...order, ...missing];
+  }
+
+  // Fonctionnalités utilisées par le club (Lot 1 — fondation invisible). Helper PUR, déterministe,
+  // idempotent, sans effet de bord, tolérant à tout (undefined / null / tableau / chaîne / objet
+  // partiel / version future). Cette structure est encore totalement INERTE : aucune partie de
+  // l'application ne la lit (ni menu, ni KPI, ni isViewVisible, ni isModuleEnabled). Elle ne fait que
+  // fournir un format durable et non destructeur pour une future configuration modulaire par club.
+  // - version : entier de schéma (seule la valeur 1 est connue à ce jour ; on stampe la version
+  //   courante, aucune migration n'existe encore — les clés d'`enabled` restent de toute façon
+  //   préservées si une version future apparaît).
+  // - configured : SEUL le booléen strict true produit true (jamais Boolean("false")). "false"
+  //   signifierait « comportement historique », jamais « toutes les fonctions désactivées ».
+  // - enabled : objet SPARSE clé stable non vide -> booléen STRICT. Aucune coercition de "true",
+  //   "false", 0, 1, null. Les clés booléennes inconnues (config d'une version plus récente) sont
+  //   CONSERVÉES telles quelles pour ne rien détruire ; elles resteront simplement inutilisées tant
+  //   qu'aucun registre ne les reconnaît. Aucune mutation de la source, aucune clé de prototype.
+  function normalizeFeaturesSettings(source) {
+    const input = source && typeof source === "object" && !Array.isArray(source) ? source : {};
+    const configured = input.configured === true;
+    const rawEnabled = input.enabled && typeof input.enabled === "object" && !Array.isArray(input.enabled) ? input.enabled : {};
+    const enabled = {};
+    Object.keys(rawEnabled).forEach((key) => {
+      if (key === "__proto__" || key === "prototype" || key === "constructor") return;
+      const stableKey = String(key);
+      if (!stableKey) return;
+      const value = rawEnabled[key];
+      // Seul un booléen STRICT est conservé (aucune coercition d'une chaîne / d'un nombre / de null).
+      if (value === true || value === false) enabled[stableKey] = value;
+    });
+    return { version: FEATURES_SCHEMA_VERSION, configured, enabled };
   }
 
   function normalizeDisplaySettings(source = {}) {
