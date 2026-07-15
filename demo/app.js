@@ -5438,8 +5438,10 @@
       if (calc.restDue > 0) rows.push({ type: "membership", editAction: "edit-membership", id: membership.id, module: "Disciplines", person: membership, status: alertStatusForPayments(membership.payments), amount: calc.restDue });
     }
     // Module pilote Boutique (Lot 2B) : les alertes OPÉRATIONNELLES « reste dû » d'une commande
-    // (menant à edit-order, une mutation) suivent la fonctionnalité shop. Les TOTAUX (dashboardStats)
-    // restent, eux, sur isModuleEnabled -> le CA/reste à encaisser global ne change pas.
+    // (menant à edit-order, une mutation) suivent l'affichage isModuleEnabled("boutique") ET la
+    // fonctionnalité hasFeature("shop"). En revanche dashboardStats reste un CALCUL HISTORIQUE
+    // inconditionnel : masquer ou désactiver la Boutique ne retire pas ses commandes existantes des
+    // totaux (CA global). Seule cette liste d'alertes actionnables se cache avec le module.
     if (isModuleEnabled("boutique") && hasFeature("shop")) {
       for (const order of state.shopOrders) {
         const calc = calcOrder(order);
@@ -6914,9 +6916,11 @@
 
   function renderDashboard() {
     const stats = dashboardStats();
-    // Module pilote Boutique (Lot 2B) : les indicateurs et raccourcis OPÉRATIONNELS Boutique de
-    // l'accueil suivent la fonctionnalité shop (hasFeature) en plus de la préférence d'affichage.
-    // Les TOTAUX historiques (dashboardStats, CA) restent sur isModuleEnabled et ne changent pas.
+    // Module pilote Boutique (Lot 2B) : les KPI et raccourcis OPÉRATIONNELS Boutique de l'accueil
+    // suivent l'affichage isModuleEnabled("boutique") ET la fonctionnalité hasFeature("shop"). Les
+    // TOTAUX de dashboardStats (CA global) restent, eux, un CALCUL HISTORIQUE INCONDITIONNEL :
+    // masquer ou désactiver la Boutique ne retire jamais ses ventes existantes des totaux — seuls
+    // ces indicateurs/raccourcis actionnables disparaissent avec le module.
     const boutiqueEnabled = isModuleEnabled("boutique") && hasFeature("shop");
     const stagesEnabled = isModuleEnabled("stages");
     const today = todayInputValue();
@@ -11081,7 +11085,7 @@ ${esc(bodyText)}</pre>
           <button data-action="add-note">+ Note</button>
         </div>
         <div class="note-tabs">
-          ${state.notes.map((item) => `<button class="note-tab ${item.id === note.id ? "active" : ""}" data-action="select-note" data-id="${esc(item.id)}">${esc(item.title || "Note")}</button>`).join("")}
+          ${state.notes.map((item) => `<button class="note-tab ${item.id === note.id ? "active" : ""}" data-action="select-note" data-id="${esc(item.id)}" title="${esc(item.title || "Note")}">${esc(item.title || "Note")}</button>`).join("")}
         </div>
       </div>
       <div class="band note-editor-band">

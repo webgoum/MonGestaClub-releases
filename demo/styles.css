@@ -7284,6 +7284,146 @@ small.email-variable-chip:hover {
   font-weight: 850;
 }
 
+/* --- Authentification locale par PIN (Lot 4A) : écran « Qui utilise MonGestaClub ? » ---
+   Réutilise le langage visuel déjà validé de .welcome-choice (mêmes tokens, mêmes états
+   hover/actif) pour rester cohérent avec le reste de l'app. */
+.auth-gate .license-card {
+  gap: 22px;
+}
+
+.auth-gate-users {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  justify-content: center;
+}
+
+.auth-gate-user {
+  display: grid;
+  gap: 4px;
+  flex: 1 1 160px;
+  min-width: 150px;
+  max-width: 220px;
+  padding: 14px 16px;
+  border: 2px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  text-align: left;
+  cursor: pointer;
+  font-family: var(--font-button);
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.auth-gate-user:hover,
+.auth-gate-user:focus-visible {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, var(--surface-2));
+}
+
+/* .auth-gate-users en préfixe (pas juste .auth-gate-user.active) : certains thèmes (ex. Graphite)
+   appliquent un fond texturé à TOUS les <button> via un sélecteur ":root[data-theme=...] button" —
+   sa spécificité (2 classes/attributs + 1 élément) dépasse ".auth-gate-user.active" (2 classes, 0
+   élément) à spécificité de classes égale. Un niveau d'ancêtre en plus règle ça sans !important. */
+.auth-gate-users .auth-gate-user.active {
+  border-color: var(--accent);
+  background: var(--accent);
+  box-shadow: 0 6px 16px color-mix(in srgb, var(--accent) 28%, transparent);
+}
+
+.auth-gate-user.active strong,
+.auth-gate-user.active span {
+  color: var(--on-accent);
+}
+
+.auth-gate-user strong {
+  font-size: 0.95rem;
+  color: var(--ink);
+}
+
+.auth-gate-user span {
+  font-size: 0.8rem;
+  color: var(--muted);
+  font-weight: normal;
+}
+
+/* Sépare visuellement la zone d'actions (Continuer / PIN oublié) de la liste des profils, avec
+   assez d'air entre les deux boutons — plus de "collé", et ça s'étend proprement si d'autres
+   actions s'ajoutent ici plus tard. */
+.auth-gate-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+  margin-top: 4px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+}
+
+/* Bouton secondaire "PIN oublié ?" : une vraie action (ouvre le parcours de récupération), pas un
+   lien texte — même famille visuelle que .auth-gate-user (fond surface-2, bordure fine, radius et
+   hauteur cohérents avec les autres boutons de l'app), mais sans le remplissage accent plein de
+   .primary sur "Continuer" : reste clairement secondaire sans ressembler à un lien web brut. */
+.auth-gate-secondary {
+  min-height: 36px;
+  padding: 0 16px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--surface-2);
+  color: var(--ink);
+  font-family: var(--font-button);
+  font-weight: 700;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.auth-gate-secondary:hover,
+.auth-gate-secondary:focus-visible {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, var(--surface-2));
+}
+
+.auth-gate-secondary:active {
+  transform: translateY(1px);
+}
+
+/* --- Champ PIN + bouton oeil sur une seule ligne, oeil aligné à droite (dialogues PIN :
+   saisie, création, changement — tous partagent pinFieldHtml()). Sans ces règles, l'oeil retombe
+   sous le champ à cause de `input { width:100% }` combiné au `label { display:grid }` global. --- */
+.pin-input-wrap {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+}
+
+.pin-input-wrap input {
+  width: auto;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.pin-reveal {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 42px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--surface-2);
+  color: var(--ink);
+  font-size: 1rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.pin-reveal:hover,
+.pin-reveal:focus-visible {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, var(--surface-2));
+}
+
 .security-settings-panel {
   align-content: start;
 }
@@ -9197,8 +9337,9 @@ summary {
 .note-tabs {
   padding: 10px;
   display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
   gap: 8px;
-  overflow-x: auto;
 }
 
 .note-tab {
@@ -9813,6 +9954,11 @@ summary {
   box-shadow: none;
 }
 
+.side-switchers {
+  display: grid;
+  min-height: 0;
+}
+
 .club-switcher {
   display: grid;
   gap: 6px;
@@ -9834,6 +9980,80 @@ summary {
 .club-switcher button {
   width: 100%;
   min-width: 0;
+}
+
+.user-switcher {
+  display: grid;
+  gap: 6px;
+  margin: 0 18px 14px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--surface) 78%, transparent);
+}
+
+.user-switcher span {
+  font-size: 0.7rem;
+  color: var(--muted);
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.user-switcher select {
+  width: 100%;
+  min-width: 0;
+}
+
+.user-switcher.compact {
+  gap: 2px;
+}
+
+.user-switcher.compact strong {
+  font-size: 0.88rem;
+}
+
+.users-settings .user-card-list {
+  display: grid;
+  gap: 10px;
+  margin: 8px 0 18px;
+}
+
+.user-card {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.user-card.active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 20%, transparent);
+}
+
+.user-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.user-memberships {
+  display: grid;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.user-membership-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 0.88rem;
+}
+
+.user-membership-row select {
+  min-width: 160px;
 }
 
 .club-cards {
@@ -9888,6 +10108,7 @@ summary {
 }
 
 .club-card-head em,
+.user-card-head em,
 .club-active-badge,
 .archived-badge {
   padding: 5px 9px;
