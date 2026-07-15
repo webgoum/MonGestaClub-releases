@@ -1783,6 +1783,12 @@
     if (view === "assistant") return assistantDisplayEnabled();
     // Sécurité : Accueil, Paramètres et Aide ne sont jamais masqués (on ne bloque pas l'utilisateur).
     if (DISPLAY_FORCED_MODULES.includes(view)) return true;
+    // Module pilote Boutique (Lot 2B) : la vue Boutique et le Stock disparaissent du menu et de la
+    // navigation quand la FONCTIONNALITÉ shop est désactivée pour le club (hasFeature), sans toucher
+    // aux calculs ni à l'historique (isModuleEnabled/settings.display restent l'axe d'affichage).
+    // Axe orthogonal : une préférence d'affichage masquée n'est pas une désactivation de fonction,
+    // et une fonction désactivée n'est pas une permission de sécurité.
+    if ((view === "boutique" || view === "stock") && !hasFeature("shop")) return false;
     return moduleFunctionallyEnabled(view) && isModuleVisibleByMode(view);
   }
 
@@ -1794,10 +1800,14 @@
   }
 
   function accountingModuleNames() {
+    // Lot 2B — point bloquant 1 : la comptabilité est un CALCUL HISTORIQUE. Boutique est toujours
+    // recensée (comme Disciplines), indépendamment de settings.display.showBoutique : la synthèse
+    // par activité et les exports comptables restent identiques, Boutique masquée ou non à l'écran.
+    // (Stages reste inchangé : hors périmètre de ce lot.)
     return [
       "Disciplines",
       isModuleEnabled("stages") ? "Stages" : "",
-      isModuleEnabled("boutique") ? "Boutique" : "",
+      "Boutique",
     ].filter(Boolean);
   }
 
@@ -1870,17 +1880,17 @@
   }
 
   // ===================================================================================
-  // Registre central des fonctionnalités par club (Lot 2A — encore totalement INERTE).
+  // Registre central des fonctionnalités par club.
   // ===================================================================================
   // Ce module DÉCLARE les fonctionnalités reconnues, résout leurs clés/alias, et calcule leur état
-  // effectif à partir de settings.features (fondation posée au Lot 1). Il n'a AUCUN effet visuel ni
-  // métier dans cette phase : aucun appel de production n'utilise encore hasFeature, et ni
-  // isViewVisible ni isModuleEnabled ni le menu/KPI/recherche ne le consultent.
+  // effectif à partir de settings.features (fondation posée au Lot 1).
   //
-  // Chargé juste après 04-settings-normalize.js (d'où le préfixe « 04b ») : il dépend de
-  // FEATURES_SCHEMA_VERSION (01) et de la variable `settings` (02), et se place avant tout futur
-  // consommateur (menu en 10+, dashboard en 11+, handlers en 21). Nommé 04b et non 05 car
-  // « 05-security-identity.js » occupe déjà ce numéro.
+  // Dépendances réelles (aucune lecture directe de FEATURES_SCHEMA_VERSION dans ce code) :
+  //  - le CONTRAT settings.features défini au Lot 1 (structure { version, configured, enabled }) ;
+  //  - la variable `settings` du club actif, lue uniquement par hasFeature (contexte courant) ;
+  //  - l'ordre de chargement : placé juste après 04-settings-normalize.js (d'où le préfixe « 04b »,
+  //    et non 05 car « 05-security-identity.js » occupe déjà ce numéro), donc AVANT ses
+  //    consommateurs (menu en 10+, dashboard en 11+, handlers en 21).
   //
   // Contrat respecté du Lot 1 : configured:false = « comportement historique » ; enabled est sparse ;
   // les clés inconnues sont préservées mais JAMAIS exécutées ; la config est propre au club et
@@ -1997,9 +2007,25 @@
   // Helper de contexte courant : lit UNIQUEMENT la variable `settings` du club actuellement chargé
   // et délègue au calcul pur. Aucune autre logique : ne lit ni userStore, ni rôle, ni authSession,
   // ni settings.display, ni visibleModules, ni le sport ; ne mute rien, ne persiste rien, ne
-  // journalise rien. INERTE dans ce lot : aucun appel de production ne l'utilise encore.
+  // journalise rien.
   function hasFeature(key) {
     return featureEnabledInSettings(key, settings);
+  }
+
+  // Garde-fou central de MUTATION lié à une fonctionnalité (Lot 2B). N'est PAS une permission :
+  // délègue uniquement à hasFeature, ne lit ni rôle ni userStore ni authSession, ne réauthentifie
+  // pas, ne mute/persiste/journalise rien. Retourne true si la fonctionnalité est active pour le
+  // club courant, false sinon — et affiche alors un message utilisateur non technique (sauf
+  // options.silent). À appeler au MOMENT EXACT de chaque mutation (handler, soumission de dialogue,
+  // écouteur inline) : le simple masquage d'un bouton n'est jamais une protection suffisante.
+  function ensureFeatureEnabledForMutation(featureKey, options = {}) {
+    if (hasFeature(featureKey)) return true;
+    if (!options.silent && typeof alert === "function") {
+      const def = featureDefinition(featureKey);
+      const label = def ? def.label : "Cette fonctionnalité";
+      alert(`${label} est désactivée pour ce club. Réactivez-la dans les paramètres du club pour modifier ces données.`);
+    }
+    return false;
   }
   function hasAppPassword() {
     return Boolean(settings.security?.passwordSalt && settings.security?.passwordHash);
@@ -5411,7 +5437,10 @@
       const calc = calcMembership(membership);
       if (calc.restDue > 0) rows.push({ type: "membership", editAction: "edit-membership", id: membership.id, module: "Disciplines", person: membership, status: alertStatusForPayments(membership.payments), amount: calc.restDue });
     }
-    if (isModuleEnabled("boutique")) {
+    // Module pilote Boutique (Lot 2B) : les alertes OPÉRATIONNELLES « reste dû » d'une commande
+    // (menant à edit-order, une mutation) suivent la fonctionnalité shop. Les TOTAUX (dashboardStats)
+    // restent, eux, sur isModuleEnabled -> le CA/reste à encaisser global ne change pas.
+    if (isModuleEnabled("boutique") && hasFeature("shop")) {
       for (const order of state.shopOrders) {
         const calc = calcOrder(order);
         if (calc.restDue > 0) rows.push({ type: "order", editAction: "edit-order", id: order.id, module: "Boutique", person: order, status: alertStatusForPayments(order.payments), amount: calc.restDue });
@@ -5431,7 +5460,10 @@
 
   function dashboardStats() {
     const memberships = state.memberships.map(calcMembership);
-    const orders = isModuleEnabled("boutique") ? state.shopOrders.map(calcOrder) : [];
+    // Lot 2B — point bloquant 1 : le CA global (total/réglé/reste dû) est un CALCUL HISTORIQUE. Les
+    // commandes existantes y comptent toujours, que la Boutique soit masquée (showBoutique) ou sa
+    // fonctionnalité désactivée (hasFeature). (Stages inchangé : hors périmètre de ce lot.)
+    const orders = state.shopOrders.map(calcOrder);
     const registrations = isModuleEnabled("stages") ? Object.values(state.stageRegistrations).flat().map(calcRegistration) : [];
     const total = [...memberships, ...orders, ...registrations].reduce((sum, item) => sum + item.total, 0);
     const paid = [...memberships, ...orders, ...registrations].reduce((sum, item) => sum + item.paid, 0);
@@ -6482,7 +6514,7 @@
     // reconstruit group("shop|amber") directement depuis stockRows(), indépendamment de
     // taskRows(). Le stock RÉELLEMENT en rupture (available < 0) reste porté par taskRows()
     // ci-dessus, inchangé ; même forme de groupe donc mêmes destinations qu'avant ce correctif.
-    if (isModuleEnabled("boutique")) {
+    if (isModuleEnabled("boutique") && hasFeature("shop")) {
       stockRows().filter((row) => row.available >= 0 && isStockLow(row)).forEach((row) => {
         const key = "shop|amber";
         const g = groups[key] || (groups[key] = { count: 0, attrs: "", amount: 0, minDate: "", minAvail: null, minName: "", zero: 0 });
@@ -6575,7 +6607,7 @@
     if (!has("payments", "red")) green.push("Aucun paiement en retard");
     if (!doc.red.members && !doc.amber.members) green.push("Tous les documents sont à jour");
     if (!has("planning", "red") && !has("coaches", "red") && !has("rooms", "red")) green.push("Aucun conflit de planning");
-    if (isModuleEnabled("boutique") && !has("shop", "red") && !has("shop", "amber")) green.push("Stock au-dessus des seuils");
+    if (isModuleEnabled("boutique") && hasFeature("shop") && !has("shop", "red") && !has("shop", "amber")) green.push("Stock au-dessus des seuils");
     return { red: toCards("red"), amber: toCards("amber"), green };
   }
 
@@ -6882,7 +6914,10 @@
 
   function renderDashboard() {
     const stats = dashboardStats();
-    const boutiqueEnabled = isModuleEnabled("boutique");
+    // Module pilote Boutique (Lot 2B) : les indicateurs et raccourcis OPÉRATIONNELS Boutique de
+    // l'accueil suivent la fonctionnalité shop (hasFeature) en plus de la préférence d'affichage.
+    // Les TOTAUX historiques (dashboardStats, CA) restent sur isModuleEnabled et ne changent pas.
+    const boutiqueEnabled = isModuleEnabled("boutique") && hasFeature("shop");
     const stagesEnabled = isModuleEnabled("stages");
     const today = todayInputValue();
     const memberCount = state.contacts.members.length;
@@ -7000,7 +7035,7 @@
       const calc = calcMembership(membership);
       push(membership.payments, "Discipline", membership, calc.restDue, "edit-membership", membership.id);
     }
-    if (isModuleEnabled("boutique")) {
+    if (isModuleEnabled("boutique") && hasFeature("shop")) {
       for (const order of state.shopOrders) {
         const calc = calcOrder(order);
         push(order.payments, "Boutique", order, calc.restDue, "edit-order", order.id);
@@ -7196,7 +7231,7 @@
         attrs: `data-action="open-invoice" data-id="${esc(invoice.id)}"`,
       });
     });
-    if (isModuleEnabled("boutique")) {
+    if (isModuleEnabled("boutique") && hasFeature("shop")) {
       // Lot À faire V2 — seul le stock réellement en rupture (available < 0) reste une urgence ;
       // le simple seuil bas (isStockLow non-rupture) reste visible dans la page Stock uniquement.
       stockRows().filter((row) => row.available < 0).forEach((row) => {
@@ -7653,7 +7688,7 @@
         push({ type: "Discipline", title: `${personLabel(row)} · ${row.discipline || "Sans discipline"}`, detail: `Total ${money(calc.total)} · reste ${money(calc.restDue)}`, attrs: `data-action="edit-membership" data-id="${esc(row.id)}"` });
       }
     });
-    if (isModuleEnabled("boutique")) {
+    if (isModuleEnabled("boutique") && hasFeature("shop")) {
       state.tariffs.articles.forEach((article, index) => {
         if (matches([article.name, article.reference, (article.sizes || []).join(" ")])) {
           push({ type: "Article", title: article.name || "Article", detail: `${article.reference || ""} · ${money(article.priceOptions?.[0] || 0)}`, attrs: `data-action="edit-stock-article" data-index="${index}"` });
@@ -8502,11 +8537,13 @@ ${esc(bodyText)}</pre>
   }
 
   function articleSalesById() {
+    // Lot 2B — point bloquant 1 : dérivation de DONNÉES HISTORIQUES (ventes par article). Elle
+    // alimente stockRows(), la comptabilité, les statistiques et les exports : elle ne dépend donc
+    // NI de settings.display.showBoutique NI de hasFeature. La visibilité se décide aux appelants.
     const map = new Map();
     for (const article of state.tariffs.articles) {
       map.set(article.id, { quantity: 0, total: 0, bySize: {} });
     }
-    if (!isModuleEnabled("boutique")) return map;
     for (const order of state.shopOrders) {
       for (const item of order.items || []) {
         const sales = map.get(item.articleId) || { quantity: 0, total: 0, bySize: {} };
@@ -8550,7 +8587,9 @@ ${esc(bodyText)}</pre>
   }
 
   function stockRows() {
-    if (!isModuleEnabled("boutique")) return [];
+    // Lot 2B — point bloquant 1 : stock DÉRIVÉ (initial − vendus) = donnée historique inconditionnelle.
+    // Consommée par la comptabilité, les statistiques, les factures et les exports ; ne dépend pas de
+    // settings.display.showBoutique (affichage) ni de hasFeature (fonction). Gardé aux appelants.
     const sales = articleSalesById();
     return state.tariffs.articles.map((article, index) => {
       const sale = sales.get(article.id) || { quantity: 0, total: 0, bySize: {} };
@@ -9350,6 +9389,10 @@ ${esc(bodyText)}</pre>
     // encore dans state.tariffs.articles. Capturé avant tout champ modifié ci-dessous.
     const beforeSnapshot = isCreate ? null : shopItemSnapshot(article);
     showDialog(isCreate ? "Nouvel article" : "Modifier l'article", body, async (data, form) => {
+      // Garde de MUTATION (Lot 2B) au MOMENT exact de l'enregistrement : bloque toute écriture si la
+      // Boutique a été désactivée pendant que ce dialogue restait ouvert (ou après un changement de
+      // club). return false -> aucune mutation, aucun persist, message affiché.
+      if (!ensureFeatureEnabledForMutation("shop")) return false;
       const nextName = data.get("name") || "Article";
       article.name = nextName;
       article.reference = data.get("reference") || makeArticleReference(nextName, index);
@@ -9709,7 +9752,9 @@ ${esc(bodyText)}</pre>
   }
 
   function boutiqueUsageStats() {
-    if (!isModuleEnabled("boutique")) return [];
+    // Lot 2B — point bloquant 1 : statistiques d'usage = calcul historique inconditionnel. Le masquage
+    // éventuel de la section (settings.display.showBoutique) se décide à l'affichage (renderStats),
+    // pas ici : la donnée exportée/rapportée reste identique quel que soit l'état d'affichage.
     const stockById = new Map(stockRows().map((row) => [row.article.id, row]));
     const map = new Map(state.tariffs.articles.map((article) => [article.id, {
       id: article.id,
@@ -9928,8 +9973,10 @@ ${esc(bodyText)}</pre>
   }
 
   function accountingData() {
+    // Lot 2B — point bloquant 1 : la comptabilité est un CALCUL HISTORIQUE. Les commandes et le stock
+    // existants comptent toujours ; settings.display.showBoutique (affichage) et hasFeature (fonction)
+    // n'y ont AUCUNE influence — seuls les totaux/synthèses restent la source unique (aucun 2e moteur).
     const stagesEnabled = isModuleEnabled("stages");
-    const boutiqueEnabled = isModuleEnabled("boutique");
     const disciplineRows = state.memberships.map((membership) => {
       const calc = calcMembership(membership);
       const license = asNumber(calc.license);
@@ -9983,7 +10030,7 @@ ${esc(bodyText)}</pre>
         result: -asNumber(stage.investment),
         refused: 0,
       })) : [];
-    const orderRows = boutiqueEnabled ? state.shopOrders.map((order) => {
+    const orderRows = state.shopOrders.map((order) => {
       const calc = calcOrder(order);
       const costs = orderItemDetails(order).reduce((sum, item) => {
         const article = articleById(item.articleId);
@@ -10004,9 +10051,9 @@ ${esc(bodyText)}</pre>
         result: paidNet - costs,
         refused: refusedAmount(order.payments),
       };
-    }) : [];
+    });
     const rows = [...disciplineRows, ...stageRows, ...stageInvestmentRows, ...orderRows];
-    const stock = boutiqueEnabled ? stockRows() : [];
+    const stock = stockRows();
     const stockInvestment = stock.reduce((sum, row) => sum + Math.max(0, row.available) * asNumber(row.purchasePrice), 0);
     const totalInvestment = stock.reduce((sum, row) => sum + Math.max(0, row.available + row.sold) * asNumber(row.purchasePrice), 0);
     const soldPurchaseCost = stock.reduce((sum, row) => sum + Math.max(0, row.sold) * asNumber(row.purchasePrice), 0);
@@ -10141,19 +10188,20 @@ ${esc(bodyText)}</pre>
         addDatedInvestment(map, firstPaidPaymentYear(allPayments), asNumber(stage.investment));
       });
     }
-    if (isModuleEnabled("boutique")) {
-      state.shopOrders.forEach((order) => {
-        const paid = paidAmount(order.payments);
-        const costs = orderItemDetails(order).reduce((sum, item) => {
-          const article = articleById(item.articleId);
-          return sum + item.quantity * asNumber(article.priceOptions?.[1]);
-        }, 0);
-        (order.payments || []).forEach((payment) => {
-          const share = paid > 0 ? costs * (asNumber(payment.amount) / paid) : 0;
-          addTaxPayment(map, "Boutique", payment, share);
-        });
+    // Lot 2B — point bloquant 1 : la TVA encaissée sur les commandes existantes fait partie de la
+    // déclaration fiscale HISTORIQUE ; elle est comptée inconditionnellement (indépendant de
+    // settings.display.showBoutique et de hasFeature).
+    state.shopOrders.forEach((order) => {
+      const paid = paidAmount(order.payments);
+      const costs = orderItemDetails(order).reduce((sum, item) => {
+        const article = articleById(item.articleId);
+        return sum + item.quantity * asNumber(article.priceOptions?.[1]);
+      }, 0);
+      (order.payments || []).forEach((payment) => {
+        const share = paid > 0 ? costs * (asNumber(payment.amount) / paid) : 0;
+        addTaxPayment(map, "Boutique", payment, share);
       });
-    }
+    });
     return [...map.values()]
       .map((row) => ({ ...row, result: row.net - row.costs }))
       .sort((a, b) => {
@@ -10774,7 +10822,7 @@ ${esc(bodyText)}</pre>
           </label>
         </div>
       `)}
-      ${isModuleEnabled("boutique") ? tariffCollapsibleBand("articles", "Articles", intValue(state.tariffs.articles.length), editableArticles(), "add-tariff-article") : ""}
+      ${isModuleEnabled("boutique") && hasFeature("shop") ? tariffCollapsibleBand("articles", "Articles", intValue(state.tariffs.articles.length), editableArticles(), "add-tariff-article") : ""}
       ${tariffCollapsibleBand("disciplines", "Disciplines", intValue(state.tariffs.disciplines.length), editableDisciplines(), "add-tariff-discipline")}
       ${isModuleEnabled("stages") ? tariffCollapsibleBand("stages", "Stages", intValue(state.tariffs.stages.length), editableStages(), "add-tariff-stage") : ""}
       ${tariffCollapsibleBand("insurance", "Assurances", intValue(state.tariffs.insurance.length), editableInsurance(), "add-tariff-insurance")}`;
@@ -10840,6 +10888,15 @@ ${esc(bodyText)}</pre>
   function commitTariffRow(source) {
     const row = source.closest(".tariff-row.editing");
     if (!row) {
+      ui.tariffEditKey = "";
+      render();
+      return;
+    }
+    // Garde de MUTATION (Lot 2B) — chemin hors handleAction (validation d'une ligne Tarifs au clavier).
+    // Si la ligne éditée est un ARTICLE et que la Boutique est désactivée, on bloque l'écriture avant
+    // tout recordHistory/persist ; les autres tarifs (disciplines, stages, assurances) restent libres.
+    const [editKind, editIndexRaw] = asText(ui.tariffEditKey).split(":");
+    if (editKind === "article" && !ensureFeatureEnabledForMutation("shop")) {
       ui.tariffEditKey = "";
       render();
       return;
@@ -11772,7 +11829,7 @@ ${esc(bodyText)}</pre>
               ${displaySettingToggle("showAssistant", "Afficher le Centre d'accompagnement et les visites guidées", "Désactivez cette option si vous connaissez déjà le logiciel et ne souhaitez plus afficher les aides guidées.")}
               ${displaySettingToggle("toolbarLabels", "Texte sous les icônes", "Ajoute un petit libellé sous les boutons de la barre du haut.")}
               ${displaySettingToggle("showStages", "Module Stages (données)", "Inclut ou exclut les stages des statistiques et de la comptabilité. Indépendant de sa visibilité dans le menu.")}
-              ${displaySettingToggle("showBoutique", "Module Boutique (données)", "Inclut ou exclut Boutique, Stock et ventes des statistiques et de la comptabilité. Indépendant de sa visibilité dans le menu.")}
+              ${displaySettingToggle("showBoutique", "Module Boutique (affichage)", "Affiche ou masque Boutique et Stock dans le menu et les sections d'écran (statistiques, comptabilité). Ce réglage ne modifie jamais les données ni les montants : les totaux, la comptabilité et les exports comptent toujours l'historique existant.")}
             </div>
           </div>
         </div>`)}
@@ -14169,6 +14226,10 @@ ${esc(bodyText)}</pre>
   }
 
   async function runResetScope(scope) {
+    // Garde de MUTATION (Lot 2B) : un vidage destructif de données Boutique est une mutation Boutique.
+    // Bloqué quand la fonctionnalité est désactivée, pour ne jamais détruire l'historique qui doit
+    // rester conservé et restituable après réactivation. Le scope global "all" n'est pas concerné.
+    if (["boutique", "boutique-orders", "boutique-articles"].includes(scope) && !ensureFeatureEnabledForMutation("shop")) return;
     const info = resetScopeInfo(scope);
     const message = `${info.detail}\nSeul le club actif est concerné. Les autres clubs ne sont pas touchés.\nPense à exporter une sauvegarde JSON avant de supprimer. Action irréversible.`;
     if (!(await requestProtectedDangerAction(`Vider : ${info.label}`, message, `Vider ${info.label.toLowerCase()}`))) return;
@@ -16001,7 +16062,11 @@ ${esc(bodyText)}</pre>
         });
       });
     }
-    if (isModuleEnabled("boutique")) {
+    // Lot 2B — point bloquant 1 : le contenu FACTURABLE d'un contact (calcul des factures) inclut
+    // toujours ses commandes existantes. Cette lecture historique ne dépend pas de
+    // settings.display.showBoutique ; la CRÉATION de nouvelles données Boutique, elle, reste gardée
+    // par hasFeature (ensureFeatureEnabledForMutation) aux points de mutation.
+    {
       state.shopOrders.filter((row) => contactRecordMatches(contact, row)).forEach((order) => {
         orderItemDetails(order).forEach((item, index) => {
           rows.push(billableItem({
@@ -16348,7 +16413,7 @@ ${esc(bodyText)}</pre>
               : `<p class="contact-recap-empty">Aucune discipline enregistrée pour le moment.</p>`}
           </section>`
         : contactRecapSection("Disciplines", memberships, contactRecapMembership)}
-      ${contactRecapSection("Boutique", orders, contactRecapOrder, isModuleEnabled("boutique") ? "" : "Module désactivé — historique conservé. Réactivez le module pour ajouter de nouvelles données.")}
+      ${contactRecapSection("Boutique", orders, contactRecapOrder, (isModuleEnabled("boutique") && hasFeature("shop")) ? "" : "Module désactivé — historique conservé. Réactivez le module pour ajouter de nouvelles données.")}
       ${contactRecapSection("Stages", registrations, contactRecapRegistration, isModuleEnabled("stages") ? "" : "Module désactivé — historique conservé. Réactivez le module pour ajouter de nouvelles données.")}
       ${invoiceRows.length ? `<section class="contact-recap-section">
         <h4>Factures</h4>
@@ -18637,6 +18702,10 @@ ${esc(bodyText)}</pre>
     const footer = contactLinkAction(row);
     setNextWindowKey(row.id ? `order:${row.id}` : null);
     showDialog(row.id ? "Modifier la commande" : "Nouvelle commande", body, (data, form) => {
+      // Garde de MUTATION (Lot 2B) au MOMENT exact de l'enregistrement : bloque toute écriture de
+      // commande (et de ses paiements) si la Boutique a été désactivée pendant que ce dialogue
+      // restait ouvert, ou après un changement de club. return false -> aucune mutation, aucun persist.
+      if (!ensureFeatureEnabledForMutation("shop")) return false;
       const items = state.tariffs.articles
         .map((article) => {
           const sizes = readOrderSizeQuantities(form, article);
@@ -20675,7 +20744,8 @@ ${esc(bodyText)}</pre>
         ...state.tariffs.disciplines.map((row) => ["Discipline", row.name, row.price, row.licenseFee, tariffTaxRate(row), ""]),
         ...state.tariffs.insurance.map((row) => ["Assurance", row.category, row.label, row.amounts?.join(" | "), tariffTaxRate(row), ""]),
         ...(isModuleEnabled("stages") ? state.tariffs.stages.map((row) => ["Stage", row.name, row.unitPrice, row.investment, tariffTaxRate(row), `${row.lodgingName || ""} ${row.lodgingUnitPrice || ""}`]) : []),
-        ...(isModuleEnabled("boutique") ? state.tariffs.articles.map((row) => ["Article", row.name, row.priceOptions?.[0] ?? row.defaultPrice ?? 0, row.priceOptions?.[1] ?? 0, tariffTaxRate(row), row.reference || ""]) : []),
+        // Lot 2B — point bloquant 1 : export historique des tarifs Articles, inconditionnel (indépendant de showBoutique).
+        ...state.tariffs.articles.map((row) => ["Article", row.name, row.priceOptions?.[0] ?? row.defaultPrice ?? 0, row.priceOptions?.[1] ?? 0, tariffTaxRate(row), row.reference || ""]),
       ];
       return download("tarifs-mongestaclub.csv", toCsv(["Type", "Nom", "Valeur 1", "Valeur 2", "TVA", "Détail"], rows), "text/csv;charset=utf-8");
     }
@@ -20683,7 +20753,8 @@ ${esc(bodyText)}</pre>
       const rows = [
         ...disciplineUsageStats().map((row) => ["Discipline", row.name, row.count, row.total, row.paid, row.due]),
         ...(isModuleEnabled("stages") ? stageUsageStats().map((row) => ["Stage", row.name, row.count, row.total, row.paid, row.due]) : []),
-        ...(isModuleEnabled("boutique") ? boutiqueUsageStats().map((row) => ["Boutique", row.name, row.stock, row.total, row.quantity, row.orders]) : []),
+        // Lot 2B — point bloquant 1 : export historique des statistiques Boutique, inconditionnel (indépendant de showBoutique).
+        ...boutiqueUsageStats().map((row) => ["Boutique", row.name, row.stock, row.total, row.quantity, row.orders]),
       ];
       return download("statistiques-mongestaclub.csv", toCsv(["Rubrique", "Nom", "Nombre/Stock", "Total", "Réglé ou vendu", "Reste dû ou commandes"], rows), "text/csv;charset=utf-8");
     }
@@ -20934,7 +21005,9 @@ ${esc(bodyText)}</pre>
   function statsPdfPayload(generatedAt) {
     const clubName = (typeof activeClub === "function" && activeClub() && activeClub().name) || asText(settings && settings.clubName) || "";
     const stagesEnabled = isModuleEnabled("stages");
-    const boutiqueEnabled = isModuleEnabled("boutique");
+    // Lot 2B — point bloquant 1 : ce PDF est un RAPPORT/EXPORT historique. La Boutique y figure toujours
+    // dès qu'elle a des données (indépendant de settings.display.showBoutique) ; seul l'écran interactif
+    // Statistiques peut masquer la section. Les chiffres restent identiques à la Comptabilité.
 
     // --- Helpers existants (mêmes que l'écran / la Comptabilité) ---
     const disciplineRows = disciplineUsageStats();
@@ -20952,8 +21025,8 @@ ${esc(bodyText)}</pre>
     const activeGroups = (state.groups || []).filter((g) => !g.archived);
     const disciplineCount = (state.tariffs && state.tariffs.disciplines || []).length;
     const stageCount = (state.tariffs && state.tariffs.stages || []).length;
-    const articleCount = boutiqueEnabled ? (state.tariffs.articles || []).filter((a) => a.active !== false).length : 0;
-    const lowStockCount = boutiqueEnabled ? stockRows().filter((r) => isStockLow(r)).length : 0;
+    const articleCount = (state.tariffs.articles || []).filter((a) => a.active !== false).length;
+    const lowStockCount = stockRows().filter((r) => isStockLow(r)).length;
 
     // Enfants / adultes / indéterminés : MÊME fonction que la page Contacts (contactAgeClass).
     let childCount = 0, adultCount = 0, indetCount = 0;
@@ -20978,7 +21051,7 @@ ${esc(bodyText)}</pre>
       ["Groupes", intValue(activeGroups.length)],
       ["Disciplines", intValue(disciplineCount)],
       stagesEnabled ? ["Stages", intValue(stageCount)] : null,
-      boutiqueEnabled ? ["Articles boutique", intValue(articleCount)] : null,
+      ["Articles boutique", intValue(articleCount)],
       ["Encaissé TTC", money(acct.totals.paid)],
       ["Solde corrigé", kpiVal("Solde corrigé")],
     ].filter(Boolean).map(([l, v]) => `<div class="kpi"><span>${esc(l)}</span><strong>${esc(v)}</strong></div>`).join("");
@@ -21122,11 +21195,11 @@ ${esc(bodyText)}</pre>
             <table><thead><tr><th>Stage</th><th class="num">Participants</th><th class="num">Total</th><th class="num">Réglé</th><th class="num">Reste dû</th></tr></thead><tbody>${stageBody}</tbody></table>` : ""}
           </section>
 
-          ${boutiqueEnabled ? `<section class="band">
+          <section class="band">
             <h2>Boutique</h2>
             <table><thead><tr><th>Article</th><th class="num">Vendu</th><th class="num">Commandes</th><th class="num">En stock</th><th class="num">Total vendu</th></tr></thead><tbody>${boutiqueBody}</tbody></table>
             <p class="note">${esc(intValue(lowStockCount))} article${lowStockCount > 1 ? "s" : ""} en stock faible.</p>
-          </section>` : ""}
+          </section>
 
           <section class="band">
             <h2>Finances résumées</h2>
@@ -21802,7 +21875,9 @@ ${esc(bodyText)}</pre>
   function accountingPdfPayload(generatedAt) {
     const clubName = (typeof activeClub === "function" && activeClub() && activeClub().name) || asText(settings && settings.clubName) || "";
     const stagesEnabled = isModuleEnabled("stages");
-    const boutiqueEnabled = isModuleEnabled("boutique");
+    // Lot 2B — point bloquant 1 : l'export comptable PDF s'appuie exclusivement sur accountingData()
+    // et accountingModuleNames(), tous deux inconditionnels pour la Boutique : le résultat est donc
+    // identique que la Boutique soit masquée (showBoutique) ou non. (Aucun drapeau boutique local ici.)
 
     // --- Lecture des données (mêmes helpers que renderAccounting / correctionsBandHtml) ---
     const data = accountingData();
@@ -23790,6 +23865,8 @@ ${esc(bodyText)}</pre>
     }
     if (action === "open-contact-module") {
       if ((button.dataset.module === "boutique" && !isModuleEnabled("boutique")) || (button.dataset.module === "stages" && !isModuleEnabled("stages"))) return;
+      // Module pilote Boutique (Lot 2B) : ouvrir une commande depuis un contact est une mutation.
+      if (button.dataset.module === "boutique" && !ensureFeatureEnabledForMutation("shop")) return;
       // Depuis un NOUVEAU contact : on valide puis on enregistre le contact AVANT d'ouvrir le module.
       // Si un champ requis manque, reportValidity bloque -> pas de création, pas de navigation, popup
       // ouverte. Sinon showDialog ouvre le module sur le contact créé (follow-up). Contact existant :
@@ -23806,6 +23883,7 @@ ${esc(bodyText)}</pre>
     }
     if (action === "add-order-article-row") {
       if (!isModuleEnabled("boutique")) return;
+      if (!ensureFeatureEnabledForMutation("shop")) return;
       return addOrderArticleRow(button);
     }
     if (action === "scroll-sale-step") return scrollSaleStep(button);
@@ -23813,7 +23891,7 @@ ${esc(bodyText)}</pre>
     if (action === "remove-size-stock-row") return removeSizeStockRow(button);
     if (action === "show-size-stock-section") return showSizeStockSection(button);
     if (action === "toggle-stock-panel") {
-      if (!isModuleEnabled("boutique")) return;
+      if (!isModuleEnabled("boutique") || !hasFeature("shop")) return;
       const panel = button.dataset.panel;
       if (!ui.stockPanels) ui.stockPanels = {};
       ui.stockPanels[panel] = !ui.stockPanels[panel];
@@ -23906,6 +23984,10 @@ ${esc(bodyText)}</pre>
     if (action === "validate-form-payment") return validateFormPayment(button);
     if (action === "validate-payment") {
       const paymentContext = paymentContextFrom(button);
+      // Module pilote Boutique (Lot 2B) : valider/annuler un paiement de commande Boutique est une
+      // mutation active — bloquée quand la fonctionnalité shop est désactivée (le paiement
+      // historique déjà enregistré reste, lui, intact et lisible ailleurs).
+      if (paymentContext.module === "boutique" && !ensureFeatureEnabledForMutation("shop")) return;
       const snapshot = snapshotState();
       recordHistory();
       const validation = validatePayment(button);
@@ -24432,10 +24514,11 @@ ${esc(bodyText)}</pre>
       refreshOpenCourseEnrollmentDialogs();
       return;
     }
-    if (action === "add-order") return isModuleEnabled("boutique") ? openOrderDialog() : undefined;
-    if (action === "sell-article") return isModuleEnabled("boutique") ? openArticleSaleDialog(button.dataset.articleId) : undefined;
+    if (action === "add-order") return isModuleEnabled("boutique") && ensureFeatureEnabledForMutation("shop") ? openOrderDialog() : undefined;
+    if (action === "sell-article") return isModuleEnabled("boutique") && ensureFeatureEnabledForMutation("shop") ? openArticleSaleDialog(button.dataset.articleId) : undefined;
     if (action === "edit-order") {
       if (!isModuleEnabled("boutique")) return;
+      if (!ensureFeatureEnabledForMutation("shop")) return;
       const order = state.shopOrders.find((row) => row.id === button.dataset.id);
       if (!order) return;
       // Garde-fou obligatoire au niveau handler (pas seulement visuel) : reste efficace même si
@@ -24449,6 +24532,7 @@ ${esc(bodyText)}</pre>
       return openOrderDialog(order);
     }
     if (action === "delete-order") {
+      if (!ensureFeatureEnabledForMutation("shop")) return;
       const order = state.shopOrders.find((row) => row.id === button.dataset.id);
       if (!order) return;
       const integrity = shopOrderIntegrityState(order);
@@ -24502,6 +24586,7 @@ ${esc(bodyText)}</pre>
       return;
     }
     if (action === "delete-stock-article") {
+      if (!ensureFeatureEnabledForMutation("shop")) return;
       const index = Number(button.dataset.index);
       const article = state.tariffs.articles[index];
       if (!article) return;
@@ -24519,7 +24604,7 @@ ${esc(bodyText)}</pre>
       render();
       return;
     }
-    if (action === "edit-stock-article") return openStockArticleDialog(Number(button.dataset.index));
+    if (action === "edit-stock-article") return ensureFeatureEnabledForMutation("shop") ? openStockArticleDialog(Number(button.dataset.index)) : undefined;
     if (action === "edit-article-sizes") return openArticleSizeDialog(Number(button.dataset.index));
     if (action === "move-article-image") {
       // En création, on agit sur le brouillon local (pas dans le state, pas de persist).
@@ -24758,6 +24843,7 @@ ${esc(bodyText)}</pre>
       return commitTariffRow(button);
     }
     if (action === "add-tariff-article") {
+      if (!ensureFeatureEnabledForMutation("shop")) return;
       recordHistory();
       const newArticle = stampRecordClubId({
         id: id("article"),
@@ -24785,6 +24871,7 @@ ${esc(bodyText)}</pre>
       return;
     }
     if (action === "delete-tariff-article") {
+      if (!ensureFeatureEnabledForMutation("shop")) return;
       const index = Number(button.dataset.index);
       const article = state.tariffs.articles[index];
       if (!article) return;
