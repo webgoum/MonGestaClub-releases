@@ -1911,6 +1911,21 @@
       // « boutique » est la clé historique/d'appel existante -> alias de la clé canonique « shop ».
       aliases: Object.freeze(["boutique"]),
       views: Object.freeze(["boutique"]),
+      // Lot 2C — métadonnées de PRÉSENTATION pour l'écran « Fonctionnalités du club » uniquement.
+      // N'influencent NI hasFeature, NI les calculs historiques, NI la visibilité (axes distincts).
+      // available:true -> la carte est proposée dans l'écran. order -> ordre d'affichage. Les textes
+      // sont destinés à l'utilisateur (aucun jargon). {club} est remplacé par le nom du club actif à
+      // l'affichage. Objet gelé, cohérent avec l'immutabilité du reste du registre.
+      ui: Object.freeze({
+        available: true,
+        order: 1,
+        description: "Gérez les articles, les stocks, les commandes et les paiements liés à la Boutique.",
+        dataRetention: "La désactivation masque les outils de gestion mais ne supprime aucune donnée existante.",
+        disableConfirmTitle: "Désactiver la Boutique ?",
+        disableConfirmMessage: "La Boutique sera désactivée pour le club « {club} ». Elle disparaîtra des menus et vous ne pourrez plus ajouter ou modifier les articles, les stocks, les commandes ni les paiements de la Boutique.\n\nAucune donnée existante ne sera supprimée. Les factures, les paiements déjà enregistrés, la comptabilité, les statistiques et l'historique resteront conservés.\n\nVous pourrez réactiver la Boutique plus tard. Ce changement ne concerne que ce club.",
+        disableConfirmLabel: "Désactiver la Boutique",
+        reactivateFeedback: "La Boutique est réactivée pour ce club. Son affichage suit vos réglages d'affichage actuels.",
+      }),
     }),
     stages: Object.freeze({
       key: "stages",
@@ -1921,6 +1936,21 @@
       defaultEnabled: true,
       aliases: Object.freeze([]),
       views: Object.freeze(["stages"]),
+      // Lot 2C — Stages est déclaré et configurable conceptuellement, mais PAS encore réellement
+      // branché (aucun hasFeature("stages") ni garde de mutation). available:false -> il n'est PAS
+      // proposé dans l'écran tant que son branchement n'est pas terminé (honnêteté : ne jamais
+      // présenter un interrupteur sans effet). legacyEnabled/defaultEnabled/aliases/views/clé et le
+      // comportement de hasFeature restent inchangés.
+      ui: Object.freeze({
+        available: false,
+        order: 2,
+        description: "",
+        dataRetention: "",
+        disableConfirmTitle: "",
+        disableConfirmMessage: "",
+        disableConfirmLabel: "",
+        reactivateFeedback: "",
+      }),
     }),
   });
 
@@ -2026,6 +2056,46 @@
       alert(`${label} est désactivée pour ce club. Réactivez-la dans les paramètres du club pour modifier ces données.`);
     }
     return false;
+  }
+
+  // Lot 2C — fonctionnalités RÉELLEMENT proposables dans l'écran « Fonctionnalités du club ».
+  // Filtre sur ui.available === true (donc Stages, non branché, est exclu) et trie par ui.order.
+  // Retourne les définitions gelées du registre (ni copie, ni mutation). Ne lit ni settings, ni
+  // rôle, ni affichage : c'est une pure projection du registre.
+  function screenFeatures() {
+    return FEATURE_CANONICAL_KEYS
+      .map((key) => FEATURE_REGISTRY[key])
+      .filter((def) => def && def.ui && def.ui.available === true)
+      .sort((a, b) => (a.ui.order || 0) - (b.ui.order || 0));
+  }
+
+  // Lot 2C — calcul PUR de la prochaine configuration settings.features après un choix utilisateur.
+  // Ne persiste rien, n'affiche rien, ne journalise rien, ne rend rien, ne lit ni rôle ni userStore
+  // ni authSession, et NE MUTE PAS l'objet reçu. Retourne une NOUVELLE structure normalisée.
+  //
+  // Règles (voir contrat Lot 2C) :
+  //  - clé inconnue OU nextEnabled non booléen strict -> aucun changement : on renvoie l'entrée
+  //    simplement normalisée (jamais de bascule configured, jamais d'exécution d'une clé inconnue) ;
+  //  - sinon : configured devient true ; on résout la clé canonique ; on RETIRE de `enabled` la clé
+  //    canonique ET ses alias reconnus ; on réécrit UNIQUEMENT la clé canonique avec le booléen
+  //    choisi ; toutes les autres clés (fonctionnalités connues ET clés inconnues) sont préservées.
+  //  - les clés dangereuses (__proto__/prototype/constructor) restent exclues (via normalize).
+  function nextFeaturesConfig(features, key, nextEnabled) {
+    // normalizeFeaturesSettings (04-settings-normalize.js, chargé avant) : nettoie enabled en booléens
+    // stricts, exclut les clés dangereuses et PRÉSERVE les clés inconnues. Ne mute pas la source.
+    const normalized = normalizeFeaturesSettings(features);
+    if (nextEnabled !== true && nextEnabled !== false) return normalized;
+    const canonical = resolveFeatureKey(key);
+    if (!canonical) return normalized;
+    const def = FEATURE_REGISTRY[canonical];
+    const aliasesToDrop = new Set([canonical, ...((def && def.aliases) || [])]);
+    const enabled = {};
+    Object.keys(normalized.enabled).forEach((existingKey) => {
+      if (aliasesToDrop.has(existingKey)) return; // canonique + alias reconnus retirés puis réécrits
+      enabled[existingKey] = normalized.enabled[existingKey]; // clés inconnues / autres fonctions préservées
+    });
+    enabled[canonical] = nextEnabled;
+    return { version: FEATURES_SCHEMA_VERSION, configured: true, enabled };
   }
   function hasAppPassword() {
     return Boolean(settings.security?.passwordSalt && settings.security?.passwordHash);
@@ -11773,6 +11843,54 @@ ${esc(bodyText)}</pre>
     return `<div class="display-modules-groups">${groupsHtml}${othersHtml}</div>`;
   }
 
+  // Lot 2C — écran « Fonctionnalités du club ». Axe FONCTIONNALITÉ (settings.features / hasFeature),
+  // strictement distinct de l'axe AFFICHAGE (settings.display), des permissions et de l'historique.
+  // La préférence d'affichage showBoutique n'est JAMAIS modifiée ici.
+  function featureDisplayHiddenNote(def) {
+    // Seule la Boutique a aujourd'hui un axe d'affichage lié (showBoutique). Actif mais masqué à
+    // l'écran = fonctionnalité disponible mais préférence d'affichage sur « masquer ».
+    if (def.key !== "shop") return false;
+    return displaySettings().showBoutique === false;
+  }
+
+  function featureCardHtml(def) {
+    const active = hasFeature(def.key);
+    const displayHidden = active && featureDisplayHiddenNote(def);
+    const statusText = active
+      ? (displayHidden ? "Activée — masquée par les réglages d'affichage" : "Activée")
+      : "Désactivée";
+    return `<div class="feature-card feature-${esc(def.key)} ${active ? "is-on" : "is-off"}">
+      <label class="settings-check feature-toggle">
+        <input type="checkbox" data-feature-setting="${esc(def.key)}" ${active ? "checked" : ""} role="switch" aria-checked="${active ? "true" : "false"}" />
+        <span>
+          <strong>${esc(def.label)}</strong>
+          ${def.ui.description ? `<small>${esc(def.ui.description)}</small>` : ""}
+        </span>
+      </label>
+      <div class="feature-card-meta">
+        <span class="feature-badge ${active ? "is-on" : "is-off"}">${esc(statusText)}</span>
+        ${def.ui.dataRetention ? `<small class="muted">${esc(def.ui.dataRetention)}</small>` : ""}
+        <small class="muted">Ce réglage ne concerne que le club actif.</small>
+      </div>
+    </div>`;
+  }
+
+  function featuresClubBandSummary() {
+    const n = screenFeatures().filter((def) => hasFeature(def.key)).length;
+    return `${n} fonctionnalité${n > 1 ? "s" : ""} activée${n > 1 ? "s" : ""}`;
+  }
+
+  function featuresClubBandBody() {
+    const clubName = (typeof activeClub === "function" && activeClub() && activeClub().name) || "ce club";
+    const configured = Boolean(settings.features && settings.features.configured === true);
+    const intro = `<p class="muted">Ces fonctionnalités s'appliquent uniquement au club « ${esc(clubName)} ». Les autres clubs ne sont pas modifiés. Désactiver une fonctionnalité ne supprime pas ses données. Les droits des utilisateurs sont gérés séparément.</p>`;
+    const originInfo = configured
+      ? ""
+      : `<p class="muted feature-origin-note">Ce club utilise encore sa configuration d'origine. Le premier changement sera enregistré uniquement pour ce club.</p>`;
+    const cards = screenFeatures().map(featureCardHtml).join("");
+    return `<div class="settings-panel features-club-panel">${intro}${originInfo}${cards}</div>`;
+  }
+
   function renderSettings() {
     const macIconAvailable = canInstallMacAppIcon();
     return `<div class="settings-stack">
@@ -11800,6 +11918,7 @@ ${esc(bodyText)}</pre>
         </div>`)}
       ${settingsCollapsibleBand("typography", "Polices", "Titres, texte, boutons", typographySettingsHtml())}
       ${settingsCollapsibleBand("postits", "Post-it À faire", "Couleurs et modèles", postitSettingsHtml())}
+      ${settingsCollapsibleBand("features", "Fonctionnalités du club", featuresClubBandSummary(), featuresClubBandBody())}
       ${settingsCollapsibleBand("display", "Affichage", displayModeSummary(), `<div class="settings-panel display-settings-panel">
           <label class="layout-mode-select">
             <span><strong>Disposition de l'interface</strong><small>Choisissez entre l'affichage moderne actuel et une interface classique avec menus en haut.</small></span>
@@ -11833,8 +11952,9 @@ ${esc(bodyText)}</pre>
               ${displaySettingToggle("showAssistant", "Afficher le Centre d'accompagnement et les visites guidées", "Désactivez cette option si vous connaissez déjà le logiciel et ne souhaitez plus afficher les aides guidées.")}
               ${displaySettingToggle("toolbarLabels", "Texte sous les icônes", "Ajoute un petit libellé sous les boutons de la barre du haut.")}
               ${displaySettingToggle("showStages", "Module Stages (données)", "Inclut ou exclut les stages des statistiques et de la comptabilité. Indépendant de sa visibilité dans le menu.")}
-              ${displaySettingToggle("showBoutique", "Module Boutique (affichage)", "Affiche ou masque Boutique et Stock dans le menu et les sections d'écran (statistiques, comptabilité). Ce réglage ne modifie jamais les données ni les montants : les totaux, la comptabilité et les exports comptent toujours l'historique existant.")}
+              ${displaySettingToggle("showBoutique", "Afficher la Boutique lorsqu'elle est activée", "Ce réglage masque ou affiche les écrans de la Boutique sans activer ni désactiver la fonctionnalité et sans modifier les données.")}
             </div>
+            ${!hasFeature("shop") ? `<p class="muted feature-display-context">La Boutique est actuellement désactivée dans Fonctionnalités du club. Ce réglage d'affichage sera conservé pour une prochaine réactivation.</p>` : ""}
           </div>
         </div>`)}
       ${settingsCollapsibleBand("menu-order", "Ordre du menu", "Personnaliser la navigation", `<div class="settings-panel">
@@ -22924,6 +23044,55 @@ ${esc(bodyText)}</pre>
         return;
       }
     }
+    if (target.dataset.featureSetting) {
+      // Lot 2C — écran « Fonctionnalités du club ». Axe FONCTIONNALITÉ uniquement (jamais l'affichage,
+      // jamais un rôle/permission). SÉCURITÉ : on reconsulte le REGISTRE (jamais confiance au seul
+      // DOM). Une clé inconnue, une fonctionnalité non disponible dans l'écran (ex. Stages), une clé
+      // dangereuse ou une valeur non booléenne ne persiste RIEN. Ne modifie jamais settings.display.
+      const requestedKey = target.dataset.featureSetting;
+      const def = featureDefinition(requestedKey);
+      if (!def || !def.ui || def.ui.available !== true) { render(); return; }
+      const canonical = def.key; // clé CANONIQUE issue du registre (jamais l'alias fourni par le DOM)
+      const desired = target.checked === true; // case native -> booléen STRICT
+      const current = hasFeature(canonical);
+      if (desired === current) { render(); return; } // no-op réel : ni recordHistory, ni persist, ni Journal
+      // On CAPTURE l'identifiant du club ciblé (jamais une référence mutable qui suivrait un changement).
+      const targetClubId = activeClubId();
+      const targetClubName = (activeClub() && activeClub().name) || "ce club";
+      if (!desired) {
+        // Désactivation : confirmation prudente. Interrupteur figé pendant l'opération asynchrone.
+        target.disabled = true;
+        const confirmed = await requestConfirm({
+          title: def.ui.disableConfirmTitle || "Désactiver ?",
+          message: (def.ui.disableConfirmMessage || "").split("{club}").join(targetClubName),
+          confirmLabel: def.ui.disableConfirmLabel || `Désactiver ${def.label}`,
+          danger: true,
+        });
+        if (!confirmed) { render(); return; } // Annulation : aucune écriture ; render() rétablit la case
+        if (activeClubId() !== targetClubId) { // le club actif a changé pendant la confirmation
+          ui.saveMessage = "Opération annulée : le club actif a changé.";
+          render();
+          return;
+        }
+        recordHistory();
+        settings.features = nextFeaturesConfig(settings.features, canonical, false);
+        persistSettings();
+        audit.clubFeatureUpdated(activeClub(), def.label, false);
+        // render() redirige automatiquement si la vue active (Boutique/Stock) vient d'être masquée.
+        render();
+        return;
+      }
+      // Réactivation : aucune confirmation bloquante (action non destructive et à faible risque).
+      if (activeClubId() !== targetClubId) { render(); return; }
+      recordHistory();
+      settings.features = nextFeaturesConfig(settings.features, canonical, true);
+      persistSettings();
+      audit.clubFeatureUpdated(activeClub(), def.label, true);
+      // Feedback non bloquant via le bandeau de statut existant (aria-live). showBoutique inchangé.
+      ui.saveMessage = def.ui.reactivateFeedback || "";
+      render();
+      return;
+    }
     if (target.dataset.displaySetting) {
       // Lot 1 Modules désactivables — couper Boutique/Stages (modules FONCTIONNELS) retire
       // leurs paiements de À faire, de l'agenda et de la comptabilité : refusé tant que des
@@ -32954,6 +33123,8 @@ ${esc(bodyText)}</pre>
     "user.created", "user.renamed", "user.deactivated", "user.reactivated",
     "club.created", "club.duplicated", "club.archived", "club.unarchived", "club.deleted",
     "club.settings.updated",
+    // Lot 2C — activation/désactivation d'une fonctionnalité du club (écran Fonctionnalités du club).
+    "club.feature.updated",
     // Lot 3A — cycle de vie facture (voir audit.invoiceXxx ci-dessous).
     "invoice.created", "invoice.updated", "invoice.issued",
     "invoice.payment.attached", "invoice.credit.applied",
@@ -33333,6 +33504,19 @@ ${esc(bodyText)}</pre>
     },
     clubSettingsUpdated(club) {
       return recordAuditEvent({ action: "club.settings.updated", entityType: "club", entityId: club.id, entityLabel: club.name, clubId: club.id });
+    },
+    // Lot 2C — un seul événement par changement RÉEL d'une fonctionnalité. metadata ne contient que
+    // le libellé de la fonctionnalité et le nouvel état booléen : aucune donnée métier, aucun secret,
+    // aucun dump de settings, aucune clé inconnue de enabled.
+    clubFeatureUpdated(club, featureLabel, enabled) {
+      return recordAuditEvent({
+        action: "club.feature.updated",
+        entityType: "club",
+        entityId: club.id,
+        entityLabel: club.name,
+        clubId: club.id,
+        metadata: { feature: String(featureLabel || ""), enabled: enabled === true },
+      });
     },
     // Lot 3A — cycle de vie facture. `contact` est optionnel (facture sans contact résolu) :
     // contactLabel reste vide plutôt que de faire échouer l'événement.
@@ -33853,6 +34037,11 @@ ${esc(bodyText)}</pre>
     "club.unarchived": (actor, label) => `${actor} a désarchivé le club « ${label || "?"} »`,
     "club.deleted": (actor, label) => `${actor} a supprimé le club « ${label || "?"} »`,
     "club.settings.updated": (actor, label) => `${actor} a modifié les paramètres du club « ${label || "?"} »`,
+    "club.feature.updated": (actor, label, metadata) => {
+      const feature = asText(metadata.feature) || "une fonctionnalité";
+      const verb = metadata.enabled === true ? "a activé" : "a désactivé";
+      return `${actor} ${verb} « ${feature} » pour le club « ${label || "?"} »`;
+    },
     "invoice.created": (actor, label, metadata) => {
       const contactLabel = asText(metadata.contactLabel);
       if (asText(metadata.invoiceNumber)) return `${actor} a créé la facture « ${label || "?"} »`;

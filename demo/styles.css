@@ -6198,6 +6198,48 @@ button[data-action="email-coach"] .tool-icon, button[data-action="email-room"] .
   line-height: 1.25;
 }
 
+/* Lot 2C — écran « Fonctionnalités du club » (axe FONCTIONNALITÉ, distinct de l'affichage). */
+.features-club-panel { display: grid; gap: 10px; }
+.features-club-panel .feature-card {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px 16px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+.features-club-panel .feature-toggle {
+  flex: 1 1 260px;
+  min-width: 0;
+  margin: 0;
+  border: 0;
+  padding: 0;
+  background: transparent;
+}
+.features-club-panel .feature-card-meta {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  flex: 1 1 220px;
+  min-width: 0;
+}
+.feature-badge {
+  align-self: flex-start;
+  padding: 2px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  font-family: var(--font-button);
+  font-size: 0.82rem;
+  white-space: nowrap;
+}
+.feature-badge.is-on { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 16%, var(--surface)); }
+.feature-badge.is-off { color: var(--muted); }
+.feature-origin-note, .feature-display-context { font-style: italic; }
+
 .layout-mode-select { display: grid; gap: 6px; margin-bottom: 10px; }
 .layout-mode-select span { display: grid; gap: 3px; }
 .layout-mode-select small {
