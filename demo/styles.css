@@ -2928,6 +2928,26 @@ tfoot td {
   white-space: nowrap;
 }
 
+/* Lot 2D — créance Stage encaissable depuis « Paiements dus » : le tiroir de paiement occupe
+   toute la largeur sous la ligne (la grille passe de 3 à 2 colonnes, le bouton étant remplacé). */
+.due-item-with-payments {
+  grid-template-columns: 1fr auto;
+  row-gap: 10px;
+}
+
+.due-item-payment {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.due-item-payment-label {
+  font-size: .85rem;
+  color: var(--muted);
+}
+
 .membership-card-list {
   display: grid;
   gap: 8px;

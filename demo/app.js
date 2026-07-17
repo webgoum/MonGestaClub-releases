@@ -1789,6 +1789,11 @@
     // Axe orthogonal : une préférence d'affichage masquée n'est pas une désactivation de fonction,
     // et une fonction désactivée n'est pas une permission de sécurité.
     if ((view === "boutique" || view === "stock") && !hasFeature("shop")) return false;
+    // Module pilote Stages (Lot 2D) : même axe orthogonal que Boutique. La vue Stages disparaît du
+    // menu et de la navigation quand la FONCTIONNALITÉ stages est désactivée pour le club
+    // (hasFeature), sans toucher aux calculs ni à l'historique (isModuleEnabled/settings.display
+    // restent l'axe d'affichage).
+    if (view === "stages" && !hasFeature("stages")) return false;
     return moduleFunctionallyEnabled(view) && isModuleVisibleByMode(view);
   }
 
@@ -1800,13 +1805,15 @@
   }
 
   function accountingModuleNames() {
-    // Lot 2B — point bloquant 1 : la comptabilité est un CALCUL HISTORIQUE. Boutique est toujours
-    // recensée (comme Disciplines), indépendamment de settings.display.showBoutique : la synthèse
-    // par activité et les exports comptables restent identiques, Boutique masquée ou non à l'écran.
-    // (Stages reste inchangé : hors périmètre de ce lot.)
+    // Lot 2B/2D — point bloquant 1 : la comptabilité est un CALCUL HISTORIQUE. La rubrique Stages est
+    // recensée dès qu'il existe des DONNÉES Stage (tarifs/investissements/inscriptions), et JAMAIS en
+    // fonction de settings.display.showStages ni de hasFeature : masquer ou désactiver ne change donc
+    // aucun total (identique dans les 4 états). hasStageData() étant indépendant des drapeaux, la liste
+    // des colonnes est stable ; un club SANS donnée Stage n'obtient aucune colonne « Stages » vide.
+    // (Boutique reste inconditionnelle — comportement existant NON modifié dans ce lot.)
     return [
       "Disciplines",
-      isModuleEnabled("stages") ? "Stages" : "",
+      hasStageData() ? "Stages" : "",
       "Boutique",
     ].filter(Boolean);
   }
@@ -1936,20 +1943,20 @@
       defaultEnabled: true,
       aliases: Object.freeze([]),
       views: Object.freeze(["stages"]),
-      // Lot 2C — Stages est déclaré et configurable conceptuellement, mais PAS encore réellement
-      // branché (aucun hasFeature("stages") ni garde de mutation). available:false -> il n'est PAS
-      // proposé dans l'écran tant que son branchement n'est pas terminé (honnêteté : ne jamais
-      // présenter un interrupteur sans effet). legacyEnabled/defaultEnabled/aliases/views/clé et le
-      // comportement de hasFeature restent inchangés.
+      // Lot 2D — Stages est branché sur hasFeature : ses mutations structurelles sont gardées, tandis
+      // que ses calculs et ses données historiques restent conservés et consultables (une créance déjà
+      // existante reste même encaissable depuis « Paiements dus »). Lot 2E — le branchement étant
+      // terminé, available:true expose la fonctionnalité dans l'écran : l'interrupteur a un effet réel.
+      // L'activation fonctionnelle et l'affichage (settings.display.showStages) restent deux axes distincts.
       ui: Object.freeze({
-        available: false,
+        available: true,
         order: 2,
-        description: "",
-        dataRetention: "",
-        disableConfirmTitle: "",
-        disableConfirmMessage: "",
-        disableConfirmLabel: "",
-        reactivateFeedback: "",
+        description: "Gérez les stages, les inscriptions, l'hébergement et les paiements associés.",
+        dataRetention: "La désactivation masque les outils de gestion sans supprimer les stages, inscriptions, factures, paiements ni l'historique.",
+        disableConfirmTitle: "Désactiver les Stages ?",
+        disableConfirmMessage: "Les outils de gestion des Stages seront désactivés pour le club « {club} ». Les écrans et les actions de création ou de modification disparaîtront.\n\nAucune donnée existante ne sera supprimée. Les stages, inscriptions, factures, paiements, statistiques, éléments comptables et l'historique resteront conservés. Les créances déjà existantes resteront encaissables depuis « Paiements dus ».\n\nVous pourrez réactiver les Stages plus tard. Ce changement concerne uniquement ce club.",
+        disableConfirmLabel: "Désactiver les Stages",
+        reactivateFeedback: "Les Stages sont réactivés pour ce club. Leur affichage suit vos réglages d'affichage.",
       }),
     }),
   });
@@ -2059,7 +2066,8 @@
   }
 
   // Lot 2C — fonctionnalités RÉELLEMENT proposables dans l'écran « Fonctionnalités du club ».
-  // Filtre sur ui.available === true (donc Stages, non branché, est exclu) et trie par ui.order.
+  // Filtre sur ui.available === true et trie par ui.order : une fonctionnalité déclarée mais pas
+  // encore branchée resterait exclue (ne jamais présenter un interrupteur sans effet).
   // Retourne les définitions gelées du registre (ni copie, ni mutation). Ne lit ni settings, ni
   // rôle, ni affichage : c'est une pure projection du registre.
   function screenFeatures() {
@@ -5518,13 +5526,18 @@
         if (calc.restDue > 0) rows.push({ type: "order", editAction: "edit-order", id: order.id, module: "Boutique", person: order, status: alertStatusForPayments(order.payments), amount: calc.restDue });
       }
     }
-    if (isModuleEnabled("stages")) {
-      for (const stage of state.tariffs.stages) {
-        for (const registration of state.stageRegistrations[stage.id] || []) {
-          const payments = [...(registration.event?.payments || []), ...(registration.lodging?.payments || [])];
-          const calc = calcRegistration(registration);
-          if (calc.restDue > 0) rows.push({ type: "registration", editAction: "edit-registration", id: registration.id, stageId: stage.id, module: stage.name, person: registration, status: alertStatusForPayments(payments), amount: calc.restDue });
-        }
+    // Module pilote Stages (Lot 2D) : une CRÉANCE existante est une donnée financière, jamais une
+    // surface opérationnelle -> elle est recensée INCONDITIONNELLEMENT (comme Disciplines ci-dessus),
+    // indépendamment de settings.display.showStages et de hasFeature("stages"). Désactiver le module
+    // n'efface pas une dette : elle doit rester visible et encaissable dans « Paiements dus », sinon
+    // l'argent dû devient invisible et inatteignable sans réactiver la fonctionnalité.
+    // C'est renderDuePayments qui n'expose alors qu'une action FINANCIÈRE (le tiroir de paiement),
+    // jamais une mutation structurelle. (Boutique conserve son comportement du Lot 2B, non modifié.)
+    for (const stage of state.tariffs.stages) {
+      for (const registration of state.stageRegistrations[stage.id] || []) {
+        const payments = [...(registration.event?.payments || []), ...(registration.lodging?.payments || [])];
+        const calc = calcRegistration(registration);
+        if (calc.restDue > 0) rows.push({ type: "registration", editAction: "edit-registration", id: registration.id, stageId: stage.id, module: stage.name, person: registration, status: alertStatusForPayments(payments), amount: calc.restDue });
       }
     }
     return rows;
@@ -5532,11 +5545,12 @@
 
   function dashboardStats() {
     const memberships = state.memberships.map(calcMembership);
-    // Lot 2B — point bloquant 1 : le CA global (total/réglé/reste dû) est un CALCUL HISTORIQUE. Les
-    // commandes existantes y comptent toujours, que la Boutique soit masquée (showBoutique) ou sa
-    // fonctionnalité désactivée (hasFeature). (Stages inchangé : hors périmètre de ce lot.)
+    // Lot 2B/2D — point bloquant 1 : le CA global (total/réglé/reste dû) est un CALCUL HISTORIQUE. Les
+    // commandes ET les inscriptions existantes y comptent toujours, que la Boutique ou les Stages soient
+    // masqués (showBoutique/showStages) ou leur fonctionnalité désactivée (hasFeature). Masquer ou
+    // désactiver ne retire jamais une donnée existante des totaux.
     const orders = state.shopOrders.map(calcOrder);
-    const registrations = isModuleEnabled("stages") ? Object.values(state.stageRegistrations).flat().map(calcRegistration) : [];
+    const registrations = Object.values(state.stageRegistrations).flat().map(calcRegistration);
     const total = [...memberships, ...orders, ...registrations].reduce((sum, item) => sum + item.total, 0);
     const paid = [...memberships, ...orders, ...registrations].reduce((sum, item) => sum + item.paid, 0);
     const restDue = [...memberships, ...orders, ...registrations].reduce((sum, item) => sum + item.restDue, 0);
@@ -6158,6 +6172,27 @@
     const sorted = Object.values(groups).sort((a, b) => b.total - a.total);
 
     const sourceLabel = { membership: "Discipline", order: "Boutique", registration: "Stage" };
+    // Lot 2D — accès FINANCIER à une créance Stage existante. « Payer » menait à edit-registration,
+    // une mutation structurelle : inopérante quand la fonctionnalité est désactivée (la dette devenait
+    // alors inencaissable sans réactiver Stages). On rend ici le tiroir de paiement RÉEL, celui-là même
+    // qu'utilise la vue Stages : mêmes contrôles, même action validate-payment, mêmes calculs, même
+    // Journal, même persistance — aucune logique financière dupliquée. Les deux accès (vue Stages et
+    // « Paiements dus ») lisent et écrivent la même source de vérité (state.stageRegistrations).
+    // Les scopes event et hébergement restent des dettes DISTINCTES : un tiroir par scope réellement dû.
+    // Aucun champ structurel n'est exposé ici (ni tarif, ni participant, ni prestation, ni suppression).
+    const registrationPaymentHtml = (item) => {
+      const registration = (state.stageRegistrations[item.stageId] || []).find((row) => row.id === item.id);
+      if (!registration) return "";
+      const stage = stageById(item.stageId);
+      const scopes = [
+        { part: "event", label: "Stage", segment: calcStageSegment(registration.event || {}), payments: registration.event?.payments || [], taxRate: stageDefaultTaxRate(stage) },
+        { part: "lodging", label: "Hébergement", segment: calcStageSegment(registration.lodging || {}), payments: registration.lodging?.payments || [], taxRate: lodgingDefaultTaxRate(stage) },
+      ].filter((scope) => scope.segment.restDue > 0.005);
+      return scopes.map((scope) => `<div class="due-item-payment">
+        <span class="due-item-payment-label">${esc(stage.name || "Stage")} · ${esc(scope.label)} · reste dû ${money(scope.segment.restDue)}</span>
+        ${paymentControls("registration", registration.id, scope.payments, { stageId: item.stageId, part: scope.part, total: scope.segment.subtotal, defaultTaxRate: scope.taxRate })}
+      </div>`).join("");
+    };
     const cards = sorted.map(({ person, items, total }) => {
       const label = personLabel(person);
       const email = asText(person.email);
@@ -6167,13 +6202,17 @@
         const editAttrs = item.stageId
           ? `data-id="${esc(item.id)}" data-stage-id="${esc(item.stageId)}"`
           : `data-id="${esc(item.id)}"`;
-        return `<div class="due-item">
+        // Créance Stage : tiroir de paiement (accès financier). Autres modules : bouton existant, inchangé.
+        const action = item.type === "registration"
+          ? registrationPaymentHtml(item)
+          : `<button type="button" class="primary" data-action="${esc(item.editAction)}" ${editAttrs}>Payer</button>`;
+        return `<div class="due-item ${item.type === "registration" ? "due-item-with-payments" : ""}">
           <div class="due-item-info">
             ${statusPill(item.status)}
             <span class="due-item-module">${esc(sourceLabel[item.type] || item.type)} — ${esc(item.module)}</span>
           </div>
           <strong class="due-item-amount">${money(item.amount)}</strong>
-          <button type="button" class="primary" data-action="${esc(item.editAction)}" ${editAttrs}>Payer</button>
+          ${action}
         </div>`;
       }).join("");
       return `<div class="due-card payment-${items[0]?.status === "Refusé" ? "late" : "due"}">
@@ -6992,7 +7031,9 @@
     // masquer ou désactiver la Boutique ne retire jamais ses ventes existantes des totaux — seuls
     // ces indicateurs/raccourcis actionnables disparaissent avec le module.
     const boutiqueEnabled = isModuleEnabled("boutique") && hasFeature("shop");
-    const stagesEnabled = isModuleEnabled("stages");
+    // Module pilote Stages (Lot 2D) : KPI et raccourcis OPÉRATIONNELS Stages suivent l'affichage
+    // isModuleEnabled("stages") ET la fonctionnalité hasFeature("stages"). Les CALCULS restent inconditionnels.
+    const stagesEnabled = isModuleEnabled("stages") && hasFeature("stages");
     const today = todayInputValue();
     const memberCount = state.contacts.members.length;
     const invoicesPending = (state.invoices || [])
@@ -7115,7 +7156,9 @@
         push(order.payments, "Boutique", order, calc.restDue, "edit-order", order.id);
       }
     }
-    if (isModuleEnabled("stages")) {
+    // Lot 2D — liste actionnable « reste dû » (mène à edit-registration, une mutation) : suit
+    // l'affichage ET la fonctionnalité, comme Boutique. Les totaux/CA restent inconditionnels ailleurs.
+    if (isModuleEnabled("stages") && hasFeature("stages")) {
       for (const stage of state.tariffs.stages) {
         for (const registration of state.stageRegistrations[stage.id] || []) {
           const calc = calcRegistration(registration);
@@ -7776,7 +7819,10 @@
         }
       });
     }
-    if (isModuleEnabled("stages")) {
+    // Résultats de recherche Stages : ouvrent une mutation (edit-stage/edit-registration). Surface
+    // opérationnelle (Lot 2D) -> masquée quand la fonctionnalité est désactivée ou l'affichage coupé.
+    // L'historique financier reste consultable via la fiche contact, les factures et la comptabilité.
+    if (isModuleEnabled("stages") && hasFeature("stages")) {
       state.tariffs.stages.forEach((stage) => {
         if (matches([stage.name, stage.lodgingName])) push({ type: "Stage", title: stage.name || "Stage", detail: `${money(stage.unitPrice || 0)} · ${stageParticipantCount(stage.id)} participant(s)`, attrs: `data-action="edit-stage" data-stage-id="${esc(stage.id)}"` });
         (state.stageRegistrations[stage.id] || []).forEach((registration) => {
@@ -8724,7 +8770,9 @@ ${esc(bodyText)}</pre>
   }
 
   function groupStages() {
-    if (!isModuleEnabled("stages")) return [];
+    // Lot 2D — lecture historique inconditionnelle : le regroupement des stages/inscriptions ne dépend
+    // ni de l'affichage (showStages) ni de la fonctionnalité (hasFeature). L'affichage éventuel de ce
+    // regroupement se décide chez l'appelant ; la donnée reste identique dans tous les états.
     return state.tariffs.stages.map((stage) => {
       const rows = state.stageRegistrations[stage.id] || [];
       return {
@@ -9811,7 +9859,9 @@ ${esc(bodyText)}</pre>
   }
 
   function stageUsageStats() {
-    if (!isModuleEnabled("stages")) return [];
+    // Lot 2D — statistiques d'usage = calcul historique inconditionnel (comme boutiqueUsageStats). Le
+    // masquage éventuel de la section (affichage) se décide dans renderStats/exports, jamais ici : la
+    // donnée rapportée reste identique quel que soit showStages / hasFeature.
     return state.tariffs.stages.map((stage) => {
       const rows = state.stageRegistrations[stage.id] || [];
       return rows.reduce((acc, registration) => {
@@ -9950,7 +10000,10 @@ ${esc(bodyText)}</pre>
   }
 
   function renderStats() {
-    const stagesEnabled = isModuleEnabled("stages");
+    // Lot 2D — la section Stages (rapport historique) ne dépend plus de la fonctionnalité ni de
+    // l'affichage : elle suit les DONNÉES (jamais absente uniquement parce que Stages est désactivé ou
+    // masqué ; seulement absente s'il n'existe aucune donnée Stages).
+    const stagesEnabled = hasStageData();
     const boutiqueEnabled = isModuleEnabled("boutique");
     // Sections conditionnées : module visible (mode courant) OU données présentes.
     const showStagesStats = stagesEnabled && shouldShowStatsSection("stages");
@@ -10047,10 +10100,10 @@ ${esc(bodyText)}</pre>
   }
 
   function accountingData() {
-    // Lot 2B — point bloquant 1 : la comptabilité est un CALCUL HISTORIQUE. Les commandes et le stock
-    // existants comptent toujours ; settings.display.showBoutique (affichage) et hasFeature (fonction)
-    // n'y ont AUCUNE influence — seuls les totaux/synthèses restent la source unique (aucun 2e moteur).
-    const stagesEnabled = isModuleEnabled("stages");
+    // Lot 2B/2D — point bloquant 1 : la comptabilité est un CALCUL HISTORIQUE. Les commandes, le stock,
+    // les inscriptions et l'investissement des stages existants comptent toujours ; settings.display
+    // (showBoutique/showStages) et hasFeature n'y ont AUCUNE influence — seuls les totaux/synthèses
+    // restent la source unique (aucun 2e moteur).
     const disciplineRows = state.memberships.map((membership) => {
       const calc = calcMembership(membership);
       const license = asNumber(calc.license);
@@ -10070,7 +10123,10 @@ ${esc(bodyText)}</pre>
         refused: refusedAmount(membership.payments),
       };
     });
-    const stageRows = stagesEnabled ? state.tariffs.stages.flatMap((stage) => (state.stageRegistrations[stage.id] || []).map((registration) => {
+    // Lot 2D — point bloquant : la comptabilité est un CALCUL HISTORIQUE inconditionnel. Les inscriptions
+    // et l'investissement des stages existants comptent TOUJOURS (comme orderRows Boutique), quel que
+    // soit showStages ou hasFeature. Masquer/désactiver ne retire jamais l'historique des totaux.
+    const stageRows = state.tariffs.stages.flatMap((stage) => (state.stageRegistrations[stage.id] || []).map((registration) => {
       const calc = calcRegistration(registration);
       const payments = [...(registration.event?.payments || []), ...(registration.lodging?.payments || [])];
       const tax = paidTaxAmount(payments);
@@ -10088,8 +10144,8 @@ ${esc(bodyText)}</pre>
         result: paidNet,
         refused: refusedAmount(payments),
       };
-    })) : [];
-    const stageInvestmentRows = stagesEnabled ? state.tariffs.stages
+    }));
+    const stageInvestmentRows = state.tariffs.stages
       .filter((stage) => asNumber(stage.investment))
       .map((stage) => ({
         module: "Stages",
@@ -10103,7 +10159,7 @@ ${esc(bodyText)}</pre>
         costs: asNumber(stage.investment),
         result: -asNumber(stage.investment),
         refused: 0,
-      })) : [];
+      }));
     const orderRows = state.shopOrders.map((order) => {
       const calc = calcOrder(order);
       const costs = orderItemDetails(order).reduce((sum, item) => {
@@ -10251,17 +10307,18 @@ ${esc(bodyText)}</pre>
         addTaxPayment(map, "Disciplines", payment, share);
       });
     });
-    if (isModuleEnabled("stages")) {
-      state.tariffs.stages.forEach((stage) => {
-        const allPayments = [];
-        (state.stageRegistrations[stage.id] || []).forEach((registration) => {
-          const payments = [...(registration.event?.payments || []), ...(registration.lodging?.payments || [])];
-          allPayments.push(...payments);
-          payments.forEach((payment) => addTaxPayment(map, "Stages", payment));
-        });
-        addDatedInvestment(map, firstPaidPaymentYear(allPayments), asNumber(stage.investment));
+    // Lot 2D — point bloquant : la TVA encaissée sur les inscriptions existantes fait partie de la
+    // déclaration fiscale HISTORIQUE ; elle est comptée inconditionnellement (indépendant de
+    // settings.display.showStages et de hasFeature), exactement comme la TVA Boutique ci-dessous.
+    state.tariffs.stages.forEach((stage) => {
+      const allPayments = [];
+      (state.stageRegistrations[stage.id] || []).forEach((registration) => {
+        const payments = [...(registration.event?.payments || []), ...(registration.lodging?.payments || [])];
+        allPayments.push(...payments);
+        payments.forEach((payment) => addTaxPayment(map, "Stages", payment));
       });
-    }
+      addDatedInvestment(map, firstPaidPaymentYear(allPayments), asNumber(stage.investment));
+    });
     // Lot 2B — point bloquant 1 : la TVA encaissée sur les commandes existantes fait partie de la
     // déclaration fiscale HISTORIQUE ; elle est comptée inconditionnellement (indépendant de
     // settings.display.showBoutique et de hasFeature).
@@ -10712,7 +10769,10 @@ ${esc(bodyText)}</pre>
   }
 
   function renderAccounting() {
-    const stagesEnabled = isModuleEnabled("stages");
+    // Lot 2D — la rubrique Stages (rapport historique) suit les DONNÉES, jamais la fonctionnalité ni
+    // l'affichage : jamais absente uniquement parce que Stages est désactivé/masqué. Les totaux, eux,
+    // sont déjà inconditionnels (accountingData / taxDeclarationRows / accountingModuleNames).
+    const stagesEnabled = hasStageData();
     const boutiqueEnabled = isModuleEnabled("boutique");
     const data = accountingData();
     const expenseTotalAll = expensesTotal(clubExpenses());
@@ -10898,7 +10958,7 @@ ${esc(bodyText)}</pre>
       `)}
       ${isModuleEnabled("boutique") && hasFeature("shop") ? tariffCollapsibleBand("articles", "Articles", intValue(state.tariffs.articles.length), editableArticles(), "add-tariff-article") : ""}
       ${tariffCollapsibleBand("disciplines", "Disciplines", intValue(state.tariffs.disciplines.length), editableDisciplines(), "add-tariff-discipline")}
-      ${isModuleEnabled("stages") ? tariffCollapsibleBand("stages", "Stages", intValue(state.tariffs.stages.length), editableStages(), "add-tariff-stage") : ""}
+      ${isModuleEnabled("stages") && hasFeature("stages") ? tariffCollapsibleBand("stages", "Stages", intValue(state.tariffs.stages.length), editableStages(), "add-tariff-stage") : ""}
       ${tariffCollapsibleBand("insurance", "Assurances", intValue(state.tariffs.insurance.length), editableInsurance(), "add-tariff-insurance")}`;
   }
 
@@ -11195,7 +11255,7 @@ ${esc(bodyText)}</pre>
   }
 
   function renderHelp() {
-    const stagesEnabled = isModuleEnabled("stages");
+    const stagesEnabled = isModuleEnabled("stages") && hasFeature("stages");
     const boutiqueEnabled = isModuleEnabled("boutique");
     return `
       <div class="help-page">
@@ -11845,12 +11905,15 @@ ${esc(bodyText)}</pre>
 
   // Lot 2C — écran « Fonctionnalités du club ». Axe FONCTIONNALITÉ (settings.features / hasFeature),
   // strictement distinct de l'axe AFFICHAGE (settings.display), des permissions et de l'historique.
-  // La préférence d'affichage showBoutique n'est JAMAIS modifiée ici.
+  // Les préférences d'affichage showBoutique et showStages ne sont JAMAIS modifiées ici.
   function featureDisplayHiddenNote(def) {
-    // Seule la Boutique a aujourd'hui un axe d'affichage lié (showBoutique). Actif mais masqué à
-    // l'écran = fonctionnalité disponible mais préférence d'affichage sur « masquer ».
-    if (def.key !== "shop") return false;
-    return displaySettings().showBoutique === false;
+    // Actif mais masqué à l'écran = fonctionnalité disponible, mais préférence d'affichage sur
+    // « masquer ». Seules Boutique et Stages ont un réglage d'affichage lié ; une fonctionnalité qui
+    // n'en a pas n'est jamais dans cet état. Lecture seule : ne modifie JAMAIS settings.display.
+    const displayKeys = { shop: "showBoutique", stages: "showStages" };
+    const displayKey = displayKeys[def.key];
+    if (!displayKey) return false;
+    return displaySettings()[displayKey] === false;
   }
 
   function featureCardHtml(def) {
@@ -11951,9 +12014,10 @@ ${esc(bodyText)}</pre>
             <div class="settings-check-grid">
               ${displaySettingToggle("showAssistant", "Afficher le Centre d'accompagnement et les visites guidées", "Désactivez cette option si vous connaissez déjà le logiciel et ne souhaitez plus afficher les aides guidées.")}
               ${displaySettingToggle("toolbarLabels", "Texte sous les icônes", "Ajoute un petit libellé sous les boutons de la barre du haut.")}
-              ${displaySettingToggle("showStages", "Module Stages (données)", "Inclut ou exclut les stages des statistiques et de la comptabilité. Indépendant de sa visibilité dans le menu.")}
+              ${displaySettingToggle("showStages", "Afficher les Stages lorsqu'ils sont activés", "Ce réglage masque ou affiche les écrans des Stages sans activer ni désactiver la fonctionnalité et sans modifier les données.")}
               ${displaySettingToggle("showBoutique", "Afficher la Boutique lorsqu'elle est activée", "Ce réglage masque ou affiche les écrans de la Boutique sans activer ni désactiver la fonctionnalité et sans modifier les données.")}
             </div>
+            ${!hasFeature("stages") ? `<p class="muted feature-display-context">Les Stages sont actuellement désactivés dans Fonctionnalités du club. Ce réglage d'affichage sera conservé pour une prochaine réactivation.</p>` : ""}
             ${!hasFeature("shop") ? `<p class="muted feature-display-context">La Boutique est actuellement désactivée dans Fonctionnalités du club. Ce réglage d'affichage sera conservé pour une prochaine réactivation.</p>` : ""}
           </div>
         </div>`)}
@@ -14354,9 +14418,20 @@ ${esc(bodyText)}</pre>
     // Bloqué quand la fonctionnalité est désactivée, pour ne jamais détruire l'historique qui doit
     // rester conservé et restituable après réactivation. Le scope global "all" n'est pas concerné.
     if (["boutique", "boutique-orders", "boutique-articles"].includes(scope) && !ensureFeatureEnabledForMutation("shop")) return;
+    // Lot 2D — un vidage destructif CIBLÉ de données Stages est une mutation Stages : bloqué quand la
+    // fonctionnalité est désactivée, pour ne jamais détruire l'historique qui doit rester conservé et
+    // restituable après réactivation. Le scope global "all" (vidage complet explicitement confirmé)
+    // n'est jamais concerné : désactiver une fonctionnalité ≠ masquer ≠ supprimer les données.
+    if (["stages", "stage-registrations"].includes(scope) && !ensureFeatureEnabledForMutation("stages")) return;
     const info = resetScopeInfo(scope);
     const message = `${info.detail}\nSeul le club actif est concerné. Les autres clubs ne sont pas touchés.\nPense à exporter une sauvegarde JSON avant de supprimer. Action irréversible.`;
+    // Club ciblé (Lot 2D) : capturé AVANT la confirmation protégée, qui est asynchrone (saisie du mot
+    // de passe). Sans cela, un changement de club pendant la confirmation ferait porter le vidage sur
+    // le club devenu actif — la promesse « Seul le club actif est concerné » est celle affichée à
+    // l'ouverture. Un club différent au moment de valider = annulation, sans recordHistory ni persist.
+    const targetClubId = activeClubId();
     if (!(await requestProtectedDangerAction(`Vider : ${info.label}`, message, `Vider ${info.label.toLowerCase()}`))) return;
+    if (activeClubId() !== targetClubId) { ui.saveMessage = "Opération annulée : le club actif a changé."; render(); return; }
     recordHistory();
     applyResetScope(scope);
     persist(`Vidage : ${info.label}`);
@@ -16152,7 +16227,12 @@ ${esc(bodyText)}</pre>
         }));
       }
     });
-    if (isModuleEnabled("stages")) {
+    // Lot 2D — point bloquant : le contenu FACTURABLE d'un contact (calcul des factures) inclut TOUJOURS
+    // ses inscriptions existantes. Cette lecture historique ne dépend ni de settings.display.showStages
+    // ni de hasFeature : une créance de stage déjà enregistrée reste facturable et soldable via les
+    // chemins financiers génériques (facture de contact, avoir, paiement). La CRÉATION de NOUVELLES
+    // données Stages, elle, reste gardée par hasFeature (ensureFeatureEnabledForMutation) aux mutations.
+    {
       state.tariffs.stages.forEach((stage) => {
         (state.stageRegistrations[stage.id] || []).filter((row) => contactRecordMatches(contact, row)).forEach((row) => {
           const event = calcStageSegment(row.event || {});
@@ -16538,7 +16618,7 @@ ${esc(bodyText)}</pre>
           </section>`
         : contactRecapSection("Disciplines", memberships, contactRecapMembership)}
       ${contactRecapSection("Boutique", orders, contactRecapOrder, (isModuleEnabled("boutique") && hasFeature("shop")) ? "" : "Module désactivé — historique conservé. Réactivez le module pour ajouter de nouvelles données.")}
-      ${contactRecapSection("Stages", registrations, contactRecapRegistration, isModuleEnabled("stages") ? "" : "Module désactivé — historique conservé. Réactivez le module pour ajouter de nouvelles données.")}
+      ${contactRecapSection("Stages", registrations, contactRecapRegistration, (isModuleEnabled("stages") && hasFeature("stages")) ? "" : "Module désactivé — historique conservé. Réactivez le module pour ajouter de nouvelles données.")}
       ${invoiceRows.length ? `<section class="contact-recap-section">
         <h4>Factures</h4>
         <div class="contact-recap-kpis">
@@ -19066,6 +19146,11 @@ ${esc(bodyText)}</pre>
   }
 
   function openStageDialog(row = {}, options = {}) {
+    // Lot 2D — garde de mutation à l'ouverture : créer/modifier un stage est une mutation métier,
+    // bloquée quand la fonctionnalité stages est désactivée pour le club (jamais un simple masquage).
+    if (!ensureFeatureEnabledForMutation("stages")) return;
+    // Club ciblé (étape 12) : mémorisé à l'ouverture, re-vérifié au submit (dialogue asynchrone).
+    const openedClubId = activeClubId();
     const stage = row.id ? row : createStageDefaults();
     const isNewStage = !row.id || options.duplicate;
     const body = [
@@ -19089,6 +19174,11 @@ ${esc(bodyText)}</pre>
     ].join("");
     setNextWindowKey(isNewStage ? null : `stage:${stage.id}`);
     showDialog(isNewStage ? "Nouveau stage" : "Modifier le stage", body, (form) => {
+      // Dialogue périmé (Lot 2D) : la fonctionnalité a pu être désactivée pendant que le dialogue
+      // restait ouvert -> aucune mutation, aucun persist, aucun Journal (return false, avant recordHistory
+      // effectif). Le club a pu changer -> ne jamais écrire dans un autre club.
+      if (!ensureFeatureEnabledForMutation("stages")) return false;
+      if (activeClubId() !== openedClubId) { ui.saveMessage = "Opération annulée : le club actif a changé."; return false; }
       const startDate = dateInputValue(form.get("startDate"));
       const endDate = dateInputValue(form.get("endDate"));
       const registrationDeadline = dateInputValue(form.get("registrationDeadline"));
@@ -19137,6 +19227,10 @@ ${esc(bodyText)}</pre>
   }
 
   function openRegistrationStageChoiceDialog(options = {}) {
+    // Lot 2D — garde de mutation : inscrire un participant est une mutation métier (bloquée quand la
+    // fonctionnalité stages est désactivée). La régularisation financière d'une inscription EXISTANTE
+    // reste possible par la facture de contact (billables historiques inconditionnels).
+    if (!ensureFeatureEnabledForMutation("stages")) return;
     const contactLink = asText(options.contactLink || "");
     const contact = contactLink ? contactByLink(contactLink) : null;
     const link = parseContactLink(contactLink);
@@ -19183,6 +19277,13 @@ ${esc(bodyText)}</pre>
   }
 
   function openRegistrationDialog(stageId, row = {}) {
+    // Lot 2D — garde de mutation à l'ouverture : créer/modifier une inscription est une mutation métier.
+    // Bloquée quand la fonctionnalité stages est désactivée (jamais un simple masquage d'affichage). La
+    // créance d'une inscription EXISTANTE reste facturable/soldable via la facture de contact générique
+    // (billableItemsForContact inconditionnel) et payable via le tiroir de paiement / la facture émise.
+    if (!ensureFeatureEnabledForMutation("stages")) return;
+    // Club ciblé (étape 12) : mémorisé à l'ouverture, re-vérifié au submit.
+    const openedClubId = activeClubId();
     // Lot 5A — capturée AVANT le merge d'affichage ci-dessous (qui complète les champs vides avec
     // le contact lié pour préremplir le formulaire) : sert de "before" fidèle pour le diff d'audit.
     const originalRegistration = row;
@@ -19261,6 +19362,11 @@ ${esc(bodyText)}</pre>
     ].filter(Boolean).join("");
     setNextWindowKey(row.id ? `stage-registration:${row.id}` : null);
     showDialog(row.id ? "Modifier l'inscription stage" : "Nouvelle inscription stage", body, (form, formElement) => {
+      // Dialogue périmé (Lot 2D) : re-vérifier au submit — la fonctionnalité a pu être désactivée
+      // pendant que le dialogue restait ouvert -> aucune mutation, aucun persist, aucun Journal. Club
+      // ciblé : ne jamais écrire dans un autre club si le club actif a changé depuis l'ouverture.
+      if (!ensureFeatureEnabledForMutation("stages")) return false;
+      if (activeClubId() !== openedClubId) { ui.saveMessage = "Opération annulée : le club actif a changé."; return false; }
       // Drapeau « Imprimer la facture » (posé par le bouton dédié) : lu puis effacé d'emblée, même si la
       // validation échoue, pour ne pas déclencher une impression au prochain Enregistrer normal.
       const wantsPrintInvoice = formElement.dataset.printRegistrationInvoice === "1";
@@ -20867,7 +20973,8 @@ ${esc(bodyText)}</pre>
         ["TVA actuelle", "", isClubVatExempt() ? "—" : settings.defaultVatRate, "", "", ""],
         ...state.tariffs.disciplines.map((row) => ["Discipline", row.name, row.price, row.licenseFee, tariffTaxRate(row), ""]),
         ...state.tariffs.insurance.map((row) => ["Assurance", row.category, row.label, row.amounts?.join(" | "), tariffTaxRate(row), ""]),
-        ...(isModuleEnabled("stages") ? state.tariffs.stages.map((row) => ["Stage", row.name, row.unitPrice, row.investment, tariffTaxRate(row), `${row.lodgingName || ""} ${row.lodgingUnitPrice || ""}`]) : []),
+        // Lot 2D — export historique des tarifs Stages, inconditionnel (indépendant de showStages / hasFeature).
+        ...state.tariffs.stages.map((row) => ["Stage", row.name, row.unitPrice, row.investment, tariffTaxRate(row), `${row.lodgingName || ""} ${row.lodgingUnitPrice || ""}`]),
         // Lot 2B — point bloquant 1 : export historique des tarifs Articles, inconditionnel (indépendant de showBoutique).
         ...state.tariffs.articles.map((row) => ["Article", row.name, row.priceOptions?.[0] ?? row.defaultPrice ?? 0, row.priceOptions?.[1] ?? 0, tariffTaxRate(row), row.reference || ""]),
       ];
@@ -20876,7 +20983,8 @@ ${esc(bodyText)}</pre>
     if (ui.view === "stats") {
       const rows = [
         ...disciplineUsageStats().map((row) => ["Discipline", row.name, row.count, row.total, row.paid, row.due]),
-        ...(isModuleEnabled("stages") ? stageUsageStats().map((row) => ["Stage", row.name, row.count, row.total, row.paid, row.due]) : []),
+        // Lot 2D — export historique des statistiques Stages, inconditionnel (indépendant de showStages / hasFeature).
+        ...stageUsageStats().map((row) => ["Stage", row.name, row.count, row.total, row.paid, row.due]),
         // Lot 2B — point bloquant 1 : export historique des statistiques Boutique, inconditionnel (indépendant de showBoutique).
         ...boutiqueUsageStats().map((row) => ["Boutique", row.name, row.stock, row.total, row.quantity, row.orders]),
       ];
@@ -21128,7 +21236,10 @@ ${esc(bodyText)}</pre>
   // aucune statistique, aucun calcul financier n'est modifié.
   function statsPdfPayload(generatedAt) {
     const clubName = (typeof activeClub === "function" && activeClub() && activeClub().name) || asText(settings && settings.clubName) || "";
-    const stagesEnabled = isModuleEnabled("stages");
+    // Lot 2D — ce PDF est un RAPPORT/EXPORT historique : la section Stages figure dès qu'il existe des
+    // données Stages (indépendant de showStages et de hasFeature). Les chiffres restent identiques à
+    // l'écran/la Comptabilité.
+    const stagesEnabled = hasStageData();
     // Lot 2B — point bloquant 1 : ce PDF est un RAPPORT/EXPORT historique. La Boutique y figure toujours
     // dès qu'elle a des données (indépendant de settings.display.showBoutique) ; seul l'écran interactif
     // Statistiques peut masquer la section. Les chiffres restent identiques à la Comptabilité.
@@ -21998,7 +22109,10 @@ ${esc(bodyText)}</pre>
   // on ne les re-soustrait jamais. Les avoirs actifs ne sont soustraits que dans le solde corrigé.
   function accountingPdfPayload(generatedAt) {
     const clubName = (typeof activeClub === "function" && activeClub() && activeClub().name) || asText(settings && settings.clubName) || "";
-    const stagesEnabled = isModuleEnabled("stages");
+    // Lot 2D — export comptable historique : la section Stages figure dès qu'il existe des données
+    // (indépendant de showStages et de hasFeature). accountingData/accountingModuleNames sont déjà
+    // inconditionnels : les totaux sont identiques quel que soit l'état d'affichage/fonctionnalité.
+    const stagesEnabled = hasStageData();
     // Lot 2B — point bloquant 1 : l'export comptable PDF s'appuie exclusivement sur accountingData()
     // et accountingModuleNames(), tous deux inconditionnels pour la Boutique : le résultat est donc
     // identique que la Boutique soit masquée (showBoutique) ou non. (Aucun drapeau boutique local ici.)
@@ -23047,8 +23161,8 @@ ${esc(bodyText)}</pre>
     if (target.dataset.featureSetting) {
       // Lot 2C — écran « Fonctionnalités du club ». Axe FONCTIONNALITÉ uniquement (jamais l'affichage,
       // jamais un rôle/permission). SÉCURITÉ : on reconsulte le REGISTRE (jamais confiance au seul
-      // DOM). Une clé inconnue, une fonctionnalité non disponible dans l'écran (ex. Stages), une clé
-      // dangereuse ou une valeur non booléenne ne persiste RIEN. Ne modifie jamais settings.display.
+      // DOM). Une clé inconnue, une fonctionnalité non disponible dans l'écran (ui.available !== true),
+      // une clé dangereuse ou une valeur non booléenne ne persiste RIEN. Ne modifie jamais settings.display.
       const requestedKey = target.dataset.featureSetting;
       const def = featureDefinition(requestedKey);
       if (!def || !def.ui || def.ui.available !== true) { render(); return; }
@@ -23109,21 +23223,11 @@ ${esc(bodyText)}</pre>
           return;
         }
       }
-      if (target.dataset.displaySetting === "showStages" && !target.checked) {
-        const upcoming = (state.tariffs.stages || []).filter((s) => !stageIsPast(s)).length;
-        const unpaid = Object.values(state.stageRegistrations || {})
-          .flat()
-          .filter((row) => calcRegistration(row).restDue > 0.005).length;
-        if (upcoming || unpaid) {
-          const impacts = [
-            upcoming ? `${upcoming} stage(s) à venir` : "",
-            unpaid ? `${unpaid} inscription(s) avec paiement à régulariser` : "",
-          ].filter(Boolean).join(" et ");
-          alert(`Impossible de désactiver le module Stages : ${impacts}. Terminez ou soldez ces éléments d'abord.`);
-          render();
-          return;
-        }
-      }
+      // Lot 2D — showStages est désormais un réglage d'AFFICHAGE pur : masquer les écrans Stages est une
+      // opération NON destructive (aucune donnée, aucun calcul, aucune facture, aucun paiement retiré).
+      // L'ancien blocage « stages à venir / inscriptions impayées » a donc été retiré : la protection
+      // des données est portée par la FONCTIONNALITÉ (hasFeature + ensureFeatureEnabledForMutation),
+      // pas par l'affichage. La désactivation fonctionnelle, elle, ne modifie jamais showStages.
       recordHistory();
       settings.display = normalizeDisplaySettings(settings.display);
       settings.display[target.dataset.displaySetting] = Boolean(target.checked);
@@ -24037,9 +24141,12 @@ ${esc(bodyText)}</pre>
       return;
     }
     if (action === "open-contact-module") {
-      if ((button.dataset.module === "boutique" && !isModuleEnabled("boutique")) || (button.dataset.module === "stages" && !isModuleEnabled("stages"))) return;
+      if (button.dataset.module === "boutique" && !isModuleEnabled("boutique")) return;
       // Module pilote Boutique (Lot 2B) : ouvrir une commande depuis un contact est une mutation.
       if (button.dataset.module === "boutique" && !ensureFeatureEnabledForMutation("shop")) return;
+      // Module pilote Stages (Lot 2D) : ouvrir une inscription depuis un contact est une mutation métier
+      // (jamais conditionnée par showStages). Bloquée quand la fonctionnalité stages est désactivée.
+      if (button.dataset.module === "stages" && !ensureFeatureEnabledForMutation("stages")) return;
       // Depuis un NOUVEAU contact : on valide puis on enregistre le contact AVANT d'ouvrir le module.
       // Si un champ requis manque, reportValidity bloque -> pas de création, pas de navigation, popup
       // ouverte. Sinon showDialog ouvre le module sur le contact créé (follow-up). Contact existant :
@@ -24862,6 +24969,8 @@ ${esc(bodyText)}</pre>
       return openStageDialog(next, { duplicate: true });
     }
     if (action === "reactivate-stage" || action === "close-stage-registration") {
+      // Lot 2D — mutation métier (ouverture/fermeture des inscriptions) : gardée avant recordHistory.
+      if (!ensureFeatureEnabledForMutation("stages")) return;
       const stage = stageById(button.dataset.stageId || ui.stageId);
       if (!stage.id) return;
       recordHistory();
@@ -24873,6 +24982,8 @@ ${esc(bodyText)}</pre>
       return;
     }
     if (action === "delete-stage") {
+      // Lot 2D — suppression = mutation destructive ciblée : gardée avant toute lecture/mutation.
+      if (!ensureFeatureEnabledForMutation("stages")) return;
       const stage = stageById(button.dataset.stageId || ui.stageId);
       if (!stage.id) return;
       const count = stageParticipantCount(stage.id);
@@ -24880,7 +24991,11 @@ ${esc(bodyText)}</pre>
         alert("Ce stage contient des participants. Il faut supprimer les inscriptions avant de supprimer le stage.");
         return;
       }
+      // Club ciblé (Lot 2D) : capturé AVANT la confirmation asynchrone ; si le club actif change
+      // pendant la confirmation, on annule sans recordHistory, sans persist, sans Journal.
+      const targetClubId = activeClubId();
       if (!await requestConfirm({ title: "Supprimer le stage", message: `Supprimer le stage "${stage.name}" ?`, confirmLabel: "Supprimer", danger: true })) return;
+      if (activeClubId() !== targetClubId) { ui.saveMessage = "Opération annulée : le club actif a changé."; render(); return; }
       recordHistory();
       // Capturé AVANT suppression : le Journal doit rester lisible même une fois le stage disparu.
       const deletedStageSnapshot = { ...stage };
@@ -24893,17 +25008,29 @@ ${esc(bodyText)}</pre>
       return;
     }
     if (action === "add-registration") {
-      if (!isModuleEnabled("stages")) return;
+      // Lot 2D — inscrire = mutation métier. La garde est portée par les dialogues (open) ; on n'ouvre
+      // même pas le sélecteur si la fonctionnalité est désactivée. showStages (affichage) n'entre pas ici.
+      if (!ensureFeatureEnabledForMutation("stages")) return;
       if (button.dataset.stageId) return openRegistrationDialog(button.dataset.stageId);
       return openRegistrationStageChoiceDialog();
     }
-    if (action === "edit-registration") return isModuleEnabled("stages") ? openRegistrationDialog(button.dataset.stageId, (state.stageRegistrations[button.dataset.stageId] || []).find((row) => row.id === button.dataset.id)) : undefined;
+    if (action === "edit-registration") {
+      // Lot 2D — modifier une inscription = mutation métier (jamais conditionnée par showStages).
+      if (!ensureFeatureEnabledForMutation("stages")) return;
+      return openRegistrationDialog(button.dataset.stageId, (state.stageRegistrations[button.dataset.stageId] || []).find((row) => row.id === button.dataset.id));
+    }
     if (action === "delete-current-registration") {
+      // Lot 2D — suppression d'un participant = mutation destructive : gardée avant confirmation/mutation.
+      if (!ensureFeatureEnabledForMutation("stages")) return;
       const stageId = button.dataset.stageId;
       const registrationId = button.dataset.id;
       const registration = (state.stageRegistrations[stageId] || []).find((row) => row.id === registrationId);
       if (!registration) return;
+      // Club ciblé (Lot 2D) : capturé AVANT la confirmation asynchrone ; si le club actif change
+      // pendant la confirmation, on annule sans recordHistory, sans persist, sans Journal.
+      const targetClubId = activeClubId();
       if (!await requestConfirm({ title: "Supprimer le participant", message: `Supprimer le participant ${personLabel(registration)} ?`, confirmLabel: "Supprimer", danger: true })) return;
+      if (activeClubId() !== targetClubId) { ui.saveMessage = "Opération annulée : le club actif a changé."; render(); return; }
       recordHistory();
       removeById(state.stageRegistrations[stageId], registrationId);
       persist(`Participant stage supprimé : ${personLabel(registration)}`);
@@ -24913,10 +25040,16 @@ ${esc(bodyText)}</pre>
       return;
     }
     if (action === "delete-registration") {
+      // Lot 2D — suppression d'une inscription = mutation destructive : gardée avant confirmation/mutation.
+      if (!ensureFeatureEnabledForMutation("stages")) return;
       const stageId = button.dataset.stageId;
       const registrationId = button.dataset.id;
       const registration = (state.stageRegistrations[stageId] || []).find((row) => row.id === registrationId);
+      // Club ciblé (Lot 2D) : capturé AVANT la confirmation asynchrone ; si le club actif change
+      // pendant la confirmation, on annule sans recordHistory, sans persist, sans Journal.
+      const targetClubId = activeClubId();
       if (!await requestConfirm({ title: "Supprimer l'inscription", message: "Supprimer cette inscription stage ?", confirmLabel: "Supprimer", danger: true })) return;
+      if (activeClubId() !== targetClubId) { ui.saveMessage = "Opération annulée : le club actif a changé."; render(); return; }
       recordHistory();
       removeById(state.stageRegistrations[stageId], registrationId);
       persist("Inscription stage supprimée");
@@ -25105,6 +25238,8 @@ ${esc(bodyText)}</pre>
       return;
     }
     if (action === "add-tariff-stage") {
+      // Lot 2D — ajouter un tarif/stage = mutation métier : gardée avant recordHistory.
+      if (!ensureFeatureEnabledForMutation("stages")) return;
       recordHistory();
       const stage = createStageDefaults();
       stampRecordClubId(stage);
@@ -25117,6 +25252,8 @@ ${esc(bodyText)}</pre>
       return;
     }
     if (action === "delete-tariff-stage") {
+      // Lot 2D — suppression d'un tarif/stage = mutation destructive : gardée avant toute lecture/mutation.
+      if (!ensureFeatureEnabledForMutation("stages")) return;
       const index = Number(button.dataset.index);
       const stage = state.tariffs.stages[index];
       if (stage && stageParticipantCount(stage.id)) {
@@ -31674,7 +31811,9 @@ ${esc(bodyText)}</pre>
       if (soon && isViewVisible("documents")) items.push({ label: `${soon} document${soon > 1 ? "s" : ""} expire${soon > 1 ? "nt" : ""} bientôt`, view: "documents" });
     } catch (e) {}
     try {
-      if (isModuleEnabled("stages")) {
+      // Lot 2D — élément actionnable menant à la vue Stages : masqué quand la fonctionnalité est
+      // désactivée ou l'affichage coupé (évite un lien vers une vue invisible / une redirection).
+      if (isModuleEnabled("stages") && hasFeature("stages")) {
         const upcoming = (state.tariffs.stages || []).filter((s) => { const d = dateInputValue(s.startDate); return d && d >= today; }).length;
         if (upcoming) items.push({ label: `${upcoming} stage${upcoming > 1 ? "s" : ""} à venir`, view: "stages" });
       }
