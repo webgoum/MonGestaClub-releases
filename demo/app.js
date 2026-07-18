@@ -5509,22 +5509,35 @@
     };
   }
 
+  // Lot 2F — prédicat monétaire COMMUN à la surface « Paiements dus » (allAlerts + renderDuePayments).
+  // Une créance n'est listée et actionnable que si son reste dû, ARRONDI AU CENTIME RÉELLEMENT AFFICHÉ,
+  // vaut au moins 0,01 € — exactement ce que montre money(). Cela supprime la divergence historique
+  // (allAlerts utilisait « > 0 », le rendu « > 0.005 ») et neutralise les résidus flottants. Attention :
+  // money() affiche déjà « 0,01 € » dès 0,005 (arrondi), donc un simple « > 0.005 » masquerait à tort
+  // une ligne affichée à 0,01 € ; l'arrondi en centimes est la seule règle cohérente avec l'affichage.
+  // Négatif / NaN / valeur absente -> 0 centime -> jamais une dette actionnable. Ne modifie AUCUN calcul.
+  function isPayableDue(amount) {
+    return Math.round(asNumber(amount) * 100) >= 1;
+  }
+
   function allAlerts() {
     const rows = [];
     for (const membership of state.memberships) {
       const calc = calcMembership(membership);
-      if (calc.restDue > 0) rows.push({ type: "membership", editAction: "edit-membership", id: membership.id, module: "Disciplines", person: membership, status: alertStatusForPayments(membership.payments), amount: calc.restDue });
+      if (isPayableDue(calc.restDue)) rows.push({ type: "membership", editAction: "edit-membership", id: membership.id, module: "Disciplines", person: membership, status: alertStatusForPayments(membership.payments), amount: calc.restDue });
     }
-    // Module pilote Boutique (Lot 2B) : les alertes OPÉRATIONNELLES « reste dû » d'une commande
-    // (menant à edit-order, une mutation) suivent l'affichage isModuleEnabled("boutique") ET la
-    // fonctionnalité hasFeature("shop"). En revanche dashboardStats reste un CALCUL HISTORIQUE
-    // inconditionnel : masquer ou désactiver la Boutique ne retire pas ses commandes existantes des
-    // totaux (CA global). Seule cette liste d'alertes actionnables se cache avec le module.
-    if (isModuleEnabled("boutique") && hasFeature("shop")) {
-      for (const order of state.shopOrders) {
-        const calc = calcOrder(order);
-        if (calc.restDue > 0) rows.push({ type: "order", editAction: "edit-order", id: order.id, module: "Boutique", person: order, status: alertStatusForPayments(order.payments), amount: calc.restDue });
-      }
+    // Module pilote Boutique — Lot 2F : une CRÉANCE Boutique existante est une donnée financière,
+    // jamais une surface opérationnelle -> recensée INCONDITIONNELLEMENT (comme Disciplines et Stages),
+    // indépendamment de settings.display.showBoutique et de hasFeature("shop"). Désactiver ou masquer
+    // la Boutique retire sa vue, ses créations et ses actions de stock, mais JAMAIS une dette existante :
+    // elle doit rester visible et directement soldable dans « Paiements dus » (order.payments), sans
+    // réactivation ni dépendance à une facture. C'est renderDuePayments qui n'expose alors qu'une action
+    // FINANCIÈRE (le tiroir de paiement de la commande), jamais une mutation structurelle. editAction
+    // "edit-order" retiré : plus aucun consommateur ne le lit depuis cette surface (le tiroir remplace
+    // le bouton). Aligne Boutique sur le comportement Stages (Lot 2D) dans la surface générique.
+    for (const order of state.shopOrders) {
+      const calc = calcOrder(order);
+      if (isPayableDue(calc.restDue)) rows.push({ type: "order", id: order.id, module: "Boutique", person: order, status: alertStatusForPayments(order.payments), amount: calc.restDue });
     }
     // Module pilote Stages (Lot 2D) : une CRÉANCE existante est une donnée financière, jamais une
     // surface opérationnelle -> elle est recensée INCONDITIONNELLEMENT (comme Disciplines ci-dessus),
@@ -5537,7 +5550,15 @@
       for (const registration of state.stageRegistrations[stage.id] || []) {
         const payments = [...(registration.event?.payments || []), ...(registration.lodging?.payments || [])];
         const calc = calcRegistration(registration);
-        if (calc.restDue > 0) rows.push({ type: "registration", editAction: "edit-registration", id: registration.id, stageId: stage.id, module: stage.name, person: registration, status: alertStatusForPayments(payments), amount: calc.restDue });
+        // Lot 2F — listée si et seulement si au moins un SCOPE (événement OU hébergement) est encore dû
+        // au centime, avec le MÊME prédicat isPayableDue que renderDuePayments : toute ligne affichée
+        // possède donc toujours au moins un tiroir de paiement (jamais de ligne « 0,00 € » sans contrôle).
+        // stageId est CONSERVÉ (registrationPaymentHtml en a besoin pour retrouver l'inscription). En
+        // revanche editAction "edit-registration" est retiré : depuis le Lot 2D, cette surface n'expose
+        // qu'un tiroir de paiement (jamais une mutation structurelle), et plus aucun consommateur ne le lit.
+        const eventDue = isPayableDue(calcStageSegment(registration.event || {}).restDue);
+        const lodgingDue = isPayableDue(calcStageSegment(registration.lodging || {}).restDue);
+        if (eventDue || lodgingDue) rows.push({ type: "registration", id: registration.id, stageId: stage.id, module: stage.name, person: registration, status: alertStatusForPayments(payments), amount: calc.restDue });
       }
     }
     return rows;
@@ -6187,11 +6208,29 @@
       const scopes = [
         { part: "event", label: "Stage", segment: calcStageSegment(registration.event || {}), payments: registration.event?.payments || [], taxRate: stageDefaultTaxRate(stage) },
         { part: "lodging", label: "Hébergement", segment: calcStageSegment(registration.lodging || {}), payments: registration.lodging?.payments || [], taxRate: lodgingDefaultTaxRate(stage) },
-      ].filter((scope) => scope.segment.restDue > 0.005);
+      ].filter((scope) => isPayableDue(scope.segment.restDue));
       return scopes.map((scope) => `<div class="due-item-payment">
         <span class="due-item-payment-label">${esc(stage.name || "Stage")} · ${esc(scope.label)} · reste dû ${money(scope.segment.restDue)}</span>
         ${paymentControls("registration", registration.id, scope.payments, { stageId: item.stageId, part: scope.part, total: scope.segment.subtotal, defaultTaxRate: scope.taxRate })}
       </div>`).join("");
+    };
+    // Lot 2F — accès FINANCIER à une créance Boutique existante, sur le même modèle que Stages (Lot 2D).
+    // Une commande non soldée reste encaissable depuis « Paiements dus » quelle que soit la disponibilité
+    // (hasFeature("shop")) ou l'affichage (showBoutique) de la Boutique : on rend le tiroir de paiement
+    // RÉEL — paymentControls("order", …), celui-là même qu'utilise la vue Boutique — écrivant directement
+    // dans order.payments. Même moteur (validate-payment), mêmes calculs (calcOrder), même Journal, aucune
+    // logique dupliquée. Aucun champ structurel (article, quantité, stock) n'est exposé. La facture
+    // éventuellement liée et son paymentsSnapshot ne sont PAS touchés (désynchronisation préexistante,
+    // hors périmètre du Lot 2F). Le prédicat isPayableDue garantit qu'un tiroir n'apparaît que si dû.
+    const orderPaymentHtml = (item) => {
+      const order = (state.shopOrders || []).find((row) => row.id === item.id);
+      if (!order) return "";
+      const calc = calcOrder(order);
+      if (!isPayableDue(calc.restDue)) return "";
+      return `<div class="due-item-payment">
+        <span class="due-item-payment-label">Boutique · reste dû ${money(calc.restDue)}</span>
+        ${paymentControls("order", order.id, order.payments || [], { total: calc.total, defaultTaxRate: orderDefaultTaxRate(order) })}
+      </div>`;
     };
     const cards = sorted.map(({ person, items, total }) => {
       const label = personLabel(person);
@@ -6199,14 +6238,18 @@
       const phone = asText(person.phone || person.tel);
       const category = asText(person.discipline || person.category);
       const itemRows = items.map((item) => {
-        const editAttrs = item.stageId
-          ? `data-id="${esc(item.id)}" data-stage-id="${esc(item.stageId)}"`
-          : `data-id="${esc(item.id)}"`;
-        // Créance Stage : tiroir de paiement (accès financier). Autres modules : bouton existant, inchangé.
+        // Créances Stage et Boutique : tiroir de paiement (accès financier, via registrationPaymentHtml
+        // / orderPaymentHtml). Seules les adhésions gardent le bouton d'édition existant (edit-membership),
+        // qui reste utile pour modifier/encaisser une cotisation. Lot 2F — seul le type membership atteint
+        // ce bouton, et une adhésion n'a jamais de stageId : editAttrs se limite à data-id.
+        const editAttrs = `data-id="${esc(item.id)}"`;
+        const usesDrawer = item.type === "registration" || item.type === "order";
         const action = item.type === "registration"
           ? registrationPaymentHtml(item)
-          : `<button type="button" class="primary" data-action="${esc(item.editAction)}" ${editAttrs}>Payer</button>`;
-        return `<div class="due-item ${item.type === "registration" ? "due-item-with-payments" : ""}">
+          : item.type === "order"
+            ? orderPaymentHtml(item)
+            : `<button type="button" class="primary" data-action="${esc(item.editAction)}" ${editAttrs}>Payer</button>`;
+        return `<div class="due-item ${usesDrawer ? "due-item-with-payments" : ""}">
           <div class="due-item-info">
             ${statusPill(item.status)}
             <span class="due-item-module">${esc(sourceLabel[item.type] || item.type)} — ${esc(item.module)}</span>
@@ -24264,10 +24307,19 @@ ${esc(bodyText)}</pre>
     if (action === "validate-form-payment") return validateFormPayment(button);
     if (action === "validate-payment") {
       const paymentContext = paymentContextFrom(button);
-      // Module pilote Boutique (Lot 2B) : valider/annuler un paiement de commande Boutique est une
-      // mutation active — bloquée quand la fonctionnalité shop est désactivée (le paiement
-      // historique déjà enregistré reste, lui, intact et lisible ailleurs).
-      if (paymentContext.module === "boutique" && !ensureFeatureEnabledForMutation("shop")) return;
+      // Lot 2F — CONTRAT EXPLICITE : valider/annuler un paiement est une RÉGULARISATION FINANCIÈRE
+      // HISTORIQUE (encaisser/annuler une créance DÉJÀ enregistrée), jamais une mutation structurelle.
+      // Elle est donc autorisée quel que soit l'état des fonctionnalités du club : une commande (order)
+      // ou une inscription (registration) reste soldable même Boutique/Stages désactivés, exactement
+      // comme une adhésion (membership). Les CRÉATIONS et MODIFICATIONS structurelles (add-order,
+      // edit-order, edit-stock-*, add-registration, edit-registration, add/edit-stage, vidages ciblés…)
+      // gardent, elles, leurs propres ensureFeatureEnabledForMutation à leurs points respectifs.
+      // Sécurité des types : seuls les trois types de paiement RÉELLEMENT émis par paymentControls sont
+      // acceptés ici ; un data-payment-module inconnu ou falsifié est refusé explicitement (aucune
+      // autorisation implicite, aucune écriture). Remplace l'ancienne dépendance ACCIDENTELLE au fait
+      // que la garde testait "boutique" alors que le tiroir pose "order" (garde qui ne matchait jamais).
+      const HISTORICAL_PAYMENT_MODULES = ["membership", "order", "registration"];
+      if (!HISTORICAL_PAYMENT_MODULES.includes(paymentContext.module)) return;
       const snapshot = snapshotState();
       recordHistory();
       const validation = validatePayment(button);
