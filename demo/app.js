@@ -4998,6 +4998,32 @@
     }, 0);
   }
 
+  // Lot 2G-C1 — Validation/normalisation COMMUNE d'un montant de paiement SOUMIS. Unique règle au
+  // centime partagée par le tiroir live (validate-payment : membership / order / registration) ET le
+  // formulaire de la fiche (validate-form-payment) — aucune exception propre à un type de créance.
+  //
+  // La valeur RÉELLEMENT présente dans le champ au moment de la validation fait foi : le tiroir est
+  // pré-rempli à l'ouverture avec la suggestion du reste dû (proposition automatique conservée), mais
+  // dès que l'utilisateur l'efface ou la remplace, c'est sa saisie qui compte — JAMAIS de repli
+  // silencieux sur la suggestion au moment de valider.
+  //
+  // Renvoie le montant ARRONDI AU CENTIME (au plus deux décimales), ou null (refus, aucune mutation) :
+  //  - champ vide / espaces seuls / non numérique / NaN / Infinity / null / undefined  -> null ;
+  //  - montant arrondi à moins de 0,01 € (0, 0.001, 0.0049…) ou négatif                 -> null.
+  // Cohérent au centime avec isPayableDue() et money() : le prédicat Math.round(x*100) >= 1 est la
+  // même frontière d'affichage (« 0,00 € » -> refusé, « 0,01 € » et plus -> accepté si la créance le
+  // permet). La virgule décimale est tolérée (saisie FR). Le trop-perçu reste géré en aval par
+  // paymentOverpayMessage (montant plafonné au reste réellement dû).
+  function normalizeSubmittedPaymentAmount(rawValue) {
+    const text = (typeof rawValue === "string" ? rawValue : rawValue == null ? "" : String(rawValue)).trim();
+    if (!text) return null;
+    const parsed = Number(text.replace(",", "."));
+    if (!Number.isFinite(parsed)) return null;
+    const cents = Math.round(parsed * 100);
+    if (cents < 1) return null;
+    return cents / 100;
+  }
+
   // La couverture financière ne détermine plus SEULE le nombre de lignes visibles (une ligne
   // Refusé/Annulé/Payé/En cours/À encaisser antérieure au point de couverture ne doit jamais
   // disparaître simplement parce qu'une autre ligne, plus loin, couvre déjà le total) : on
@@ -6260,23 +6286,48 @@
         ${paymentControls("order", order.id, order.payments || [], { total: calc.total, defaultTaxRate: orderDefaultTaxRate(order) })}
       </div>`;
     };
+    // Lot 2G-C1 — accès FINANCIER UNIFORME à une créance d'adhésion, sur le même modèle que Stages (2D)
+    // et Boutique (2F). « Payer » ouvrait edit-membership, un dialogue de MUTATION STRUCTURELLE (discipline,
+    // groupe, cotisation, licence, assurance…) : régulariser une dette ne devait pas exiger d'ouvrir la
+    // fiche complète, et cette surface n'a pas à exposer une modification. On rend ici le tiroir de paiement
+    // RÉEL — paymentControls("membership", …), celui-là même qu'utilisent les cartes de la vue Disciplines —
+    // écrivant directement dans membership.payments. Même moteur (validate-payment), mêmes calculs
+    // (calcMembership), même Journal (un seul payment.validated par paiement), même persistance. Aucune
+    // logique dupliquée, aucun champ structurel exposé, aucune dépendance à la fonctionnalité memberships
+    // (aucun gating par hasFeature dans ce lot : la créance reste encaissable inconditionnellement).
+    // Le règlement structurel depuis la fiche (edit-membership) et l'agenda « À encaisser » restent
+    // opérationnels et inchangés (allAlerts conserve editAction pour ces surfaces). isPayableDue garantit
+    // qu'un tiroir n'apparaît que si la créance est réellement due au centime (jamais « 0,00 € »).
+    const membershipPaymentHtml = (item) => {
+      const membership = (state.memberships || []).find((row) => row.id === item.id);
+      if (!membership) return "";
+      const calc = calcMembership(membership);
+      if (!isPayableDue(calc.restDue)) return "";
+      return `<div class="due-item-payment">
+        <span class="due-item-payment-label">Adhésion · reste dû ${money(calc.restDue)}</span>
+        ${paymentControls("membership", membership.id, membership.payments || [], { total: calc.total, defaultTaxRate: membershipDefaultTaxRate(membership) })}
+      </div>`;
+    };
     const cards = sorted.map(({ person, items, total }) => {
       const label = personLabel(person);
       const email = asText(person.email);
       const phone = asText(person.phone || person.tel);
       const category = asText(person.discipline || person.category);
       const itemRows = items.map((item) => {
-        // Créances Stage et Boutique : tiroir de paiement (accès financier, via registrationPaymentHtml
-        // / orderPaymentHtml). Seules les adhésions gardent le bouton d'édition existant (edit-membership),
-        // qui reste utile pour modifier/encaisser une cotisation. Lot 2F — seul le type membership atteint
-        // ce bouton, et une adhésion n'a jamais de stageId : editAttrs se limite à data-id.
-        const editAttrs = `data-id="${esc(item.id)}"`;
-        const usesDrawer = item.type === "registration" || item.type === "order";
+        // Lot 2G-C1 — les TROIS types de créance (Stage, Boutique, Adhésion) exposent désormais le même
+        // tiroir de paiement financier (registrationPaymentHtml / orderPaymentHtml / membershipPaymentHtml).
+        // Cette surface n'ouvre plus aucune mutation structurelle : edit-membership n'y est plus routé (il
+        // reste disponible dans les écrans métier — vue Disciplines, fiche contact — et dans l'agenda
+        // « À encaisser », via allAlerts.editAction, inchangés). Le repli sur item.type inconnu est une
+        // chaîne vide (défensif) : aucun bouton d'édition n'est produit ici.
+        const usesDrawer = item.type === "registration" || item.type === "order" || item.type === "membership";
         const action = item.type === "registration"
           ? registrationPaymentHtml(item)
           : item.type === "order"
             ? orderPaymentHtml(item)
-            : `<button type="button" class="primary" data-action="${esc(item.editAction)}" ${editAttrs}>Payer</button>`;
+            : item.type === "membership"
+              ? membershipPaymentHtml(item)
+              : "";
         return `<div class="due-item ${usesDrawer ? "due-item-with-payments" : ""}">
           <div class="due-item-info">
             ${statusPill(item.status)}
@@ -23390,10 +23441,25 @@ ${esc(bodyText)}</pre>
       return;
     }
     if (target.dataset.paymentField) {
+      // Lot 2G-C1 — la validation monétaire commune (normalizeSubmittedPaymentAmount) refuse toute saisie
+      // invalide (vide, non numérique, arrondie à moins de 0,01 €, négative). Mais persist()+render()
+      // régénère le tiroir et re-remplirait un champ « montant » laissé vide ou à 0 avec le reste dû
+      // suggéré (un montant tronqué à 0 est falsy -> le rendu réinjecte suggestedAmount). Pour que « la
+      // valeur réelle du champ au moment de la validation fasse foi » (jamais de repli silencieux sur la
+      // suggestion, cf. contrat 2G-C1), on RESTAURE après le re-render la saisie brute de l'utilisateur
+      // quand elle est invalide au centime : la validation la refusera alors franchement, sans encaisser
+      // le reste complet. LIVE uniquement (le champ formulaire n'a pas de data-payment-field).
+      const invalidAmountRaw = (target.dataset.paymentField === "amount" && normalizeSubmittedPaymentAmount(target.value) === null)
+        ? target.value : null;
+      const invalidAmountSelector = invalidAmountRaw !== null ? liveAmountFieldSelector(target) : "";
       recordHistory();
       updatePaymentFromControl(target);
       persist();
       render();
+      if (invalidAmountSelector) {
+        const refilled = app.querySelector(invalidAmountSelector);
+        if (refilled) { refilled.value = invalidAmountRaw; refilled.dataset.autoAmount = ""; }
+      }
     }
     if (target.dataset.stockImage !== undefined) {
       recordHistory();
@@ -25820,6 +25886,21 @@ ${esc(bodyText)}</pre>
     });
   }
 
+  // Lot 2G-C1 — sélecteur stable du champ « montant » d'un tiroir de paiement LIVE, reconstruit à
+  // l'identique après un render() à partir des attributs d'identité portés par l'input (module, id,
+  // stage, part, index — posés par paymentControls). Sert à restaurer une saisie invalide qu'un
+  // re-rendu aurait sinon remplacée par le reste dû suggéré.
+  function liveAmountFieldSelector(input) {
+    const d = input.dataset;
+    const esc = (typeof CSS !== "undefined" && CSS.escape) ? CSS.escape : (v) => String(v).replace(/["\\]/g, "\\$&");
+    let sel = `input[data-payment-field="amount"][data-index="${esc(String(d.index))}"]`;
+    if (d.paymentModule) sel += `[data-payment-module="${esc(d.paymentModule)}"]`;
+    if (d.id) sel += `[data-id="${esc(d.id)}"]`;
+    if (d.stageId) sel += `[data-stage-id="${esc(d.stageId)}"]`;
+    if (d.part) sel += `[data-part="${esc(d.part)}"]`;
+    return sel;
+  }
+
   function updatePaymentFromControl(control) {
     const payments = getPaymentList(control);
     const index = Number(control.dataset.index);
@@ -25900,15 +25981,20 @@ ${esc(bodyText)}</pre>
       if (date) date.value = "";
       return { ok: true, auditAction: "cancelled", payment, index };
     }
-    if (!payment.amount && asNumber(button.dataset.paymentTotal)) {
-      payment.amount = paymentSuggestion(payments, index, asNumber(button.dataset.paymentTotal));
-      normalizeImmediatePayment(payment);
-    }
-    if (payment.amount <= 0) {
+    // Lot 2G-C1 — validation monétaire au centime via le moteur COMMUN (normalizeSubmittedPaymentAmount) :
+    // la valeur réelle du champ fait foi (aucun repli silencieux sur la suggestion), et tout montant vide,
+    // non numérique, NaN, arrondi à moins de 0,01 € (0, 0.001, 0.0049…) ou négatif est REFUSÉ sans aucune
+    // mutation, aucun payment.validated, aucune écriture. Le champ étant pré-rempli à l'ouverture avec le
+    // reste dû, « Payer » sans rien saisir valide bien ce reste ; l'effacer revient à ne rien encaisser.
+    const validatedAmount = normalizeSubmittedPaymentAmount(amount ? amount.value : "");
+    if (validatedAmount === null) {
+      payment.amount = 0;
       payment.state = "";
       if (state) state.value = "";
       return false;
     }
+    payment.amount = validatedAmount;
+    normalizeImmediatePayment(payment);
     // Garde anti trop-perçu (centralisé) : total dû dérivé des données stockées (robuste si le
     // dataset est absent/périmé). Bloque toute validation qui dépasserait le montant dû, quel que
     // soit l'historique du paiement (refusé, réactivé, ancien, ajouté…).
@@ -25980,21 +26066,20 @@ ${esc(bodyText)}</pre>
       alert("Ce paiement est refusé. Remettez son statut à vide pour pouvoir le valider.");
       return;
     }
-    let paymentAmount = asNumber(amount?.value);
-    if (paymentAmount <= 0) {
-      const rows = formPaymentRows(form, prefix);
-      paymentAmount = paymentSuggestion(rows, index, asNumber(block?.dataset.paymentTotal));
-      if (amount && paymentAmount > 0) {
-        amount.value = String(Math.round(paymentAmount * 100) / 100);
-        amount.dataset.autoAmount = "true";
-      }
-    }
-    if (paymentAmount <= 0) {
+    // Lot 2G-C1 — même règle monétaire au centime que le tiroir live, via le moteur COMMUN
+    // (normalizeSubmittedPaymentAmount). La valeur du champ fait foi (le formulaire est pré-rempli avec
+    // la suggestion au rendu, comme le tiroir) ; aucun repli silencieux sur la suggestion au moment de
+    // valider. Un montant vide, non numérique, NaN, arrondi à moins de 0,01 € ou négatif est refusé sans
+    // aucune mutation. Les deux chemins de règlement produisent ainsi un résultat financier identique.
+    const validatedAmount = normalizeSubmittedPaymentAmount(amount?.value);
+    if (validatedAmount === null) {
       if (state) state.value = "";
       if (manualState) manualState.value = "";
       updatePaymentSplitDisplay(form, prefix);
       return;
     }
+    const paymentAmount = validatedAmount;
+    if (amount) amount.value = String(paymentAmount);
     // Garde anti trop-perçu (centralisé, même logique que le live) : le total du formulaire fait foi.
     const overpayMessage = paymentOverpayMessage(formPaymentRows(form, prefix), index, paymentAmount, asNumber(block?.dataset.paymentTotal));
     if (overpayMessage) {
