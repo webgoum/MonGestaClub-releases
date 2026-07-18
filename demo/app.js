@@ -3566,11 +3566,27 @@
     return { state: parsed, settings, ui: {} };
   }
 
+  // Lot UX — état d'interface TRANSITOIRE de la barre supérieure, exclu de l'historique métier.
+  // Le repli/dépli de la barre (settings.topbarHidden) est un état visuel, jamais une étape
+  // d'Annuler/Rétablir : on ne le mélange PAS aux snapshots métier (settingsForHistory le retire
+  // avant sérialisation) et restoreState conserve sa valeur COURANTE (undo/redo ne le parcourent
+  // jamais). Sa persistance entre sessions reste assurée par persistSettings, indépendamment de
+  // l'historique. Les états d'ouverture des menus (settingsMenuOpen/boutiqueMenuOpen/openMenuGroups)
+  // sont déjà hors historique (absents d'undoUiKeys, aucun recordHistory dans leurs handlers).
+  // NB : sidebarHidden partage exactement la même classe (bug identique) — signalé hors périmètre.
+  const historyExcludedSettingsKeys = ["topbarHidden"];
+
+  function settingsForHistory() {
+    const copy = { ...settings };
+    for (const key of historyExcludedSettingsKeys) delete copy[key];
+    return copy;
+  }
+
   function snapshotState() {
     return JSON.stringify({
       version: 2,
       state,
-      settings,
+      settings: settingsForHistory(),
       ui: snapshotUiState(),
     });
   }
@@ -3596,7 +3612,12 @@
     const restored = parseUndoSnapshot(snapshot);
     if (!restored) return;
     state = normalizeState(restored.state);
+    // L'état visuel transitoire de la barre n'est pas parcouru par Annuler/Rétablir : on préserve
+    // sa valeur courante au lieu de celle (absente) du snapshot.
+    const liveTransient = {};
+    for (const key of historyExcludedSettingsKeys) liveTransient[key] = settings[key];
     settings = normalizeSettings(restored.settings);
+    for (const key of historyExcludedSettingsKeys) settings[key] = liveTransient[key];
     applyUiSnapshot(restored.ui);
     persist(message);
     render();
