@@ -1959,10 +1959,38 @@
         reactivateFeedback: "Les Stages sont réactivés pour ce club. Leur affichage suit vos réglages d'affichage.",
       }),
     }),
+    memberships: Object.freeze({
+      key: "memberships",
+      label: "Adhésions",
+      category: "management",
+      configurable: true,
+      legacyEnabled: true,
+      defaultEnabled: true,
+      aliases: Object.freeze([]),
+      // Lot 2G-B — SOCLE INERTE. views RESTE VIDE (jamais ["disciplines"]) : la vue Disciplines agrège un
+      // référentiel transversal (Planning/Groupes/Coachs/Salles), l'historique des adhésions et l'accès
+      // financier ; elle ne doit donc pas être masquée globalement par isViewVisible/hasFeature comme le
+      // sont boutique/stages. Le futur branchement (Lot 2G-C) se fera par rendu partiel, pas par views.
+      views: Object.freeze([]),
+      // Lot 2G-B — available:false : la fonctionnalité est DÉCLARÉE (résolution, legacy/default, sécurité)
+      // mais PAS encore proposée dans l'écran « Fonctionnalités du club » (screenFeatures la filtre). Aucun
+      // interrupteur, aucune garde métier, aucun changement visible dans ce lot. Les textes ci-dessous sont
+      // renseignés d'avance pour le Lot 2G-D et n'influencent ni hasFeature, ni la navigation, ni les calculs.
+      ui: Object.freeze({
+        available: false,
+        order: 3,
+        description: "Gérez les inscriptions des adhérents, les cotisations, les licences, les assurances et leurs paiements.",
+        dataRetention: "La désactivation masque les outils de gestion des adhésions sans supprimer les inscriptions, factures, paiements, documents ni l'historique.",
+        disableConfirmTitle: "Désactiver les Adhésions ?",
+        disableConfirmMessage: "Les outils de création et de modification des adhésions seront désactivés pour le club « {club} ».\n\nAucune donnée ne sera supprimée. Les anciennes adhésions, cotisations, licences, assurances, factures, paiements, documents, statistiques, éléments comptables et l'historique resteront conservés. Les dettes existantes resteront encaissables depuis « Paiements dus ».\n\nLe référentiel des disciplines, le Planning, les Groupes, les Coachs et les Salles ne seront pas désactivés. Vous pourrez réactiver les Adhésions plus tard. Ce changement concerne uniquement ce club.",
+        disableConfirmLabel: "Désactiver les Adhésions",
+        reactivateFeedback: "Les Adhésions sont réactivées pour ce club. Leur affichage suit vos réglages d'affichage.",
+      }),
+    }),
   });
 
   // Ordre canonique déterministe (ordre de déclaration). Ne contient que des clés canoniques.
-  const FEATURE_CANONICAL_KEYS = Object.freeze(["shop", "stages"]);
+  const FEATURE_CANONICAL_KEYS = Object.freeze(["shop", "stages", "memberships"]);
 
   // Table de résolution clé/alias -> clé canonique. Construite depuis le registre (jamais deux
   // fonctionnalités distinctes « shop » et « boutique » : boutique pointe vers shop).
