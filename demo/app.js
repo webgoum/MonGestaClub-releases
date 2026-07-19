@@ -3566,15 +3566,17 @@
     return { state: parsed, settings, ui: {} };
   }
 
-  // Lot UX — état d'interface TRANSITOIRE de la barre supérieure, exclu de l'historique métier.
-  // Le repli/dépli de la barre (settings.topbarHidden) est un état visuel, jamais une étape
-  // d'Annuler/Rétablir : on ne le mélange PAS aux snapshots métier (settingsForHistory le retire
-  // avant sérialisation) et restoreState conserve sa valeur COURANTE (undo/redo ne le parcourent
-  // jamais). Sa persistance entre sessions reste assurée par persistSettings, indépendamment de
-  // l'historique. Les états d'ouverture des menus (settingsMenuOpen/boutiqueMenuOpen/openMenuGroups)
-  // sont déjà hors historique (absents d'undoUiKeys, aucun recordHistory dans leurs handlers).
-  // NB : sidebarHidden partage exactement la même classe (bug identique) — signalé hors périmètre.
-  const historyExcludedSettingsKeys = ["topbarHidden"];
+  // Lot UX — états d'interface TRANSITOIRES des barres, exclus de l'historique métier.
+  // Le repli/dépli de la barre supérieure (settings.topbarHidden) et du menu latéral
+  // (settings.sidebarHidden) sont des états VISUELS, jamais des étapes d'Annuler/Rétablir : on ne les
+  // mélange PAS aux snapshots métier (settingsForHistory les retire avant sérialisation) et
+  // restoreState conserve leur valeur COURANTE (undo/redo ne les parcourent jamais). Leur persistance
+  // entre sessions reste assurée par persistSettings, indépendamment de l'historique. Les états
+  // d'ouverture des menus (settingsMenuOpen/boutiqueMenuOpen/openMenuGroups) sont déjà hors historique
+  // (absents d'undoUiKeys, aucun recordHistory dans leurs handlers). Rétrocompatible : un ancien
+  // snapshot contenant encore ces clés est ignoré au restore (valeur courante préservée). Toute clé de
+  // préférence hors de cette liste (thème, layout…) continue de suivre l'historique comme avant.
+  const historyExcludedSettingsKeys = ["topbarHidden", "sidebarHidden"];
 
   function settingsForHistory() {
     const copy = { ...settings };
