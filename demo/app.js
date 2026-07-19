@@ -14016,11 +14016,21 @@ ${esc(bodyText)}</pre>
     return container?.closest?.("dialog") || dialog;
   }
 
+  // Jeton de génération pour les tentatives de focus différées des dialogues. focusDialogControl
+  // programme plusieurs `run` (rAF + setTimeout jusqu'à 360 ms) : chacune ne doit agir que si aucun
+  // contexte de focus plus récent n'a démarré depuis. Un nouveau dialogue, un overlay modal ou
+  // l'éditeur de recadrage qui prend le focus appelle invalidateDialogFocus() → les tentatives
+  // antérieures deviennent obsolètes et ne peuvent plus écraser le focus courant.
+  let dialogFocusGeneration = 0;
+  function invalidateDialogFocus() { dialogFocusGeneration++; }
+
   function focusDialogControl(container = dialog, selector = "[autofocus], input:not([type='hidden']):not([disabled]), select:not([disabled]), textarea:not([disabled]), button:not([disabled])") {
     const targetDialog = dialogForContainer(container);
     const target = container.querySelector(selector);
     if (!target) return;
+    const generation = ++dialogFocusGeneration;
     const run = () => {
+      if (generation !== dialogFocusGeneration) return; // tentative obsolète : un contexte de focus plus récent a pris le relais
       window.monGestaClubShell?.focusApp?.().catch?.(() => {});
       targetDialog.setAttribute("tabindex", "-1");
       window.focus?.();
@@ -15558,6 +15568,333 @@ ${esc(bodyText)}</pre>
       }
       return normalizeImmediatePayment(payment);
     });
+  }
+
+  // =========================================================================
+  // Éditeur de recadrage photo — composant UNIQUE réutilisable (Contacts, Coachs,
+  // et toute fiche à avatar future). Paramétré par un RATIO cible : le masque, les
+  // limites de déplacement, le zoom ET la génération finale utilisent tous ce ratio.
+  //   - Coachs   : 1:1     -> sortie 512x512   (photoDataUrl)
+  //   - Contacts : 18:23 (360:460) -> sortie 396x506   (identityPhotoDataUrl)
+  // Stockage = image FINALE seule : les champs existants ne changent pas, aucune
+  // migration des anciennes photos (jamais recadrées automatiquement). L'éditeur
+  // travaille sur l'originale UNIQUEMENT pendant la session puis génère la finale.
+  // Évolution future : conserver une source bornée dans un stockage séparé (IndexedDB)
+  // se ferait sans changer cette interface (on passerait juste une autre `source`).
+  // Il ne persiste RIEN et n'appelle jamais recordHistory : c'est l'enregistrement de
+  // la fiche (showDialog) qui crée l'unique niveau d'historique métier.
+  // Les dimensions de sortie (outWidth/outHeight) définissent À LA FOIS le ratio du cadre, du masque
+  // et de l'image finale : cadre, aperçu et rendu ont donc EXACTEMENT le même ratio → aucune
+  // déformation, aperçu = résultat. Un futur ratio se déclare en ajoutant un preset ici.
+  //   coach 1:1 (512x512) · contact carte d'identité 18:23 = 360:460 (396x506, ratio exact)
+  const PHOTO_CROP_PRESETS = {
+    coach: { outWidth: 512, outHeight: 512, shape: "square", title: "Cadrer la photo du coach" },
+    contact: { outWidth: 396, outHeight: 506, shape: "portrait", title: "Cadrer la photo d'identité" },
+  };
+  const PHOTO_CROP_MAX_WORK = 1600; // borne la copie de travail (grandes photos de téléphone)
+  const PHOTO_CROP_MAX_ZOOM = 4;
+  function photoCropPreset(name) { return PHOTO_CROP_PRESETS[name] || PHOTO_CROP_PRESETS.coach; }
+
+  // Décode une source image en respectant l'orientation EXIF (photos de téléphone) et borne la
+  // copie de travail. Renvoie un HTMLImageElement déjà orienté (plus d'EXIF à gérer ensuite).
+  // Rejette proprement si le fichier n'est pas décodable (corrompu, ou HEIC/HEIF non pris en charge
+  // par la plateforme — jamais promis, on échoue sans planter).
+  async function loadImageForCrop(source) {
+    const decodeUrl = (url) => new Promise((resolve, reject) => {
+      const image = new Image();
+      image.onload = () => resolve(image);
+      image.onerror = () => reject(new Error("decode"));
+      image.src = url;
+    });
+    if (typeof source === "string") {
+      const image = await decodeUrl(source);
+      return { img: image, width: image.naturalWidth, height: image.naturalHeight };
+    }
+    // File : on tente createImageBitmap (applique l'orientation EXIF et décode hors thread principal).
+    let bitmap = null;
+    try { bitmap = await createImageBitmap(source, { imageOrientation: "from-image" }); } catch (_) { bitmap = null; }
+    if (bitmap) {
+      const scale = Math.min(1, PHOTO_CROP_MAX_WORK / Math.max(bitmap.width, bitmap.height));
+      const w = Math.max(1, Math.round(bitmap.width * scale));
+      const h = Math.max(1, Math.round(bitmap.height * scale));
+      const canvas = document.createElement("canvas");
+      canvas.width = w; canvas.height = h;
+      canvas.getContext("2d").drawImage(bitmap, 0, 0, w, h);
+      if (bitmap.close) bitmap.close();
+      const image = await decodeUrl(canvas.toDataURL("image/jpeg", 0.92));
+      return { img: image, width: w, height: h };
+    }
+    // Fallback : object URL + <img> (createImageBitmap indisponible). On borne AUSSI la copie de
+    // travail ici — sinon une grande photo de téléphone resterait en pleine résolution en mémoire.
+    // Limite EXIF : l'orientation via ce chemin dépend du moteur. Les navigateurs récents (Chromium,
+    // Safari, Firefox) appliquent l'orientation EXIF au <img> par défaut (image-orientation:from-image)
+    // et naturalWidth/Height + drawImage suivent alors l'orientation. Sur un moteur ancien qui ne le
+    // ferait pas, l'orientation ne serait pas corrigée ici. Le chemin garanti reste createImageBitmap ;
+    // le fallback est « au mieux » selon la plateforme (testé conforme sous Chromium).
+    const objectUrl = URL.createObjectURL(source);
+    let decoded;
+    try {
+      decoded = await decodeUrl(objectUrl);
+    } catch (error) {
+      URL.revokeObjectURL(objectUrl);
+      throw error;
+    }
+    const iw = decoded.naturalWidth, ih = decoded.naturalHeight;
+    const scale = Math.min(1, PHOTO_CROP_MAX_WORK / Math.max(iw, ih));
+    if (scale >= 1) {
+      // Pas de réduction nécessaire : on garde l'image telle quelle, l'appelant révoque l'Object URL.
+      return { img: decoded, width: iw, height: ih, objectUrl };
+    }
+    // Réduction : on rasterise une copie bornée puis on révoque immédiatement l'Object URL
+    // (aucune grande image temporaire conservée).
+    const w = Math.max(1, Math.round(iw * scale));
+    const h = Math.max(1, Math.round(ih * scale));
+    const canvas = document.createElement("canvas");
+    canvas.width = w; canvas.height = h;
+    canvas.getContext("2d").drawImage(decoded, 0, 0, w, h);
+    URL.revokeObjectURL(objectUrl);
+    const image = await decodeUrl(canvas.toDataURL("image/jpeg", 0.92));
+    return { img: image, width: w, height: h };
+  }
+
+  function openPhotoCropEditor(options = {}) {
+    const preset = photoCropPreset(options.preset);
+    const cfg = {
+      outWidth: options.outWidth || preset.outWidth,
+      outHeight: options.outHeight || preset.outHeight,
+      shape: options.shape || preset.shape,
+      title: options.title || preset.title,
+      maxZoom: options.maxZoom || PHOTO_CROP_MAX_ZOOM,
+    };
+    const onValidate = typeof options.onValidate === "function" ? options.onValidate : () => {};
+    const onCancel = typeof options.onCancel === "function" ? options.onCancel : () => {};
+    const triggerButton = options.triggerButton
+      || (document.activeElement instanceof HTMLElement ? document.activeElement : null);
+    // Cible de restauration du focus. Un résolveur (recalculé à la fermeture) est préférable à une
+    // référence figée : le widget appelant peut avoir remplacé le bouton pendant onValidate.
+    const resolveFocusTarget = typeof options.resolveFocusTarget === "function"
+      ? options.resolveFocusTarget
+      : () => triggerButton;
+
+    const overlay = document.createElement("div");
+    overlay.className = "photo-crop-overlay";
+    overlay.innerHTML = `
+      <div class="photo-crop-panel" role="dialog" aria-modal="true" aria-label="${esc(cfg.title)}">
+        <div class="photo-crop-header">
+          <h2 class="photo-crop-title">${esc(cfg.title)}</h2>
+          <button type="button" class="icon photo-crop-x" data-crop-cancel title="Annuler" aria-label="Annuler et fermer sans enregistrer">×</button>
+        </div>
+        <div class="photo-crop-stage-wrap">
+          <div class="photo-crop-stage ${cfg.shape === "round" ? "is-round" : ""}" data-crop-stage tabindex="0" role="application" aria-label="Zone de cadrage. Glisser pour déplacer la photo, flèches du clavier pour ajuster finement." style="aspect-ratio:${cfg.outWidth} / ${cfg.outHeight};">
+            <img class="photo-crop-img" data-crop-img alt="" draggable="false" />
+            <div class="photo-crop-mask ${cfg.shape === "round" ? "is-round" : "is-rect"}" aria-hidden="true"></div>
+            <div class="photo-crop-loading" data-crop-loading>Chargement…</div>
+          </div>
+          <p class="photo-crop-hint muted">Glisse la photo pour la positionner, ajuste le zoom. Le cadrage remplit toujours le cadre (jamais de zone vide).</p>
+        </div>
+        <div class="photo-crop-controls">
+          <label class="photo-crop-zoom">
+            <span class="photo-crop-zoom-label">Zoom</span>
+            <input type="range" min="1" max="${cfg.maxZoom}" step="0.01" value="1" data-crop-zoom aria-label="Niveau de zoom" />
+            <output class="photo-crop-zoom-val" data-crop-zoom-val>100 %</output>
+          </label>
+          <div class="photo-crop-buttons">
+            <button type="button" data-crop-recenter>Recentrer</button>
+            <button type="button" data-crop-reset>Réinitialiser</button>
+            <span class="photo-crop-spacer"></span>
+            <button type="button" data-crop-cancel>Annuler</button>
+            <button type="button" class="primary" data-crop-validate disabled>Utiliser cette photo</button>
+          </div>
+        </div>
+      </div>`;
+
+    const stage = overlay.querySelector("[data-crop-stage]");
+    const imgEl = overlay.querySelector("[data-crop-img]");
+    const zoomInput = overlay.querySelector("[data-crop-zoom]");
+    const zoomVal = overlay.querySelector("[data-crop-zoom-val]");
+    const validateBtn = overlay.querySelector("[data-crop-validate]");
+    const loadingEl = overlay.querySelector("[data-crop-loading]");
+
+    // État du cadrage : zoom (>= 1, relatif au « cover »), décalage en px du cadre.
+    let img = null, imgW = 0, imgH = 0, baseScale = 1;
+    let zoom = 1, offX = 0, offY = 0;
+    let pendingObjectUrl = null;
+    let closed = false;
+
+    const frameSize = () => { const r = stage.getBoundingClientRect(); return { w: r.width, h: r.height }; };
+    const coverScale = () => { const f = frameSize(); return Math.max(f.w / imgW, f.h / imgH) || 1; };
+    function clampOffsets() {
+      const f = frameSize();
+      const s = baseScale * zoom;
+      const maxX = Math.max(0, (imgW * s - f.w) / 2);
+      const maxY = Math.max(0, (imgH * s - f.h) / 2);
+      offX = Math.min(maxX, Math.max(-maxX, offX));
+      offY = Math.min(maxY, Math.max(-maxY, offY));
+    }
+    function applyTransform() {
+      if (!img) return;
+      baseScale = coverScale();
+      clampOffsets();
+      const s = baseScale * zoom;
+      imgEl.style.width = (imgW * s) + "px";
+      imgEl.style.height = (imgH * s) + "px";
+      imgEl.style.transform = `translate(-50%, -50%) translate(${Math.round(offX)}px, ${Math.round(offY)}px)`;
+      zoomInput.value = String(zoom);
+      zoomVal.textContent = Math.round(zoom * 100) + " %";
+    }
+    function setZoom(next) {
+      zoom = Math.min(cfg.maxZoom, Math.max(1, next));
+      applyTransform();
+    }
+
+    // --- Déplacement (Pointer Events : souris + trackpad + tactile unifiés) ---
+    let dragging = false, lastX = 0, lastY = 0, activePointer = null;
+    stage.addEventListener("pointerdown", (event) => {
+      if (!img || event.button !== undefined && event.button !== 0) return;
+      dragging = true; activePointer = event.pointerId;
+      lastX = event.clientX; lastY = event.clientY;
+      stage.classList.add("dragging");
+      try { stage.setPointerCapture(event.pointerId); } catch (_) {}
+      event.preventDefault();
+    });
+    stage.addEventListener("pointermove", (event) => {
+      if (!dragging || event.pointerId !== activePointer) return;
+      offX += event.clientX - lastX;
+      offY += event.clientY - lastY;
+      lastX = event.clientX; lastY = event.clientY;
+      applyTransform();
+    });
+    const endDrag = (event) => {
+      if (!dragging || (event && event.pointerId !== activePointer)) return;
+      dragging = false; activePointer = null;
+      stage.classList.remove("dragging");
+      try { if (event) stage.releasePointerCapture(event.pointerId); } catch (_) {}
+    };
+    stage.addEventListener("pointerup", endDrag);
+    stage.addEventListener("pointercancel", endDrag);
+
+    // --- Zoom molette/trackpad (contrôlé, ancré au centre) ---
+    stage.addEventListener("wheel", (event) => {
+      if (!img) return;
+      event.preventDefault();
+      setZoom(zoom * (1 - event.deltaY * 0.0015));
+    }, { passive: false });
+
+    // --- Clavier : flèches = déplacement fin (le cadre doit avoir le focus) ---
+    stage.addEventListener("keydown", (event) => {
+      if (!img) return;
+      const step = event.shiftKey ? 2 : 12;
+      const moves = { ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, -step], ArrowDown: [0, step] };
+      if (moves[event.key]) { offX += moves[event.key][0]; offY += moves[event.key][1]; applyTransform(); event.preventDefault(); }
+    });
+
+    zoomInput.addEventListener("input", () => setZoom(parseFloat(zoomInput.value) || 1));
+    // Empêche le drag de l'image quand on manipule le curseur de zoom.
+    zoomInput.addEventListener("pointerdown", (event) => event.stopPropagation());
+    overlay.querySelector("[data-crop-recenter]").addEventListener("click", () => { offX = 0; offY = 0; applyTransform(); stage.focus(); });
+    overlay.querySelector("[data-crop-reset]").addEventListener("click", () => { zoom = 1; offX = 0; offY = 0; applyTransform(); stage.focus(); });
+
+    // --- Génération de l'image finale : la région visible du cadre -> canvas de sortie. ---
+    function renderFinal() {
+      const f = frameSize();
+      const s = baseScale * zoom;
+      const srcW = f.w / s, srcH = f.h / s;
+      let sx = imgW / 2 - (f.w / 2 + offX) / s;
+      let sy = imgH / 2 - (f.h / 2 + offY) / s;
+      sx = Math.min(Math.max(0, sx), Math.max(0, imgW - srcW));
+      sy = Math.min(Math.max(0, sy), Math.max(0, imgH - srcH));
+      const canvas = document.createElement("canvas");
+      canvas.width = cfg.outWidth; canvas.height = cfg.outHeight;
+      const ctx = canvas.getContext("2d");
+      ctx.imageSmoothingQuality = "high";
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(0, 0, cfg.outWidth, cfg.outHeight);
+      ctx.drawImage(img, sx, sy, srcW, srcH, 0, 0, cfg.outWidth, cfg.outHeight);
+      return canvas.toDataURL("image/jpeg", 0.86);
+    }
+
+    // --- Fermeture / focus ---
+    const focusables = () => Array.from(overlay.querySelectorAll(
+      'button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex="-1"])'
+    )).filter((el) => el.offsetParent !== null || el === stage);
+    const isFocusable = (el) => el instanceof HTMLElement && el.isConnected && !el.hidden && el.getClientRects().length > 0;
+    // Restaure le focus AU PROCHAIN CYCLE DE RENDU, après suppression de l'overlay, exécution des
+    // callbacks et éventuelle mise à jour du widget. Nécessaire car : (a) retirer l'élément focalisé
+    // d'un <dialog> modal déclenche le « focus fixup » du dialog (qui déplacerait le focus vers son
+    // premier focusable, ex. « Réduire la fenêtre ») ; en repassant après, on écrase ce fixup ;
+    // (b) le résolveur retrouve le bouton d'origine même si le widget l'a remplacé pendant onValidate.
+    function restoreTriggerFocus() {
+      // Invalide toute tentative de focus différée du dialogue parent : notre restauration doit
+      // être le dernier mot, même si un `run` tardif (jusqu'à 360 ms) était encore en attente.
+      invalidateDialogFocus();
+      requestAnimationFrame(() => {
+        let target = null;
+        try { target = resolveFocusTarget(); } catch (_) { target = null; }
+        if (isFocusable(target)) { try { target.focus(); } catch (_) {} }
+      });
+    }
+    function close(runCancel) {
+      if (closed) return;
+      closed = true;
+      document.removeEventListener("keydown", onKeydown, true);
+      if (pendingObjectUrl) { URL.revokeObjectURL(pendingObjectUrl); pendingObjectUrl = null; }
+      overlay.remove();
+      if (runCancel) onCancel();
+      restoreTriggerFocus();
+    }
+    function onKeydown(event) {
+      if (closed || !overlay.isConnected) return;
+      if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); close(true); return; }
+      if (event.key === "Tab") {
+        const items = focusables();
+        if (!items.length) return;
+        const first = items[0], last = items[items.length - 1];
+        const active = document.activeElement;
+        if (event.shiftKey && (active === first || !overlay.contains(active))) { last.focus(); event.preventDefault(); }
+        else if (!event.shiftKey && (active === last || !overlay.contains(active))) { first.focus(); event.preventDefault(); }
+      }
+    }
+    document.addEventListener("keydown", onKeydown, true);
+    overlay.addEventListener("pointerdown", (event) => { if (event.target === overlay) close(true); });
+    overlay.querySelectorAll("[data-crop-cancel]").forEach((btn) => btn.addEventListener("click", () => close(true)));
+    validateBtn.addEventListener("click", () => {
+      if (!img) return;
+      let dataUrl = "";
+      try { dataUrl = renderFinal(); } catch (_) { dataUrl = ""; }
+      if (!isImageDataUrl(dataUrl)) { alert("Impossible de générer l'image. Réessaie avec une autre photo."); return; }
+      close(false);
+      onValidate(dataUrl);
+    });
+
+    // Le crop vit DANS le dialogue modal ouvert (top-layer) pour passer au-dessus de lui ;
+    // sinon dans le body. Même principe que la lightbox photo d'identité existante.
+    const host = (triggerButton && triggerButton.closest("dialog[open]")) || document.querySelector("dialog[open]") || document.body;
+    // L'éditeur prend le contrôle du focus : on invalide les tentatives différées encore en attente
+    // du dialogue parent (sinon un `run` à 360 ms replacerait le focus sur « Réduire la fenêtre »).
+    invalidateDialogFocus();
+    host.appendChild(overlay);
+
+    // Chargement asynchrone de la source (ne bloque pas l'UI).
+    (async () => {
+      try {
+        const loaded = await loadImageForCrop(options.source);
+        if (closed) { if (loaded.objectUrl) URL.revokeObjectURL(loaded.objectUrl); return; }
+        img = loaded.img; imgW = loaded.width || img.naturalWidth; imgH = loaded.height || img.naturalHeight;
+        pendingObjectUrl = loaded.objectUrl || null;
+        imgEl.src = img.src;
+        if (loadingEl) loadingEl.remove();
+        zoom = 1; offX = 0; offY = 0;
+        applyTransform();
+        validateBtn.disabled = false;
+        stage.focus();
+      } catch (error) {
+        close(false);
+        alert("Impossible de lire cette image (format non pris en charge ou fichier corrompu).");
+        onCancel();
+      }
+    })();
+
+    return { close };
   }
 
   function showDialog(title, body, onSave, onOpen = () => {}, footerLeft = "", onCancel = () => {}, submitLabel = "Enregistrer") {
@@ -18355,7 +18692,9 @@ ${esc(bodyText)}</pre>
         <img src="${esc(isImageDataUrl(dataUrl) ? dataUrl : avatarSrc)}" alt="${isImageDataUrl(dataUrl) ? "Photo d'identité" : "Silhouette automatique"}" />
       </div>
       ${editable ? `<div class="identity-photo-lightbox-actions">
-        <label class="button-like">Modifier<input type="file" accept="image/*" data-lightbox-identity-photo-file hidden /></label>
+        <button type="button" class="button-like" data-lightbox-identity-photo-pick>${isImageDataUrl(dataUrl) ? "Remplacer" : "Ajouter"}</button>
+        <input type="file" accept="image/jpeg,image/png,image/webp,image/*" data-lightbox-identity-photo-file hidden />
+        <button type="button" data-lightbox-recrop-photo ${isImageDataUrl(dataUrl) ? "" : "hidden"}>Modifier le cadrage</button>
         <button type="button" class="danger" data-lightbox-remove-photo ${isImageDataUrl(dataUrl) ? "" : "hidden"}>Retirer</button>
         <button type="button" class="primary" data-lightbox-validate-photo disabled>Valider la photo</button>
       </div>` : ""}
@@ -18367,6 +18706,8 @@ ${esc(bodyText)}</pre>
       imageBox.innerHTML = `<img src="${esc(isImageDataUrl(pendingPhoto) ? pendingPhoto : avatarSrc)}" alt="${isImageDataUrl(pendingPhoto) ? "Photo d'identité" : "Silhouette automatique"}" />`;
       const remove = overlay.querySelector("[data-lightbox-remove-photo]");
       if (remove) remove.hidden = !isImageDataUrl(pendingPhoto);
+      const recrop = overlay.querySelector("[data-lightbox-recrop-photo]");
+      if (recrop) recrop.hidden = !isImageDataUrl(pendingPhoto);
       const validate = overlay.querySelector("[data-lightbox-validate-photo]");
       if (validate) validate.disabled = pendingPhoto === dataUrl;
     };
@@ -18377,22 +18718,46 @@ ${esc(bodyText)}</pre>
       pendingPhoto = "";
       renderPendingPhoto();
     });
+    // Le bouton visible « Ajouter/Remplacer » déclenche l'input fichier masqué (clavier + souris).
+    overlay.querySelector("[data-lightbox-identity-photo-pick]")?.addEventListener("click", () => {
+      overlay.querySelector("[data-lightbox-identity-photo-file]")?.click();
+    });
+    overlay.querySelector("[data-lightbox-recrop-photo]")?.addEventListener("click", (event) => {
+      if (!isImageDataUrl(pendingPhoto)) return;
+      openPhotoCropEditor({
+        source: pendingPhoto,
+        preset: "contact",
+        triggerButton: event.currentTarget,
+        resolveFocusTarget: () => overlay.querySelector("[data-lightbox-recrop-photo]:not([hidden])") || overlay.querySelector("[data-lightbox-identity-photo-pick]"),
+        onValidate: (croppedUrl) => { pendingPhoto = croppedUrl; renderPendingPhoto(); },
+      });
+    });
     overlay.querySelector("[data-lightbox-validate-photo]")?.addEventListener("click", () => {
       setIdentityPhotoInForm(form, pendingPhoto);
       close();
     });
-    overlay.querySelector("[data-lightbox-identity-photo-file]")?.addEventListener("change", async (event) => {
-      const file = event.target.files?.[0];
+    overlay.querySelector("[data-lightbox-identity-photo-file]")?.addEventListener("change", (event) => {
+      const fileInput = event.target;
+      const file = fileInput.files?.[0];
       if (!file) return;
       if (!file.type.startsWith("image/")) {
         alert("Choisis un fichier image.");
-        event.target.value = "";
+        fileInput.value = "";
         return;
       }
-      pendingPhoto = await identityPhotoFileToDataUrl(file);
-      renderPendingPhoto();
-      event.target.value = "";
+      openPhotoCropEditor({
+        source: file,
+        preset: "contact",
+        triggerButton: fileInput,
+        // input masqué (non focalisable) → focus restauré sur le vrai bouton visible de la lightbox.
+        resolveFocusTarget: () => overlay.querySelector("[data-lightbox-identity-photo-pick]"),
+        onValidate: (croppedUrl) => { pendingPhoto = croppedUrl; renderPendingPhoto(); },
+      });
+      fileInput.value = "";
     });
+    // La lightbox (overlay modal) prend le contrôle du focus : invalider les tentatives de focus
+    // différées encore en attente du dialogue parent, pour qu'elles ne volent pas le focus.
+    invalidateDialogFocus();
     (dialog.open ? dialog : document.body).appendChild(overlay);
   }
 
@@ -24577,6 +24942,7 @@ ${esc(bodyText)}</pre>
     if (action === "add-coach") return openCoachDialog();
     if (action === "edit-coach") return openCoachDialog(coachById(button.dataset.id));
     if (action === "coach-photo-pick") return pickCoachPhoto(button);
+    if (action === "coach-photo-recrop") return recropCoachPhoto(button);
     if (action === "coach-photo-remove") { setCoachPhotoInWidget(button.closest("[data-coach-photo-widget]"), ""); return; }
     if (action === "coach-avatar-choice") return setCoachAvatarChoice(button);
     if (action === "toggle-archive-coach") {
@@ -26244,7 +26610,7 @@ ${esc(bodyText)}</pre>
     setArticleImages(article, nextImages, nextCaptions);
   }
 
-  async function updateIdentityPhotoFile(input) {
+  function updateIdentityPhotoFile(input) {
     const file = input.files?.[0];
     if (!file) return;
     if (!file.type.startsWith("image/")) {
@@ -26253,7 +26619,16 @@ ${esc(bodyText)}</pre>
       return;
     }
     const form = input.closest("form");
-    setIdentityPhotoInForm(form, await identityPhotoFileToDataUrl(file));
+    openPhotoCropEditor({
+      source: file,
+      preset: "contact",
+      triggerButton: input,
+      // input fichier masqué (non focalisable) → on restaure le focus sur un vrai contrôle visible
+      // du formulaire (le cadre photo, un <button>), jamais sur l'input masqué ni un <label>.
+      resolveFocusTarget: () => form?.querySelector('[data-action="open-identity-photo"]')
+        || form?.querySelector("[data-identity-photo-widget] button"),
+      onValidate: (dataUrl) => setIdentityPhotoInForm(form, dataUrl),
+    });
     input.value = "";
   }
 
@@ -26266,49 +26641,45 @@ ${esc(bodyText)}</pre>
     });
   }
 
-  // Photo coach : recadrage carré centré 256x256, JPEG ~0.82 (jamais l'original brut).
-  function coachPhotoFileToDataUrl(file) {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onerror = () => reject(reader.error);
-      reader.onload = () => {
-        const image = new Image();
-        image.onerror = () => resolve(reader.result);
-        image.onload = () => {
-          const size = 256;
-          const side = Math.min(image.width, image.height) || 1;
-          const sx = Math.max(0, (image.width - side) / 2);
-          const sy = Math.max(0, (image.height - side) / 2);
-          const canvas = document.createElement("canvas");
-          canvas.width = size;
-          canvas.height = size;
-          const context = canvas.getContext("2d");
-          context.drawImage(image, sx, sy, side, side, 0, 0, size, size);
-          resolve(canvas.toDataURL("image/jpeg", 0.82));
-        };
-        image.src = reader.result;
-      };
-      reader.readAsDataURL(file);
-    });
-  }
-
-  // Sélecteur de fichier pour la photo coach : lit, recadre/redimensionne, écrit dans le widget.
+  // Sélecteur de fichier pour la photo coach : ouvre l'éditeur de recadrage commun (ratio carré
+  // 1:1, sortie 512x512), puis écrit la finale dans le widget. L'éditeur gère orientation EXIF,
+  // zoom, déplacement et génération finale (voir openPhotoCropEditor).
   function pickCoachPhoto(button) {
     const widget = button.closest("[data-coach-photo-widget]");
     if (!widget) return;
     const input = document.createElement("input");
     input.type = "file";
-    input.accept = "image/*";
-    input.addEventListener("change", async () => {
+    input.accept = "image/jpeg,image/png,image/webp,image/*";
+    input.addEventListener("change", () => {
       const file = input.files && input.files[0];
       if (!file) return;
       if (!file.type.startsWith("image/")) { alert("Choisis un fichier image."); return; }
-      try {
-        const dataUrl = await coachPhotoFileToDataUrl(file);
-        setCoachPhotoInWidget(widget, dataUrl);
-      } catch (e) { alert("Impossible de lire cette image."); }
+      openPhotoCropEditor({
+        source: file,
+        preset: "coach",
+        triggerButton: button,
+        // Le widget mute ses boutons en place : on recible le bouton « Ajouter/Remplacer » à la fermeture.
+        resolveFocusTarget: () => widget.querySelector('[data-action="coach-photo-pick"]'),
+        onValidate: (dataUrl) => setCoachPhotoInWidget(widget, dataUrl),
+      });
     });
     input.click();
+  }
+
+  // Rouvre l'éditeur de cadrage sur la photo coach déjà enregistrée (finale). On ne récupère pas
+  // les bords déjà coupés (stockage = image finale seule) mais on peut re-cadrer/re-zoomer dessus.
+  function recropCoachPhoto(button) {
+    const widget = button.closest("[data-coach-photo-widget]");
+    if (!widget) return;
+    const current = (widget.querySelector("[data-coach-photo-value]") || {}).value || "";
+    if (!isImageDataUrl(current)) return pickCoachPhoto(button);
+    openPhotoCropEditor({
+      source: current,
+      preset: "coach",
+      triggerButton: button,
+      resolveFocusTarget: () => widget.querySelector("[data-coach-photo-recrop]:not([hidden])") || widget.querySelector('[data-action="coach-photo-pick"]'),
+      onValidate: (dataUrl) => setCoachPhotoInWidget(widget, dataUrl),
+    });
   }
 
   function imageFileToDataUrl(file) {
@@ -26335,35 +26706,6 @@ ${esc(bodyText)}</pre>
     });
   }
 
-  function identityPhotoFileToDataUrl(file) {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onerror = () => reject(reader.error);
-      reader.onload = () => {
-        const image = new Image();
-        image.onerror = () => resolve(reader.result);
-        image.onload = () => {
-          const targetWidth = 360;
-          const targetHeight = 460;
-          const scale = Math.max(targetWidth / image.width, targetHeight / image.height);
-          const width = image.width * scale;
-          const height = image.height * scale;
-          const x = (targetWidth - width) / 2;
-          const y = (targetHeight - height) / 2;
-          const canvas = document.createElement("canvas");
-          canvas.width = targetWidth;
-          canvas.height = targetHeight;
-          const context = canvas.getContext("2d");
-          context.fillStyle = "#ffffff";
-          context.fillRect(0, 0, targetWidth, targetHeight);
-          context.drawImage(image, x, y, width, height);
-          resolve(canvas.toDataURL("image/jpeg", 0.88));
-        };
-        image.src = reader.result;
-      };
-      reader.readAsDataURL(file);
-    });
-  }
 
   function logoFileToDataUrl(file) {
     return new Promise((resolve, reject) => {
@@ -28560,8 +28902,10 @@ ${esc(bodyText)}</pre>
     renderCoachWidgetAvatar(widget);
     const rm = widget.querySelector("[data-action=coach-photo-remove]");
     if (rm) rm.hidden = !valid;
+    const recrop = widget.querySelector("[data-coach-photo-recrop]");
+    if (recrop) recrop.hidden = !valid;
     const pick = widget.querySelector("[data-coach-photo-pick-label]");
-    if (pick) pick.textContent = valid ? "Modifier la photo" : "Ajouter une photo";
+    if (pick) pick.textContent = valid ? "Remplacer la photo" : "Ajouter une photo";
   }
   // Applique un choix d'avatar par défaut (boutons segmentés) ; met à jour l'aperçu si pas de photo.
   function setCoachAvatarChoice(button) {
@@ -29056,15 +29400,16 @@ ${esc(bodyText)}</pre>
         ${coachAvatarHtml(coach, "lg")}
         <div class="coach-photo-controls">
           <div class="coach-photo-buttons">
-            <button type="button" data-action="coach-photo-pick"><span data-coach-photo-pick-label>${hasPhoto ? "Modifier la photo" : "Ajouter une photo"}</span></button>
+            <button type="button" data-action="coach-photo-pick"><span data-coach-photo-pick-label>${hasPhoto ? "Remplacer la photo" : "Ajouter une photo"}</span></button>
+            <button type="button" data-action="coach-photo-recrop" data-coach-photo-recrop ${hasPhoto ? "" : "hidden"}>Modifier le cadrage</button>
             <button type="button" class="danger" data-action="coach-photo-remove" ${hasPhoto ? "" : "hidden"}>Supprimer la photo</button>
           </div>
           <div class="coach-avatar-choice" role="group" aria-label="Avatar par défaut">
             <span class="coach-avatar-choice-label">Avatar par défaut</span>
             <div class="coach-avatar-choice-btns">${avatarChoiceBtn("neutral", "Avatar neutre")}${avatarChoiceBtn("man", "Caricature homme")}${avatarChoiceBtn("woman", "Caricature femme")}</div>
           </div>
-          <small class="coach-photo-help">Photo recadrée automatiquement, environ 256 px. L'avatar par défaut s'affiche s'il n'y a pas de photo.</small>
-          <small class="coach-photo-help-short">Photo recadrée automatiquement, environ 256 px.</small>
+          <small class="coach-photo-help">Recadre, zoome et positionne la photo dans l'éditeur ; enregistrée en 512 px. L'avatar par défaut s'affiche s'il n'y a pas de photo.</small>
+          <small class="coach-photo-help-short">Recadre, zoome et positionne ; enregistrée en 512 px.</small>
         </div>
       </div>
       <input type="hidden" name="photoDataUrl" value="${esc(coach.photoDataUrl || "")}" data-coach-photo-value />
