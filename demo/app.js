@@ -14710,10 +14710,59 @@ ${esc(bodyText)}</pre>
   let dialogFocusGeneration = 0;
   function invalidateDialogFocus() { dialogFocusGeneration++; }
 
-  function focusDialogControl(container = dialog, selector = "[autofocus], input:not([type='hidden']):not([disabled]), select:not([disabled]), textarea:not([disabled]), button:not([disabled])") {
+  // Contrôles de « chrome » d'un dialogue (réduire la fenêtre, futurs contrôles techniques) : ils
+  // restent atteignables au clavier (Tab) mais ne doivent jamais recevoir le focus initial normal.
+  const DIALOG_CHROME_SELECTOR = "[data-dialog-minimize], [data-dialog-chrome]";
+
+  // Un élément est candidat au focus initial s'il est connecté, visible, non désactivé, non caché
+  // et pas dans une section repliée (<details> fermé / conteneur [hidden] / aria-hidden).
+  function isDialogFocusCandidate(el) {
+    if (!(el instanceof HTMLElement)) return false;
+    if (el.disabled) return false;
+    if (el.type === "hidden") return false;
+    if (el.closest("[hidden]")) return false;
+    if (el.getAttribute("aria-hidden") === "true" || el.closest("[aria-hidden='true']")) return false;
+    const details = el.closest("details");
+    if (details && !details.open) return false;
+    return el.getClientRects().length > 0;
+  }
+
+  // Choisit le focus initial d'un dialogue générique par ordre de priorité métier, en ignorant les
+  // contrôles de chrome. querySelector renvoyant le premier nœud dans l'ordre du DOM (et non selon
+  // l'ordre des sélecteurs), on évalue chaque niveau séparément et on retient le premier qui répond.
+  function pickDefaultDialogFocus(container) {
+    if (!container) return null;
+    const pick = (sel, extra) => {
+      for (const el of container.querySelectorAll(sel)) {
+        if (!isDialogFocusCandidate(el)) continue;
+        if (el.closest(DIALOG_CHROME_SELECTOR)) continue;
+        if (extra && !extra(el)) continue;
+        return el;
+      }
+      return null;
+    };
+    const notClose = (el) => !el.matches("[data-dialog-close]");
+    const fieldSel = "input:not([type='hidden']):not([disabled]), select:not([disabled]), textarea:not([disabled])";
+    return pick("[autofocus]")                              // 1. [autofocus] visible et actif
+      || pick(fieldSel)                                     // 2. premier champ métier
+      || pick("button.primary:not([disabled]), button[type='submit']:not([disabled]), [data-confirm-submit]:not([disabled])", notClose) // 3. bouton d'action principal (hors Fermer)
+      || pick(fieldSel + ", button:not([disabled]), a[href], [tabindex]:not([tabindex='-1'])", notClose)  // 4. premier contrôle métier (hors chrome/Fermer)
+      || pick("[data-dialog-close]");                       // 5. bouton Fermer si aucun contrôle métier
+    // 6. sinon null → focusDialogControl focalise le dialogue lui-même (tabindex -1) en dernier recours.
+  }
+
+  // selector : sélecteur CSS explicite, élément DOM précis, ou rien/"" pour la règle générique
+  // (pickDefaultDialogFocus). Les appels avec sélecteur explicite conservent le comportement
+  // historique (querySelector, aucune tentative si sans correspondance).
+  function focusDialogControl(container = dialog, selector) {
     const targetDialog = dialogForContainer(container);
-    const target = container.querySelector(selector);
-    if (!target) return;
+    const useDefault = selector == null || selector === "";
+    const target = useDefault
+      ? pickDefaultDialogFocus(container)
+      : (selector instanceof HTMLElement ? selector : container.querySelector(selector));
+    // Sélecteur explicite sans cible : on ne programme rien (comportement historique). Règle par
+    // défaut sans cible : on focalise quand même le dialogue lui-même (dernier recours).
+    if (!useDefault && !target) return;
     const generation = ++dialogFocusGeneration;
     const run = () => {
       if (generation !== dialogFocusGeneration) return; // tentative obsolète : un contexte de focus plus récent a pris le relais
@@ -14721,8 +14770,10 @@ ${esc(bodyText)}</pre>
       targetDialog.setAttribute("tabindex", "-1");
       window.focus?.();
       targetDialog.focus?.();
-      target.focus?.({ preventScroll: true });
-      if (typeof target.select === "function" && target.matches("input, textarea")) target.select();
+      if (target) {
+        target.focus?.({ preventScroll: true });
+        if (typeof target.select === "function" && target.matches("input, textarea")) target.select();
+      }
     };
     requestAnimationFrame(run);
     setTimeout(run, 0);
@@ -16625,6 +16676,17 @@ ${esc(bodyText)}</pre>
     form.dataset.openedBy = activeUserId();
     let saved = false;
     let minimized = false;
+    // Suivi du dernier contrôle métier réellement focalisé (hors chrome) : sert à restaurer le
+    // focus à la réouverture d'une fenêtre réduite plutôt que de le replacer systématiquement au
+    // début. Le clic sur « Réduire » focalise le bouton chrome, ignoré ici, donc on conserve bien
+    // le champ où l'utilisateur travaillait.
+    let lastBusinessFocus = null;
+    form.addEventListener("focusin", (event) => {
+      const el = event.target;
+      if (el instanceof HTMLElement && !el.closest("[data-dialog-minimize], [data-dialog-chrome]")) {
+        lastBusinessFocus = el;
+      }
+    });
     // Fermeture (× / Annuler) : agit sur le dialogue hôte courant (peut changer après réduction/réouverture).
     form.querySelectorAll("[data-dialog-close]").forEach((button) => button.addEventListener("click", () => host.dialog.close()));
     const disposeWindow = () => { if (windowKey) keyedWindows.delete(windowKey); };
@@ -16655,7 +16717,13 @@ ${esc(bodyText)}</pre>
       host.dialog.appendChild(form);
       applyDialogClasses(host.dialog);
       armCloseHandler(host.dialog);
-      showFloatingDialog(form, "", host.dialog);
+      // Restaure le contrôle précédemment focalisé s'il existe encore et reste focalisable ;
+      // sinon showFloatingDialog appliquera la règle générique (premier champ métier).
+      const restoreTarget = (lastBusinessFocus && form.contains(lastBusinessFocus)
+        && !lastBusinessFocus.disabled && lastBusinessFocus.type !== "hidden"
+        && !lastBusinessFocus.closest("[data-dialog-minimize], [data-dialog-chrome]")
+        && !lastBusinessFocus.closest("[hidden]")) ? lastBusinessFocus : "";
+      showFloatingDialog(form, restoreTarget, host.dialog);
     };
     const closeForGoodWindow = () => {
       unregisterMinimizedWindow(minWindow);
