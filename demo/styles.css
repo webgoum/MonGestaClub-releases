@@ -2237,6 +2237,46 @@ tfoot td {
   pointer-events: none;
 }
 
+/* Recherche globale — surlignage bref de la bande de réglages atteinte depuis un résultat.
+   Strictement limité à .settings-collapsible-band.search-target-highlight : aucun effet sur les
+   autres bandes. Deux mécanismes hors flux, donc AUCUN décalage de mise en page ni masquage du
+   texte : un outline (anneau principal, jamais redéfini par les thèmes) + un box-shadow ring
+   teinté --accent superposé à --shadow (on conserve l'ombre du thème). La couleur vient de
+   --accent : lisible en graphite/ubuntu/classic, en clair comme en sombre. On ne touche pas au
+   background (les thèmes y peignent leur texture : grain graphite, cuir mac…). En mouvement
+   normal, le palier « animations » du cascade fait gagner le ring même face aux règles de thème
+   `:root[data-theme] .band`; en prefers-reduced-motion, `!important` assure le même résultat.
+   L'animation s'estompe d'elle-même ; JS retire ensuite la classe (durée alignée : 1,5 s). */
+.settings-collapsible-band.search-target-highlight {
+  outline: 2px solid transparent;
+  outline-offset: 2px;
+  border-radius: var(--radius);
+  animation: settings-search-target 1.5s ease-out forwards;
+}
+
+@keyframes settings-search-target {
+  0% {
+    outline-color: var(--accent);
+    box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 45%, transparent), var(--shadow);
+  }
+  70% {
+    outline-color: var(--accent);
+    box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 34%, transparent), var(--shadow);
+  }
+  100% {
+    outline-color: transparent;
+    box-shadow: 0 0 0 4px transparent, var(--shadow);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .settings-collapsible-band.search-target-highlight {
+    animation: none;
+    outline-color: var(--accent) !important;
+    box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 32%, transparent), var(--shadow) !important;
+  }
+}
+
 .collapsible-inner > .stock-alert-edit-list {
   padding: 10px;
 }
@@ -11708,3 +11748,110 @@ td.due,
   .photo-crop-buttons button { flex: 1 1 auto; }
 }
 /* ===== fin éditeur de recadrage photo ===== */
+
+/* ===== Recherche globale fonctionnelle (pages, réglages, actions) ===== */
+/* Liste unifiée : les résultats métier et fonctionnels partagent la même mise en forme,
+   seul le badge de type les distingue. Variables du thème actif uniquement (aucune
+   couleur en dur) pour rester cohérent avec graphite / ubuntu / classic. */
+.search-results-list,
+.search-results-list ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.search-results-group + .search-results-group { margin-top: 14px; }
+.search-results-group-title {
+  display: block;
+  margin: 0 0 6px;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  opacity: 0.62;
+}
+.search-option {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 9px 12px;
+  border: 1px solid var(--border, rgba(0, 0, 0, 0.12));
+  border-radius: 10px;
+  background: var(--card, #fff);
+  cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease;
+}
+.search-option + .search-option { margin-top: 6px; }
+.search-option:hover,
+.search-option.is-active {
+  background: var(--hover, rgba(0, 0, 0, 0.05));
+  border-color: var(--accent, #4d5966);
+}
+/* Résultat actif au clavier : repère visible même sans survol, et non uniquement
+   par la couleur (bordure renforcée) pour rester lisible en contraste réduit. */
+.search-option.is-active { box-shadow: inset 0 0 0 1px var(--accent, #4d5966); }
+.search-option-icon {
+  flex: 0 0 auto;
+  display: inline-flex;
+  width: 22px;
+  height: 22px;
+  align-items: center;
+  justify-content: center;
+}
+.search-option-icon svg { width: 100%; height: 100%; }
+.search-option-main {
+  flex: 1 1 auto;
+  min-width: 0;                 /* autorise l'ellipse dans un conteneur flex */
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.search-option-title {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.search-option-desc,
+.search-option-reason {
+  font-size: 0.82rem;
+  opacity: 0.72;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.search-option-reason { opacity: 0.9; font-style: italic; }
+.search-option-badge {
+  flex: 0 0 auto;
+  padding: 2px 9px;
+  border-radius: 999px;
+  border: 1px solid var(--border, rgba(0, 0, 0, 0.14));
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  opacity: 0.85;
+}
+.search-option-dest {
+  flex: 0 0 auto;
+  font-size: 0.78rem;
+  opacity: 0.6;
+  white-space: nowrap;
+}
+/* Entrée indisponible : lisible, jamais trompeuse — elle reste actionnable mais conduit
+   vers le réglage qui la débloque (cf. commandEntryAvailability). */
+.search-option-unavailable { opacity: 0.66; }
+.search-option-unavailable .search-option-badge { border-style: dashed; }
+
+@media (max-width: 720px) {
+  /* Petite largeur : le badge passe sous le titre, la destination disparaît (redondante
+     avec la description) ; aucun débordement horizontal, aucun texte tronqué à l'excès. */
+  .search-option { flex-wrap: wrap; padding: 8px 10px; gap: 8px; }
+  .search-option-main { flex: 1 1 100%; order: 1; }
+  .search-option-icon { order: 0; }
+  .search-option-badge { order: 2; }
+  .search-option-dest { display: none; }
+  .search-option-title { white-space: normal; }
+  .search-option-desc, .search-option-reason { white-space: normal; }
+}
+/* ===== fin recherche globale fonctionnelle ===== */

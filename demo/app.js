@@ -204,6 +204,19 @@
   // visible plutôt qu'un bug technique — décision produit, même mécanisme que Recherche/E-mails.
   const DISPLAY_FORCED_MODULES = ["dashboard", "settings", "help", "assistant", "search", "newsletter", "documents"];
 
+  // ===== Bandes repliables de la page Paramètres — SOURCE DE VÉRITÉ UNIQUE =====
+  // Identifiants des sections de réglages réellement rendues par settingsCollapsibleBand()
+  // (16-settings-themes.js) et pilotées par ui.settingsPanels / l'action toggle-settings-panel.
+  // Cette liste est l'unique référence : settingsCollapsibleBand la contrôle à l'affichage, et le
+  // registre de recherche (11b-command-registry.js) la contrôle à l'indexation. Les deux ne peuvent
+  // donc pas diverger silencieusement — une section ajoutée sans être déclarée ici est signalée.
+  // Ajouter une bande = ajouter son identifiant ICI, nulle part ailleurs.
+  const SETTINGS_PANEL_IDS = [
+    "themes", "typography", "postits", "features", "display", "menu-order", "checks",
+    "security", "logo", "emails", "smtp", "users", "data", "license",
+  ];
+  const isSettingsPanelId = (value) => SETTINGS_PANEL_IDS.includes(value);
+
   // Fonctionnalités par club (Lot 1 — fondation invisible). Version de schéma de settings.features.
   // Déclarée ici (tôt) car normalizeFeaturesSettings est appelée dès loadSettings au démarrage via
   // normalizeSettings (évite une TDZ). Structure INERTE dans ce lot : aucune logique de l'app ne la
@@ -577,6 +590,9 @@
     stageId: "stage-1",
     query: "",
     globalSearch: "",
+    // Curseur virtuel dans les résultats de recherche (flèches haut/bas). -1 = aucun résultat
+    // actif. État d'interface pur : jamais persisté, jamais dans l'historique métier.
+    searchActiveIndex: -1,
     discipline: "",
     disciplineLetter: "",
     contactLetter: "",
@@ -5211,6 +5227,526 @@
     return statusPill(status);
   }
 
+  // ===== Lot UX — Recherche globale fonctionnelle (pages, réglages, actions) =====
+  // Registre DÉCLARATIF des destinations et commandes du logiciel. Objectif : permettre à
+  // l'utilisateur d'atteindre une page, un réglage ou une action sans connaître son emplacement
+  // dans les menus, sans disperser des dizaines de `if (query.includes(...))` dans le handler.
+  //
+  // Principes structurants :
+  // - Une seule source de vérité par intitulé : les titres de PAGES sont repris de `views`
+  //   (01-constants.js) plutôt que recopiés ; seuls les mots-clés/synonymes sont déclarés ici.
+  // - Construction PARESSEUSE : aucune donnée n'est évaluée au chargement du bundle (les entrées
+  //   lisent `settings`/`state` via des fonctions appelées au moment de la recherche seulement).
+  //   Un `const` de haut niveau appelant ces helpers casserait au démarrage (TDZ).
+  // - Exécution par IDENTIFIANT validé : un résultat ne transporte jamais de code, seulement un id
+  //   recherché dans le registre. Une entrée inconnue ou indisponible est ignorée proprement.
+  // - Sûreté : aucune action destructrice n'est exécutable depuis la recherche. Les opérations
+  //   sensibles (import/restauration, suppression, remise à zéro, envoi réel d'e-mail, archivage)
+  //   sont indexées comme DESTINATIONS (elles ouvrent la page/section) et jamais déclenchées.
+
+  const SEARCH_TYPE_ORDER = ["page", "setting", "action", "module", "help", "data"];
+
+  // Libellé + icône de chaque type. Les icônes proviennent de MGC_ICONS (aucun emoji réintroduit).
+  const SEARCH_TYPE_META = {
+    page: { label: "Page", icon: "search" },
+    setting: { label: "Réglage", icon: "settings" },
+    action: { label: "Action", icon: "menu-bolt" },
+    module: { label: "Module", icon: "menu-grid" },
+    help: { label: "Aide", icon: "help" },
+    data: { label: "Donnée", icon: "contacts" },
+  };
+
+  function searchTypeMeta(type) {
+    return SEARCH_TYPE_META[type] || SEARCH_TYPE_META.data;
+  }
+
+  // --- Normalisation ---------------------------------------------------------------------
+  // Tolérante : casse, accents, apostrophes (droites et typographiques), tirets, pluriels simples.
+  // « Disponibilités » / « disponibilites » / « DISPONIBILITE » donnent le même jeton.
+  function normalizeSearchText(value) {
+    return asText(value)
+      .toLowerCase()
+      .normalize("NFD")
+      .replace(/\p{Diacritic}/gu, "")
+      .replace(/[’'`]/g, " ")
+      .replace(/[-_/\\.,;:!?()[\]{}"]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  // Pluriel simple : « salles » -> « salle ». On ne touche pas aux mots courts (« pin », « pdf »)
+  // ni aux terminaisons en -ss, pour ne pas casser des mots légitimes.
+  function singularizeSearchToken(token) {
+    if (token.length > 3 && token.endsWith("s") && !token.endsWith("ss")) return token.slice(0, -1);
+    return token;
+  }
+
+  function searchTokens(query) {
+    const normalized = normalizeSearchText(query);
+    if (!normalized) return [];
+    return normalized.split(" ").filter(Boolean).map(singularizeSearchToken);
+  }
+
+  // Texte indexable d'une entrée, normalisé et singularisé (mémoïsé, cf. commandRegistryIndex).
+  function searchableTokens(values = []) {
+    const out = new Set();
+    values.filter(Boolean).forEach((value) => {
+      searchTokens(value).forEach((token) => out.add(token));
+    });
+    return out;
+  }
+
+  // --- Helpers de déclaration ---------------------------------------------------------------
+  // Titre officiel d'une vue : lu dans `views` (source de vérité) plutôt que recopié.
+  function viewLabel(view) {
+    const found = views.find(([key]) => key === view);
+    return found ? found[1] : view;
+  }
+
+  // Icône d'une vue : réutilise la bibliothèque interne, avec repli sur l'icône du type.
+  function viewIconKey(view) {
+    return MGC_ICONS && MGC_ICONS[view] ? view : null;
+  }
+
+  // --- Registre --------------------------------------------------------------------------
+  // Chaque entrée : { id, type, title, description, keywords[], view?, panel?, action?,
+  //                   feature?, module?, priority?, available?() }
+  // `available()` renvoie true/false ; l'indisponibilité est expliquée par `unavailableReason`.
+  function commandRegistryDefinitions() {
+    const pages = [
+      // [clé de vue, description, mots-clés/synonymes supplémentaires]
+      ["dashboard", "Vue d'ensemble du club : alertes, tâches et chiffres clés.", ["accueil", "tableau de bord", "home", "resume", "synthese"]],
+      ["tasks", "Les points à traiter : relances, documents manquants, échéances.", ["a faire", "todo", "taches", "rappels", "post it", "postit"]],
+      ["search", "Rechercher partout : personnes, pages, réglages et actions.", ["rechercher", "trouver", "chercher"]],
+      ["contacts", "Adhérents et non-adhérents du club : fiches, coordonnées, photos.", ["adherent", "adherents", "membre", "membres", "personne", "personnes", "prospect", "fiche", "annuaire"]],
+      ["invoices", "Factures émises, brouillons et avoirs.", ["facture", "facturation", "devis", "avoir", "note de credit"]],
+      ["newsletter", "Envoyer un e-mail aux contacts à partir d'un modèle.", ["email", "e mail", "mail", "courriel", "message", "messagerie", "newsletter", "infolettre"]],
+      ["disciplines", "Disciplines enseignées et inscriptions associées.", ["discipline", "cours", "activite", "activites", "sport"]],
+      ["groups", "Groupes de pratiquants et leurs membres.", ["groupe", "equipe", "equipes", "categorie"]],
+      ["coaches", "Coachs du club : fiches, spécialités, disponibilités, photos.", ["coach", "entraineur", "entraineurs", "professeur", "prof", "encadrant", "moniteur", "instructeur"]],
+      ["rooms", "Salles et lieux de pratique.", ["salle", "gymnase", "dojo", "lieu", "lieux", "site", "installation"]],
+      ["planning", "Planning des séances et des cours.", ["planning", "agenda", "calendrier", "horaire", "horaires", "seance", "seances", "emploi du temps"]],
+      ["availability", "Disponibilités des coachs et des salles.", ["disponibilite", "dispo", "creneau", "creneaux", "indisponibilite"]],
+      ["attendance", "Feuilles de présence des séances.", ["presence", "appel", "emargement", "pointage", "absence"]],
+      ["documents", "Documents sportifs : certificats, licences, autorisations.", ["document", "certificat", "licence", "attestation", "autorisation", "dossier"]],
+      ["stages", "Stages et sessions : inscriptions, hébergement, paiements.", ["stage", "camp", "session", "seminaire", "sortie"]],
+      ["boutique", "Boutique du club : articles, commandes, ventes.", ["boutique", "magasin", "vente", "ventes", "commande", "commandes", "article", "articles", "shop"]],
+      ["stock", "Stock des articles de la boutique.", ["stock", "inventaire", "quantite", "reassort", "approvisionnement"]],
+      ["clubs", "Gérer les clubs : créer, dupliquer, activer, archiver.", ["club", "mes clubs", "multi club", "association", "changer de club"]],
+      ["settings", "Réglages du logiciel : thèmes, affichage, e-mails, données, sécurité.", ["parametre", "parametres", "reglage", "reglages", "configuration", "config", "preference", "preferences", "option", "options"]],
+      ["club-settings", "Identité du club : nom, adresse, responsables, mentions légales.", ["identite", "identite du club", "coordonnees", "siret", "responsable", "responsables", "bureau", "mentions legales"]],
+      ["tarifs", "Tarifs des disciplines, articles, stages et assurances.", ["tarif", "tarifs", "prix", "cotisation", "montant", "grille tarifaire"]],
+      ["stats", "Statistiques du club : effectifs et évolutions.", ["statistique", "statistiques", "stat", "chiffre", "chiffres", "graphique", "analyse"]],
+      ["accounting", "Comptabilité : recettes, dépenses et soldes.", ["comptabilite", "compta", "recette", "depense", "depenses", "bilan", "tresorerie", "budget"]],
+      ["due-payments", "Paiements dus : impayés, retards et relances.", ["paiement", "paiements", "paiement du", "impaye", "impayes", "retard", "creance", "reste a payer", "relance", "encaissement"]],
+      ["notes", "Notes libres du club.", ["note", "notes", "memo", "pense bete"]],
+      ["history", "Historique des actions récentes.", ["historique", "recent", "recents"]],
+      ["audit-log", "Journal d'activité : trace des modifications importantes.", ["journal", "journal d activite", "activite", "audit", "trace", "log", "suivi"]],
+      ["help", "Aide et documentation du logiciel.", ["aide", "documentation", "manuel", "guide", "assistance", "support", "faq"]],
+      ["assistant", "Centre d'accompagnement : visites guidées et conseils.", ["accompagnement", "assistant", "visite guidee", "tutoriel", "demarrage", "prise en main"]],
+    ];
+
+    const entries = pages.map(([view, description, keywords]) => ({
+      id: `page-${view}`,
+      type: "page",
+      title: viewLabel(view),          // source de vérité : `views`
+      description,
+      keywords,
+      view,
+      icon: viewIconKey(view),
+      priority: 0,
+    }));
+
+    // --- Réglages : chaque entrée ouvre Paramètres ET déplie la bonne bande ------------------
+    // Les identifiants de bande sont ceux passés à settingsCollapsibleBand() (16-settings-themes).
+    const settingsBands = [
+      ["themes", "Thèmes", "Changer l'apparence du logiciel.", ["theme", "apparence", "couleur", "couleurs", "graphite", "ubuntu", "classic", "sombre", "clair", "style"]],
+      ["typography", "Polices", "Choisir les polices des titres, du texte et des boutons.", ["police", "polices", "typographie", "font", "taille du texte", "caractere"]],
+      ["postits", "Post-it À faire", "Couleurs et modèles des post-it.", ["post it", "postit", "pense bete", "couleur des post it"]],
+      ["features", "Fonctionnalités du club", "Activer ou désactiver des fonctions pour ce club.", ["fonctionnalite", "fonctionnalites", "fonction", "module", "modules", "activer", "desactiver", "option du club"]],
+      ["display", "Affichage", "Mode Simple, Avancé ou Personnalisé et modules visibles.", ["affichage", "mode", "mode simple", "mode avance", "mode personnalise", "simple", "avance", "personnalise", "layout", "interface", "menu visible"]],
+      ["menu-order", "Ordre du menu", "Personnaliser l'ordre et les icônes de la navigation.", ["menu", "ordre du menu", "navigation", "personnaliser le menu", "icone", "icones", "raccourci"]],
+      ["checks", "Paiement en plusieurs fois", "Nombre d'échéances et de chèques autorisés.", ["cheque", "cheques", "echeance", "echeances", "plusieurs fois", "fractionne", "paiement en plusieurs fois"]],
+      ["security", "Sécurité", "Mot de passe du logiciel et protection des actions sensibles.", ["securite", "mot de passe", "password", "protection", "verrouillage", "confidentialite"]],
+      ["logo", "Logo", "Logo du club et icônes de l'application.", ["logo", "image", "embleme", "blason", "icone de l application"]],
+      ["emails", "Messages e-mail", "Modèles de messages et relances.", ["modele", "modeles", "modele e mail", "message", "relance", "relances", "email", "e mail", "mail"]],
+      ["smtp", "Envoi d'e-mails (SMTP)", "Configurer le serveur d'envoi des e-mails du club.", ["smtp", "serveur mail", "serveur d envoi", "envoi e mail", "email", "e mail", "mail", "messagerie", "port", "expediteur"]],
+      ["users", "Utilisateurs", "Profils locaux, code PIN et profil actif.", ["utilisateur", "utilisateurs", "utilisateur local", "profil", "profils", "pin", "code pin", "compte", "session"]],
+      ["data", "Données", "Sauvegarde, restauration, import/export et vidage.", ["donnee", "donnees", "sauvegarde", "backup", "restauration", "restaurer", "import", "importer", "export", "exporter", "archive", "archivage", "vider", "reinitialiser"]],
+      ["license", "Licence", "Activation et état de la licence.", ["licence", "license", "activation", "cle", "abonnement", "essai"]],
+    ];
+
+    settingsBands.forEach(([panel, title, description, keywords]) => {
+      entries.push({
+        id: `setting-${panel}`,
+        type: "setting",
+        title,
+        description,
+        keywords,
+        view: "settings",
+        panel,
+        icon: "settings",
+        priority: 0,
+      });
+    });
+
+    // --- Actions exécutables ------------------------------------------------------------------
+    // UNIQUEMENT des actions sûres : elles ouvrent un dialogue de création ou produisent un
+    // fichier. Aucune suppression, remise à zéro, restauration, désactivation, envoi réel
+    // d'e-mail, paiement ni archivage massif n'est déclenchable depuis la recherche.
+    // Volontairement ABSENTES du registre exécutable, et couvertes par des destinations :
+    //   · import-json  -> écrase les données dès le choix du fichier, sans confirmation
+    //                     => indexé comme destination « Importer une sauvegarde » (Paramètres > Données)
+    //   · add-note     -> crée et persiste une note immédiatement (niveau d'historique)
+    //                     => la page « Notes » suffit
+    const actions = [
+      ["action-add-contact", "Ajouter un contact", "Créer une fiche adhérent ou non-adhérent.",
+        ["ajouter un contact", "nouveau contact", "creer un contact", "ajouter une personne", "nouvel adherent", "ajouter un adherent", "ajouter un membre", "inscrire"],
+        "add-contact", "contacts", null],
+      ["action-add-coach", "Ajouter un coach", "Créer une fiche coach.",
+        ["ajouter un coach", "nouveau coach", "creer un coach", "ajouter un entraineur", "nouvel entraineur", "ajouter un professeur", "ajouter un encadrant"],
+        "add-coach", "coaches", null],
+      ["action-add-room", "Ajouter une salle", "Créer une salle ou un lieu de pratique.",
+        ["ajouter une salle", "nouvelle salle", "creer une salle", "ajouter un gymnase", "ajouter un lieu", "ajouter un dojo"],
+        "add-room", "rooms", null],
+      ["action-add-group", "Ajouter un groupe", "Créer un groupe de pratiquants.",
+        ["ajouter un groupe", "nouveau groupe", "creer un groupe", "ajouter une equipe"],
+        "add-group", "groups", null],
+      ["action-add-stage", "Ajouter un stage", "Créer un stage ou une session.",
+        ["ajouter un stage", "nouveau stage", "creer un stage", "ajouter un camp", "nouvelle session"],
+        "add-stage", "stages", "stages"],
+      ["action-new-invoice", "Créer une facture", "Établir une nouvelle facture pour un contact.",
+        ["creer une facture", "nouvelle facture", "ajouter une facture", "facturer", "editer une facture"],
+        "new-invoice", "invoices", null],
+      ["action-add-stock-article", "Ajouter un article boutique", "Créer un article et son stock.",
+        ["ajouter un article", "nouvel article", "creer un article", "ajouter du stock", "nouveau produit", "ajouter au stock"],
+        "add-stock-article", "stock", "shop"],
+      ["action-add-order", "Ajouter une commande boutique", "Enregistrer une commande pour un contact.",
+        ["ajouter une commande", "nouvelle commande", "creer une commande", "vendre", "vente"],
+        "add-order", "boutique", "shop"],
+      ["action-add-course", "Ajouter un cours au planning", "Créer une séance récurrente dans le planning.",
+        ["ajouter un cours", "nouveau cours", "creer un cours", "ajouter une seance", "ajouter au planning"],
+        "add-course", "planning", null],
+      ["action-new-user", "Créer un utilisateur local", "Ajouter un profil local protégé par un code PIN.",
+        ["creer un utilisateur", "nouvel utilisateur", "ajouter un utilisateur", "utilisateur local", "nouveau profil", "ajouter un profil"],
+        "new-user", "settings", null],
+      // Seul export indexable : il ne dépend d'AUCUN contexte de page (sauvegarde complète).
+      ["action-export-json", "Exporter les données (sauvegarde)", "Télécharger une sauvegarde JSON complète.",
+        ["exporter les donnees", "sauvegarde", "sauvegarder", "backup", "telecharger une sauvegarde", "export json", "copie de securite"],
+        "export-json", null, null],
+      // VOLONTAIREMENT ABSENTS du registre : `export-csv` et `export-pdf`. Ces deux actions
+      // portent sur la PAGE COURANTE (exportCurrentCsv/exportCurrentPdf) : lancées depuis la
+      // page Recherche, elles exporteraient celle-ci, ce qu'un intitulé de résultat ne peut pas
+      // rendre sans ambiguïté. Elles restent accessibles depuis les boutons de chaque page,
+      // dont le contexte est explicite. Ne pas les réintroduire ici.
+    ];
+
+    actions.forEach(([id, title, description, keywords, action, module, feature]) => {
+      entries.push({ id, type: "action", title, description, keywords, action, module, feature, icon: "menu-bolt", priority: 1 });
+    });
+
+    // --- Destinations pour opérations sensibles (jamais exécutées depuis la recherche) --------
+    entries.push({
+      id: "setting-data-import",
+      type: "setting",
+      title: "Importer une sauvegarde",
+      description: "Ouvre Paramètres > Données. L'import remplace les données : il se confirme depuis cette page.",
+      keywords: ["import", "importer", "importer une sauvegarde", "restaurer", "restauration", "charger une sauvegarde", "recuperer"],
+      view: "settings",
+      panel: "data",
+      icon: "settings",
+      priority: 0,
+    });
+    entries.push({
+      id: "setting-data-reset",
+      type: "setting",
+      title: "Vider ou réinitialiser les données",
+      description: "Ouvre Paramètres > Données. Opération sensible : elle se confirme depuis cette page.",
+      keywords: ["vider", "reinitialiser", "remise a zero", "effacer les donnees", "supprimer les donnees", "repartir de zero"],
+      view: "settings",
+      panel: "data",
+      icon: "settings",
+      priority: 0,
+    });
+
+    // --- Aide contextuelle ---------------------------------------------------------------------
+    // Le recadrage photo n'existe QUE dans une fiche ouverte : on n'invente pas d'action globale,
+    // on conduit l'utilisateur là où la fonction se trouve réellement.
+    entries.push({
+      id: "help-photo-crop",
+      type: "help",
+      title: "Recadrer une photo",
+      description: "Le recadrage s'ouvre depuis la photo d'une fiche contact ou coach.",
+      keywords: ["recadrer", "recadrage", "photo", "cadrer", "rogner", "zoomer une photo", "modifier une photo", "portrait", "avatar", "identite photo"],
+      view: "contacts",
+      icon: "contacts",
+      priority: 0,
+    });
+
+    return entries;
+  }
+
+  // --- Index mémoïsé ---------------------------------------------------------------------------
+  // Le registre est statique : on ne le reconstruit qu'une fois par session, et on pré-calcule les
+  // jetons normalisés. La DISPONIBILITÉ, elle, est réévaluée à chaque recherche (club actif, mode
+  // d'affichage et fonctionnalités peuvent changer) — c'est peu coûteux, contrairement à l'indexation.
+  let commandRegistryCache = null;
+
+  function commandRegistryIndex() {
+    if (commandRegistryCache) return commandRegistryCache;
+    const seen = new Set();
+    const list = [];
+    commandRegistryDefinitions().forEach((entry) => {
+      // Une entrée invalide est ignorée proprement plutôt que de casser la recherche.
+      if (!entry || typeof entry !== "object") return;
+      if (!entry.id || typeof entry.id !== "string" || seen.has(entry.id)) return;
+      if (!entry.type || !SEARCH_TYPE_META[entry.type]) return;
+      if (!asText(entry.title)) return;
+      if (!entry.view && !entry.action) return;          // une entrée doit mener quelque part
+      if (entry.action && typeof entry.action !== "string") return;
+      if (entry.view && !views.some(([key]) => key === entry.view)) return; // pas de destination fictive
+      // Une section de réglages doit exister réellement : on la valide contre la source de vérité
+      // unique SETTINGS_PANEL_IDS (01-constants.js), la même que celle vérifiée à l'affichage par
+      // settingsCollapsibleBand. Sinon l'entrée conduirait à Paramètres sans rien déplier.
+      if (entry.panel !== undefined && entry.panel !== null) {
+        if (typeof entry.panel !== "string" || !isSettingsPanelId(entry.panel)) {
+          console.warn(`registre de recherche : entrée « ${entry.id} » ignorée — section de réglages inconnue « ${entry.panel} ».`);
+          return;
+        }
+        // Un panneau n'a de sens que sur la page Paramètres, qui l'affiche.
+        if (entry.view !== "settings") {
+          console.warn(`registre de recherche : entrée « ${entry.id} » ignorée — un panneau ne peut être ouvert que depuis la vue « settings ».`);
+          return;
+        }
+      }
+      seen.add(entry.id);
+      const keywords = Array.isArray(entry.keywords) ? entry.keywords.filter((k) => typeof k === "string") : [];
+      list.push({
+        ...entry,
+        keywords,
+        titleNorm: normalizeSearchText(entry.title),
+        titleTokens: searchableTokens([entry.title]),
+        keywordTokens: searchableTokens(keywords),
+        keywordNorms: keywords.map((k) => normalizeSearchText(k)),
+        descriptionTokens: searchableTokens([entry.description]),
+      });
+    });
+    commandRegistryCache = list;
+    return list;
+  }
+
+  // --- Disponibilité ----------------------------------------------------------------------------
+  // Trois axes distincts, déjà portés par l'application : la FONCTIONNALITÉ du club (hasFeature),
+  // l'AFFICHAGE du module (isViewVisible : mode Simple/Avancé/Personnalisé) et le club actif.
+  // Règle retenue : une entrée dont le module est simplement MASQUÉ reste proposée, signalée comme
+  // indisponible avec le chemin pour l'activer — sinon l'utilisateur ne peut pas découvrir comment
+  // réactiver ce qu'il cherche. Une entrée dont la FONCTIONNALITÉ est coupée est traitée pareil.
+  function commandEntryAvailability(entry) {
+    if (typeof entry.available === "function") {
+      let ok = false;
+      try { ok = Boolean(entry.available()); } catch (_) { ok = false; }
+      if (!ok) return { available: false, reason: "Indisponible dans ce contexte." };
+    }
+    if (entry.feature && typeof hasFeature === "function" && !hasFeature(entry.feature)) {
+      return {
+        available: false,
+        reason: "Fonctionnalité désactivée pour ce club.",
+        fixView: "settings",
+        fixPanel: "features",
+      };
+    }
+    const targetModule = entry.module || entry.view;
+    if (targetModule && typeof isViewVisible === "function" && !isViewVisible(targetModule)) {
+      return {
+        available: false,
+        reason: "Module masqué dans ce club.",
+        fixView: "settings",
+        fixPanel: "display",
+      };
+    }
+    return { available: true };
+  }
+
+  // --- Pondération -------------------------------------------------------------------------------
+  // Barème explicite et stable (du plus fort au plus faible) :
+  //   1. titre identique à la requête          100
+  //   2. titre commençant par la requête        80
+  //   3. titre contenant la requête             60
+  //   4. mot-clé identique                      50
+  //   5. mot-clé/synonyme commençant par        40
+  //   6. description                            15
+  // Tous les jetons de la requête doivent être couverts (ET logique) : « ajouter coach » ne
+  // remonte pas une entrée qui ne parle que de « coach ».
+  function scoreCommandEntry(entry, tokens, normalizedQuery) {
+    if (!tokens.length) return 0;
+    let score = 0;
+
+    if (entry.titleNorm === normalizedQuery) score += 100;
+    else if (entry.titleNorm.startsWith(normalizedQuery)) score += 80;
+    else if (entry.titleNorm.includes(normalizedQuery)) score += 60;
+
+    if (entry.keywordNorms.some((k) => k === normalizedQuery)) score += 50;
+    else if (entry.keywordNorms.some((k) => k.startsWith(normalizedQuery))) score += 40;
+    else if (entry.keywordNorms.some((k) => k.includes(normalizedQuery))) score += 25;
+
+    // Couverture jeton par jeton : indispensable pour les requêtes en plusieurs mots.
+    let couverts = 0;
+    tokens.forEach((token) => {
+      if (entry.titleTokens.has(token)) { score += 12; couverts++; return; }
+      if (entry.keywordTokens.has(token)) { score += 9; couverts++; return; }
+      // Préfixe : « dispo » doit atteindre « disponibilite ».
+      if ([...entry.titleTokens].some((t) => t.startsWith(token))) { score += 7; couverts++; return; }
+      if ([...entry.keywordTokens].some((t) => t.startsWith(token))) { score += 5; couverts++; return; }
+      if (entry.descriptionTokens.has(token)) { score += 3; couverts++; }
+    });
+    if (couverts < tokens.length) return 0;   // tous les jetons doivent être couverts
+
+    score += entry.priority || 0;
+    return score;
+  }
+
+  // --- Recherche fonctionnelle ---------------------------------------------------------------------
+  function functionalSearchResults(query = ui.globalSearch, limit = 12) {
+    const normalizedQuery = normalizeSearchText(query);
+    const tokens = searchTokens(query);
+    if (!tokens.length) return [];
+    const scored = [];
+    commandRegistryIndex().forEach((entry) => {
+      const score = scoreCommandEntry(entry, tokens, normalizedQuery);
+      if (score <= 0) return;
+      const availability = commandEntryAvailability(entry);
+      scored.push({ entry, score, availability });
+    });
+    // Tri stable et lisible : score, puis type (ordre fixe), puis titre.
+    scored.sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score;
+      const ta = SEARCH_TYPE_ORDER.indexOf(a.entry.type);
+      const tb = SEARCH_TYPE_ORDER.indexOf(b.entry.type);
+      if (ta !== tb) return ta - tb;
+      return a.entry.title.localeCompare(b.entry.title, "fr");
+    });
+    // Les entrées disponibles passent devant les indisponibles, à score comparable.
+    const dispo = scored.filter((row) => row.availability.available);
+    const indispo = scored.filter((row) => !row.availability.available);
+    return [...dispo, ...indispo].slice(0, limit);
+  }
+
+  // --- Exécution ------------------------------------------------------------------------------------
+  // Un résultat ne transporte qu'un identifiant : on le recherche dans le registre (liste blanche)
+  // avant toute exécution. Aucune action arbitraire ne peut être déclenchée depuis le DOM.
+  async function runCommandEntryById(entryId, options = {}) {
+    const entry = commandRegistryIndex().find((row) => row.id === entryId);
+    if (!entry) return false;                       // identifiant inconnu : ignoré proprement
+    const availability = commandEntryAvailability(entry);
+    if (!availability.available) {
+      // On n'exécute jamais une entrée indisponible : on conduit vers le réglage qui la débloque.
+      if (options.fix && availability.fixView) {
+        // Le message doit être posé AVANT la navigation : openSettingsAt() rend la page une seule
+        // fois (et y consomme le jeton de surlignage). Rendre une seconde fois après coup
+        // reconstruirait le DOM et effacerait aussitôt le surlignage de la bande atteinte.
+        ui.saveMessage = `${entry.title} — ${availability.reason}`;
+        openSettingsAt(availability.fixView, availability.fixPanel);
+        return true;
+      }
+      ui.saveMessage = `${entry.title} — ${availability.reason}`;
+      render();
+      return false;
+    }
+    // Destination : on réutilise la navigation existante (jamais de clic simulé).
+    if (entry.view && !entry.action) {
+      openSettingsAt(entry.view, entry.panel);
+      return true;
+    }
+    if (entry.action) {
+      // Une action rattachée à une vue s'exécute depuis cette vue (contexte cohérent, ex. le
+      // dialogue de création s'ouvre sur la page concernée).
+      if (entry.module && views.some(([key]) => key === entry.module) && ui.view !== entry.module) {
+        navigateToViewFromMenu(entry.module);
+      }
+      await handleAction({ dataset: { action: entry.action } });
+      return true;
+    }
+    return false;
+  }
+
+  // Navigation vers une vue, en dépliant au passage la bande de réglages visée.
+  // N'enregistre AUCUN niveau d'historique métier (navigateTo n'appelle pas recordHistory).
+  function openSettingsAt(view, panel) {
+    // Seconde barrière : l'index exclut déjà les panneaux inconnus, mais openSettingsAt reçoit
+    // aussi les `fixPanel` de commandEntryAvailability — on ne crée jamais une clé fantôme.
+    if (panel && isSettingsPanelId(panel)) {
+      ui.settingsPanels = { ...(ui.settingsPanels || {}), [panel]: true };
+      // Jeton logique consommé juste après le rendu (cf. highlightSettingsSearchTarget) : il
+      // indique la bande à amener à l'écran et à surligner brièvement. Il ne survit jamais à
+      // l'appel courant — la consommation le purge inconditionnellement.
+      ui.searchHighlightPanel = panel;
+    }
+    // navigateTo() court-circuite le rendu quand le point de navigation est identique (on est
+    // déjà sur cette page, sans filtre). On force alors un rendu pour que la bande soit dépliée
+    // et que le jeton soit consommé sur un DOM à jour.
+    const rerenderNeeded = ui.view === view;
+    navigateToViewFromMenu(view);
+    if (rerenderNeeded) render();
+    // Le rendu est synchrone (app.innerHTML) : à ce point le DOM cible existe. On consomme donc
+    // le jeton « après le rendu effectif » sans setTimeout fragile en amont.
+    highlightSettingsSearchTarget();
+  }
+
+  // Durée d'affichage du surlignage de la bande atteinte depuis la recherche. Doit rester alignée
+  // sur l'animation CSS `settings-search-target` (styles.css) : bref, perceptible, non agressif.
+  const SETTINGS_HIGHLIGHT_MS = 1500;
+
+  // Consommateur du jeton `ui.searchHighlightPanel`. Appelé juste après le rendu de la page visée.
+  // Contrats :
+  //  - purge INCONDITIONNELLE du jeton logique (jamais rejoué sur un rerender, un changement de
+  //    thème, de club ou de largeur, ni sur une modification sans rapport) ;
+  //  - aucun effet hors page Paramètres ;
+  //  - un panneau valide mais absent du DOM ne déclenche ni scroll ni erreur ;
+  //  - reprise du focus a11y : la page Recherche étant détruite, le focus retomberait sinon sur
+  //    BODY ; on le place sur le titre interactif de la bande atteinte (jamais laissé sur BODY) ;
+  //  - respecte prefers-reduced-motion (géré côté CSS + repli de comportement de défilement).
+  function highlightSettingsSearchTarget() {
+    const panel = ui.searchHighlightPanel;
+    ui.searchHighlightPanel = "";                 // purge immédiate et inconditionnelle
+    if (!panel || ui.view !== "settings") return;
+    const target = app.querySelector(`.settings-collapsible-band[data-settings-panel="${CSS.escape(panel)}"]`);
+    if (!target) return;                          // panneau valide mais pas dans le DOM : rien
+    const reduceMotion = typeof matchMedia === "function"
+      && matchMedia("(prefers-reduced-motion: reduce)").matches;
+    try {
+      // block:"center" évite tout recouvrement par une barre haute et fonctionne quel que soit
+      // le conteneur qui défile réellement (ici la fenêtre : .sidebar est sticky, .content sans
+      // overflow propre). scrollIntoView remonte automatiquement jusqu'au bon ancêtre scrollable.
+      target.scrollIntoView({ block: "center", inline: "nearest", behavior: reduceMotion ? "auto" : "smooth" });
+    } catch (_) {
+      target.scrollIntoView();                    // repli si l'objet d'options n'est pas supporté
+    }
+    // Surlignage : une classe dédiée, retirée après l'animation. Un rerender reconstruit le DOM
+    // sans cette classe, donc elle ne peut pas persister ; le timeout sur le nœud (éventuellement
+    // détaché) reste sans effet de bord.
+    target.classList.add("search-target-highlight");
+    // Reprise du focus (a11y). Le titre de la bande est la destination logique : role="button",
+    // tabindex="0", aria-expanded et intitulé du réglage. preventScroll empêche un second
+    // défilement qui annulerait le centrage demandé ci-dessus. .focus() ne déclenche pas l'action
+    // « toggle-settings-panel » (seule une activation le ferait) : la bande reste ouverte.
+    const focusTarget = target.querySelector(".collapsible-title-row[role='button'][tabindex='0']");
+    if (focusTarget) {
+      try { focusTarget.focus({ preventScroll: true }); }
+      catch (_) { focusTarget.focus(); }
+    }
+    // Confirmation réelle de la prise de focus : on ne laisse JAMAIS le focus sur BODY. Repli
+    // exceptionnel (titre introuvable ou focus refusé) sur la bande elle-même, via un tabindex
+    // temporaire retiré au blur ou au prochain rendu — le titre interactif reste le chemin normal.
+    if (focusTarget !== document.activeElement) {
+      if (typeof console !== "undefined" && console.warn) {
+        console.warn(`highlightSettingsSearchTarget : focus non pris sur le titre de « ${panel} » — repli sur la bande.`);
+      }
+      target.setAttribute("tabindex", "-1");
+      try { target.focus({ preventScroll: true }); } catch (_) { target.focus(); }
+      target.addEventListener("blur", () => target.removeAttribute("tabindex"), { once: true });
+    }
+    window.setTimeout(() => target.classList.remove("search-target-highlight"), SETTINGS_HIGHLIGHT_MS);
+  }
   function includesQuery(record, query) {
     if (!query) return true;
     return JSON.stringify(record).toLowerCase().includes(query.toLowerCase());
@@ -7986,6 +8522,18 @@
         push({ type: "Coach", title: coachFullName(coach), detail: [(coach.specialties || []).join(", "), coach.archived ? "archivé" : ""].filter(Boolean).join(" · "), attrs: `data-action="edit-coach" data-id="${esc(coach.id)}"` });
       }
     });
+    // Groupes : absents de la recherche métier jusqu'ici alors que la page existe et que les
+    // groupes sont une entité de premier plan. Comblé ici (signalé comme écart préexistant).
+    (state.groups || []).forEach((group) => {
+      if (matches([group.name, group.discipline, group.type, group.notes])) {
+        push({
+          type: "Groupe",
+          title: group.name || "Groupe",
+          detail: [group.discipline, group.type, group.archived ? "archivé" : ""].filter(Boolean).join(" · "),
+          attrs: `data-action="edit-group" data-id="${esc(group.id)}"`,
+        });
+      }
+    });
     (state.rooms || []).forEach((room) => {
       if (matches([room.name, room.address, room.type, (room.disciplines || []).join(" "), room.equipment, room.notes, room.description, room.managerName, room.managerEmail, room.managerPhone, roomAvailabilitySummary(room)])) {
         push({ type: "Salle", title: roomName(room), detail: [room.type, (room.disciplines || []).join(", "), room.archived ? "archivée" : ""].filter(Boolean).join(" · "), attrs: `data-action="edit-room" data-id="${esc(room.id)}"` });
@@ -8007,12 +8555,18 @@
   }
 
   function renderSearch() {
+    // Combobox : le champ pilote une liste de résultats (aria-controls/-expanded/-activedescendant),
+    // ce qui rend la navigation aux flèches annonçable par les lecteurs d'écran.
+    const hasQuery = Boolean(asText(ui.globalSearch));
     return `<div class="band">
       <div class="band-title">
-        <div><h2>Recherche globale</h2><p class="muted">Recherche dans les contacts, inscriptions, paiements, boutique, stock, stages, factures et notes.</p></div>
+        <div><h2>Recherche globale</h2><p class="muted">Personnes et données du club, mais aussi pages, réglages et actions du logiciel.</p></div>
       </div>
       <div class="search-page-form">
-        <input type="search" value="${esc(ui.globalSearch)}" data-global-search placeholder="Nom, téléphone, article, stage, facture, note..." autofocus />
+        <input type="search" value="${esc(ui.globalSearch)}" data-global-search
+          placeholder="Contact, coach, salle, facture… ou « ajouter un coach », « SMTP », « paiements dus »"
+          role="combobox" aria-expanded="${hasQuery ? "true" : "false"}" aria-controls="global-search-results"
+          aria-autocomplete="list" aria-label="Recherche globale" autofocus />
         <button class="primary" data-action="run-global-search">Rechercher</button>
       </div>
       <div data-search-results>
@@ -8021,19 +8575,145 @@
     </div>`;
   }
 
+  // Un résultat = une option de liste. `attrs` (données métier) et l'identifiant de registre
+  // (résultats fonctionnels) sont les SEULS vecteurs d'action : aucun code n'est transporté.
+  function searchOptionHtml(option, index) {
+    const meta = searchTypeMeta(option.type);
+    const iconKey = option.icon && MGC_ICONS[option.icon] ? option.icon : meta.icon;
+    const icon = getIconSvg(iconKey);
+    const indispo = option.unavailable ? ` search-option-unavailable` : "";
+    return `<li class="search-option${indispo}" role="option" id="search-option-${index}"
+      aria-selected="false" data-search-option data-index="${index}" ${option.attrs || ""}>
+      <span class="search-option-icon" aria-hidden="true">${icon}</span>
+      <span class="search-option-main">
+        <span class="search-option-title">${esc(option.title)}</span>
+        ${option.description ? `<span class="search-option-desc">${esc(option.description)}</span>` : ""}
+        ${option.unavailable ? `<span class="search-option-reason">${esc(option.unavailable)}</span>` : ""}
+      </span>
+      <span class="search-option-badge" data-type="${esc(option.type)}">${esc(meta.label)}</span>
+      ${option.destination ? `<span class="search-option-dest">${esc(option.destination)}</span>` : ""}
+    </li>`;
+  }
+
+  // Construit la liste unifiée : fonctionnel d'abord (on cherche souvent « où est X ? »), puis les
+  // données métier — qui ne sont jamais masquées, seulement regroupées sous leur propre titre.
+  function searchOptions(query = ui.globalSearch) {
+    const options = [];
+    functionalSearchResults(query).forEach((row) => {
+      const { entry, availability } = row;
+      options.push({
+        group: "Pages, réglages et actions",
+        type: entry.type,
+        title: entry.title,
+        description: entry.description,
+        icon: entry.icon,
+        destination: entry.view ? viewLabel(entry.view) : "",
+        unavailable: availability.available ? "" : availability.reason,
+        // Exécution par identifiant, validé contre le registre au moment du clic.
+        attrs: `data-action="run-search-command" data-command-id="${esc(entry.id)}"${availability.available ? "" : ' data-command-fix="1"'}`,
+      });
+    });
+    globalSearchRows(query).forEach((row) => {
+      options.push({
+        group: "Données du club",
+        type: "data",
+        title: row.title,
+        description: row.detail,
+        icon: searchDataIcon(row.type),
+        destination: row.type,
+        attrs: row.attrs,
+      });
+    });
+    return options;
+  }
+
+  // Icône d'un résultat métier : réutilise l'icône de la page qui héberge l'entité.
+  function searchDataIcon(dataType) {
+    const map = {
+      "Adhérent": "contacts", "Non adhérent": "contacts", "Discipline": "disciplines",
+      "Article": "stock", "Commande": "boutique", "Stage": "stages", "Participant stage": "stages",
+      "Note": "notes", "Coach": "coaches", "Salle": "rooms", "Facture": "invoices", "Groupe": "groups",
+    };
+    return map[dataType] || "search";
+  }
+
   function searchResultsHtml() {
-    const rows = globalSearchRows();
-    return `
-      ${ui.globalSearch ? `<p class="muted">${intValue(rows.length)} résultat${rows.length > 1 ? "s" : ""} pour "${esc(ui.globalSearch)}"</p>` : `<p class="muted">Tape une recherche puis valide avec Entrée.</p>`}
-      ${rows.length ? `<div class="table-wrap"><table class="editable-table search-results-table">
-        <thead><tr><th>Type</th><th>Résultat</th><th>Détail</th></tr></thead>
-        <tbody>${rows.map((row) => `<tr class="clickable-row" ${row.attrs}><td>${esc(row.type)}</td><td><strong>${esc(row.title)}</strong></td><td>${esc(row.detail)}</td></tr>`).join("")}</tbody>
-      </table></div>` : ui.globalSearch ? `<div class="empty">Aucun résultat.</div>` : ""}`;
+    if (!asText(ui.globalSearch)) {
+      // Requête vide : on garde le comportement existant, sans déverser tout le registre.
+      return `<p class="muted">Tape une recherche puis valide avec Entrée. Tu peux chercher une personne, une page (« paiements dus »), un réglage (« SMTP ») ou une action (« ajouter un coach »).</p>`;
+    }
+    const options = searchOptions();
+    if (!options.length) {
+      return `<p class="muted">0 résultat pour "${esc(ui.globalSearch)}"</p>
+        <div class="empty">Aucun résultat. Essaie un autre mot : un nom, une page (« stock »), un réglage (« thème ») ou une action (« ajouter une salle »).</div>`;
+    }
+    let index = -1;
+    const groups = [];
+    options.forEach((option) => {
+      const last = groups[groups.length - 1];
+      if (!last || last.title !== option.group) groups.push({ title: option.group, items: [option] });
+      else last.items.push(option);
+    });
+    return `<p class="muted">${intValue(options.length)} résultat${options.length > 1 ? "s" : ""} pour "${esc(ui.globalSearch)}"</p>
+      <ul class="search-results-list" id="global-search-results" role="listbox" aria-label="Résultats de recherche">
+        ${groups.map((group) => `
+          <li class="search-results-group" role="presentation">
+            <span class="search-results-group-title">${esc(group.title)}</span>
+            <ul role="group" aria-label="${esc(group.title)}">
+              ${group.items.map((option) => { index += 1; return searchOptionHtml(option, index); }).join("")}
+            </ul>
+          </li>`).join("")}
+      </ul>`;
   }
 
   function updateSearchResults() {
     const container = app.querySelector("[data-search-results]");
-    if (container) container.innerHTML = searchResultsHtml();
+    if (!container) return;
+    container.innerHTML = searchResultsHtml();
+    // Nouvelle liste : aucun résultat actif tant que l'utilisateur n'a pas appuyé sur une flèche.
+    ui.searchActiveIndex = -1;
+    syncSearchActiveOption();
+  }
+
+  function searchOptionElements() {
+    return Array.from(app.querySelectorAll("[data-search-option]"));
+  }
+
+  function activeSearchOptionElement() {
+    const items = searchOptionElements();
+    const index = Number.isInteger(ui.searchActiveIndex) ? ui.searchActiveIndex : -1;
+    return index >= 0 && index < items.length ? items[index] : null;
+  }
+
+  // Reflète l'option active dans le DOM et l'expose aux technologies d'assistance
+  // (aria-selected sur l'option, aria-activedescendant sur le champ combobox).
+  function syncSearchActiveOption() {
+    const items = searchOptionElements();
+    const active = activeSearchOptionElement();
+    items.forEach((item) => {
+      const isActive = item === active;
+      item.classList.toggle("is-active", isActive);
+      item.setAttribute("aria-selected", isActive ? "true" : "false");
+    });
+    const input = app.querySelector(".search-page-form [data-global-search]");
+    if (!input) return;
+    input.setAttribute("aria-expanded", items.length ? "true" : "false");
+    if (active && active.id) input.setAttribute("aria-activedescendant", active.id);
+    else input.removeAttribute("aria-activedescendant");
+    if (active) active.scrollIntoView({ block: "nearest" });
+  }
+
+  // Déplacement circulaire dans la liste. Le focus RESTE dans le champ de saisie : on ne
+  // déplace qu'un curseur virtuel, ce qui évite tout piège de focus et garde la frappe fluide.
+  function moveSearchActiveOption(step) {
+    const items = searchOptionElements();
+    if (!items.length) return;
+    const current = Number.isInteger(ui.searchActiveIndex) ? ui.searchActiveIndex : -1;
+    let next = current + step;
+    if (next < 0) next = items.length - 1;
+    if (next >= items.length) next = 0;
+    ui.searchActiveIndex = next;
+    syncSearchActiveOption();
   }
 
   function renderHistory() {
@@ -12509,6 +13189,12 @@ ${esc(bodyText)}</pre>
   }
 
   function settingsCollapsibleBand(idValue, title, summary, body) {
+    // Garde de cohérence : toute bande rendue doit être déclarée dans SETTINGS_PANEL_IDS
+    // (01-constants.js), qui sert aussi à valider les entrées du registre de recherche.
+    // On n'empêche pas le rendu (l'utilisateur ne doit jamais perdre une section), on signale.
+    if (!isSettingsPanelId(idValue)) {
+      console.warn(`settingsCollapsibleBand : bande « ${idValue} » absente de SETTINGS_PANEL_IDS (01-constants.js). La recherche globale ne pourra pas y conduire.`);
+    }
     const open = Boolean(ui.settingsPanels?.[idValue]);
     return `<div class="band collapsible-band settings-collapsible-band ${open ? "open" : ""}" data-settings-panel="${esc(idValue)}">
       <div class="band-title collapsible-title-row" data-action="toggle-settings-panel" data-panel="${esc(idValue)}" role="button" tabindex="0" aria-expanded="${open ? "true" : "false"}">
@@ -23250,6 +23936,36 @@ ${esc(bodyText)}</pre>
       handleAction(collapsibleTitle);
       return;
     }
+    // Navigation clavier dans les résultats de la recherche globale (page Recherche) :
+    // flèches pour parcourir, Entrée pour ouvrir le résultat actif, Échap pour effacer.
+    // Traité AVANT le filtre `Enter` ci-dessous, qui ignore les autres touches.
+    if (event.target.dataset.globalSearch !== undefined && ui.view === "search") {
+      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        event.preventDefault();
+        moveSearchActiveOption(event.key === "ArrowDown" ? 1 : -1);
+        return;
+      }
+      if (event.key === "Escape") {
+        // Échap efface la recherche ; le focus reste dans le champ (aucun piège de focus).
+        if (asText(event.target.value) || asText(ui.globalSearch)) {
+          event.preventDefault();
+          event.target.value = "";
+          ui.globalSearch = "";
+          ui.searchActiveIndex = -1;
+          updateSearchResults();
+        }
+        return;
+      }
+      if (event.key === "Enter") {
+        const active = activeSearchOptionElement();
+        if (active) {
+          event.preventDefault();
+          const target = active.dataset.action ? active : active.closest("[data-action]");
+          if (target) handleAction(target);
+          return;
+        }
+      }
+    }
     if (event.key !== "Enter") return;
     if (event.target.dataset.globalSearch !== undefined) {
       event.preventDefault();
@@ -23995,6 +24711,14 @@ ${esc(bodyText)}</pre>
     }
     if (action === "export-pdf") {
       return exportCurrentPdf();
+    }
+    // Résultat fonctionnel de la recherche globale. Le DOM ne transporte qu'un identifiant :
+    // runCommandEntryById le valide contre le registre (liste blanche) avant toute exécution.
+    if (action === "run-search-command") {
+      const commandId = asText(button.dataset.commandId);
+      if (!commandId) return;
+      await runCommandEntryById(commandId, { fix: button.dataset.commandFix === "1" });
+      return;
     }
     if (action === "run-global-search") {
       const input = button.closest(".topbar, .band, .search-page-form")?.querySelector("[data-global-search]");
