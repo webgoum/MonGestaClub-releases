@@ -6191,6 +6191,17 @@
     return { total, paid, restDue, alerts: allAlerts() };
   }
 
+  // En-tête de page : affiche devant le titre la MÊME icône que le menu (source de vérité unique
+  // menuIconSvg → personnalisation settings.menuIcons incluse ; une modification d'icône se reflète
+  // automatiquement dans le menu ET dans le titre). L'icône est purement décorative (aria-hidden) :
+  // le titre reste l'unique nom accessible de l'en-tête, la hiérarchie <h1> est conservée, et rien
+  // n'est ajouté à l'ordre de tabulation. Une seule <h1> par page (topbar du shell).
+  function pageHeadingHtml(title) {
+    const icon = (typeof menuIconSvg === "function") ? menuIconSvg(ui.view) : "";
+    const iconHtml = icon ? `<span class="page-heading-icon" aria-hidden="true">${icon}</span>` : "";
+    return `<h1 class="page-heading">${iconHtml}<span class="page-heading-label">${esc(title)}</span></h1>`;
+  }
+
   function shell(title, body) {
     ensureMenuOrganizationV2();
     ensureMenuOrganizationV3();
@@ -6261,7 +6272,7 @@
               </nav>
               <div class="topbar-title-row">
                 <button class="sidebar-toggle topbar-collapse" data-action="toggle-topbar" aria-label="Masquer la barre du haut" title="Masquer la barre du haut">${toolbarIcon("collapse")}</button>
-                <h1>${esc(title)}</h1>
+                ${pageHeadingHtml(title)}
               </div>
               ${topToolbar()}
             </header>
@@ -6306,7 +6317,7 @@
             <div class="topbar-title-row">
               <button class="sidebar-toggle" data-action="toggle-sidebar" aria-label="${settings.sidebarHidden ? "Afficher le menu" : "Masquer le menu"}" title="${settings.sidebarHidden ? "Afficher le menu" : "Masquer le menu"}">${settings.sidebarHidden ? "☰" : "⟨"}</button>
               <button class="sidebar-toggle topbar-collapse" data-action="toggle-topbar" aria-label="Masquer la barre du haut" title="Masquer la barre du haut">${toolbarIcon("collapse")}</button>
-              <h1>${esc(title)}</h1>
+              ${pageHeadingHtml(title)}
             </div>
             ${topToolbar()}
           </header>

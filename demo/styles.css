@@ -1885,6 +1885,41 @@ tfoot td {
   overflow-wrap: anywhere;
 }
 
+/* En-tête de page : la MÊME icône que le menu (menuIconSvg), agrandie, devant le titre.
+   Icône décorative (aria-hidden, non focalisable). Réutilise les icônes du menu :
+   .tool-icon (currentColor, hérite la couleur du titre) et .mgc-icon (illustrées, couleurs
+   fixes lisibles en clair comme en sombre) — cohérence totale avec le menu et tous les thèmes.
+   Taille pilotée par des variables dédiées, exprimée en em (suit la typographie du titre :
+   ~30px en 1.35rem, ~27px sur petits écrans en 1.2rem — toujours > 20px du menu). */
+.page-heading {
+  --page-heading-icon-size: 1.4em;
+  --page-heading-gap: 10px;
+  display: flex;
+  align-items: center;
+  gap: var(--page-heading-gap);
+  min-width: 0;
+}
+.page-heading-icon {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--page-heading-icon-size);
+  height: var(--page-heading-icon-size);
+  line-height: 0;
+}
+.page-heading-icon svg,
+.page-heading-icon .tool-icon,
+.page-heading-icon .mgc-icon {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+.page-heading-label {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .topbar-actions {
   display: flex;
   gap: 8px;
