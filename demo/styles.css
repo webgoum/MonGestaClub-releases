@@ -3836,6 +3836,31 @@ tfoot td {
   font-variant-numeric: tabular-nums;
 }
 
+/* Bandeau discret de consultation (lecture seule) d'une commande dont le paiement/facture
+   empêche la modification. Informatif — jamais une erreur bloquante. */
+.order-readonly-note {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--line));
+  border-left: 3px solid var(--accent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+.order-readonly-note strong {
+  font-size: 0.82rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--accent);
+}
+.order-readonly-note p {
+  margin: 0;
+  font-size: 0.9rem;
+  color: var(--text);
+  line-height: 1.4;
+}
+
 .shop-sale-steps {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));

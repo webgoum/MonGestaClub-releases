@@ -7097,7 +7097,7 @@
           person: row,
           status: alertStatusForPayments(row.payments || []),
           amount: calc.restDue,
-          editAction: "edit-order",
+          editAction: "view-order",
           id: row.id,
         }));
     }
@@ -7147,7 +7147,7 @@
         const stageId = row.dataset.stageId;
         dialog.close();
         if (action === "edit-membership") return openMembershipDialog(state.memberships.find((item) => item.id === rowId));
-        if (action === "edit-order") return openOrderDialog(state.shopOrders.find((item) => item.id === rowId));
+        if (action === "view-order") return openOrderForConsult(state.shopOrders.find((item) => item.id === rowId));
         if (action === "edit-registration") return openRegistrationDialog(stageId, state.stageRegistrations[stageId]?.find((item) => item.id === rowId));
       });
     });
@@ -7855,7 +7855,7 @@
     if (isModuleEnabled("boutique") && hasFeature("shop")) {
       for (const order of state.shopOrders) {
         const calc = calcOrder(order);
-        push(order.payments, "Boutique", order, calc.restDue, "edit-order", order.id);
+        push(order.payments, "Boutique", order, calc.restDue, "view-order", order.id);
       }
     }
     // Lot 2D — liste actionnable « reste dû » (mène à edit-registration, une mutation) : suit
@@ -8517,7 +8517,7 @@
         const articles = orderItemDetails(order).map((item) => `${item.article.name} ${item.sizesText}`).join(" ");
         if (matches([order.lastName, order.firstName, order.email, order.phone, articles])) {
           const calc = calcOrder(order);
-          push({ type: "Commande", title: personLabel(order), detail: `${articles || "Commande"} · reste ${money(calc.restDue)}`, attrs: `data-action="edit-order" data-id="${esc(order.id)}"` });
+          push({ type: "Commande", title: personLabel(order), detail: `${articles || "Commande"} · reste ${money(calc.restDue)}`, attrs: `data-action="view-order" data-id="${esc(order.id)}"` });
         }
       });
     }
@@ -9376,7 +9376,7 @@ ${esc(bodyText)}</pre>
         const stageId = row.dataset.stageId;
         dialog.close();
         if (action === "edit-membership") return openMembershipDialog(state.memberships.find((item) => item.id === rowId));
-        if (action === "edit-order") return openOrderDialog(state.shopOrders.find((item) => item.id === rowId));
+        if (action === "view-order") return openOrderForConsult(state.shopOrders.find((item) => item.id === rowId));
         if (action === "edit-registration") return openRegistrationDialog(stageId, state.stageRegistrations[stageId]?.find((item) => item.id === rowId));
       });
     });
@@ -9936,7 +9936,7 @@ ${esc(bodyText)}</pre>
   function shopPaymentFollowUp(rows) {
     const content = rows.slice(0, 8).map((row) => {
       const calc = calcOrder(row);
-      return `<button class="shop-follow-row" data-action="edit-order" data-id="${esc(row.id)}">
+      return `<button class="shop-follow-row" data-action="view-order" data-id="${esc(row.id)}">
         <div>${personCell(row)}</div>
         ${statusPill(shopOrderStatus(row, calc))}
         <strong>${money(calc.restDue)}</strong>
@@ -9998,8 +9998,8 @@ ${esc(bodyText)}</pre>
     // (shopOrderIntegrityState, 18-contacts-invoices.js) — un seul calcul, jamais dupliqué.
     const integrity = shopOrderIntegrityState(row);
     const invoice = integrity.invoice;
-    const editTitle = integrity.editBlocked ? ` title="${esc(shopOrderIntegrityMessage(integrity.editReasons))}"` : "";
-    const deleteTitle = integrity.deleteBlocked ? ` title="${esc(shopOrderIntegrityMessage(integrity.deleteReasons))}"` : "";
+    const editTitle = integrity.editBlocked ? ` title="${esc(shopOrderIntegrityMessage(integrity.editReasons, "edit"))}"` : "";
+    const deleteTitle = integrity.deleteBlocked ? ` title="${esc(shopOrderIntegrityMessage(integrity.deleteReasons, "delete"))}"` : "";
     return `<details class="shop-order-card ${calc.restDue > 0 ? "has-due" : "is-paid"}">
       <summary class="shop-order-summary">
         <span class="shop-order-client">
@@ -16720,7 +16720,7 @@ ${esc(bodyText)}</pre>
     return { close };
   }
 
-  function showDialog(title, body, onSave, onOpen = () => {}, footerLeft = "", onCancel = () => {}, submitLabel = "Enregistrer") {
+  function showDialog(title, body, onSave, onOpen = () => {}, footerLeft = "", onCancel = () => {}, submitLabel = "Enregistrer", options = {}) {
     // Déduplication : une fiche déjà ouverte (ou réduite) est réutilisée, pas recréée.
     const windowKey = pendingWindowKey; pendingWindowKey = null;
     if (windowKey && keyedWindows.has(windowKey)) {
@@ -16747,7 +16747,9 @@ ${esc(bodyText)}</pre>
       <datalist id="paymentStateList"><option value="Refusé"></option></datalist>
       <div class="dialog-footer">
         ${footerLeft ? `<div class="dialog-footer-left">${footerLeft}</div>` : `<span></span>`}
-        <div class="dialog-footer-actions"><button type="button" data-dialog-close>Annuler</button><button class="primary" type="submit">${esc(submitLabel)}</button></div>
+        <div class="dialog-footer-actions">${options.readOnly
+          ? `<button type="button" class="primary" data-dialog-close>Fermer</button>`
+          : `<button type="button" data-dialog-close>Annuler</button><button class="primary" type="submit">${esc(submitLabel)}</button>`}</div>
       </div>
     </form>`;
     const applyDialogClasses = (dlg) => {
@@ -16830,6 +16832,9 @@ ${esc(bodyText)}</pre>
     }
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
+      // Mode consultation (lecture seule) : aucune sauvegarde possible. Défense contre une
+      // soumission par la touche Entrée (le pied de page n'expose alors aucun bouton d'envoi).
+      if (options.readOnly) return;
       // Garde d'authentification (Lot 4A) : session valide requise, et le formulaire doit être
       // soumis par le même profil qui l'a ouvert. Sinon aucune mutation n'est enregistrée.
       if (!requireAuthenticatedSession()) return;
@@ -16888,11 +16893,36 @@ ${esc(bodyText)}</pre>
       if (notice) showInfoDialog("Changement de statut", `<p>${esc(notice)}</p>`);
     });
     onOpen(form);
-    setupAddressAutocomplete(form);
+    if (options.readOnly) {
+      // Consultation : on neutralise toute édition APRÈS onOpen (donc après construction complète
+      // du formulaire), et on n'active pas les enrichisseurs d'édition (autocomplete d'adresse,
+      // steppers +/-). Aucune donnée n'est modifiable ; aucun bouton d'action métier n'est actif.
+      applyReadOnlyToForm(form);
+    } else {
+      setupAddressAutocomplete(form);
+      enhanceNumberSteppers(targetDialog);
+    }
     applyClickableTooltips(targetDialog);
-    enhanceNumberSteppers(targetDialog);
     showFloatingDialog(form, "", targetDialog);
     return targetDialog;
+  }
+
+  // Rend un formulaire de dialogue non modifiable (consultation) : champs texte en lecture seule
+  // (restent lisibles et focalisables), listes/cases/fichiers désactivés, boutons d'action métier
+  // neutralisés — mais jamais la chrome de la fenêtre (Fermer/Réduire) ni le pied de page.
+  function applyReadOnlyToForm(form) {
+    if (!form) return;
+    form.querySelectorAll("input, textarea").forEach((el) => {
+      if (el.type === "hidden") return;
+      el.readOnly = true;
+      el.setAttribute("aria-readonly", "true");
+    });
+    form.querySelectorAll("select, input[type=checkbox], input[type=radio], input[type=file]").forEach((el) => { el.disabled = true; });
+    form.querySelectorAll("button").forEach((btn) => {
+      if (btn.matches("[data-dialog-close], [data-dialog-minimize]")) return;
+      if (btn.closest("[data-dialog-close], [data-dialog-minimize], .dialog-footer")) return;
+      btn.disabled = true;
+    });
   }
 
   function showInfoDialog(title, body, opts) {
@@ -17077,8 +17107,12 @@ ${esc(bodyText)}</pre>
   }
 
   // Message lisible et unique (jamais une liste technique de statuts) pour un blocage donné.
-  // reasons vient de shopOrderIntegrityState().deleteReasons/editReasons.
-  function shopOrderIntegrityMessage(reasons = []) {
+  // reasons vient de shopOrderIntegrityState().deleteReasons/editReasons. `intent` adapte le verbe
+  // à l'action réellement demandée ("edit" par défaut, ou "delete") — on n'affiche jamais
+  // « modifier ou supprimer » quand l'utilisateur n'a demandé qu'une seule de ces actions. La
+  // consultation, elle, n'est jamais bloquée : ce message n'est produit que pour une action interdite.
+  function shopOrderIntegrityMessage(reasons = [], intent = "edit") {
+    const verb = intent === "delete" ? "supprimer" : "modifier";
     const hasInvoiceReason = reasons.includes("draftInvoice") || reasons.includes("issuedInvoice");
     const hasPaymentReason = reasons.includes("paidPayment") || reasons.includes("pendingPayment");
     if (hasInvoiceReason && hasPaymentReason) {
@@ -17091,12 +17125,29 @@ ${esc(bodyText)}</pre>
       return "Cette commande contient un paiement validé. Elle ne peut plus être modifiée ni supprimée.";
     }
     if (reasons.includes("pendingPayment")) {
-      return "Cette commande contient un paiement en cours ou à encaisser. Terminez ou annulez ce paiement avant de modifier ou supprimer la commande.";
+      return `Cette commande contient un paiement en cours ou à encaisser. Terminez ou annulez ce paiement avant de ${verb} la commande.`;
     }
     if (reasons.includes("draftInvoice")) {
       return "Cette commande possède une facture brouillon. Supprimez d'abord ce brouillon depuis les factures avant de supprimer la commande.";
     }
     return "";
+  }
+
+  // Explication non bloquante affichée en tête d'une commande ouverte en consultation (lecture
+  // seule) : dit pourquoi elle n'est pas modifiable. Priorité au motif « paiement en cours / à
+  // encaisser » (celui du bug d'origine) car il est levable par l'utilisateur.
+  function shopOrderReadOnlyReason(order = {}) {
+    const integrity = shopOrderIntegrityState(order);
+    if (integrity.hasPendingPayment) {
+      return "Cette commande est en lecture seule car un paiement est actuellement en cours ou à encaisser. Terminez ou annulez le paiement pour pouvoir modifier la commande.";
+    }
+    if (integrity.hasPaidPayment) {
+      return "Cette commande est en lecture seule car elle contient un paiement validé.";
+    }
+    if (integrity.hasIssuedInvoice) {
+      return "Cette commande est en lecture seule car elle possède une facture émise.";
+    }
+    return "Cette commande est en lecture seule.";
   }
 
   function contactAndKindForOrder(order = {}) {
@@ -19306,7 +19357,10 @@ ${esc(bodyText)}</pre>
     if (module === "boutique") {
       const entry = firstContactModuleEntry(contact, module);
       const link = parseContactLink(source.dataset.contactLink);
-      if (entry) openOrderDialog(entry.row);
+      // Ouverture d'une commande EXISTANTE depuis la fiche contact = consultation : lecture seule si
+      // la commande n'est pas modifiable (cohérent avec toutes les autres surfaces d'ouverture — cf.
+      // openOrderForConsult). Sans cela, cette surface contournait le verrou d'intégrité.
+      if (entry) openOrderForConsult(entry.row);
       else openOrderDialog({
         contactId: link.kind === "member" ? link.contactId : "",
         prospectContactId: link.kind === "prospect" ? link.contactId : "",
@@ -20179,7 +20233,17 @@ ${esc(bodyText)}</pre>
     openOrderDialog({ items: [item] });
   }
 
-  function openOrderDialog(row = {}) {
+  // Consultation d'une commande : toujours autorisée, quel que soit l'état du paiement. Lecture
+  // seule si la commande n'est pas modifiable (facture émise, paiement validé / en cours / à
+  // encaisser) ; sinon formulaire d'édition normal. En lecture seule : aucune mutation, aucun
+  // historique, aucune facturation — seulement l'affichage.
+  function openOrderForConsult(order = {}) {
+    if (!order || !order.id) return openOrderDialog(order);
+    return openOrderDialog(order, { readOnly: shopOrderIntegrityState(order).editBlocked });
+  }
+
+  function openOrderDialog(row = {}, opts = {}) {
+    const readOnly = Boolean(opts.readOnly);
     // Snapshot des paiements AVANT ouverture, pour journaliser (payment.validated/cancelled) les
     // seules transitions réellement persistées à la sauvegarde finale — jamais le clic Payer/Annuler
     // local. Copie profonde (jamais une référence vers state) ; vide si la commande est neuve
@@ -20219,7 +20283,16 @@ ${esc(bodyText)}</pre>
       </div>
       <div class="order-summary-items" data-order-summary-items>${orderSummaryItemsPreview(row)}</div>
     </div>`;
+    // Avertissement discret (non bloquant) affiché en tête de la consultation lecture seule :
+    // explique pourquoi la commande n'est pas modifiable ici. Message adapté à la raison réelle.
+    const readOnlyNote = readOnly
+      ? `<div class="dialog-section order-readonly-note" role="note">
+          <strong>Lecture seule</strong>
+          <p>${esc(shopOrderReadOnlyReason(row))}</p>
+        </div>`
+      : "";
     const body = [
+      readOnlyNote,
       `<div class="dialog-section shop-sale-steps">
         <span>1 · Article</span>
         <span>2 · Client</span>
@@ -20253,9 +20326,14 @@ ${esc(bodyText)}</pre>
       </div>`,
       paymentFields("payment", row.payments || [], calc.total, orderDefaultTaxRate(row)),
     ].join("");
-    const footer = contactLinkAction(row);
-    setNextWindowKey(row.id ? `order:${row.id}` : null);
-    showDialog(row.id ? "Modifier la commande" : "Nouvelle commande", body, (data, form) => {
+    // En lecture seule : pas d'action secondaire « Fiche contact / facture » (elle enregistrerait
+    // puis naviguerait). Clé de fenêtre distincte pour ne pas dédupliquer avec une éventuelle
+    // fenêtre d'édition de la même commande.
+    const footer = readOnly ? "" : contactLinkAction(row);
+    setNextWindowKey(row.id ? `${readOnly ? "order-view" : "order"}:${row.id}` : null);
+    const dialogTitle = readOnly ? "Commande — consultation" : (row.id ? "Modifier la commande" : "Nouvelle commande");
+    showDialog(dialogTitle, body, (data, form) => {
+      if (readOnly) return false; // sécurité : aucune écriture depuis une consultation.
       // Garde de MUTATION (Lot 2B) au MOMENT exact de l'enregistrement : bloque toute écriture de
       // commande (et de ses paiements) si la Boutique a été désactivée pendant que ce dialogue
       // restait ouvert, ou après un changement de club. return false -> aucune mutation, aucun persist.
@@ -20298,6 +20376,9 @@ ${esc(bodyText)}</pre>
         orderInvoiceFollowUpId: next.id,
       };
     }, (form) => {
+      // Consultation : aucun listener d'édition (recalcul de résumé, changement de client,
+      // suppression de ligne, sélecteur d'articles). showDialog neutralise déjà les contrôles.
+      if (readOnly) return;
       const update = () => updateOrderDialogSummary(form);
       form.elements.contactLink?.addEventListener("change", () => {
         applyLinkedContactToForm(form);
@@ -20318,7 +20399,7 @@ ${esc(bodyText)}</pre>
       });
       updateOrderArticleSelect(form);
       update();
-    }, footer);
+    }, footer, () => {}, "Enregistrer", { readOnly });
   }
 
   function applyLinkedContactToForm(form) {
@@ -26269,6 +26350,15 @@ ${esc(bodyText)}</pre>
     }
     if (action === "add-order") return isModuleEnabled("boutique") && ensureFeatureEnabledForMutation("shop") ? openOrderDialog() : undefined;
     if (action === "sell-article") return isModuleEnabled("boutique") && ensureFeatureEnabledForMutation("shop") ? openArticleSaleDialog(button.dataset.articleId) : undefined;
+    if (action === "view-order") {
+      // Consultation : TOUJOURS autorisée, quel que soit l'état du paiement/facture. Lecture seule
+      // si la commande n'est pas modifiable, sinon formulaire d'édition (cf. openOrderForConsult).
+      // Aucune mutation ici : on n'exige pas ensureFeatureEnabledForMutation (pas une écriture).
+      if (!isModuleEnabled("boutique")) return;
+      const order = state.shopOrders.find((row) => row.id === button.dataset.id);
+      if (!order) return;
+      return openOrderForConsult(order);
+    }
     if (action === "edit-order") {
       if (!isModuleEnabled("boutique")) return;
       if (!ensureFeatureEnabledForMutation("shop")) return;
@@ -26276,10 +26366,11 @@ ${esc(bodyText)}</pre>
       if (!order) return;
       // Garde-fou obligatoire au niveau handler (pas seulement visuel) : reste efficace même si
       // l'action est déclenchée depuis la console ou un DOM périmé, indépendamment de l'état
-      // disabled/aria-disabled du bouton (cf. orderCard).
+      // disabled/aria-disabled du bouton (cf. orderCard). Intention = ÉDITION -> message « modifier »
+      // (la simple consultation passe par view-order et n'est jamais bloquée).
       const integrity = shopOrderIntegrityState(order);
       if (integrity.editBlocked) {
-        alert(shopOrderIntegrityMessage(integrity.editReasons));
+        alert(shopOrderIntegrityMessage(integrity.editReasons, "edit"));
         return;
       }
       return openOrderDialog(order);
@@ -26290,7 +26381,7 @@ ${esc(bodyText)}</pre>
       if (!order) return;
       const integrity = shopOrderIntegrityState(order);
       if (integrity.deleteBlocked) {
-        alert(shopOrderIntegrityMessage(integrity.deleteReasons));
+        alert(shopOrderIntegrityMessage(integrity.deleteReasons, "delete"));
         return;
       }
       if (!await requestConfirm({ title: "Supprimer la commande", message: "Supprimer cette commande ?", confirmLabel: "Supprimer", danger: true })) return;
