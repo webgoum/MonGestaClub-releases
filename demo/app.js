@@ -1284,7 +1284,17 @@
       // réassemblage de settings (settingsForClub, saveClub, import, duplication…) reproduit la
       // même structure déterministe. Aucune logique de l'app ne consulte encore ce champ.
       features: normalizeFeaturesSettings(source.features),
+      // Protection individuelle des pages (Lot « protection par page »). Liste de clés de vues
+      // protégées par le mot de passe du logiciel, indépendante de la protection par groupe.
+      // Normalisée en tableau dédupliqué de chaînes non vides (idempotent). L'application de la
+      // protection reste conditionnée à hasAppPassword() dans viewProtectionKey (comme les groupes).
+      protectedViews: normalizeProtectedViews(source.protectedViews),
     };
+  }
+
+  function normalizeProtectedViews(value) {
+    if (!Array.isArray(value)) return [];
+    return [...new Set(value.filter((key) => typeof key === "string" && key))];
   }
 
   function emailTemplateDefinitions() {
@@ -11767,14 +11777,17 @@ ${esc(bodyText)}</pre>
   }
 
   function renderLockedView(view, key) {
-    const isTarifs = key === "tarifs";
-    const label = isTarifs ? "Tarifs" : menuKeyLabel(view);
+    const label = menuKeyLabel(view);
+    // key === view : protection INDIVIDUELLE de la page ; sinon key = id d'une rubrique protégée.
+    const isPageProtection = key === view;
+    const heading = isPageProtection ? `${label} — page protégée` : `${label} — rubrique protégée`;
+    const detail = isPageProtection ? "Cette page est protégée" : "Cette rubrique est protégée";
     return `
       <div class="tarifs-locked">
         <div class="tarifs-locked-card paper">
           <div class="tarifs-locked-icon" aria-hidden="true">🔒</div>
-          <h2>${esc(label)}${isTarifs ? " protégés" : " — menu protégé"}</h2>
-          <p class="muted">${isTarifs ? "La modification des tarifs est protégée" : "Ce menu est protégé"} par le mot de passe du logiciel. Saisis-le pour accéder à cette page.</p>
+          <h2>${esc(heading)}</h2>
+          <p class="muted">${detail} par le mot de passe du logiciel. Saisis-le pour accéder à cette page.</p>
           <button type="button" class="primary" data-action="unlock-protected" data-unlock-key="${esc(key)}">Déverrouiller</button>
         </div>
       </div>`;
@@ -12857,35 +12870,17 @@ ${esc(bodyText)}</pre>
             ${!hasFeature("shop") ? `<p class="muted feature-display-context">La Boutique est actuellement désactivée dans Fonctionnalités du club. Ce réglage d'affichage sera conservé pour une prochaine réactivation.</p>` : ""}
           </div>
         </div>`)}
-      ${settingsCollapsibleBand("menu-order", "Ordre du menu", "Personnaliser la navigation", `<div class="settings-panel">
-          <p class="muted">Fais glisser les éléments pour les réordonner ou les déplacer d'un groupe à l'autre : tu peux sortir une entrée d'un sous-menu vers le menu principal, ou inversement. Le bouton ⇄ déplace aussi l'élément, et les flèches ▲▼ le réordonnent. Les éléments masqués (Affichage) restent grisés.</p>
-          <div class="menu-order-group">
-            <h4>Menu principal</h4>
-            ${menuOrderListHtml("main")}
+      ${settingsCollapsibleBand("menu-order", "Ordre du menu", menuOrderBandSummary(), `<div class="settings-panel menu-order-panel">
+          <p class="muted">Voici la structure réelle de ton menu : les rubriques dans leur ordre, avec leurs pages juste en dessous. Fais glisser un élément pour le réordonner ou le déplacer d'une rubrique à l'autre, ou utilise les flèches ▲▼ (accessibles au clavier). Le cadenas 🔒 protège une page ou une rubrique par le mot de passe du logiciel ; 🎨 change l'icône ; ⇄ déplace vers une autre rubrique.</p>
+          ${hasAppPassword() ? "" : `<p class="muted menu-order-nopass">Astuce : définis d'abord un mot de passe du logiciel dans « Sécurité » pour que les protections 🔒 prennent effet.</p>`}
+          ${menuOrderTreeHtml()}
+          <div class="inline-actions menu-order-actions">
+            <button type="button" data-action="create-menu-group">+ Créer une rubrique</button>
+            <button type="button" data-action="reset-menu-order">Réinitialiser l'ordre</button>
+            ${(Array.isArray(settings.protectedViews) && settings.protectedViews.length) || customMenuGroups().some((g) => g.protected)
+              ? `<button type="button" class="danger" data-action="remove-all-protections">Supprimer toutes les protections</button>` : ""}
           </div>
-          <div class="menu-order-group">
-            <h4>Sous-menu Paramètres</h4>
-            ${menuOrderListHtml("settings")}
-          </div>
-          ${isViewVisible("boutique") ? `<div class="menu-order-group">
-            <h4>Sous-menu Boutique</h4>
-            ${menuOrderListHtml("boutique")}
-          </div>` : ""}
-          ${customMenuGroups().map((group) => `<div class="menu-order-group" data-custom-menu-group="${esc(group.id)}">
-            <div class="menu-order-group-head">
-              <h4>${esc(group.label)}${group.protected ? ` <span class="menu-protect-badge" title="Menu protégé par mot de passe">🔒</span>` : ""}</h4>
-              <div class="menu-order-group-actions">
-                <button type="button" data-action="rename-menu-group" data-group-id="${esc(group.id)}" title="Renommer ce menu">✎</button>
-                <button type="button" class="icon danger" data-action="delete-menu-group" data-group-id="${esc(group.id)}" title="Supprimer ce menu">×</button>
-              </div>
-            </div>
-            ${menuOrderListHtml(group.id)}
-          </div>`).join("")}
-          <div class="inline-actions">
-            <button type="button" data-action="create-menu-group">+ Créer un menu</button>
-            <button type="button" data-action="reset-menu-order">Ordre par défaut</button>
-          </div>
-          <p class="muted">Crée un menu pour regrouper des entrées : fais-y glisser les éléments du menu principal pour les transformer en sous-menu. Le menu créé apparaît dans le menu principal — à gauche en disposition Moderne, en haut en disposition Classique (Affichage &gt; Disposition) — et se déplie au clic.</p>
+          <p class="muted">Crée une rubrique pour regrouper des entrées : fais-y glisser les pages du menu principal. La rubrique apparaît dans le menu — à gauche en disposition Moderne, en haut en disposition Classique (Affichage &gt; Disposition) — et se déplie au clic. « Réinitialiser l'ordre » restaure l'organisation et les icônes par défaut sans toucher aux protections.</p>
         </div>`)}
       ${settingsCollapsibleBand("checks", "Paiement en plusieurs fois", `${paymentCheckCount()} maximum`, `<div class="settings-panel">
           <p class="muted">Choisis le nombre maximum de paiements proposés. Pour chaque ligne, le menu Mode reprend les modes acceptés dans Paramètres du club.</p>
@@ -13694,11 +13689,27 @@ ${esc(bodyText)}</pre>
   // codée en dur : elle dépend uniquement du menu (protégé) dans lequel se trouve la page
   // (voir ensureTarifsProtectionSetup pour le menu protégé par défaut).
   // (Sans mot de passe défini, aucune protection n'est applicable.)
+  // Vue protégée individuellement (indépendamment de son groupe) : présente dans
+  // settings.protectedViews. Purement déclaratif ; l'enforcement dépend de hasAppPassword().
+  function isViewIndividuallyProtected(view) {
+    return Array.isArray(settings.protectedViews) && settings.protectedViews.includes(view);
+  }
+
+  // Clé de protection EFFECTIVE d'une vue (source de vérité unique de l'enforcement, utilisée par
+  // renderView + le déverrouillage + la RAZ à la sortie du périmètre). Règle déterministe :
+  //   1. si la vue est dans un GROUPE protégé → clé = id du groupe (priorité : déverrouiller le
+  //      groupe circule dans tout le groupe, un seul mot de passe) ;
+  //   2. sinon si la vue est protégée INDIVIDUELLEMENT → clé = la vue elle-même ;
+  //   3. sinon null.
+  // Une seule clé effective par vue ⇒ jamais deux demandes successives pour le même secret.
+  // Sans mot de passe défini, aucune protection n'est applicable (comme historiquement).
   function viewProtectionKey(view) {
     if (!hasAppPassword()) return null;
     const layout = resolveMenuLayout();
     const group = customMenuGroups().find((grp) => grp.protected && (layout[grp.id] || []).includes(view));
-    return group ? group.id : null;
+    if (group) return group.id;
+    if (isViewIndividuallyProtected(view)) return view;
+    return null;
   }
 
   // Toute action qui réduit la protection d'un menu protégé (le modifier/décocher,
@@ -13923,7 +13934,11 @@ ${esc(bodyText)}</pre>
     const parents = menuParentKeys();
     const saved = settings.menuLayout || {};
     const customIds = new Set(customMenuGroupIds());
-    const knownViews = new Set([...def.main, ...def.settings, ...def.boutique].filter((k) => !customIds.has(k)));
+    // knownViews = TOUTES les pages réelles (pas seulement main/settings/boutique). Sans cela, les
+    // enfants des rubriques personnalisées (ex. disciplines, groups… dans grp-sport) n'étaient pas
+    // « placeables » : l'ordre sauvé de ces pages était ignoré et retombait sur le défaut. On préserve
+    // désormais l'ordre sauvé de n'importe quel groupe (les clés orphelines/invalides restent filtrées).
+    const knownViews = new Set(views.map(([k]) => k).filter((k) => !customIds.has(k)));
     const isPlaceable = (key) => knownViews.has(key) || customIds.has(key);
     const layout = {};
     groups.forEach((group) => { layout[group] = []; });
@@ -14012,29 +14027,86 @@ ${esc(bodyText)}</pre>
     return order.filter((k) => byKey[k] || labels[k]).map((k) => byKey[k] || [k, labels[k] || k]);
   }
 
-  function menuOrderListHtml(group) {
-    const layout = resolveMenuLayout();
-    const keys = layout[group] || [];
-    const parents = menuParentKeys();
-    return `<div class="menu-order-list" data-menu-order-list data-menu-group="${esc(group)}">
-      ${keys.map((key, idx) => {
-        const label = menuKeyLabel(key);
-        const visible = isCustomMenuGroup(key) ? true : isViewVisible(key);
-        const isParent = parents.includes(key);
-        return `<div class="menu-order-item${visible ? "" : " menu-order-item-hidden"}" data-menu-drag-item data-menu-key="${esc(key)}" data-menu-group="${esc(group)}" draggable="true">
-          <span class="menu-order-handle" aria-hidden="true">≡</span>
-          <span class="menu-order-icon" aria-hidden="true">${menuIconSvg(key)}</span>
-          <span class="menu-order-label">${esc(label)}</span>
-          ${!visible ? `<span class="menu-order-badge">masqué</span>` : ""}
-          <div class="menu-order-btns">
-            <button type="button" data-action="change-menu-icon" data-menu-key="${esc(key)}" title="Changer l'icône">🎨</button>
-            ${isParent ? "" : `<button type="button" data-action="move-menu-item-group" data-menu-key="${esc(key)}" data-menu-group="${esc(group)}" title="Déplacer vers un autre menu…">⇄</button>`}
-            <button type="button" data-action="move-menu-item-up" data-menu-key="${esc(key)}" data-menu-group="${esc(group)}" ${idx === 0 ? "disabled" : ""} title="Monter">▲</button>
-            <button type="button" data-action="move-menu-item-down" data-menu-key="${esc(key)}" data-menu-group="${esc(group)}" ${idx === keys.length - 1 ? "disabled" : ""} title="Descendre">▼</button>
-          </div>
-        </div>`;
-      }).join("")}
+  // Une page peut-elle être masquée/affichée depuis l'arborescence ? Seulement en mode d'affichage
+  // « Personnalisé » (les autres modes sont pilotés par le mode lui-même) et hors modules forcés.
+  function canTogglePageVisibility(key) {
+    return displaySettings().mode === "custom" && !DISPLAY_FORCED_MODULES.includes(key) && key !== "stock" && isKnownViewKey(key);
+  }
+
+  // Rangée unique de l'arborescence du menu (page OU rubrique), réutilisée pour tous les niveaux.
+  // opts.isGroup = rubrique (parent) ; opts.level = niveau ARIA (1 rubrique/entrée principale, 2 page).
+  function menuOrderItemHtml(key, group, idx, total, opts = {}) {
+    const isGroup = Boolean(opts.isGroup);
+    const level = opts.level || 1;
+    const label = menuKeyLabel(key);
+    const isCustomGroup = isCustomMenuGroup(key);
+    const visible = isGroup ? true : isViewVisible(key);
+    // Protection : rubrique custom → drapeau du groupe ; page → protection effective (couverte par une
+    // rubrique protégée OU protégée individuellement). Le bouton cadenas agit sur le drapeau propre.
+    const groupProtected = isCustomGroup && Boolean(customMenuGroups().find((g) => g.id === key)?.protected);
+    const coveredByGroup = !isGroup && Boolean(menuParentKeys().find((g) => customMenuGroups().find((c) => c.id === g)?.protected && (resolveMenuLayout()[g] || []).includes(key)));
+    const selfProtected = isGroup ? groupProtected : isViewIndividuallyProtected(key);
+    const effectiveProtected = isGroup ? groupProtected : (coveredByGroup || selfProtected);
+    const lockLabel = isGroup
+      ? (groupProtected ? `Retirer la protection de la rubrique ${label}` : `Protéger la rubrique ${label} (protège toutes ses pages)`)
+      : (selfProtected ? `Retirer la protection de la page ${label}` : `Protéger la page ${label}`);
+    const protectBtn = (isGroup && !isCustomGroup)
+      ? "" // rubriques intégrées (Paramètres/Boutique) : protection non gérée dans ce lot
+      : `<button type="button" class="menu-order-lock${selfProtected ? " is-on" : ""}" data-action="${isGroup ? "toggle-group-protection" : "toggle-view-protection"}" ${isGroup ? `data-group-id="${esc(key)}"` : `data-menu-key="${esc(key)}"`} aria-pressed="${selfProtected ? "true" : "false"}" title="${esc(lockLabel)}" aria-label="${esc(lockLabel)}"><span aria-hidden="true">${effectiveProtected ? "🔒" : "🔓"}</span></button>`;
+    const visBtn = (!isGroup && canTogglePageVisibility(key))
+      ? `<button type="button" class="menu-order-vis" data-action="toggle-page-visibility" data-menu-key="${esc(key)}" aria-pressed="${visible ? "true" : "false"}" title="${visible ? `Masquer la page ${label}` : `Afficher la page ${label}`}" aria-label="${visible ? `Masquer la page ${label}` : `Afficher la page ${label}`}"><span aria-hidden="true">${visible ? "👁" : "🚫"}</span></button>`
+      : "";
+    const iconBtn = `<button type="button" data-action="change-menu-icon" data-menu-key="${esc(key)}" title="Changer l'icône de ${esc(label)}" aria-label="Changer l'icône de ${esc(label)}"><span aria-hidden="true">🎨</span></button>`;
+    const groupEditBtns = isCustomGroup
+      ? `<button type="button" data-action="rename-menu-group" data-group-id="${esc(key)}" title="Renommer la rubrique ${esc(label)}" aria-label="Renommer la rubrique ${esc(label)}"><span aria-hidden="true">✎</span></button>
+         <button type="button" class="icon danger" data-action="delete-menu-group" data-group-id="${esc(key)}" title="Supprimer la rubrique ${esc(label)}" aria-label="Supprimer la rubrique ${esc(label)}"><span aria-hidden="true">×</span></button>`
+      : "";
+    const moveGroupBtn = (!isGroup)
+      ? `<button type="button" data-action="move-menu-item-group" data-menu-key="${esc(key)}" data-menu-group="${esc(group)}" title="Déplacer ${esc(label)} vers une autre rubrique…" aria-label="Déplacer ${esc(label)} vers une autre rubrique">⇄</button>`
+      : "";
+    return `<div class="menu-order-item${isGroup ? " menu-order-item-group" : ""}${visible ? "" : " menu-order-item-hidden"}" data-menu-drag-item data-menu-key="${esc(key)}" data-menu-group="${esc(group)}" draggable="true" role="treeitem" aria-level="${level}" aria-label="${esc((isGroup ? "Rubrique " : "Page ") + label)}">
+      <span class="menu-order-handle" aria-hidden="true">≡</span>
+      <span class="menu-order-icon" aria-hidden="true">${menuIconSvg(key)}</span>
+      <span class="menu-order-label">${esc(label)}</span>
+      ${!visible ? `<span class="menu-order-badge">masqué</span>` : ""}
+      ${coveredByGroup ? `<span class="menu-order-badge menu-order-badge-lock" title="Cette rubrique protège toutes les pages qu'elle contient">protégée par la rubrique</span>` : ""}
+      <div class="menu-order-btns">
+        ${iconBtn}${protectBtn}${visBtn}${moveGroupBtn}
+        <button type="button" data-action="move-menu-item-up" data-menu-key="${esc(key)}" data-menu-group="${esc(group)}" ${idx === 0 ? "disabled" : ""} title="Monter ${esc(label)}" aria-label="Monter ${esc(label)}">▲</button>
+        <button type="button" data-action="move-menu-item-down" data-menu-key="${esc(key)}" data-menu-group="${esc(group)}" ${idx === total - 1 ? "disabled" : ""} title="Descendre ${esc(label)}" aria-label="Descendre ${esc(label)}">▼</button>
+        ${groupEditBtns}
+      </div>
     </div>`;
+  }
+
+  // Arborescence du menu : reproduit visuellement le vrai menu (rubriques dans leur ordre réel, avec
+  // leurs pages indentées juste en dessous). MÊME source de vérité que la sidebar (resolveMenuLayout).
+  // Chaque conteneur porte data-menu-order-list/data-menu-group pour le glisser-déposer inter-groupes.
+  function menuOrderTreeHtml() {
+    const layout = resolveMenuLayout();
+    const parents = menuParentKeys();
+    const mainKeys = layout.main || [];
+    const rows = mainKeys.map((key, idx) => {
+      const isParent = parents.includes(key);
+      const row = menuOrderItemHtml(key, "main", idx, mainKeys.length, { isGroup: isParent, level: 1 });
+      if (!isParent) return row;
+      const childKeys = layout[key] || [];
+      const children = childKeys.map((ck, i) => menuOrderItemHtml(ck, key, i, childKeys.length, { isGroup: false, level: 2 })).join("");
+      return `${row}
+        <div class="menu-order-children menu-order-list" data-menu-order-list data-menu-group="${esc(key)}" role="group" aria-label="Pages de ${esc(menuKeyLabel(key))}">
+          ${children || `<p class="menu-order-empty muted">Aucune page — glisse une page ici.</p>`}
+        </div>`;
+    }).join("");
+    return `<div class="menu-order-tree menu-order-list" data-menu-order-list data-menu-group="main" role="tree" aria-label="Structure du menu">${rows}</div>`;
+  }
+
+  // Résumé de la bande « Ordre du menu » : nombre d'éléments protégés (pages + rubriques).
+  function menuOrderBandSummary() {
+    const pages = Array.isArray(settings.protectedViews) ? settings.protectedViews.length : 0;
+    const groups = customMenuGroups().filter((g) => g.protected).length;
+    const total = pages + groups;
+    if (!total) return "Personnaliser la navigation";
+    return `${total} protection${total > 1 ? "s" : ""}`;
   }
 
   let menuDragKey = null;
@@ -14066,11 +14138,14 @@ ${esc(bodyText)}</pre>
       container.addEventListener("dragover", (e) => { e.preventDefault(); });
       container.addEventListener("drop", (e) => {
         e.preventDefault();
+        e.stopPropagation(); // conteneurs imbriqués (arbre) : le plus interne gère seul le drop
         clearOver();
         if (e.target.closest("[data-menu-drag-item]")) return; // géré par l'item
         applyDrop(group, null);
       });
-      container.querySelectorAll("[data-menu-drag-item]").forEach((item) => {
+      // :scope > : uniquement les items DIRECTS de ce conteneur. En arborescence, les listes enfants
+      // sont imbriquées dans le conteneur « main » ; sans cela leurs items seraient gérés deux fois.
+      container.querySelectorAll(":scope > [data-menu-drag-item]").forEach((item) => {
         item.addEventListener("dragstart", (e) => {
           menuDragKey = item.dataset.menuKey;
           menuDragGroup = group;
@@ -25311,6 +25386,66 @@ ${esc(bodyText)}</pre>
       setMenuIcon(key, res.icon);
       persistSettings();
       ui.saveMessage = "Icône mise à jour";
+      render();
+      return;
+    }
+    if (action === "toggle-view-protection") {
+      const key = button.dataset.menuKey;
+      if (!key) return;
+      const list = Array.isArray(settings.protectedViews) ? [...settings.protectedViews] : [];
+      const isProtected = list.includes(key);
+      if (isProtected) {
+        // Retirer une protection réduit la sécurité : exige le mot de passe du logiciel (anti-contournement).
+        if (hasAppPassword() && !await requestPasswordConfirmation("Retirer la protection", `Saisis le mot de passe du logiciel pour retirer la protection de « ${menuKeyLabel(key)} ».`)) return;
+        recordHistory();
+        settings.protectedViews = list.filter((k) => k !== key);
+        ui.saveMessage = `Protection retirée : ${menuKeyLabel(key)}`;
+      } else {
+        recordHistory();
+        settings.protectedViews = [...list, key];
+        ui.saveMessage = hasAppPassword() ? `Page protégée : ${menuKeyLabel(key)}` : `Protection activée — définis un mot de passe dans « Sécurité » pour qu'elle prenne effet`;
+      }
+      persistSettings();
+      render();
+      return;
+    }
+    if (action === "toggle-group-protection") {
+      const id = button.dataset.groupId;
+      const group = customMenuGroups().find((g) => g.id === id);
+      if (!group) return;
+      if (group.protected) {
+        if (!await requireProtectedMenuPassword(id)) return; // retirer la protection exige le mot de passe
+        recordHistory();
+        settings.customMenuGroups = customMenuGroups().map((g) => g.id === id ? { ...g, protected: false } : g);
+        ui.saveMessage = `Protection retirée : ${group.label}`;
+      } else {
+        recordHistory();
+        settings.customMenuGroups = customMenuGroups().map((g) => g.id === id ? { ...g, protected: true } : g);
+        ui.saveMessage = hasAppPassword() ? `Rubrique protégée : ${group.label}` : `Protection activée — définis un mot de passe dans « Sécurité » pour qu'elle prenne effet`;
+      }
+      persistSettings();
+      render();
+      return;
+    }
+    if (action === "toggle-page-visibility") {
+      const key = button.dataset.menuKey;
+      if (!key || displaySettings().mode !== "custom" || DISPLAY_FORCED_MODULES.includes(key) || key === "stock") return;
+      recordHistory();
+      settings.display = normalizeDisplaySettings(settings.display);
+      settings.display.visibleModules[key] = !settings.display.visibleModules[key];
+      persistSettings();
+      ui.saveMessage = "Modules visibles mis à jour";
+      render();
+      return;
+    }
+    if (action === "remove-all-protections") {
+      const confirmed = await requestProtectedDangerAction("Supprimer toutes les protections", "Cette action retire la protection par mot de passe de toutes les pages et rubriques du menu.\n\nElles redeviendront accessibles sans mot de passe. Le mot de passe du logiciel lui-même n'est pas supprimé.", "Supprimer les protections");
+      if (!confirmed) return;
+      recordHistory();
+      settings.protectedViews = [];
+      settings.customMenuGroups = customMenuGroups().map((g) => ({ ...g, protected: false }));
+      persistSettings();
+      ui.saveMessage = "Protections supprimées";
       render();
       return;
     }

@@ -2796,19 +2796,6 @@ tfoot td {
 
 /* ===== ORDRE DU MENU ===== */
 
-.menu-order-group {
-  margin-bottom: 14px;
-}
-
-.menu-order-group h4 {
-  margin: 0 0 8px;
-  font-size: 0.82rem;
-  font-weight: 800;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--muted);
-}
-
 .menu-order-list {
   display: grid;
   gap: 6px;
@@ -2892,6 +2879,40 @@ tfoot td {
   padding: 3px 9px;
   font-size: .8rem;
   line-height: 1.4;
+}
+
+/* ===== Arborescence « Ordre du menu » : rubriques + pages indentées (reflète le vrai menu) ===== */
+.menu-order-panel .menu-order-tree { margin: 6px 0 10px; }
+.menu-order-label { min-width: 0; overflow-wrap: anywhere; }
+.menu-order-item-group {
+  background: var(--surface-3);
+  border-color: color-mix(in srgb, var(--line) 70%, var(--text) 12%);
+}
+.menu-order-item-group > .menu-order-label { letter-spacing: 0.01em; }
+/* Pages d'une rubrique : indentées et reliées par un filet vertical. */
+.menu-order-children {
+  margin: 2px 0 8px 24px;
+  padding: 4px 2px 4px 10px;
+  border-left: 2px solid var(--line);
+  min-height: 32px;
+}
+.menu-order-empty { font-size: .82rem; padding: 6px 8px; margin: 0; }
+/* Boutons cadenas / œil : sobres, l'état actif se distingue par la bordure ET l'aria-pressed. */
+.menu-order-lock.is-on {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+.menu-order-badge-lock {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--line));
+  color: var(--text);
+}
+.menu-order-nopass { font-size: .82rem; opacity: .9; }
+.menu-order-actions { flex-wrap: wrap; gap: 8px; }
+@media (max-width: 560px) {
+  .menu-order-item { flex-wrap: wrap; }
+  .menu-order-btns { width: 100%; justify-content: flex-end; flex-wrap: wrap; }
+  .menu-order-children { margin-left: 12px; }
 }
 
 /* ===== PAIEMENTS DUS ===== */
@@ -5077,19 +5098,6 @@ input.locked-price {
   opacity: 0.92;
 }
 
-.menu-order-group-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-}
-.menu-order-group-head h4 {
-  margin: 0;
-}
-.menu-order-group-actions {
-  display: flex;
-  gap: 4px;
-}
 .menu-order-icon {
   display: inline-flex;
   align-items: center;
