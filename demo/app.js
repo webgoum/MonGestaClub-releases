@@ -584,6 +584,202 @@
     handshake: getIconSvg("menu-handshake"),
   };
 
+  // ===================================================================================
+  // SOCLE MULTISPORTS (Lot 1) — Profils sportifs, familles et terminologie adaptable.
+  // ===================================================================================
+  // Fondations DÉCLARATIVES et INERTES : ce lot ne branche rien dans l'interface (aucun
+  // changement visible). Placé dans 01-constants.js car normalizeSettings() — qui appelle
+  // normalizeClubProfile() — s'exécute très tôt (src/02, `let settings = loadSettings()`),
+  // AVANT les fragments tardifs : tout `const` référencé par la normalisation doit exister ici
+  // (cf. TDZ). Registre gelé en profondeur (deepFreeze) : jamais mutable à l'exécution.
+
+  // Gel récursif des données déclaratives (Object.freeze est superficiel). Données pures, sans
+  // cycle : la récursion termine toujours. Idempotent (Object.isFrozen court-circuite).
+  function deepFreeze(value) {
+    if (value && typeof value === "object" && !Object.isFrozen(value)) {
+      Object.freeze(value);
+      Object.keys(value).forEach((key) => deepFreeze(value[key]));
+    }
+    return value;
+  }
+
+  const CLUB_PROFILE_VERSION = 1;
+
+  // Familles sportives — identifiants internes STABLES (jamais de libellé français dans un id).
+  const SPORT_FAMILIES = Object.freeze([
+    "team-sport", "racket-sport", "martial-art", "combat-sport", "course-based", "individual-sport", "custom",
+  ]);
+
+  // Terminologie générique par défaut (clés internes stables → libellés affichables). Les valeurs
+  // restent neutres : aucun jargon spécialisé imposé. Les profils et le club peuvent surcharger.
+  const DEFAULT_TERMINOLOGY = deepFreeze({
+    member: "adhérent", members: "adhérents",
+    coach: "encadrant", coaches: "encadrants",
+    group: "groupe", groups: "groupes",
+    team: "équipe", teams: "équipes",
+    venue: "installation", venues: "installations",
+    match: "rencontre", matches: "rencontres",
+    membership: "adhésion", memberships: "adhésions",
+    category: "catégorie", categories: "catégories",
+    season: "saison", seasons: "saisons",
+  });
+  // Clés de terminologie RECONNUES (whitelist) : seules ces clés sont acceptées dans
+  // terminologyOverrides. Exclut nativement __proto__/constructor/prototype (jamais listées).
+  const TERMINOLOGY_KEYS = Object.freeze(Object.keys(DEFAULT_TERMINOLOGY));
+
+  // Normalise une définition de profil en une forme complète et déterministe (toutes les clés
+  // d'organisation présentes ; recommandations/exemples en tableaux copiés). Déclaratif : aucune
+  // logique métier, aucune activation réelle de fonctionnalité.
+  function makeSportProfile(def) {
+    const org = def.organization && typeof def.organization === "object" ? def.organization : {};
+    const orgValues = ["primary", "recommended", "optional", "off"];
+    const organization = {};
+    ["teams", "groups", "individual", "seasons", "categories", "competitions"].forEach((key) => {
+      organization[key] = orgValues.includes(org[key]) ? org[key] : "off";
+    });
+    const terminology = {};
+    if (def.terminology && typeof def.terminology === "object") {
+      Object.keys(def.terminology).forEach((key) => {
+        if (TERMINOLOGY_KEYS.includes(key) && typeof def.terminology[key] === "string" && def.terminology[key]) {
+          terminology[key] = def.terminology[key];
+        }
+      });
+    }
+    return {
+      id: def.id,
+      label: def.label,
+      family: SPORT_FAMILIES.includes(def.family) ? def.family : "custom",
+      icon: def.icon || def.id,
+      terminology,
+      organization,
+      recommendedFeatures: Array.isArray(def.recommendedFeatures) ? def.recommendedFeatures.slice() : [],
+      categoryExamples: Array.isArray(def.categoryExamples) ? def.categoryExamples.slice() : [],
+    };
+  }
+
+  // Registre central des profils sportifs — gelé en profondeur, immuable à l'exécution. Les
+  // `recommendedFeatures` n'utilisent que des clés de fonctionnalités connues/déclarées
+  // (shop/stages/memberships/teams/seasons/competitions) ; une recommandation n'est JAMAIS une
+  // activation (elle n'est appliquée à aucun club dans ce lot).
+  const SPORT_PROFILE_REGISTRY = deepFreeze((() => {
+    const defs = [
+      // --- Général ---
+      { id: "custom", label: "Club personnalisé", family: "custom", icon: "settings",
+        organization: {}, recommendedFeatures: [], categoryExamples: [] },
+      { id: "multisport", label: "Club multisports", family: "custom", icon: "handshake",
+        organization: { teams: "optional", groups: "optional", individual: "optional", seasons: "recommended", categories: "recommended", competitions: "optional" },
+        recommendedFeatures: ["memberships"], categoryExamples: [] },
+      // --- Sports collectifs ---
+      { id: "football", label: "Football", family: "team-sport", icon: "football",
+        organization: { teams: "primary", groups: "optional", individual: "off", seasons: "recommended", categories: "recommended", competitions: "optional" },
+        terminology: { member: "joueur", members: "joueurs", coach: "éducateur", coaches: "éducateurs", venue: "terrain", venues: "terrains", match: "match", matches: "matchs" },
+        recommendedFeatures: ["teams", "seasons", "memberships", "competitions", "stages", "shop"],
+        categoryExamples: ["U7", "U9", "U11", "U13", "U15", "U18", "Seniors", "Vétérans"] },
+      { id: "basketball", label: "Basket-ball", family: "team-sport", icon: "basketball",
+        organization: { teams: "primary", groups: "optional", individual: "off", seasons: "recommended", categories: "recommended", competitions: "optional" },
+        terminology: { member: "joueur", members: "joueurs", coach: "entraîneur", coaches: "entraîneurs", venue: "gymnase", venues: "gymnases", match: "match", matches: "matchs" },
+        recommendedFeatures: ["teams", "seasons", "memberships", "competitions"],
+        categoryExamples: ["U9", "U11", "U13", "U15", "U18", "Seniors"] },
+      { id: "handball", label: "Handball", family: "team-sport", icon: "handball",
+        organization: { teams: "primary", groups: "optional", individual: "off", seasons: "recommended", categories: "recommended", competitions: "optional" },
+        terminology: { member: "joueur", members: "joueurs", coach: "entraîneur", coaches: "entraîneurs", venue: "gymnase", venues: "gymnases", match: "match", matches: "matchs" },
+        recommendedFeatures: ["teams", "seasons", "memberships", "competitions"],
+        categoryExamples: ["U9", "U11", "U13", "U15", "U18", "Seniors"] },
+      { id: "rugby", label: "Rugby", family: "team-sport", icon: "rugby",
+        organization: { teams: "primary", groups: "optional", individual: "off", seasons: "recommended", categories: "recommended", competitions: "optional" },
+        terminology: { member: "joueur", members: "joueurs", coach: "entraîneur", coaches: "entraîneurs", venue: "terrain", venues: "terrains", match: "match", matches: "matchs" },
+        recommendedFeatures: ["teams", "seasons", "memberships", "competitions"],
+        categoryExamples: ["U8", "U10", "U12", "U14", "U16", "U18", "Seniors"] },
+      { id: "volleyball", label: "Volley-ball", family: "team-sport", icon: "volleyball",
+        organization: { teams: "primary", groups: "optional", individual: "off", seasons: "recommended", categories: "recommended", competitions: "optional" },
+        terminology: { member: "joueur", members: "joueurs", coach: "entraîneur", coaches: "entraîneurs", venue: "gymnase", venues: "gymnases", match: "match", matches: "matchs" },
+        recommendedFeatures: ["teams", "seasons", "memberships", "competitions"],
+        categoryExamples: ["M11", "M13", "M15", "M18", "M21", "Seniors"] },
+      // --- Sports de raquette ---
+      { id: "tennis", label: "Tennis", family: "racket-sport", icon: "tennis",
+        organization: { teams: "optional", groups: "primary", individual: "recommended", seasons: "optional", categories: "recommended", competitions: "optional" },
+        terminology: { member: "joueur", members: "joueurs", coach: "entraîneur", coaches: "entraîneurs", group: "groupe d'entraînement", groups: "groupes d'entraînement", venue: "court", venues: "courts" },
+        recommendedFeatures: ["memberships", "stages"],
+        categoryExamples: ["Débutant", "Loisir", "Compétition", "Classement"] },
+      { id: "badminton", label: "Badminton", family: "racket-sport", icon: "badminton",
+        organization: { teams: "optional", groups: "primary", individual: "recommended", seasons: "optional", categories: "recommended", competitions: "optional" },
+        terminology: { member: "joueur", members: "joueurs", coach: "entraîneur", coaches: "entraîneurs", venue: "court", venues: "courts" },
+        recommendedFeatures: ["memberships"],
+        categoryExamples: ["Débutant", "Loisir", "Compétition"] },
+      { id: "padel", label: "Padel", family: "racket-sport", icon: "padel",
+        organization: { teams: "optional", groups: "primary", individual: "recommended", seasons: "optional", categories: "recommended", competitions: "optional" },
+        terminology: { member: "joueur", members: "joueurs", coach: "entraîneur", coaches: "entraîneurs", venue: "terrain", venues: "terrains" },
+        recommendedFeatures: ["memberships"],
+        categoryExamples: ["Débutant", "Loisir", "Compétition"] },
+      { id: "table-tennis", label: "Tennis de table", family: "racket-sport", icon: "table-tennis",
+        organization: { teams: "optional", groups: "primary", individual: "recommended", seasons: "optional", categories: "recommended", competitions: "optional" },
+        terminology: { member: "joueur", members: "joueurs", coach: "entraîneur", coaches: "entraîneurs", venue: "salle", venues: "salles" },
+        recommendedFeatures: ["memberships"],
+        categoryExamples: ["Poussins", "Benjamins", "Minimes", "Cadets", "Juniors", "Seniors", "Vétérans"] },
+      // --- Arts martiaux ---
+      { id: "judo", label: "Judo", family: "martial-art", icon: "belt",
+        organization: { teams: "off", groups: "primary", individual: "optional", seasons: "optional", categories: "recommended", competitions: "optional" },
+        terminology: { member: "pratiquant", members: "pratiquants", coach: "professeur", coaches: "professeurs", group: "cours", groups: "cours", venue: "dojo", venues: "dojos" },
+        recommendedFeatures: ["memberships", "stages"],
+        categoryExamples: ["Éveil", "Poussins", "Benjamins", "Minimes", "Cadets", "Juniors", "Seniors", "Vétérans"] },
+      { id: "karate", label: "Karaté", family: "martial-art", icon: "fist",
+        organization: { teams: "off", groups: "primary", individual: "optional", seasons: "optional", categories: "recommended", competitions: "optional" },
+        terminology: { member: "pratiquant", members: "pratiquants", coach: "professeur", coaches: "professeurs", group: "cours", groups: "cours", venue: "dojo", venues: "dojos" },
+        recommendedFeatures: ["memberships", "stages"],
+        categoryExamples: ["Baby", "Poussins", "Pupilles", "Benjamins", "Minimes", "Cadets", "Juniors", "Seniors"] },
+      { id: "taekwondo", label: "Taekwondo", family: "martial-art", icon: "kick",
+        organization: { teams: "off", groups: "primary", individual: "optional", seasons: "optional", categories: "recommended", competitions: "optional" },
+        terminology: { member: "pratiquant", members: "pratiquants", coach: "professeur", coaches: "professeurs", group: "cours", groups: "cours", venue: "dojo", venues: "dojos" },
+        recommendedFeatures: ["memberships", "stages"],
+        categoryExamples: ["Baby", "Poussins", "Benjamins", "Minimes", "Cadets", "Juniors", "Seniors"] },
+      { id: "boxing", label: "Boxe", family: "combat-sport", icon: "fist",
+        organization: { teams: "off", groups: "primary", individual: "optional", seasons: "optional", categories: "recommended", competitions: "optional" },
+        terminology: { member: "pratiquant", members: "pratiquants", coach: "entraîneur", coaches: "entraîneurs", group: "cours", groups: "cours", venue: "salle", venues: "salles" },
+        recommendedFeatures: ["memberships", "stages"],
+        categoryExamples: ["Loisir", "Éducative", "Amateur", "Compétition"] },
+      // --- Cours / disciplines artistiques et bien-être ---
+      { id: "dance", label: "Danse", family: "course-based", icon: "lotus",
+        organization: { teams: "off", groups: "primary", individual: "optional", seasons: "optional", categories: "recommended", competitions: "off" },
+        terminology: { member: "pratiquant", members: "pratiquants", coach: "professeur", coaches: "professeurs", group: "cours", groups: "cours", venue: "salle", venues: "salles" },
+        recommendedFeatures: ["memberships"],
+        categoryExamples: ["Éveil", "Enfants", "Adolescents", "Adultes"] },
+      { id: "gymnastics", label: "Gymnastique", family: "course-based", icon: "athlete",
+        organization: { teams: "off", groups: "primary", individual: "optional", seasons: "optional", categories: "recommended", competitions: "optional" },
+        terminology: { member: "pratiquant", members: "pratiquants", coach: "entraîneur", coaches: "entraîneurs", group: "cours", groups: "cours", venue: "salle", venues: "salles" },
+        recommendedFeatures: ["memberships"],
+        categoryExamples: ["Baby gym", "Éveil", "Enfants", "Adolescents", "Adultes"] },
+      { id: "fitness", label: "Fitness", family: "course-based", icon: "dumbbell",
+        organization: { teams: "off", groups: "primary", individual: "optional", seasons: "optional", categories: "optional", competitions: "off" },
+        terminology: { member: "pratiquant", members: "pratiquants", coach: "coach", coaches: "coachs", group: "cours", groups: "cours", venue: "salle", venues: "salles" },
+        recommendedFeatures: ["memberships"],
+        categoryExamples: ["Débutant", "Intermédiaire", "Avancé"] },
+      { id: "yoga", label: "Yoga", family: "course-based", icon: "yoga",
+        organization: { teams: "off", groups: "primary", individual: "optional", seasons: "optional", categories: "optional", competitions: "off" },
+        terminology: { member: "pratiquant", members: "pratiquants", coach: "professeur", coaches: "professeurs", group: "cours", groups: "cours", venue: "salle", venues: "salles" },
+        recommendedFeatures: ["memberships"],
+        categoryExamples: ["Débutant", "Tous niveaux", "Confirmé"] },
+      // --- Sports individuels ---
+      { id: "athletics", label: "Athlétisme", family: "individual-sport", icon: "athlete",
+        organization: { teams: "off", groups: "primary", individual: "recommended", seasons: "optional", categories: "recommended", competitions: "optional" },
+        terminology: { member: "athlète", members: "athlètes", coach: "entraîneur", coaches: "entraîneurs", venue: "stade", venues: "stades", match: "compétition", matches: "compétitions" },
+        recommendedFeatures: ["memberships", "stages"],
+        categoryExamples: ["Éveil athlétique", "Poussins", "Benjamins", "Minimes", "Cadets", "Juniors", "Seniors", "Masters"] },
+      { id: "swimming", label: "Natation", family: "individual-sport", icon: "drop",
+        organization: { teams: "off", groups: "primary", individual: "recommended", seasons: "optional", categories: "recommended", competitions: "optional" },
+        terminology: { member: "nageur", members: "nageurs", coach: "entraîneur", coaches: "entraîneurs", venue: "piscine", venues: "piscines", match: "compétition", matches: "compétitions" },
+        recommendedFeatures: ["memberships"],
+        categoryExamples: ["Débutant", "Perfectionnement", "Groupe compétition", "Maîtres"] },
+    ];
+    const reg = {};
+    defs.map(makeSportProfile).forEach((profile) => { reg[profile.id] = profile; });
+    return reg;
+  })());
+
+  // Ensemble des identifiants de profils OFFICIELS (repli custom exclu de la logique de collision :
+  // il est officiel mais un sport personnalisé nommé « custom » n'aurait aucun sens). Sert à
+  // empêcher qu'un sport personnalisé n'usurpe l'id d'un profil officiel (normalizeClubProfile).
+  const SPORT_PROFILE_IDS = Object.freeze(new Set(Object.keys(SPORT_PROFILE_REGISTRY)));
+
   let ui = {
     view: "dashboard",
     contactKind: "members",
@@ -820,6 +1016,24 @@
     return activeClubId ? raw.data?.[activeClubId] || null : null;
   }
 
+  // Socle multisports (Lot 1) — MATÉRIALISATION PARESSEUSE de clubProfile. Le champ est normalisé
+  // EN MÉMOIRE (nextPayload ci-dessous) pour que tous les consommateurs disposent toujours d'un
+  // profil sûr, mais son absence — ou sa forme non normalisée — dans le stockage d'un ancien club
+  // ne doit JAMAIS, à elle seule, provoquer une réécriture au simple chargement. La décision de
+  // convergence de ensureClubStoreInitialized() compare donc des payloads dont les champs à
+  // matérialisation paresseuse sont retirés : seule une VRAIE différence (features, protectedViews,
+  // autres réglages, state…) déclenche encore l'écriture historique. clubProfile n'est persisté
+  // que lorsqu'une écriture a lieu pour une autre raison ou lors d'une vraie sauvegarde ultérieure.
+  // Retire uniquement clubProfile (matérialisation paresseuse) ; ne masque aucune autre différence.
+  function comparablePayloadForStartup(payload) {
+    if (!payload || typeof payload !== "object") return JSON.stringify(payload ?? null);
+    const copy = clone(payload);
+    if (copy.settings && typeof copy.settings === "object" && !Array.isArray(copy.settings)) {
+      delete copy.settings.clubProfile;
+    }
+    return JSON.stringify(copy);
+  }
+
   function ensureClubStoreInitialized() {
     try {
       const rawStore = rawClubStoreFromStorage();
@@ -853,14 +1067,15 @@
       if (!store.activeClubId) throw new Error("Aucun club actif disponible.");
       for (const club of store.clubs) {
         const previousPayload = store.data[club.id];
-        const previousPayloadJson = JSON.stringify(previousPayload || null);
         const nextPayload = previousPayload ? clone(previousPayload) : {
           state: normalizeState({}),
           settings: settingsForClub(normalizeSettings({}), club),
         };
         nextPayload.state = scopeStateToClub(normalizeState(nextPayload.state || {}), club.id);
         nextPayload.settings = settingsForClub(normalizeSettings(nextPayload.settings || {}), club);
-        if (previousPayloadJson !== JSON.stringify(nextPayload)) storeChanged = true;
+        // Comparaison hors champs à matérialisation paresseuse (clubProfile) : l'apparition d'un
+        // clubProfile normalisé en mémoire ne réécrit PAS à elle seule le stockage d'un ancien club.
+        if (comparablePayloadForStartup(previousPayload) !== comparablePayloadForStartup(nextPayload)) storeChanged = true;
         store.data[club.id] = nextPayload;
       }
       if (storeChanged) {
@@ -1289,12 +1504,153 @@
       // Normalisée en tableau dédupliqué de chaînes non vides (idempotent). L'application de la
       // protection reste conditionnée à hasAppPassword() dans viewProtectionKey (comme les groupes).
       protectedViews: normalizeProtectedViews(source.protectedViews),
+      // Socle multisports (Lot 1 — fondation invisible et INERTE, par club). Comme `features`,
+      // placé APRÈS `...source` : la valeur normalisée écrase toujours la brute, donc chaque
+      // réassemblage (settingsForClub, saveClub, import, duplication…) reproduit la même structure
+      // déterministe. Aucun club n'est reclassé automatiquement ; aucune interface ne le consulte.
+      clubProfile: normalizeClubProfile(source.clubProfile),
     };
   }
 
   function normalizeProtectedViews(value) {
     if (!Array.isArray(value)) return [];
     return [...new Set(value.filter((key) => typeof key === "string" && key))];
+  }
+
+  // ===================================================================================
+  // SOCLE MULTISPORTS (Lot 1) — Configuration `clubProfile` par club + helpers de résolution.
+  // ===================================================================================
+  // Le registre (SPORT_PROFILE_REGISTRY, DEFAULT_TERMINOLOGY, …) vit en 01-constants.js (TDZ).
+  // Ici : normalisation défensive de settings.clubProfile + résolution profil/terminologie.
+  // INERTE dans ce lot : aucune interface ne consulte encore ces helpers, aucun club n'est reclassé.
+
+  // Normalise settings.clubProfile en une structure sûre et déterministe (idempotente, ne mute pas
+  // son argument). Ne DÉDUIT jamais un sport (pas d'inspection du nom du club / de la discipline).
+  // Ne génère ni ne réécrit aucun identifiant ; préserve les valeurs inconnues de façon non
+  // destructive (templateId d'une version plus récente conservé tel quel).
+  function normalizeClubProfile(value) {
+    const src = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+    const isBadKey = (k) => k === "__proto__" || k === "prototype" || k === "constructor";
+    const str = (v) => (typeof v === "string" ? asText(v) : "");
+
+    // templateId : chaîne, défaut "custom". Une valeur inconnue (registre plus récent) est CONSERVÉE
+    // telle quelle (jamais supprimée) ; le repli "custom" ne s'applique qu'à une valeur vide/invalide.
+    const templateId = str(src.templateId) || "custom";
+
+    // sportIds : chaînes non vides, dédupliquées, ordre stable. Rejette objets/booléens/nombres.
+    const sportIds = [];
+    const seenSport = new Set();
+    (Array.isArray(src.sportIds) ? src.sportIds : []).forEach((raw) => {
+      if (typeof raw !== "string") return;
+      const idv = raw.trim();
+      if (!idv || seenSport.has(idv)) return;
+      seenSport.add(idv);
+      sportIds.push(idv);
+    });
+
+    // customSports : id + label obligatoires (chaînes) ; family valide ou "custom" ; dédup par id ;
+    // jamais d'id en collision avec un profil officiel ni de clé dangereuse. Aucun id généré ici.
+    const customSports = [];
+    const seenCustom = new Set();
+    (Array.isArray(src.customSports) ? src.customSports : []).forEach((raw) => {
+      if (!raw || typeof raw !== "object" || Array.isArray(raw)) return;
+      const idv = typeof raw.id === "string" ? raw.id.trim() : "";
+      const label = str(raw.label);
+      if (!idv || !label || isBadKey(idv) || seenCustom.has(idv)) return;
+      if (SPORT_PROFILE_IDS.has(idv)) return; // pas d'usurpation d'un profil officiel
+      seenCustom.add(idv);
+      const family = typeof raw.family === "string" && SPORT_FAMILIES.includes(raw.family) ? raw.family : "custom";
+      customSports.push({ id: idv, label, family });
+    });
+
+    // primarySportId : doit référencer un sport connu (sportIds ou customSports) ; sinon premier
+    // sport valide ; sinon chaîne vide.
+    const validSportIds = new Set([...sportIds, ...customSports.map((s) => s.id)]);
+    const rawPrimary = str(src.primarySportId);
+    const primarySportId = validSportIds.has(rawPrimary)
+      ? rawPrimary
+      : (sportIds[0] || (customSports[0] && customSports[0].id) || "");
+
+    // terminologyOverrides : uniquement des clés RECONNUES, valeurs texte non vides. Toute clé
+    // inconnue / dangereuse, tout objet/nombre/tableau est ignoré. Valeur vide = pas de remplacement.
+    const terminologyOverrides = {};
+    const rawTerm = src.terminologyOverrides && typeof src.terminologyOverrides === "object" && !Array.isArray(src.terminologyOverrides) ? src.terminologyOverrides : {};
+    TERMINOLOGY_KEYS.forEach((key) => {
+      if (!Object.prototype.hasOwnProperty.call(rawTerm, key)) return;
+      const raw = rawTerm[key];
+      if (typeof raw !== "string") return;
+      const text = asText(raw);
+      if (text) terminologyOverrides[key] = text;
+    });
+
+    return { version: CLUB_PROFILE_VERSION, templateId, sportIds, primarySportId, customSports, terminologyOverrides };
+  }
+
+  // Profil officiel par id ; repli sur le profil "custom" (jamais undefined, ne mute pas le registre).
+  function sportProfile(profileId) {
+    return (typeof profileId === "string" && Object.prototype.hasOwnProperty.call(SPORT_PROFILE_REGISTRY, profileId))
+      ? SPORT_PROFILE_REGISTRY[profileId]
+      : SPORT_PROFILE_REGISTRY.custom;
+  }
+
+  // Extrait la config clubProfile d'une source de type `settings` (défaut : settings du club actif).
+  function clubProfileConfig(source) {
+    const src = source === undefined ? settings : source;
+    return normalizeClubProfile(src && src.clubProfile);
+  }
+
+  // Profil sportif PRINCIPAL réellement applicable : primarySportId → 1er sport → templateId.
+  // Un sport personnalisé donne un profil générique synthétisé (gelé) portant son libellé. Inconnu
+  // → profil "custom". Pur, sans cache global (multi-club sûr).
+  function resolveClubSportProfile(source) {
+    const cfg = clubProfileConfig(source);
+    const candidate = cfg.primarySportId || cfg.sportIds[0] || cfg.templateId;
+    if (typeof candidate === "string" && Object.prototype.hasOwnProperty.call(SPORT_PROFILE_REGISTRY, candidate)) {
+      return SPORT_PROFILE_REGISTRY[candidate];
+    }
+    const custom = cfg.customSports.find((s) => s.id === candidate);
+    if (custom) {
+      return deepFreeze({
+        id: custom.id,
+        label: custom.label,
+        family: custom.family,
+        icon: SPORT_PROFILE_REGISTRY.custom.icon,
+        terminology: {},
+        organization: { ...SPORT_PROFILE_REGISTRY.custom.organization },
+        recommendedFeatures: [],
+        categoryExamples: [],
+      });
+    }
+    return SPORT_PROFILE_REGISTRY.custom;
+  }
+
+  // Terminologie EFFECTIVE d'un club. Priorité : (1) override du club ; (2) terminologie du sport
+  // principal ; (3) défaut générique. Retourne toujours toutes les clés en chaînes (fresh object).
+  function resolveClubTerminology(source) {
+    const cfg = clubProfileConfig(source);
+    const profile = resolveClubSportProfile(source);
+    const term = {};
+    TERMINOLOGY_KEYS.forEach((key) => {
+      let label = DEFAULT_TERMINOLOGY[key];
+      if (profile && profile.terminology && typeof profile.terminology[key] === "string" && profile.terminology[key]) {
+        label = profile.terminology[key];
+      }
+      if (Object.prototype.hasOwnProperty.call(cfg.terminologyOverrides, key) && cfg.terminologyOverrides[key]) {
+        label = cfg.terminologyOverrides[key];
+      }
+      term[key] = label;
+    });
+    return term;
+  }
+
+  // Libellé d'une clé de terminologie. Toujours une chaîne (jamais undefined) ; clé inconnue →
+  // défaut générique si connu, sinon la clé elle-même. Ne modifie aucune donnée.
+  function clubTerm(source, key) {
+    if (typeof key !== "string" || !key) return "";
+    const term = resolveClubTerminology(source);
+    if (Object.prototype.hasOwnProperty.call(term, key) && typeof term[key] === "string") return term[key];
+    if (Object.prototype.hasOwnProperty.call(DEFAULT_TERMINOLOGY, key) && typeof DEFAULT_TERMINOLOGY[key] === "string") return DEFAULT_TERMINOLOGY[key];
+    return key;
   }
 
   function emailTemplateDefinitions() {
@@ -2013,10 +2369,83 @@
         reactivateFeedback: "Les Adhésions sont réactivées pour ce club. Leur affichage suit vos réglages d'affichage.",
       }),
     }),
+    // ---------------------------------------------------------------------------------------------
+    // SOCLE MULTISPORTS (Lot 1) — fonctionnalités FUTURES simplement DÉCLARÉES. Elles préparent les
+    // lots suivants (Équipes, Saisons, Rencontres) mais restent totalement INERTES et INVISIBLES :
+    //  - legacyEnabled:false ET defaultEnabled:false → hasFeature renvoie TOUJOURS false (club
+    //    historique configured:false → legacyEnabled=false ; configured:true → defaultEnabled=false
+    //    tant qu'aucune activation explicite) : aucun effet sur les anciens ni les nouveaux clubs ;
+    //  - ui.available:false → screenFeatures() les EXCLUT de l'écran « Fonctionnalités du club »
+    //    (aucune carte, aucun interrupteur) ;
+    //  - views:[] → aucune vue masquable, aucun élément de menu, aucune route ;
+    //  - aucun handler, aucune mutation, aucune garde métier n'est branché dans ce lot.
+    // Les textes ui.* sont pré-remplis pour les lots ultérieurs et n'influencent RIEN aujourd'hui.
+    teams: Object.freeze({
+      key: "teams",
+      label: "Équipes",
+      category: "structure",
+      configurable: true,
+      legacyEnabled: false,
+      defaultEnabled: false,
+      aliases: Object.freeze([]),
+      views: Object.freeze([]),
+      ui: Object.freeze({
+        available: false,
+        order: 4,
+        description: "Gérez les équipes, leurs effectifs, leurs catégories et leurs encadrants par saison.",
+        dataRetention: "La désactivation masquera les outils de gestion des équipes sans supprimer aucune donnée existante.",
+        disableConfirmTitle: "Désactiver les Équipes ?",
+        disableConfirmMessage: "Les outils de gestion des Équipes seront désactivés pour le club « {club} ».\n\nAucune donnée existante ne sera supprimée. Vous pourrez réactiver les Équipes plus tard. Ce changement concerne uniquement ce club.",
+        disableConfirmLabel: "Désactiver les Équipes",
+        reactivateFeedback: "Les Équipes sont réactivées pour ce club. Leur affichage suit vos réglages d'affichage.",
+      }),
+    }),
+    seasons: Object.freeze({
+      key: "seasons",
+      label: "Saisons",
+      category: "structure",
+      configurable: true,
+      legacyEnabled: false,
+      defaultEnabled: false,
+      aliases: Object.freeze([]),
+      views: Object.freeze([]),
+      ui: Object.freeze({
+        available: false,
+        order: 5,
+        description: "Structurez la vie du club par saison : effectifs, catégories, renouvellements et archivage.",
+        dataRetention: "La désactivation masquera les outils de gestion des saisons sans supprimer aucune donnée existante.",
+        disableConfirmTitle: "Désactiver les Saisons ?",
+        disableConfirmMessage: "Les outils de gestion des Saisons seront désactivés pour le club « {club} ».\n\nAucune donnée existante ne sera supprimée. Vous pourrez réactiver les Saisons plus tard. Ce changement concerne uniquement ce club.",
+        disableConfirmLabel: "Désactiver les Saisons",
+        reactivateFeedback: "Les Saisons sont réactivées pour ce club. Leur affichage suit vos réglages d'affichage.",
+      }),
+    }),
+    competitions: Object.freeze({
+      key: "competitions",
+      label: "Rencontres",
+      category: "activities",
+      configurable: true,
+      legacyEnabled: false,
+      defaultEnabled: false,
+      aliases: Object.freeze([]),
+      views: Object.freeze([]),
+      ui: Object.freeze({
+        available: false,
+        order: 6,
+        description: "Suivez les rencontres, matchs ou compétitions et les convocations des équipes.",
+        dataRetention: "La désactivation masquera les outils de gestion des rencontres sans supprimer aucune donnée existante.",
+        disableConfirmTitle: "Désactiver les Rencontres ?",
+        disableConfirmMessage: "Les outils de gestion des Rencontres seront désactivés pour le club « {club} ».\n\nAucune donnée existante ne sera supprimée. Vous pourrez réactiver les Rencontres plus tard. Ce changement concerne uniquement ce club.",
+        disableConfirmLabel: "Désactiver les Rencontres",
+        reactivateFeedback: "Les Rencontres sont réactivées pour ce club. Leur affichage suit vos réglages d'affichage.",
+      }),
+    }),
   });
 
   // Ordre canonique déterministe (ordre de déclaration). Ne contient que des clés canoniques.
-  const FEATURE_CANONICAL_KEYS = Object.freeze(["shop", "stages", "memberships"]);
+  // teams/seasons/competitions y figurent (résolution/garde disponibles) mais restent invisibles
+  // (ui.available:false) et inertes (legacy/default:false) — cf. commentaires du registre.
+  const FEATURE_CANONICAL_KEYS = Object.freeze(["shop", "stages", "memberships", "teams", "seasons", "competitions"]);
 
   // Table de résolution clé/alias -> clé canonique. Construite depuis le registre (jamais deux
   // fonctionnalités distinctes « shop » et « boutique » : boutique pointe vers shop).
