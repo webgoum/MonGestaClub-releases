@@ -11923,3 +11923,94 @@ td.due,
   .search-option-desc, .search-option-reason { white-space: normal; }
 }
 /* ===== fin recherche globale fonctionnelle ===== */
+
+/* ===================================================================================
+   LOT 2 — Assistant de création multisports (premier lancement & « Nouveau club »).
+   =================================================================================== */
+.wizard-gate { padding: 24px; align-items: start; }
+.wizard-card {
+  width: min(760px, 100%);
+  margin: 0 auto;
+  padding: 24px;
+  display: grid;
+  gap: 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  box-sizing: border-box;
+}
+.wizard-card * { box-sizing: border-box; }
+.wizard-header { display: grid; gap: 4px; justify-items: start; }
+.wizard-logo { max-width: 56px; height: auto; }
+.wizard-header h1 { margin: 0; font-size: 1.35rem; }
+.wizard-header h1:focus { outline: none; }
+.wizard-step-count { margin: 0; color: var(--muted); font-size: 0.85rem; }
+.wizard-error { margin: 0; padding: 10px 12px; border-radius: 8px; background: color-mix(in srgb, #ef4444 14%, transparent); color: var(--text); border: 1px solid color-mix(in srgb, #ef4444 40%, transparent); }
+
+.wizard-stepper ol { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
+.wizard-step-btn { display: inline-flex; align-items: center; gap: 6px; padding: 5px 9px; border-radius: 999px; border: 1px solid var(--line); background: var(--surface); color: var(--muted); cursor: pointer; font-size: 0.82rem; max-width: 100%; }
+.wizard-step-btn[disabled] { cursor: default; opacity: 0.55; }
+.wizard-step-current .wizard-step-btn { border-color: var(--accent); color: var(--text); font-weight: 600; }
+.wizard-step-done .wizard-step-btn { color: var(--text); }
+.wizard-step-num { display: inline-grid; place-items: center; width: 20px; height: 20px; border-radius: 50%; background: color-mix(in srgb, var(--accent) 22%, transparent); font-size: 0.72rem; flex: none; }
+.wizard-step-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.wizard-body { display: grid; gap: 14px; }
+.wizard-form, .wizard-subform { display: grid; gap: 12px; }
+.wizard-form label, .wizard-subform label { display: grid; gap: 4px; }
+.wizard-form input, .wizard-form select, .wizard-subform input, .wizard-subform select, .wizard-search input, .wizard-primary select { max-width: 100%; width: 100%; }
+
+.wizard-search { display: grid; gap: 4px; }
+.wizard-sport-group { border: 1px solid var(--line); border-radius: 10px; padding: 12px; margin: 0; display: grid; gap: 10px; }
+.wizard-sport-group legend { padding: 0 6px; font-weight: 600; }
+.wizard-sport-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 8px; }
+.wizard-sport-card { display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); color: var(--text); cursor: pointer; text-align: left; min-height: 44px; }
+.wizard-sport-card:hover { border-color: var(--accent); }
+.wizard-sport-card.selected { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); font-weight: 600; }
+.wizard-sport-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.wizard-sport-check { color: var(--accent); font-weight: 700; }
+.wizard-custom-add { display: flex; gap: 8px; flex-wrap: wrap; }
+.wizard-custom-add input { flex: 1 1 160px; min-width: 0; }
+.wizard-custom-list, .wizard-venue-list, .wizard-group-list { list-style: none; margin: 6px 0 0; padding: 0; display: grid; gap: 6px; }
+.wizard-custom-item, .wizard-venue-item, .wizard-group-item { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; }
+.wizard-custom-item span, .wizard-venue-name, .wizard-group-name { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+.wizard-primary { display: grid; gap: 4px; }
+
+.wizard-org-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.wizard-org-row { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; }
+.wizard-org-label { font-weight: 600; flex: 0 0 auto; }
+.wizard-org-level { font-size: 0.78rem; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--line); }
+.wizard-org-primary { border-color: var(--accent); color: var(--text); background: color-mix(in srgb, var(--accent) 14%, transparent); }
+.wizard-org-note { flex: 1 1 100%; }
+
+.wizard-feature-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px; }
+.wizard-feature-card { display: grid; grid-template-columns: auto 1fr; grid-template-areas: "chk title" "chk desc"; gap: 2px 8px; padding: 12px; border: 1px solid var(--line); border-radius: 10px; position: relative; }
+.wizard-feature-card input { grid-area: chk; align-self: start; margin-top: 3px; }
+.wizard-feature-title { grid-area: title; font-weight: 600; }
+.wizard-feature-desc { grid-area: desc; font-size: 0.85rem; }
+.wizard-feature-reco { position: absolute; top: 8px; right: 8px; font-size: 0.68rem; padding: 1px 6px; border-radius: 999px; background: color-mix(in srgb, var(--accent) 20%, transparent); color: var(--text); }
+
+.wizard-summary-list { display: grid; gap: 8px; margin: 0; }
+.wizard-summary-row { display: grid; grid-template-columns: minmax(140px, 34%) 1fr; gap: 8px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; }
+.wizard-summary-row dt { font-weight: 600; margin: 0; }
+.wizard-summary-row dd { margin: 0; overflow-wrap: anywhere; }
+.wizard-note { font-style: italic; }
+
+.wizard-footer { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; padding-top: 6px; border-top: 1px solid var(--line); }
+.wizard-footer-right { display: flex; gap: 8px; flex-wrap: wrap; }
+.link-btn { background: none; border: none; color: var(--accent); cursor: pointer; padding: 6px; text-decoration: underline; font: inherit; }
+
+@media (max-width: 560px) {
+  .wizard-gate { padding: 10px; }
+  .wizard-card { padding: 16px; gap: 12px; }
+  .wizard-step-label { max-width: 96px; }
+  .wizard-footer { flex-direction: column-reverse; align-items: stretch; }
+  .wizard-footer-right { flex-direction: column; }
+  .wizard-footer-right button { width: 100%; }
+  .wizard-summary-row { grid-template-columns: 1fr; }
+}
+@media (max-width: 380px) {
+  .wizard-sport-grid { grid-template-columns: 1fr; }
+  .wizard-feature-grid { grid-template-columns: 1fr; }
+}

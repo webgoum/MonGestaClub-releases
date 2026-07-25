@@ -2965,8 +2965,12 @@
           </ul>
           <div class="welcome-choice-grid">
             <button type="button" class="welcome-choice welcome-choice-primary" data-welcome-action="create">
-              <strong>Créer mon club</strong>
-              <span>Configurez votre vrai club en quelques étapes. Tout reste modifiable ensuite.</span>
+              <strong>Créer un nouveau club</strong>
+              <span>Assistant guidé : identité, activités sportives, installations, groupes. Tout reste modifiable ensuite.</span>
+            </button>
+            <button type="button" class="welcome-choice" data-welcome-action="import">
+              <strong>Importer une sauvegarde</strong>
+              <span>Restaurez un club à partir d'un fichier exporté précédemment.</span>
             </button>
             <button type="button" class="welcome-choice" data-welcome-action="demo">
               <strong>Essayer la démo</strong>
@@ -2981,7 +2985,13 @@
           <p class="welcome-reassurance">100 % local · aucune donnée envoyée sur Internet · tout reste modifiable</p>
         </div>
       </main>`;
-      app.querySelector("[data-welcome-action='create']")?.addEventListener("click", renderCreate);
+      // Lot 2 — « Créer un nouveau club » ouvre désormais l'assistant multisports guidé
+      // (remplace l'ancien formulaire mono-discipline renderCreate, conservé pour compatibilité).
+      app.querySelector("[data-welcome-action='create']")?.addEventListener("click", () => startClubWizard({ resolve }));
+      // Lot 2 (correctif) — l'import depuis l'accueil passe par un contexte de premier lancement :
+      // après un import valide, le club importé devient actif, le provisoire vide disparaît et le
+      // premier lancement est résolu (cf. beginFirstLaunchImport / finalizeFirstLaunchImport, src/22).
+      app.querySelector("[data-welcome-action='import']")?.addEventListener("click", () => beginFirstLaunchImport(resolve));
       app.querySelector("[data-welcome-action='demo']")?.addEventListener("click", handleDemo);
     }
 
@@ -3057,6 +3067,9 @@
     }
 
     async function handleDemo() {
+      // Choix Démo depuis l'accueil : tout contexte d'import de premier lancement en attente
+      // (ex. sélecteur ouvert puis annulé) est effacé pour éviter toute fuite.
+      if (typeof clearFirstLaunchImportContext === "function") clearFirstLaunchImportContext();
       setupDemoClub();
       ui.saveMessage = `${DEMO_CLUB_NAME} prêt`;
       resolve();
@@ -13765,8 +13778,12 @@ ${esc(bodyText)}</pre>
       // champs non sensibles laisserait un club affiché "configuré" mais incapable d'envoyer.
       settings: settingsForClub({ ...(cloneSource.settings || normalizeSettings({})), smtp: undefined }, normalizedClub),
     } : {
-      state: scopeStateToClub(previousPayload.state || normalizeState({}), normalizedClub.id),
-      settings: settingsForClub(previousPayload.settings || normalizeSettings({}), normalizedClub),
+      // Lot 2 — création atomique par l'assistant : un state/settings pré-construits (disciplines,
+      // installations, groupes, clubProfile, fonctionnalités) peuvent être fournis pour un club
+      // NEUF, écrits en une seule passe (aucune création partielle). scopeStateToClub réestampille
+      // le clubId ; settingsForClub renormalise. Sans ces options, comportement historique inchangé.
+      state: scopeStateToClub(options.initialState || previousPayload.state || normalizeState({}), normalizedClub.id),
+      settings: settingsForClub(options.initialSettings || previousPayload.settings || normalizeSettings({}), normalizedClub),
     };
     // Démarrage du club : la discipline principale saisie à la création devient une discipline
     // utilisable (tarifs.disciplines), réutilisée partout (adhérents, groupes, coachs, salles,
@@ -25303,7 +25320,9 @@ ${esc(bodyText)}</pre>
       navigateTo({ view: "help" });
       return;
     }
-    if (action === "new-club") return openClubAssistantDialog("", { activate: true });
+    // Lot 2 — « Nouveau club » ouvre l'assistant multisports guidé (brouillon neuf, aucun choix du
+    // club actif conservé). openClubAssistantDialog reste pour la modification d'un club existant.
+    if (action === "new-club") return startClubWizard({ fromMesClubs: true });
     if (action === "club-assistant") return openClubAssistantDialog(button.dataset.clubId || activeClubId());
     if (action === "create-demo-club") return createDemoClub({ resetExisting: false });
     if (action === "reset-demo-club") return createDemoClub({ resetExisting: true });
@@ -36937,44 +36956,1089 @@ ${esc(bodyText)}</pre>
     ui.saveMessage = `PIN retiré : ${target.displayName}`;
     render();
   }
-  importFile.addEventListener("change", async (event) => {
-    if (isDemoMode()) { event.target.value = ""; return; }
-    // Garde d'authentification (Lot 4A) : un import est une mutation majeure de l'état métier.
-    if (!requireAuthenticatedSession()) { event.target.value = ""; return; }
-    const file = event.target.files?.[0];
-    if (!file) return;
-    let payload;
+  // ===================================================================================
+  // LOT 2 — ASSISTANT DE CRÉATION MULTISPORTS
+  // ===================================================================================
+  // Remplace le formulaire mono-discipline du premier lancement (renderCreate, src/05) par un
+  // assistant guidé multi-étapes, et alimente aussi « Nouveau club » depuis Mes clubs (src/21).
+  // S'appuie sur le socle du Lot 1 (SPORT_PROFILE_REGISTRY, normalizeClubProfile, sportProfile…).
+  //
+  // Principes :
+  //  - Le brouillon vit UNIQUEMENT en mémoire (ui.initialClubWizard). Aucune donnée métier n'est
+  //    persistée avant la validation finale ; aucune écriture dans le clubStore, aucun historique,
+  //    aucun journal tant que « Créer mon club » n'a pas réussi.
+  //  - La création est ATOMIQUE : un seul saveClub(...) avec state + settings pré-construits.
+  //  - teams / seasons / competitions restent INVISIBLES et INACTIFS (jamais exposés ni activés).
+
+  // --- Familles affichées (regroupement des profils officiels par famille). Déclaratif. ---
+  const WIZARD_SPORT_FAMILIES = Object.freeze([
+    { key: "team-sport", label: "Sports collectifs", families: ["team-sport"] },
+    { key: "racket-sport", label: "Sports de raquette", families: ["racket-sport"] },
+    { key: "martial-combat", label: "Arts martiaux et combat", families: ["martial-art", "combat-sport"] },
+    { key: "course-based", label: "Cours, bien-être et disciplines artistiques", families: ["course-based"] },
+    { key: "individual-sport", label: "Sports individuels", families: ["individual-sport"] },
+  ]);
+
+  // Profils officiels sélectionnables dans la grille (exclut les méta-profils custom/multisport).
+  function wizardSelectableProfiles() {
+    return Object.keys(SPORT_PROFILE_REGISTRY)
+      .map((key) => SPORT_PROFILE_REGISTRY[key])
+      .filter((p) => p.id !== "custom" && p.id !== "multisport");
+  }
+
+  // Profils regroupés par famille d'affichage (ordre stable = ordre du registre dans chaque groupe).
+  function wizardProfilesByFamily() {
+    const all = wizardSelectableProfiles();
+    return WIZARD_SPORT_FAMILIES.map((group) => ({
+      key: group.key,
+      label: group.label,
+      profiles: all.filter((p) => group.families.includes(p.family)),
+    })).filter((group) => group.profiles.length > 0);
+  }
+
+  // Identifiant STABLE pour une activité personnalisée. Slug ASCII kebab dérivé du label, préfixé
+  // « custom- », jamais en collision avec un profil officiel ni avec un id déjà présent. Utilisé
+  // UNE SEULE FOIS à l'ajout (l'id est ensuite mémorisé dans le brouillon, jamais régénéré).
+  function wizardCustomSportId(label, takenIds) {
+    const taken = takenIds instanceof Set ? takenIds : new Set(takenIds || []);
+    const base = String(label == null ? "" : label)
+      .normalize("NFD").replace(/[̀-ͯ]/g, "")
+      .toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40);
+    const root = "custom-" + (base || "activite");
+    let candidate = root;
+    let n = 2;
+    // Collision avec un profil officiel OU un id déjà pris → suffixe numérique déterministe.
+    while (SPORT_PROFILE_IDS.has(candidate) || taken.has(candidate)) {
+      candidate = `${root}-${n}`;
+      n += 1;
+    }
+    return candidate;
+  }
+
+  // Construit le clubProfile normalisé (Lot 1) à partir du brouillon. Règles §5 :
+  //  - 0 sport → custom ; 1 sport officiel → son id ; 1 activité perso seule → custom ;
+  //  - ≥ 2 sports (officiels et/ou perso) → multisport.
+  // sportIds = officiels (ordre de sélection) puis perso. primarySportId respecté s'il est valide.
+  // Pur : ne mute pas le brouillon, ne touche aucun registre ; délègue le nettoyage à normalizeClubProfile.
+  function buildClubProfileFromWizard(draft) {
+    const d = draft && typeof draft === "object" ? draft : {};
+    const officials = (Array.isArray(d.selectedSportIds) ? d.selectedSportIds : [])
+      .filter((v) => typeof v === "string" && SPORT_PROFILE_IDS.has(v) && v !== "custom" && v !== "multisport");
+    const customSports = (Array.isArray(d.customSports) ? d.customSports : [])
+      .filter((c) => c && typeof c === "object" && typeof c.id === "string" && c.id && typeof c.label === "string" && asText(c.label))
+      .map((c) => ({ id: c.id, label: asText(c.label), family: "custom" }));
+    const officialIds = [...new Set(officials)];
+    const customIds = customSports.map((c) => c.id);
+    const sportIds = [...officialIds, ...customIds];
+    const total = sportIds.length;
+    let templateId;
+    if (total >= 2) templateId = "multisport";
+    else if (total === 1) templateId = officialIds.length === 1 ? officialIds[0] : "custom";
+    else templateId = "custom";
+    const wanted = typeof d.primarySportId === "string" ? d.primarySportId : "";
+    const primarySportId = sportIds.includes(wanted) ? wanted : (sportIds[0] || "");
+    return normalizeClubProfile({
+      version: CLUB_PROFILE_VERSION,
+      templateId,
+      sportIds,
+      primarySportId,
+      customSports,
+      terminologyOverrides: {},
+    });
+  }
+
+  // §7 — Fonctionnalités recommandées pour un clubProfile. Fusionne les recommandations de tous les
+  // sports OFFICIELS du club, déduplique, ne garde que des clés CONNUES du registre ET réellement
+  // disponibles (ui.available === true). N'active jamais une fonctionnalité absente de l'interface
+  // (teams/seasons/competitions/memberships exclus car available:false). Retourne un NOUVEAU tableau ;
+  // ne modifie aucun registre. Pur et idempotent.
+  function recommendedFeaturesForClubProfile(clubProfile) {
+    const cp = normalizeClubProfile(clubProfile);
+    const seen = new Set();
+    const out = [];
+    const consider = (key) => {
+      if (typeof key !== "string" || seen.has(key)) return;
+      seen.add(key);
+      const def = FEATURE_REGISTRY[key];
+      if (def && def.ui && def.ui.available === true) out.push(key);
+    };
+    cp.sportIds.forEach((sportId) => {
+      const profile = sportProfile(sportId);
+      (profile.recommendedFeatures || []).forEach(consider);
+    });
+    // Le templateId officiel (mono-sport) porte aussi ses recommandations.
+    const tpl = SPORT_PROFILE_REGISTRY[cp.templateId];
+    if (tpl) (tpl.recommendedFeatures || []).forEach(consider);
+    return out;
+  }
+
+  // Disciplines (state.tariffs.disciplines) à créer : une par sport, sport principal en premier,
+  // label = libellé du profil officiel ou de l'activité perso. Dédupliqué par nom (insensible à la
+  // casse). §6. Pur : retourne des objets de définition {name} (les id/clubId sont posés à la création).
+  function wizardDisciplineNames(clubProfile) {
+    const cp = normalizeClubProfile(clubProfile);
+    const ordered = [];
+    const pushId = (sportId) => { if (sportId && !ordered.includes(sportId)) ordered.push(sportId); };
+    pushId(cp.primarySportId);
+    cp.sportIds.forEach(pushId);
+    const names = [];
+    const seenLower = new Set();
+    ordered.forEach((sportId) => {
+      let label = "";
+      if (SPORT_PROFILE_IDS.has(sportId)) label = SPORT_PROFILE_REGISTRY[sportId].label;
+      else { const cs = cp.customSports.find((c) => c.id === sportId); label = cs ? cs.label : ""; }
+      const clean = asText(label);
+      if (!clean) return;
+      const low = clean.toLowerCase();
+      if (seenLower.has(low)) return;
+      seenLower.add(low);
+      names.push(clean);
+    });
+    return names;
+  }
+
+  // ----------------------------------------------------------------------------------------------
+  // Brouillon en mémoire (jamais persisté dans le clubStore).
+  // ----------------------------------------------------------------------------------------------
+  const WIZARD_STEPS = Object.freeze(["identity", "sports", "organisation", "features", "venues", "groups", "summary"]);
+  const WIZARD_STEP_TITLES = Object.freeze({
+    identity: "Identité du club",
+    sports: "Activités sportives",
+    organisation: "Organisation recommandée",
+    features: "Fonctionnalités du club",
+    venues: "Installations",
+    groups: "Premiers groupes ou cours",
+    summary: "Récapitulatif",
+  });
+  const WIZARD_OPTIONAL_STEPS = Object.freeze(new Set(["venues", "groups"]));
+
+  function freshClubWizardDraft() {
+    return {
+      step: "identity",
+      fromMesClubs: false,
+      identity: { clubName: "", clubSubtitle: "", theme: settings.theme || "graphite", logoDataUrl: "", email: "", phone: "", address: "" },
+      selectedSportIds: [],
+      primarySportId: "",
+      customSports: [],
+      featureSelection: {},   // { shop: bool, stages: bool } — uniquement des clés available:true
+      featureTouched: {},     // clés que l'utilisateur a explicitement (dé)cochées (prioritaires sur les recommandations)
+      venues: [],
+      groups: [],
+      sportQuery: "",
+    };
+  }
+
+  function clubWizardDraft() {
+    if (!ui.initialClubWizard || typeof ui.initialClubWizard !== "object") ui.initialClubWizard = freshClubWizardDraft();
+    return ui.initialClubWizard;
+  }
+
+  function clearClubWizardDraft() {
+    ui.initialClubWizard = null;
+  }
+
+  // Résolveur du premier lancement (renderWelcomeWizard) — appelé une fois le club créé.
+  let clubWizardResolve = null;
+
+  // Point d'entrée. options.resolve : callback de fin (premier lancement). options.fromMesClubs :
+  // lancé depuis Mes clubs (retour via render() après création/annulation).
+  function startClubWizard(options = {}) {
+    // Lot 2 (correctif) — démarrer l'assistant efface tout contexte d'import de premier lancement
+    // en attente (ex. sélecteur ouvert puis annulé avant de choisir « Créer un nouveau club »).
+    if (typeof clearFirstLaunchImportContext === "function") clearFirstLaunchImportContext();
+    ui.initialClubWizard = freshClubWizardDraft();
+    ui.initialClubWizard.fromMesClubs = Boolean(options.fromMesClubs);
+    if (!options.fromMesClubs) {
+      ui.initialClubWizard.identity.clubName = asText(settings.clubName === "MonGestaClub" ? "" : (settings.clubName || ""));
+    }
+    clubWizardResolve = typeof options.resolve === "function" ? options.resolve : null;
+    renderClubWizard();
+  }
+
+  // Sort de l'assistant sans créer de club (annulation / import / démo).
+  function exitClubWizard(action) {
+    const fromMes = Boolean(ui.initialClubWizard && ui.initialClubWizard.fromMesClubs);
+    clearClubWizardDraft();
+    const resolve = clubWizardResolve;
+    clubWizardResolve = null;
+    if (action === "import") { openImportFromWizard(); return; }
+    if (action === "demo") { if (resolve) { setupDemoClub(); ui.saveMessage = `${DEMO_CLUB_NAME} prêt`; resolve(); } return; }
+    if (fromMes) { render(); return; }
+    // Premier lancement : revenir à l'écran de choix (Créer / Importer / Démo).
+    if (typeof renderWelcomeWizard === "function") renderWelcomeWizard(resolve || (() => {}));
+  }
+
+  function openImportFromWizard() {
+    const input = document.getElementById("importFile");
+    if (input) input.click();
+  }
+
+  // ----------------------------------------------------------------------------------------------
+  // Navigation
+  // ----------------------------------------------------------------------------------------------
+  function wizardStepIndex(step) { return WIZARD_STEPS.indexOf(step); }
+
+  // Validation minimale d'une étape avant d'avancer. Retourne "" si OK, sinon un message d'erreur.
+  function validateWizardStep(step) {
+    const d = clubWizardDraft();
+    if (step === "identity") {
+      if (!asText(d.identity.clubName)) return "Le nom du club est obligatoire.";
+    }
+    if (step === "sports") {
+      const total = d.selectedSportIds.length + d.customSports.length;
+      if (total === 0) return "Sélectionnez au moins une activité, ou ajoutez une activité personnalisée.";
+    }
+    return "";
+  }
+
+  function wizardGoTo(step) {
+    if (wizardStepIndex(step) < 0) return;
+    const d = clubWizardDraft();
+    const target = wizardStepIndex(step);
+    const current = wizardStepIndex(d.step);
+    // Avancer : valider toutes les étapes obligatoires jusqu'à la cible.
+    if (target > current) {
+      for (let i = current; i < target; i += 1) {
+        const s = WIZARD_STEPS[i];
+        const err = validateWizardStep(s);
+        if (err) { d.step = s; renderClubWizard(err); return; }
+      }
+    }
+    d.step = step;
+    renderClubWizard();
+  }
+
+  function wizardNext() {
+    const d = clubWizardDraft();
+    const err = validateWizardStep(d.step);
+    if (err) { renderClubWizard(err); return; }
+    const idx = wizardStepIndex(d.step);
+    if (idx < WIZARD_STEPS.length - 1) wizardGoTo(WIZARD_STEPS[idx + 1]);
+  }
+
+  function wizardPrev() {
+    const d = clubWizardDraft();
+    const idx = wizardStepIndex(d.step);
+    if (idx > 0) { d.step = WIZARD_STEPS[idx - 1]; renderClubWizard(); }
+  }
+
+  function wizardHasEnteredData() {
+    const d = clubWizardDraft();
+    return Boolean(asText(d.identity.clubName) || d.selectedSportIds.length || d.customSports.length || d.venues.length || d.groups.length);
+  }
+
+  // ----------------------------------------------------------------------------------------------
+  // Lecture des saisies de l'étape courante depuis le DOM (avant navigation).
+  // ----------------------------------------------------------------------------------------------
+  function captureWizardStep() {
+    const d = clubWizardDraft();
+    const root = document.getElementById("clubWizard");
+    if (!root) return;
+    if (d.step === "identity") {
+      const g = (n) => { const el = root.querySelector(`[name="${n}"]`); return el ? el.value : undefined; };
+      d.identity.clubName = asText(g("clubName") ?? d.identity.clubName);
+      d.identity.clubSubtitle = asText(g("clubSubtitle") ?? d.identity.clubSubtitle);
+      d.identity.email = asText(g("email") ?? d.identity.email);
+      d.identity.phone = asText(g("phone") ?? d.identity.phone);
+      d.identity.address = asText(g("address") ?? d.identity.address);
+      const theme = g("theme"); if (theme) d.identity.theme = theme;
+    }
+    if (d.step === "features") {
+      screenFeatures().forEach((def) => {
+        const el = root.querySelector(`[name="feature:${def.key}"]`);
+        if (el) { d.featureSelection[def.key] = Boolean(el.checked); d.featureTouched[def.key] = true; }
+      });
+    }
+  }
+
+  // Valeur effective d'une fonctionnalité dans l'assistant : choix explicite de l'utilisateur s'il
+  // en a fait un, sinon recommandation dérivée des sports (pré-cochage §7). Ne concerne QUE les
+  // clés available:true (screenFeatures) ; teams/seasons/competitions ne sont jamais concernés.
+  function wizardFeatureChecked(key, recommendedSet) {
+    const d = clubWizardDraft();
+    if (d.featureTouched && d.featureTouched[key]) return Boolean(d.featureSelection[key]);
+    return recommendedSet.has(key);
+  }
+
+  // ----------------------------------------------------------------------------------------------
+  // Rendu
+  // ----------------------------------------------------------------------------------------------
+  function wizardStepperHtml(currentStep) {
+    const d = clubWizardDraft();
+    const items = WIZARD_STEPS.map((step, i) => {
+      const idx = wizardStepIndex(currentStep);
+      const state = step === currentStep ? "current" : (i < idx ? "done" : "todo");
+      const optional = WIZARD_OPTIONAL_STEPS.has(step) ? " (facultatif)" : "";
+      const clickable = i <= idx; // on ne peut cliquer que sur une étape déjà atteinte/précédente
+      return `<li class="wizard-step wizard-step-${state}">
+        <button type="button" class="wizard-step-btn" data-wizard-goto="${esc(step)}" ${clickable ? "" : "disabled aria-disabled=\"true\""} ${step === currentStep ? 'aria-current="step"' : ""}>
+          <span class="wizard-step-num" aria-hidden="true">${i + 1}</span>
+          <span class="wizard-step-label">${esc(WIZARD_STEP_TITLES[step])}${optional}</span>
+        </button>
+      </li>`;
+    }).join("");
+    return `<nav class="wizard-stepper" aria-label="Étapes de création du club"><ol>${items}</ol></nav>`;
+  }
+
+  function wizardIdentityStepHtml() {
+    const d = clubWizardDraft();
+    const id2 = d.identity;
+    return `<form class="wizard-form" id="wizardStepForm" autocomplete="off">
+      <p class="muted">Le minimum pour démarrer. Tout restera modifiable ensuite dans Paramètres.</p>
+      <label>Nom du club *<input type="text" name="clubName" value="${esc(id2.clubName)}" placeholder="Mon club" required /></label>
+      <label>Sous-titre<input type="text" name="clubSubtitle" value="${esc(id2.clubSubtitle)}" placeholder="Gestion de club" /></label>
+      <div class="form-grid compact">
+        <label>E-mail<input type="email" name="email" value="${esc(id2.email)}" placeholder="contact@club.fr" /></label>
+        <label>Téléphone<input type="text" name="phone" value="${esc(id2.phone)}" placeholder="06 12 34 56 78" /></label>
+      </div>
+      <label>Adresse<input type="text" name="address" value="${esc(id2.address)}" placeholder="Adresse (facultative)" /></label>
+      <div class="form-grid compact">
+        <label>Logo du club<input type="file" name="wizardLogo" accept="image/*" /></label>
+        <label>Thème<select name="theme">
+          ${themes.map((t) => `<option value="${esc(t.id)}" ${id2.theme === t.id ? "selected" : ""}>${esc(t.name)}</option>`).join("")}
+        </select></label>
+      </div>
+    </form>`;
+  }
+
+  function wizardSportsStepHtml() {
+    const d = clubWizardDraft();
+    const q = asText(d.sportQuery).toLowerCase();
+    const selected = new Set(d.selectedSportIds);
+    const groups = wizardProfilesByFamily().map((group) => {
+      const cards = group.profiles
+        .filter((p) => !q || p.label.toLowerCase().includes(q) || p.id.includes(q))
+        .map((p) => {
+          const on = selected.has(p.id);
+          return `<button type="button" role="checkbox" aria-checked="${on}" class="wizard-sport-card ${on ? "selected" : ""}" data-wizard-sport="${esc(p.id)}">
+            <span class="wizard-sport-label">${esc(p.label)}</span>
+            ${on ? '<span class="wizard-sport-check" aria-hidden="true">✓</span>' : ""}
+          </button>`;
+        }).join("");
+      if (!cards) return "";
+      return `<fieldset class="wizard-sport-group"><legend>${esc(group.label)}</legend><div class="wizard-sport-grid">${cards}</div></fieldset>`;
+    }).join("");
+
+    const chosen = [...d.selectedSportIds.map((sid) => ({ id: sid, label: SPORT_PROFILE_IDS.has(sid) ? SPORT_PROFILE_REGISTRY[sid].label : sid })),
+      ...d.customSports.map((c) => ({ id: c.id, label: c.label + " (perso)" }))];
+    const primaryOptions = chosen.map((c) => `<option value="${esc(c.id)}" ${d.primarySportId === c.id ? "selected" : ""}>${esc(c.label)}</option>`).join("");
+
+    const customList = d.customSports.map((c) => `<li class="wizard-custom-item"><span>${esc(c.label)}</span>
+      <button type="button" class="link-btn" data-wizard-custom-remove="${esc(c.id)}" aria-label="Retirer ${esc(c.label)}">Retirer</button></li>`).join("");
+
+    return `<div class="wizard-sports">
+      <p class="muted">Sélectionnez une ou plusieurs activités. Plusieurs activités créent un club multisports.</p>
+      <label class="wizard-search">Rechercher une activité
+        <input type="search" name="sportQuery" value="${esc(d.sportQuery)}" placeholder="football, judo, danse…" data-wizard-search />
+      </label>
+      ${groups || '<p class="muted">Aucune activité ne correspond à votre recherche.</p>'}
+      <fieldset class="wizard-sport-group">
+        <legend>Activité personnalisée</legend>
+        <div class="wizard-custom-add">
+          <input type="text" data-wizard-custom-input placeholder="Ex : Pétanque, Escalade…" aria-label="Nom de l'activité personnalisée" />
+          <button type="button" class="secondary" data-wizard-custom-add>Ajouter</button>
+        </div>
+        ${customList ? `<ul class="wizard-custom-list">${customList}</ul>` : '<p class="muted">Aucune activité personnalisée.</p>'}
+      </fieldset>
+      ${chosen.length ? `<label class="wizard-primary">Sport principal
+        <select data-wizard-primary>${primaryOptions}</select>
+      </label>` : ""}
+    </div>`;
+  }
+
+  function wizardOrganisationStepHtml() {
+    const d = clubWizardDraft();
+    const cp = buildClubProfileFromWizard(d);
+    const profile = resolveClubSportProfile({ clubProfile: cp });
+    const org = profile.organization || {};
+    const rows = [
+      ["groups", "Groupes ou cours", "Disponible dans cet assistant (étape suivante)."],
+      ["individual", "Pratique individuelle", "Suivi individuel des adhérents."],
+      ["categories", "Catégories", "Sera disponible dans une prochaine étape de configuration."],
+      ["teams", "Équipes", "Sera disponible dans une prochaine étape de configuration."],
+      ["seasons", "Saisons", "Sera disponible dans une prochaine étape de configuration."],
+      ["competitions", "Rencontres / compétitions", "Sera disponible dans une prochaine étape de configuration."],
+    ];
+    const levelLabel = { primary: "Principal", recommended: "Recommandé", optional: "Optionnel", off: "Non concerné" };
+    const list = rows.map(([key, label, note]) => {
+      const lvl = org[key] || "off";
+      const future = ["teams", "seasons", "competitions", "categories"].includes(key);
+      return `<li class="wizard-org-row">
+        <span class="wizard-org-label">${esc(label)}</span>
+        <span class="wizard-org-level wizard-org-${esc(lvl)}">${esc(levelLabel[lvl] || "Optionnel")}</span>
+        ${future ? `<span class="wizard-org-note muted">${esc(note)}</span>` : `<span class="wizard-org-note muted">${esc(note)}</span>`}
+      </li>`;
+    }).join("");
+    return `<div class="wizard-org">
+      <p class="muted">D'après vos activités, voici l'organisation recommandée. Les éléments à venir sont indiqués honnêtement et ne sont pas activés dans cette version.</p>
+      <ul class="wizard-org-list">${list}</ul>
+      <p class="muted">Vous pourrez créer des groupes ou cours et des installations dans les étapes suivantes. Les équipes, saisons et rencontres seront ajoutées ultérieurement.</p>
+    </div>`;
+  }
+
+  function wizardFeaturesStepHtml() {
+    const d = clubWizardDraft();
+    const available = screenFeatures();
+    const recommendedSet = new Set(recommendedFeaturesForClubProfile(buildClubProfileFromWizard(d)));
+    const cards = available.map((def) => {
+      const checked = wizardFeatureChecked(def.key, recommendedSet);
+      const isReco = recommendedSet.has(def.key);
+      return `<label class="wizard-feature-card">
+        <input type="checkbox" name="feature:${esc(def.key)}" ${checked ? "checked" : ""} />
+        ${isReco ? '<span class="wizard-feature-reco">Recommandé</span>' : ""}
+        <span class="wizard-feature-title">${esc(def.label)}</span>
+        <span class="wizard-feature-desc muted">${esc((def.ui && def.ui.description) || "")}</span>
+      </label>`;
+    }).join("");
+    return `<div class="wizard-features">
+      <p class="muted">Activez les fonctionnalités optionnelles adaptées à votre club. Recommandations pré-cochées selon vos activités ; tout reste modifiable dans Paramétres.</p>
+      <div class="wizard-feature-grid">${cards || '<p class="muted">Aucune fonctionnalité optionnelle supplémentaire.</p>'}</div>
+    </div>`;
+  }
+
+  const WIZARD_VENUE_TYPES = Object.freeze(["", "Dojo", "Salle polyvalente", "Gymnase", "Terrain extérieur", "Terrain de football", "Terrain de tennis", "Salle de musculation", "Piscine", "Salle de danse", "Court", "Stade", "Piste", "Autre"]);
+
+  function wizardVenuesStepHtml() {
+    const d = clubWizardDraft();
+    const list = d.venues.map((v, i) => `<li class="wizard-venue-item">
+      <span class="wizard-venue-name">${esc(v.name)}</span>
+      <span class="muted">${esc(v.type || "")}${v.capacity ? " · " + esc(String(v.capacity)) + " pers." : ""}</span>
+      <button type="button" class="link-btn" data-wizard-venue-remove="${i}" aria-label="Retirer ${esc(v.name)}">Retirer</button>
+    </li>`).join("");
+    return `<div class="wizard-venues">
+      <p class="muted">Étape facultative. Créez vos salles, dojos, gymnases, terrains, courts… Vous pouvez passer cette étape.</p>
+      <form class="wizard-subform" id="wizardVenueForm" autocomplete="off">
+        <div class="form-grid compact">
+          <label>Nom<input type="text" name="venueName" placeholder="Ex : Dojo principal" /></label>
+          <label>Type<select name="venueType">${WIZARD_VENUE_TYPES.map((t) => `<option value="${esc(t)}">${esc(t || "—")}</option>`).join("")}</select></label>
+        </div>
+        <div class="form-grid compact">
+          <label>Capacité<input type="number" name="venueCapacity" min="0" step="1" placeholder="Facultatif" /></label>
+          <label>Adresse<input type="text" name="venueAddress" placeholder="Facultative" /></label>
+        </div>
+        <div class="inline-actions"><button type="button" class="secondary" data-wizard-venue-add>Ajouter cette installation</button></div>
+      </form>
+      ${list ? `<ul class="wizard-venue-list">${list}</ul>` : '<p class="muted">Aucune installation pour le moment.</p>'}
+    </div>`;
+  }
+
+  function wizardGroupsStepHtml() {
+    const d = clubWizardDraft();
+    const cp = buildClubProfileFromWizard(d);
+    const isTeamSport = cp.sportIds.some((sid) => SPORT_PROFILE_IDS.has(sid) && SPORT_PROFILE_REGISTRY[sid].family === "team-sport");
+    const disciplineOptions = ["", ...wizardDisciplineNames(cp)];
+    const list = d.groups.map((g, i) => `<li class="wizard-group-item">
+      <span class="wizard-group-name">${g.color ? `<span class="group-color-dot" style="background:${esc(g.color)}"></span>` : ""}${esc(g.name)}</span>
+      <span class="muted">${esc(g.discipline || "")}</span>
+      <button type="button" class="link-btn" data-wizard-group-remove="${i}" aria-label="Retirer ${esc(g.name)}">Retirer</button>
+    </li>`).join("");
+    return `<div class="wizard-groups">
+      <p class="muted">Étape facultative. Créez vos premiers groupes, cours ou groupes d'entraînement.</p>
+      ${isTeamSport ? '<p class="wizard-note muted">Les équipes seront configurées dans un prochain lot. Vous pouvez déjà créer des groupes d\'entraînement.</p>' : ""}
+      <form class="wizard-subform" id="wizardGroupForm" autocomplete="off">
+        <div class="form-grid compact">
+          <label>Nom<input type="text" name="groupName" placeholder="Ex : Groupe débutants" /></label>
+          <label>Activité<select name="groupDiscipline">${disciplineOptions.map((n) => `<option value="${esc(n)}">${esc(n || "—")}</option>`).join("")}</select></label>
+        </div>
+        <div class="form-grid compact">
+          <label>Âge min<input type="number" name="groupAgeMin" min="0" step="1" placeholder="Facultatif" /></label>
+          <label>Âge max<input type="number" name="groupAgeMax" min="0" step="1" placeholder="Facultatif" /></label>
+          <label>Capacité<input type="number" name="groupCapacity" min="0" step="1" placeholder="Facultatif" /></label>
+          <label>Couleur<input type="color" name="groupColor" value="#4d5966" /></label>
+        </div>
+        <div class="inline-actions"><button type="button" class="secondary" data-wizard-group-add>Ajouter ce groupe</button></div>
+      </form>
+      ${list ? `<ul class="wizard-group-list">${list}</ul>` : '<p class="muted">Aucun groupe pour le moment.</p>'}
+    </div>`;
+  }
+
+  function wizardSummaryStepHtml() {
+    const d = clubWizardDraft();
+    const cp = buildClubProfileFromWizard(d);
+    const primaryLabel = cp.primarySportId
+      ? (SPORT_PROFILE_IDS.has(cp.primarySportId) ? SPORT_PROFILE_REGISTRY[cp.primarySportId].label : (cp.customSports.find((c) => c.id === cp.primarySportId)?.label || cp.primarySportId))
+      : "Aucun";
+    const others = cp.sportIds.filter((s) => s !== cp.primarySportId).map((s) => SPORT_PROFILE_IDS.has(s) ? SPORT_PROFILE_REGISTRY[s].label : (cp.customSports.find((c) => c.id === s)?.label || s));
+    const features = Object.keys(d.featureSelection).filter((k) => d.featureSelection[k]).map((k) => (FEATURE_REGISTRY[k] ? FEATURE_REGISTRY[k].label : k));
+    const themeName = (themes.find((t) => t.id === d.identity.theme) || {}).name || d.identity.theme;
+    const row = (label, value) => `<div class="wizard-summary-row"><dt>${esc(label)}</dt><dd>${value}</dd></div>`;
+    return `<div class="wizard-summary">
+      <p class="muted">Vérifiez vos choix. Vous pouvez revenir à chaque étape pour les corriger.</p>
+      <dl class="wizard-summary-list">
+        ${row("Nom du club", esc(d.identity.clubName || "Mon club"))}
+        ${row("Sport principal", esc(primaryLabel))}
+        ${row("Autres sports", others.length ? esc(others.join(", ")) : "<span class=\"muted\">Aucun</span>")}
+        ${row("Activités personnalisées", cp.customSports.length ? esc(cp.customSports.map((c) => c.label).join(", ")) : "<span class=\"muted\">Aucune</span>")}
+        ${row("Profil", esc(cp.templateId))}
+        ${row("Fonctionnalités activées", features.length ? esc(features.join(", ")) : "<span class=\"muted\">Aucune option supplémentaire</span>")}
+        ${row("Installations à créer", d.venues.length ? esc(d.venues.map((v) => v.name).join(", ")) : "<span class=\"muted\">Aucune</span>")}
+        ${row("Groupes à créer", d.groups.length ? esc(d.groups.map((g) => g.name).join(", ")) : "<span class=\"muted\">Aucun</span>")}
+        ${row("Thème", esc(themeName))}
+      </dl>
+      <p class="wizard-note muted">Non encore disponibles : Équipes, Saisons, Rencontres — à configurer dans une prochaine étape.</p>
+    </div>`;
+  }
+
+  function wizardStepBodyHtml(step) {
+    switch (step) {
+      case "identity": return wizardIdentityStepHtml();
+      case "sports": return wizardSportsStepHtml();
+      case "organisation": return wizardOrganisationStepHtml();
+      case "features": return wizardFeaturesStepHtml();
+      case "venues": return wizardVenuesStepHtml();
+      case "groups": return wizardGroupsStepHtml();
+      case "summary": return wizardSummaryStepHtml();
+      default: return "";
+    }
+  }
+
+  function renderClubWizard(errorMessage) {
+    const d = clubWizardDraft();
+    const step = d.step;
+    const idx = wizardStepIndex(step);
+    const isLast = idx === WIZARD_STEPS.length - 1;
+    const isFirst = idx === 0;
+    const optional = WIZARD_OPTIONAL_STEPS.has(step);
+    document.documentElement.dataset.theme = d.identity.theme || settings.theme;
+    if (typeof applyThemeOverrides === "function") applyThemeOverrides();
+
+    app.innerHTML = `<main class="password-gate wizard-gate">
+      <section class="wizard-card" id="clubWizard" role="region" aria-labelledby="wizardTitle">
+        <header class="wizard-header">
+          <img src="${esc(appLogoSrc())}" alt="MonGestaClub" class="wizard-logo" />
+          <h1 id="wizardTitle" tabindex="-1">${esc(WIZARD_STEP_TITLES[step])}</h1>
+          <p class="wizard-step-count" aria-hidden="true">Étape ${idx + 1} sur ${WIZARD_STEPS.length}</p>
+        </header>
+        ${wizardStepperHtml(step)}
+        ${errorMessage ? `<p class="wizard-error" role="alert">${esc(errorMessage)}</p>` : ""}
+        <div class="wizard-body">${wizardStepBodyHtml(step)}</div>
+        <footer class="wizard-footer">
+          <div class="wizard-footer-left">
+            <button type="button" class="link-btn" data-wizard-cancel>${d.fromMesClubs ? "Annuler" : "Retour à l'accueil"}</button>
+          </div>
+          <div class="wizard-footer-right">
+            ${isFirst ? "" : '<button type="button" class="secondary" data-wizard-prev>Précédent</button>'}
+            ${optional ? '<button type="button" class="secondary" data-wizard-skip>Passer</button>' : ""}
+            ${isLast
+              ? '<button type="button" class="primary" data-wizard-create>Créer mon club</button>'
+              : '<button type="button" class="primary" data-wizard-next>Suivant</button>'}
+          </div>
+        </footer>
+      </section>
+    </main>`;
+    bindClubWizardEvents();
+    // Focus initial : titre de l'étape (jamais un bouton secondaire de fenêtre).
+    const title = app.querySelector("#wizardTitle");
+    if (title) title.focus();
+  }
+
+  function bindClubWizardEvents() {
+    const root = app.querySelector("#clubWizard");
+    if (!root) return;
+    const d = clubWizardDraft();
+
+    root.querySelectorAll("[data-wizard-goto]").forEach((btn) => btn.addEventListener("click", () => { captureWizardStep(); wizardGoTo(btn.dataset.wizardGoto); }));
+    root.querySelector("[data-wizard-next]")?.addEventListener("click", () => { captureWizardStep(); wizardNext(); });
+    root.querySelector("[data-wizard-prev]")?.addEventListener("click", () => { captureWizardStep(); wizardPrev(); });
+    root.querySelector("[data-wizard-skip]")?.addEventListener("click", () => { captureWizardStep(); wizardNext(); });
+    root.querySelector("[data-wizard-create]")?.addEventListener("click", (e) => { e.preventDefault(); captureWizardStep(); createClubFromWizard(e.currentTarget); });
+    root.querySelector("[data-wizard-cancel]")?.addEventListener("click", () => {
+      captureWizardStep();
+      if (wizardHasEnteredData() && !confirm("Abandonner la création de ce club ? Les informations saisies seront perdues.")) return;
+      exitClubWizard("cancel");
+    });
+
+    // Empêche la touche Entrée de créer le club prématurément (sauf sur le bouton final explicite).
+    root.addEventListener("keydown", (e) => {
+      if (e.key !== "Enter") return;
+      const target = e.target;
+      const tag = (target.tagName || "").toLowerCase();
+      if (tag === "textarea") return;
+      if (target.matches("[data-wizard-create]")) return; // création explicite autorisée
+      if (tag === "input" || tag === "select") {
+        e.preventDefault();
+        // Enter dans un champ d'ajout → ajoute l'élément ; sinon → étape suivante.
+        if (target.matches("[data-wizard-custom-input]")) { wizardAddCustomSport(); return; }
+        if (target.closest("#wizardVenueForm")) { wizardAddVenue(); return; }
+        if (target.closest("#wizardGroupForm")) { wizardAddGroup(); return; }
+        captureWizardStep(); wizardNext();
+      }
+    });
+
+    // Étape identité : logo + thème en direct.
+    root.querySelector('[name="wizardLogo"]')?.addEventListener("change", async (event) => {
+      const file = event.target.files?.[0];
+      if (file?.type?.startsWith("image/")) {
+        d.identity.logoDataUrl = await logoFileToDataUrl(file);
+        const img = root.querySelector(".wizard-logo"); if (img) img.src = d.identity.logoDataUrl;
+      }
+    });
+    root.querySelector('[name="theme"]')?.addEventListener("change", (event) => {
+      d.identity.theme = event.target.value;
+      document.documentElement.dataset.theme = d.identity.theme;
+      if (typeof applyThemeOverrides === "function") applyThemeOverrides();
+    });
+
+    // Étape sports.
+    root.querySelectorAll("[data-wizard-sport]").forEach((btn) => btn.addEventListener("click", () => wizardToggleSport(btn.dataset.wizardSport)));
+    const search = root.querySelector("[data-wizard-search]");
+    if (search) search.addEventListener("input", (e) => { d.sportQuery = e.target.value; const grids = root.querySelector(".wizard-sports"); /* re-render partiel */ renderClubWizard(); const s2 = app.querySelector("[data-wizard-search]"); if (s2) { s2.focus(); s2.setSelectionRange(s2.value.length, s2.value.length); } });
+    root.querySelector("[data-wizard-custom-add]")?.addEventListener("click", () => wizardAddCustomSport());
+    root.querySelectorAll("[data-wizard-custom-remove]").forEach((btn) => btn.addEventListener("click", () => wizardRemoveCustomSport(btn.dataset.wizardCustomRemove)));
+    root.querySelector("[data-wizard-primary]")?.addEventListener("change", (e) => { d.primarySportId = e.target.value; });
+
+    // Étape installations / groupes.
+    root.querySelector("[data-wizard-venue-add]")?.addEventListener("click", () => wizardAddVenue());
+    root.querySelectorAll("[data-wizard-venue-remove]").forEach((btn) => btn.addEventListener("click", () => { d.venues.splice(Number(btn.dataset.wizardVenueRemove), 1); renderClubWizard(); }));
+    root.querySelector("[data-wizard-group-add]")?.addEventListener("click", () => wizardAddGroup());
+    root.querySelectorAll("[data-wizard-group-remove]").forEach((btn) => btn.addEventListener("click", () => { d.groups.splice(Number(btn.dataset.wizardGroupRemove), 1); renderClubWizard(); }));
+  }
+
+  function wizardToggleSport(sportId) {
+    if (!SPORT_PROFILE_IDS.has(sportId) || sportId === "custom" || sportId === "multisport") return;
+    const d = clubWizardDraft();
+    const i = d.selectedSportIds.indexOf(sportId);
+    if (i >= 0) { d.selectedSportIds.splice(i, 1); if (d.primarySportId === sportId) d.primarySportId = ""; }
+    else d.selectedSportIds.push(sportId);
+    if (!d.primarySportId) d.primarySportId = d.selectedSportIds[0] || (d.customSports[0] && d.customSports[0].id) || "";
+    renderClubWizard();
+  }
+
+  function wizardAddCustomSport() {
+    const d = clubWizardDraft();
+    const input = app.querySelector("[data-wizard-custom-input]");
+    const label = asText(input ? input.value : "");
+    if (!label) { renderClubWizard("Saisissez un nom pour l'activité personnalisée."); return; }
+    // Pas de doublon (par libellé insensible à la casse) avec un custom existant ou un profil officiel.
+    const low = label.toLowerCase();
+    if (d.customSports.some((c) => c.label.toLowerCase() === low)) { renderClubWizard("Cette activité personnalisée existe déjà."); return; }
+    const taken = new Set([...d.customSports.map((c) => c.id), ...d.selectedSportIds]);
+    const newId = wizardCustomSportId(label, taken);
+    d.customSports.push({ id: newId, label, family: "custom" });
+    if (!d.primarySportId) d.primarySportId = newId;
+    renderClubWizard();
+    const inp = app.querySelector("[data-wizard-custom-input]"); if (inp) inp.focus();
+  }
+
+  function wizardRemoveCustomSport(customId) {
+    const d = clubWizardDraft();
+    d.customSports = d.customSports.filter((c) => c.id !== customId);
+    if (d.primarySportId === customId) d.primarySportId = d.selectedSportIds[0] || (d.customSports[0] && d.customSports[0].id) || "";
+    renderClubWizard();
+  }
+
+  function wizardAddVenue() {
+    const d = clubWizardDraft();
+    const form = app.querySelector("#wizardVenueForm");
+    if (!form) return;
+    const name = asText(form.querySelector('[name="venueName"]').value);
+    if (!name) { renderClubWizard("Le nom de l'installation est obligatoire."); return; }
+    const capRaw = asText(form.querySelector('[name="venueCapacity"]').value);
+    d.venues.push({
+      name,
+      type: form.querySelector('[name="venueType"]').value || "",
+      capacity: capRaw === "" ? "" : asNumber(capRaw),
+      address: asText(form.querySelector('[name="venueAddress"]').value),
+    });
+    renderClubWizard();
+    const inp = app.querySelector('#wizardVenueForm [name="venueName"]'); if (inp) inp.focus();
+  }
+
+  function wizardAddGroup() {
+    const d = clubWizardDraft();
+    const form = app.querySelector("#wizardGroupForm");
+    if (!form) return;
+    const name = asText(form.querySelector('[name="groupName"]').value);
+    if (!name) { renderClubWizard("Le nom du groupe est obligatoire."); return; }
+    const ageMinRaw = asText(form.querySelector('[name="groupAgeMin"]').value);
+    const ageMaxRaw = asText(form.querySelector('[name="groupAgeMax"]').value);
+    const capRaw = asText(form.querySelector('[name="groupCapacity"]').value);
+    d.groups.push({
+      name,
+      discipline: form.querySelector('[name="groupDiscipline"]').value || "",
+      ageMin: ageMinRaw === "" ? "" : asNumber(ageMinRaw),
+      ageMax: ageMaxRaw === "" ? "" : asNumber(ageMaxRaw),
+      capacity: capRaw === "" ? "" : asNumber(capRaw),
+      color: form.querySelector('[name="groupColor"]').value || "",
+    });
+    renderClubWizard();
+    const inp = app.querySelector('#wizardGroupForm [name="groupName"]'); if (inp) inp.focus();
+  }
+
+  // ----------------------------------------------------------------------------------------------
+  // Construction de l'état initial + création ATOMIQUE.
+  // ----------------------------------------------------------------------------------------------
+  // Construit un state métier normalisé (disciplines, salles, groupes) à partir du brouillon.
+  // Les id sont générés ici une seule fois ; le clubId définitif est ré-estampillé par saveClub.
+  function buildInitialStateFromWizard(draft, clubProfile) {
+    const state0 = normalizeState({});
+    const cp = clubProfile;
+    // Disciplines (tarifs) — sport principal en premier, dédupliquées.
+    state0.tariffs = state0.tariffs || {};
+    state0.tariffs.disciplines = wizardDisciplineNames(cp).map((name) => ({ id: id("discipline"), clubId: "", name, price: "", license: "" }));
+    // Installations.
+    state0.rooms = draft.venues.map((v) => ({ id: id("room"), clubId: "", name: asText(v.name), type: v.type || "", capacity: v.capacity === "" ? "" : v.capacity, address: asText(v.address || ""), archived: false }));
+    // Groupes / cours.
+    state0.groups = draft.groups.map((g) => ({ id: id("group"), clubId: "", name: asText(g.name), type: "Autre", discipline: g.discipline || "", coachId: "", coach: "", ageMin: g.ageMin === "" ? "" : g.ageMin, ageMax: g.ageMax === "" ? "" : g.ageMax, color: g.color || "", archived: false }));
+    return state0;
+  }
+
+  // Construit les settings.features à partir de la sélection (uniquement des clés available:true).
+  function buildFeaturesFromWizard(draft) {
+    const enabled = {};
+    const recommendedSet = new Set(recommendedFeaturesForClubProfile(buildClubProfileFromWizard(draft)));
+    screenFeatures().forEach((def) => {
+      // Choix explicite prioritaire ; sinon recommandation. Uniquement des clés available:true.
+      enabled[def.key] = (draft.featureTouched && draft.featureTouched[def.key])
+        ? Boolean(draft.featureSelection[def.key])
+        : recommendedSet.has(def.key);
+    });
+    return { version: FEATURES_SCHEMA_VERSION, configured: true, enabled };
+  }
+
+  let clubWizardCreating = false; // anti double-clic / double-Entrée.
+
+  function createClubFromWizard(triggerButton) {
+    if (clubWizardCreating) return;
+    const d = clubWizardDraft();
+    // Validation finale (toutes les étapes obligatoires).
+    for (const step of WIZARD_STEPS) {
+      const err = validateWizardStep(step);
+      if (err) { d.step = step; renderClubWizard(err); return; }
+    }
+    clubWizardCreating = true;
+    if (triggerButton) triggerButton.disabled = true;
     try {
-      const text = await file.text();
-      payload = JSON.parse(text);
-    } catch {
-      importFile.value = "";
-      alert("Fichier invalide : ce fichier n'est pas un JSON lisible. Vérifie qu'il s'agit bien d'une sauvegarde MonGestaClub.");
-      render();
-      return;
+      const clubProfile = buildClubProfileFromWizard(d);
+      const initialState = buildInitialStateFromWizard(d, clubProfile);
+      const baseSettings = normalizeSettings({
+        clubName: asText(d.identity.clubName) || "Mon club",
+        clubSubtitle: asText(d.identity.clubSubtitle) || "Gestion de club",
+        theme: d.identity.theme,
+        logoDataUrl: d.identity.logoDataUrl || "",
+        clubProfile,
+        features: buildFeaturesFromWizard(d),
+      });
+      const fromMes = d.fromMesClubs;
+      // Premier lancement : ensureClubStoreInitialized a déjà créé un club par défaut « Mon club » —
+      // on le RÉUTILISE (create:false) au lieu d'en créer un second. Depuis « Mes clubs » : nouveau
+      // club indépendant (create:true), sans reprendre l'id du club actif.
+      const reuseClub = fromMes ? null : activeClub();
+      const club = defaultClubIdentity({
+        clubId: reuseClub ? reuseClub.id : undefined,
+        clubName: baseSettings.clubName,
+        clubSubtitle: baseSettings.clubSubtitle,
+        theme: baseSettings.theme,
+        logoDataUrl: baseSettings.logoDataUrl,
+      }, initialState);
+      club.contact = { ...(club.contact || {}), email: asText(d.identity.email), phone: asText(d.identity.phone), address: asText(d.identity.address) };
+      // Création ATOMIQUE : un seul saveClub avec state + settings pré-construits.
+      saveClub(club, { activate: true, create: !reuseClub, initialState, initialSettings: baseSettings });
+      settings.initialSetupDone = true;
+      persistSettings();
+      const resolve = clubWizardResolve;
+      clubWizardResolve = null;
+      clearClubWizardDraft();
+      ui.view = "dashboard";
+      ui.saveMessage = `Club « ${club.name} » créé`;
+      if (fromMes) { render(); }
+      else if (resolve) { resolve(); }
+      else { render(); }
+    } catch (error) {
+      console.error(error);
+      renderClubWizard(error && error.message ? error.message : "Impossible de créer le club. Vérifiez vos informations et réessayez.");
+    } finally {
+      clubWizardCreating = false;
     }
+  }
+  // ===================================================================================
+  // LOT 2 (correctif) — Import d'une sauvegarde, y compris depuis l'écran de bienvenue.
+  // ===================================================================================
+  // Contexte à USAGE UNIQUE du premier lancement (jamais une variable globale permanente qui
+  // contaminerait les imports ordinaires) : renseigné juste avant d'ouvrir le sélecteur depuis
+  // l'accueil, consommé au premier événement change, effacé par Créer/Démo. Une annulation du
+  // sélecteur ne le consomme pas mais ne provoque aucune navigation (l'accueil reste affiché) ; le
+  // contexte est réinitialisé au prochain clic Importer, ou effacé si l'utilisateur choisit Créer/Démo.
+  let firstLaunchImportContext = null;
+  function beginFirstLaunchImport(resolve) {
+    firstLaunchImportContext = { resolve, provisionalClubId: (typeof activeClubId === "function" ? activeClubId() : "") };
+    if (importFile) importFile.click();
+  }
+  function clearFirstLaunchImportContext() { firstLaunchImportContext = null; }
+
+  // Un club « provisoire » (bootstrap d'ensureClubStoreInitialized) est retirable uniquement s'il ne
+  // porte AUCUNE donnée utilisateur. Stratégie CONSERVATRICE et OUVERTE : on part des seuls artefacts
+  // de bootstrap connus et vides ; TOUTE autre collection non vide — module connu OU inconnu/futur —
+  // est considérée comme une donnée réelle et empêche le retrait (jamais de liste fermée des modules).
+  // Clés d'état connues du bootstrap (l'état par défaut d'ensureClubStoreInitialized). Toute clé
+  // ABSENTE de cette liste = module inconnu/futur : toute valeur non vide y compte comme donnée.
+  const KNOWN_BOOTSTRAP_STATE_KEYS = new Set([
+    "meta", "tariffs", "contacts", "memberships", "shopOrders", "invoices", "stageRegistrations", "notes",
+    "memoRows", "activityLog", "seasonArchives", "groups", "planningCourses", "planningExceptions",
+    "attendanceSessions", "coaches", "coachReplacements", "rooms", "roomReplacements", "expenses", "creditNotes",
+  ]);
+
+  function clubStateHasUserData(clubState) {
+    const s = clubState && typeof clubState === "object" && !Array.isArray(clubState) ? clubState : {};
+    // Note de bootstrap = note vide « Note sans titre » sans contenu : ne compte PAS.
+    const isBootstrapNote = (n) => n && typeof n === "object" && !asText(n.content) && (!asText(n.title) || asText(n.title) === "Note sans titre");
+    // Recherche RÉCURSIVE d'une collection (tableau) non vide n'importe où dans la structure — les
+    // données utilisateur (contacts.members, tariffs.disciplines, groups, rooms, inscriptions…) sont
+    // toujours des tableaux. Exclut une liste `notes` ne contenant que la note vide de bootstrap.
+    const hasNonEmptyArray = (val, keyName) => {
+      if (Array.isArray(val)) {
+        if (val.length === 0) return false;
+        if (keyName === "notes") return val.some((n) => !isBootstrapNote(n));
+        return true;
+      }
+      if (val && typeof val === "object") return Object.keys(val).some((k) => hasNonEmptyArray(val[k], k));
+      return false;
+    };
+    for (const key of Object.keys(s)) {
+      if (key === "meta") continue; // métadonnées techniques (generatedAt, clubId…), jamais une donnée métier
+      if (!KNOWN_BOOTSTRAP_STATE_KEYS.has(key)) {
+        // Clé INCONNUE / future (§10) : toute valeur non vide = donnée réelle (stratégie conservatrice).
+        const v = s[key];
+        const nonEmpty = Array.isArray(v) ? v.length > 0
+          : (v && typeof v === "object") ? Object.keys(v).length > 0
+          : (typeof v === "string") ? !!asText(v)
+          : (typeof v === "number") ? v !== 0
+          : v === true;
+        if (nonEmpty) return true;
+        continue;
+      }
+      if (hasNonEmptyArray(s[key], key)) return true;
+    }
+    return false;
+  }
+
+  // Lecture + validation PURE d'un fichier de sauvegarde : aucune écriture, aucune mutation globale.
+  function readBackupPayloadText(text) {
+    let payload;
+    try { payload = JSON.parse(text); }
+    catch { return { success: false, reason: "invalid-json", message: "Fichier invalide : ce fichier n'est pas un JSON lisible. Vérifie qu'il s'agit bien d'une sauvegarde MonGestaClub." }; }
     if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
-      importFile.value = "";
-      alert("Fichier invalide : la structure n'est pas reconnue comme une sauvegarde MonGestaClub.");
-      render();
-      return;
+      return { success: false, reason: "invalid-structure", message: "Fichier invalide : la structure n'est pas reconnue comme une sauvegarde MonGestaClub." };
     }
+    return { success: true, payload };
+  }
+
+  function importSummaryForStore(store) {
+    const clubCount = store.clubs.length;
+    const memberCount = Object.values(store.data || {}).reduce((sum, d) => sum + ((d && d.state && d.state.memberships && d.state.memberships.length) || 0), 0);
+    const parts = [`${clubCount} club${clubCount > 1 ? "s" : ""}`];
+    if (memberCount > 0) parts.push(`${memberCount} adhérent${memberCount > 1 ? "s" : ""}`);
+    return `Sauvegarde importée — ${parts.join(", ")}`;
+  }
+
+  // IMPORT ORDINAIRE (depuis l'application) — chemin HISTORIQUE inchangé : applique via
+  // importBackupPayload (qui écrit) après recordHistory. Renvoie { success, summary } ou une erreur.
+  async function importBackupFile(file) {
+    if (!file) return { success: false, reason: "no-file" };
+    const read = readBackupPayloadText(await file.text());
+    if (!read.success) return read;
     let summary;
     try {
       recordHistory();
-      summary = importBackupPayload(payload);
+      summary = importBackupPayload(read.payload);
     } catch (error) {
       console.error(error);
-      importFile.value = "";
-      alert(`Erreur lors de l'import : ${error?.message || "problème inattendu"}. Tes données précédentes ont été conservées (undo disponible).`);
-      render();
-      return;
+      return { success: false, reason: "import-error", message: `Erreur lors de l'import : ${error?.message || "problème inattendu"}. Tes données précédentes ont été conservées (undo disponible).`, error };
     }
-    persist(summary || "Sauvegarde importée");
-    importFile.value = "";
-    render();
-    alert(summary || "Sauvegarde importée avec succès.");
+    return { success: true, summary };
+  }
+
+  // Finalise EN MÉMOIRE (sur un store déjà cloné) le premier lancement : choix du club actif importé
+  // (§8 : activeClubId de la sauvegarde s'il fait partie des clubs affectés et est valide ; sinon
+  // unique club affecté ; sinon premier affecté valide), retrait du provisoire uniquement s'il est vide
+  // et sûr, marquage initialSetupDone. Ne renvoie jamais une référence du store global.
+  function finalizeStoreForFirstLaunch(store, affectedIds, backupActiveId, provId) {
+    const affectedSet = new Set((affectedIds || []).filter(Boolean));
+    const validActive = (idv) => store.clubs.some((c) => c.id === idv && !c.archived);
+    let nextActive = (backupActiveId && affectedSet.has(backupActiveId) && validActive(backupActiveId))
+      ? backupActiveId
+      : (affectedIds || []).find(validActive) || (affectedIds || []).find(Boolean) || store.activeClubId;
+    if (provId && provId !== nextActive && !affectedSet.has(provId)) {
+      const provClub = store.clubs.find((c) => c.id === provId);
+      const provPayload = store.data[provId];
+      if (provClub && provPayload && !clubStateHasUserData(provPayload.state)) {
+        store.clubs = store.clubs.filter((c) => c.id !== provId);
+        delete store.data[provId];
+      }
+    }
+    if (nextActive && validActive(nextActive)) store.activeClubId = nextActive;
+    if (store.data[store.activeClubId]) {
+      store.data[store.activeClubId].settings = { ...(store.data[store.activeClubId].settings || {}), initialSetupDone: true };
+    }
+    return normalizeClubStore(store);
+  }
+
+  // Prépare EN MÉMOIRE le clubStore FINAL du premier lancement à partir d'une sauvegarde validée.
+  // PUR : clones profonds uniquement, AUCUNE écriture, AUCUNE mutation globale, ne renvoie jamais une
+  // référence du store global. Le store retourné est prêt à être écrit en UNE seule fois.
+  function prepareFirstLaunchImportStore(payload, ctx) {
+    const provId = ctx && ctx.provisionalClubId;
+    const currentStore = normalizeClubStore(rawClubStoreFromStorage() || clubStore);
+    // Format moderne multi-club (wrapper clubStore).
+    if (payload && payload.clubStore && Array.isArray(payload.clubStore.clubs) && payload.clubStore.clubs.length) {
+      const incoming = preserveLocalSecurityOnImport(normalizeClubStore(payload.clubStore));
+      const merged = clone(mergeImportedClubStore(incoming)); // mergeImportedClubStore est pur (aucune écriture)
+      const affectedIds = incoming.clubs.map((c) => c.id).filter(Boolean); // clubs ajoutés OU restaurés (§8)
+      const store = finalizeStoreForFirstLaunch(normalizeClubStore(merged), affectedIds, incoming.activeClubId, provId);
+      // Les trois structures de la transaction sont préparées ET validées EN MÉMOIRE ici (fusions
+      // PURES qui lisent les globales locales sans écrire). Une donnée absente de la sauvegarde
+      // (userStore/auditLog undefined) n'est pas importée : on conserve la valeur locale, aucune
+      // écriture inutile ni valeur vide. Une donnée malformée fait lever la fusion → échec de
+      // préparation (aucune écriture) via le try/catch appelant.
+      const importUserStore = payload.userStore !== undefined;
+      const importAuditLog = payload.auditLog !== undefined;
+      return {
+        success: true, format: "club-store", store, summary: importSummaryForStore(store),
+        importUserStore, finalUserStore: importUserStore ? mergeImportedUserStore(payload.userStore) : undefined,
+        importAuditLog, finalAuditLog: importAuditLog ? mergeImportedAuditLog(payload.auditLog) : undefined,
+      };
+    }
+    // Format historique mono-club (ou state brut) : les données REMPLACENT le club provisoire, qui
+    // DEVIENT le club importé (aucun second club inutile). Secret de sécurité local préservé.
+    const isMono = payload && (payload.kind === "mongestaclub-backup" || payload.kind === LEGACY_BACKUP_KIND || payload.kind === LEGACY_SEASON_ARCHIVE_KIND || payload.state);
+    const store = clone(currentStore);
+    const targetId = (provId && store.data[provId]) ? provId : (store.activeClubId && store.data[store.activeClubId] ? store.activeClubId : (store.clubs[0] && store.clubs[0].id) || "");
+    if (!targetId || !store.data[targetId]) return { success: false, reason: "no-target", message: "Import impossible : aucun club cible pour cette sauvegarde." };
+    const importedState = normalizeState(isMono ? (payload.state || {}) : payload);
+    const localSecurity = store.data[targetId].settings && store.data[targetId].settings.security;
+    const importedSettings = normalizeSettings({ ...(store.data[targetId].settings || {}), ...((isMono && payload.settings) || {}), security: localSecurity, initialSetupDone: true });
+    if (!importedSettings.logoDataUrl && isMono && payload.assets && isLogoDataUrl(payload.assets.logoDataUrl)) importedSettings.logoDataUrl = payload.assets.logoDataUrl;
+    store.data[targetId] = { state: importedState, settings: importedSettings };
+    // L'IDENTITÉ du club (clubs[].name/subtitle/theme/logo) fait foi pour l'affichage et pour
+    // settingsForClub (qui redérive settings.clubName au chargement) : on la met à jour depuis la
+    // sauvegarde, sinon le nom importé serait écrasé par celui du provisoire au prochain rendu.
+    const clubIdx = store.clubs.findIndex((c) => c.id === targetId);
+    if (clubIdx >= 0) {
+      store.clubs[clubIdx] = normalizeClubIdentity({
+        ...store.clubs[clubIdx],
+        name: asText(importedSettings.clubName) || store.clubs[clubIdx].name,
+        subtitle: asText(importedSettings.clubSubtitle) || store.clubs[clubIdx].subtitle,
+        theme: importedSettings.theme || store.clubs[clubIdx].theme,
+        logoDataUrl: importedSettings.logoDataUrl || store.clubs[clubIdx].logoDataUrl,
+      });
+    }
+    store.activeClubId = targetId;
+    // Format historique : ni userStore ni auditLog dans la sauvegarde → on ne les écrit pas et on
+    // conserve les valeurs locales (transaction limitée au clubStore, sans succès partiel possible).
+    return { success: true, format: "single-club", store: normalizeClubStore(store), summary: importSummaryForStore(normalizeClubStore(store)), importUserStore: false, importAuditLog: false };
+  }
+
+  // Snapshot COMPLET (stockage + mémoire) pris AVANT toute écriture d'un import de premier lancement,
+  // pour permettre un rollback intégral et atomique. Couvre les cinq clés réellement touchées par
+  // writeClubStore / writeUserStore / writeAuditLog / loadActiveClubFromStore, plus toutes les globales
+  // associées et les piles Undo/Redo. Aucune référence mutable vers les globales d'origine n'est
+  // conservée (clones profonds) : muter les globales après le snapshot ne l'altère pas.
+  function captureInitialImportSnapshot() {
+    const cloneOrNull = (v) => (v == null ? null : clone(v));
+    return {
+      storage: {
+        [CLUBS_KEY]: appStorage.getItem(CLUBS_KEY),
+        [ACTIVE_CLUB_KEY]: appStorage.getItem(ACTIVE_CLUB_KEY),
+        [USERS_KEY]: appStorage.getItem(USERS_KEY),
+        [ACTIVE_USER_KEY]: appStorage.getItem(ACTIVE_USER_KEY),
+        [AUDIT_LOG_KEY]: appStorage.getItem(AUDIT_LOG_KEY),
+      },
+      clubStore: cloneOrNull(clubStore),
+      state: cloneOrNull(state),
+      settings: cloneOrNull(settings),
+      userStore: cloneOrNull(userStore),
+      auditLog: cloneOrNull(auditLog),
+      undo: history.undo.slice(),
+      redo: history.redo.slice(),
+    };
+  }
+
+  // Restauration intégrale de l'état capturé : stockage (une clé absente avant l'import est SUPPRIMÉE,
+  // jamais réécrite avec "null"/"undefined"), globales mémoire, piles Undo/Redo, puis rechargement de
+  // l'ancien club actif (qui redérive state/settings) et de l'utilisateur actif (via userStore restauré).
+  function restoreInitialImportSnapshot(snap) {
+    try {
+      for (const [key, value] of Object.entries(snap.storage)) {
+        if (value == null) appStorage.removeItem(key);
+        else appStorage.setItem(key, value);
+      }
+      clubStore = snap.clubStore == null ? snap.clubStore : clone(snap.clubStore);
+      state = snap.state == null ? snap.state : clone(snap.state);
+      settings = snap.settings == null ? snap.settings : clone(snap.settings);
+      userStore = snap.userStore == null ? snap.userStore : clone(snap.userStore);
+      auditLog = snap.auditLog == null ? snap.auditLog : clone(snap.auditLog);
+      history.undo = snap.undo.slice();
+      history.redo = snap.redo.slice();
+      if (clubStore) loadActiveClubFromStore(clubStore); // recharge l'ancien club actif (state/settings cohérents)
+    } catch (restoreError) { console.error(restoreError); }
+  }
+
+  let importInProgress = false; // verrou de soumission réel (double change / double clic).
+
+  importFile.addEventListener("change", async (event) => {
+    // Consomme le contexte de premier lancement dès l'entrée (usage unique), quelle que soit l'issue.
+    const firstLaunch = firstLaunchImportContext;
+    firstLaunchImportContext = null;
+    if (isDemoMode()) { event.target.value = ""; return; }
+    if (!requireAuthenticatedSession()) { event.target.value = ""; return; } // garde d'auth (Lot 4A)
+    const file = event.target.files?.[0];
+    if (!file) { event.target.value = ""; return; }
+    if (importInProgress) { event.target.value = ""; return; } // un seul traitement à la fois
+    importInProgress = true;
+    try {
+      if (firstLaunch) {
+        // ---- PREMIER LANCEMENT : préparation pure EN MÉMOIRE puis UNE transaction unique ----
+        // (clubStore + userStore + auditLog), tout ou rien, sans recordHistory ni succès partiel.
+        let text;
+        try { text = await file.text(); }
+        catch { alert("Fichier illisible. Réessaie avec une sauvegarde MonGestaClub."); return; } // aucune écriture, pas de résolution
+        const read = readBackupPayloadText(text);
+        if (!read.success) { alert(read.message); return; } // JSON/structure invalide → rien écrit, accueil réutilisable
+        let prepared;
+        try { prepared = prepareFirstLaunchImportStore(read.payload, firstLaunch); }
+        catch (error) { console.error(error); prepared = { success: false, message: `Erreur lors de la préparation de l'import : ${error?.message || "problème inattendu"}.` }; }
+        if (!prepared || !prepared.success) { alert((prepared && prepared.message) || "Import impossible : sauvegarde non exploitable."); return; }
+        // Snapshot COMPLET (stockage + mémoire + Undo/Redo) AVANT toute écriture (rien n'a encore muté).
+        // PAS de recordHistory() ici : une restauration de premier lancement ne doit créer aucun niveau
+        // Undo (sinon un Undo ramènerait au club provisoire vide) ni vider la pile Redo (§8).
+        const snapshot = captureInitialImportSnapshot();
+        try {
+          // Transaction UNIQUE : clubStore + userStore + auditLog. Aucun try/catch interne n'avale
+          // l'échec d'une écriture secondaire — toute erreur remonte au catch transactionnel externe,
+          // qui restaure intégralement l'état. Succès partiel impossible.
+          writeClubStore(prepared.store);
+          if (prepared.importUserStore) writeUserStore(prepared.finalUserStore);
+          if (prepared.importAuditLog) writeAuditLog(prepared.finalAuditLog);
+          loadActiveClubFromStore(prepared.store);
+          settings.initialSetupDone = true;
+          // *** POINT DE COMMIT LOGIQUE *** : toutes les écritures et rechargements critiques ont réussi.
+          if (typeof clearClubWizardDraft === "function") clearClubWizardDraft();
+        } catch (error) {
+          console.error(error);
+          restoreInitialImportSnapshot(snapshot); // rollback intégral : stockage + globales + Undo/Redo
+          alert(`Erreur lors de l'import : ${error?.message || "problème inattendu"}. Aucune donnée n'a été importée, tu peux réessayer.`);
+          return; // *** PAS de résolution, PAS de message de succès en cas d'échec ***
+        }
+        // Après le point de commit : une panne PUREMENT visuelle (alerte) ne défait pas l'import réussi.
+        try { alert(prepared.summary || "Sauvegarde importée avec succès."); } catch (e) { console.error(e); }
+        if (typeof firstLaunch.resolve === "function") firstLaunch.resolve();
+        return;
+      }
+      // ---- IMPORT ORDINAIRE (depuis l'application) : comportement HISTORIQUE inchangé ----
+      const result = await importBackupFile(file);
+      if (!result.success) { if (result.message) alert(result.message); render(); return; }
+      persist(result.summary || "Sauvegarde importée");
+      render();
+      alert(result.summary || "Sauvegarde importée avec succès.");
+    } finally {
+      event.target.value = "";
+      importInProgress = false;
+    }
   });
+
+  // Annulation du sélecteur (aucun fichier choisi) : nettoie le contexte de premier lancement sans
+  // effet de bord (l'accueil reste affiché, réutilisable). Événement supporté par Chromium/Electron.
+  importFile.addEventListener("cancel", () => { firstLaunchImportContext = null; });
 
   window.monGestaClubShell?.onMenuCommand?.((command) => {
     handleShellMenuCommand(command).catch((error) => {
