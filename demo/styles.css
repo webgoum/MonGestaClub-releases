@@ -5074,6 +5074,23 @@ input[type="number"]::-webkit-outer-spin-button {
   font-size: 1rem;
 }
 
+/* Lot 3A (clôture finale, FIN-ABS-1) — indication discrète « Montant historique » sous un tarif
+   issu d'un montant legacy, pour ne pas le confondre avec le tarif canonique actuel. */
+.tariff-source-hint {
+  font-size: 0.68rem;
+  color: var(--muted);
+  font-weight: 600;
+  font-style: italic;
+}
+
+/* Lot 3A (clôture absolue, FIN-PAY-1) — note remplaçant le tiroir de paiement quand le tarif est
+   absent : aucune échéance ne doit être suggérée tant que le tarif n'est pas défini. */
+.payment-undefined-note {
+  font-size: 0.8rem;
+  font-style: italic;
+  padding: 6px 0;
+}
+
 .tariff-license-note {
   font-size: 0.72rem;
   color: var(--muted);

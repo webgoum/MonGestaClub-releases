@@ -3336,6 +3336,280 @@
     return out;
   }
 
+  // ------------------------------------------------------------------------------------------------
+  // Lot 3A — IDENTITÉ CANONIQUE DES DISCIPLINES (transition additive, non destructive).
+  //  - `discipline.id` devient l'identité canonique ; le libellé (`name`) est conservé pour
+  //    l'affichage, la recherche, les exports lisibles et le repli des anciennes données ;
+  //  - les références métier (memberships/groups/planningCourses) portent `disciplineId` en plus de
+  //    `discipline` (texte historique) ; les collections de coachs/salles conservent leurs listes de
+  //    NOMS et reçoivent une liste d'`id` DÉRIVÉE (recomputée à chaque normalisation, idempotente) ;
+  //  - aucune fusion automatique de disciplines : les doublons de nom sont conservés (ambiguïté), et
+  //    un ancien nom non résolu (absent ou ambigu) n'est jamais supprimé silencieusement.
+  // ------------------------------------------------------------------------------------------------
+  // Clé de comparaison des libellés : insensible à la casse, aux espaces de bord et à la forme
+  // Unicode (NFC), mais SENSIBLE aux accents — cohérent avec le rattachement historique par `===`
+  // exact (accent-sensible) déjà en place dans le code (évite toute sur-fusion « Café »/« Cafe »).
+  function disciplineNameKey(value) {
+    return asText(value).normalize("NFC").trim().toLowerCase();
+  }
+  function disciplinesListFrom(src) {
+    const s = src || (typeof state !== "undefined" ? state : null);
+    return (s && s.tariffs && Array.isArray(s.tariffs.disciplines)) ? s.tariffs.disciplines : [];
+  }
+  function disciplineById(disciplineId, src) {
+    const key = asText(disciplineId);
+    if (!key) return null;
+    return disciplinesListFrom(src).find((d) => d && d.id === key) || null;
+  }
+  function disciplinesByNameKey(name, src) {
+    const key = disciplineNameKey(name);
+    if (!key) return [];
+    return disciplinesListFrom(src).filter((d) => d && disciplineNameKey(d.name) === key);
+  }
+  // Résolution NON AMBIGUË d'un nom vers un id, dans le club fourni (ou le club actif par défaut).
+  // Retourne "" si aucune discipline ne porte ce nom OU si plusieurs le portent (ambiguïté).
+  function resolveDisciplineIdByName(name, src) {
+    const matches = disciplinesByNameKey(name, src);
+    return matches.length === 1 ? asText(matches[0].id) : "";
+  }
+  // Libellé d'affichage : privilégie la discipline RÉSOLUE PAR ID (canonique), repli sur le libellé
+  // historique stocké (jamais supprimé, y compris si l'id est vide ou pointe une discipline absente).
+  function disciplineLabelFor(entity, src) {
+    if (!entity || typeof entity !== "object") return "";
+    const byId = disciplineById(entity.disciplineId, src);
+    return byId ? asText(byId.name) : asText(entity.discipline);
+  }
+  // Noms de disciplines en doublon (même clé sur ≥ 2 entrées) — pour détection/diagnostic, jamais
+  // pour fusionner. Retourne un Set de clés.
+  function duplicateDisciplineNameKeys(src) {
+    const counts = new Map();
+    disciplinesListFrom(src).forEach((d) => {
+      const key = disciplineNameKey(d && d.name);
+      if (key) counts.set(key, (counts.get(key) || 0) + 1);
+    });
+    const dups = new Set();
+    counts.forEach((n, key) => { if (n > 1) dups.add(key); });
+    return dups;
+  }
+  // Passe centrale de résolution des références de discipline sur un état donné (par club).
+  //  - memberships/groups/planningCourses : `disciplineId` rempli UNIQUEMENT s'il est vide ET que le
+  //    nom stocké se résout sans ambiguïté ; un id déjà présent (canonique) n'est jamais écrasé ;
+  //  - coachs/salles : listes d'`id` DÉRIVÉES des listes de noms (les noms restent la source éditée) ;
+  //    les noms non résolus sont conservés, aucun n'est supprimé.
+  // Idempotente : deux passes successives sur les mêmes données produisent le même résultat.
+  function resolveDisciplineReferences(base) {
+    if (!base || typeof base !== "object") return base;
+    const fill = (entity) => {
+      if (entity && typeof entity === "object" && !asText(entity.disciplineId)) {
+        entity.disciplineId = resolveDisciplineIdByName(entity.discipline, base);
+      }
+    };
+    (Array.isArray(base.memberships) ? base.memberships : []).forEach(fill);
+    (Array.isArray(base.groups) ? base.groups : []).forEach(fill);
+    (Array.isArray(base.planningCourses) ? base.planningCourses : []).forEach(fill);
+    // Coachs / salles (D1) : identité CANONIQUE par identifiant. resolveEntityDisciplines fait, dans
+    // l'ordre : (1) union non destructive des id (existants ∪ dérivés non ambigus des noms) ; (2)
+    // extraction des valeurs libres/historiques non couvertes par un id sélectionné ; (3) liste de
+    // NOMS de compat DÉRIVÉE des id (nom courant) + valeurs libres. Idempotent, isolé par club.
+    (Array.isArray(base.coaches) ? base.coaches : []).forEach((coach) => reconcileEntityDisciplines(coach, "specialtyDisciplineIds", "specialties", "specialtiesFree", base));
+    (Array.isArray(base.rooms) ? base.rooms : []).forEach((room) => reconcileEntityDisciplines(room, "disciplineIds", "disciplines", "disciplinesFree", base));
+    return base;
+  }
+
+  // Noms canoniques (nom COURANT) d'une liste d'id de disciplines, dans l'ordre. Les id inconnus
+  // (discipline absente) ne produisent aucun nom (mais restent conservés dans la liste d'id).
+  function canonicalDisciplineNames(idList, src) {
+    return (Array.isArray(idList) ? idList : [])
+      .map((did) => disciplineById(did, src))
+      .filter(Boolean)
+      .map((d) => asText(d.name))
+      .filter(Boolean);
+  }
+
+  // Lot 3A — CIBLE de compatibilité de discipline. Accepte un nom (legacy) OU un objet
+  // { disciplineId, discipline }. Les appelants qui disposent d'un identifiant (course/group.disciplineId)
+  // doivent le transmettre : le nom seul ne doit jamais élargir une compatibilité vers un homonyme.
+  function disciplineTargetOf(target) {
+    if (target && typeof target === "object") return { disciplineId: asText(target.disciplineId), discipline: asText(target.discipline) };
+    return { disciplineId: "", discipline: asText(target) };
+  }
+  // Construit une cible canonique depuis un NOM choisi dans un select (libellé) et l'entité éditée :
+  // id résolu si non ambigu ; à défaut, id existant de l'entité si le nom n'a pas changé ; sinon "".
+  // Utilisé par les dialogues groupe/cours dont le select de discipline reste libellé par nom.
+  function disciplineTargetFromName(name, priorEntity, src) {
+    const nm = asText(name);
+    const resolved = resolveDisciplineIdByName(nm, src);
+    const kept = (priorEntity && disciplineNameKey(nm) === disciplineNameKey(priorEntity.discipline)) ? asText(priorEntity.disciplineId) : "";
+    return { disciplineId: resolved || kept, discipline: nm };
+  }
+  // Lot 3A (clôture) — cible CANONIQUE depuis la valeur d'un select de discipline PAR IDENTIFIANT
+  // (dialogues Inscription/Groupe/Cours). La chaîne correcte est : id sélectionné → disciplineById(id)
+  // → nom d'affichage. Valeurs possibles (jamais de résolution nominale après une sélection) :
+  //  - un id de discipline connu : { disciplineId: id, discipline: nom courant } (homonymes distincts) ;
+  //  - "__unknown__:<id encodé>" : identifiant RÉEL mais absent du référentiel → on PRÉSERVE cet id et
+  //    le libellé historique de l'entité (aucune rétrogradation vers un id résolu par nom) ;
+  //  - "__legacy__" : donnée héritée SANS id → on préserve l'id (vide) et le libellé historique, sans
+  //    choisir arbitrairement un homonyme ;
+  //  - "" (aucune) : { disciplineId: "", discipline: "" }.
+  const UNKNOWN_DISCIPLINE_PREFIX = "__unknown__:";
+  function disciplineTargetFromSelectValue(value, priorEntity, src) {
+    const v = asText(value);
+    if (v.slice(0, UNKNOWN_DISCIPLINE_PREFIX.length) === UNKNOWN_DISCIPLINE_PREFIX) {
+      let decoded = v.slice(UNKNOWN_DISCIPLINE_PREFIX.length);
+      try { decoded = decodeURIComponent(decoded); } catch (_e) { /* valeur déjà brute */ }
+      return { disciplineId: asText(decoded), discipline: asText(priorEntity && priorEntity.discipline) };
+    }
+    if (v === "__legacy__") {
+      return { disciplineId: asText(priorEntity && priorEntity.disciplineId), discipline: asText(priorEntity && priorEntity.discipline) };
+    }
+    if (v) {
+      const d = disciplineById(v, src);
+      return { disciplineId: v, discipline: d ? asText(d.name) : asText(priorEntity && priorEntity.discipline) };
+    }
+    return { disciplineId: "", discipline: "" };
+  }
+  // Lot 3A (clôture financière) — définition tarifaire d'une CIBLE issue d'un select canonique
+  // (FIN-1). Jamais de tarification par nom homonyme :
+  //  - cible avec disciplineId CONNU → la discipline correspondante (prix/licence/TVA de CET id) ;
+  //  - cible avec disciplineId INCONNU (absent du référentiel) → aucune définition actuelle (null) ;
+  //  - cible sans id → résolution nominale UNIQUEMENT si le nom désigne exactement une discipline ;
+  //    un nom ambigu ou absent ne fournit AUCUNE définition (null).
+  function disciplineDefinitionFromTarget(target, src) {
+    const id = asText(target && target.disciplineId);
+    if (id) return disciplineById(id, src) || null;
+    const uid = resolveDisciplineIdByName(target && target.discipline, src);
+    return uid ? (disciplineById(uid, src) || null) : null;
+  }
+  // Lot 3A (clôture) — compatibilité CANONIQUE Groupe ↔ discipline d'un Cours (F-GRP-1). Le nom
+  // n'élargit jamais la compatibilité :
+  //  - groupe sans aucune discipline déclarée (ni id ni nom) : non restreint → compatible ;
+  //  - cours sans aucune discipline : tous les groupes ;
+  //  - les deux avec id : égalité stricte des identifiants ;
+  //  - un côté id / l'autre nom (legacy) : compatible seulement si le nom désigne UNE seule discipline,
+  //    et que c'est bien celle de l'id ; un nom ambigu ne rend jamais compatible ;
+  //  - les deux par nom : compatible seulement si le nom est unique et identique.
+  function groupMatchesCourseDiscipline(group, course, src) {
+    const cId = asText(course && course.disciplineId);
+    const gId = asText(group && group.disciplineId);
+    const cName = asText(course && course.discipline);
+    const gName = asText(group && group.discipline);
+    if (!gId && !gName) return true;            // groupe non restreint
+    if (!cId && !cName) return true;            // cours sans discipline
+    if (cId && gId) return cId === gId;         // identité canonique stricte
+    if (cId) {                                  // cours par id, groupe par nom (legacy)
+      const m = disciplinesByNameKey(gName, src);
+      return m.length === 1 && asText(m[0].id) === cId;
+    }
+    // cours par nom (legacy)
+    if (disciplinesByNameKey(cName, src).length !== 1) return false; // nom du cours ambigu → aucune compat
+    if (gId) { const gd = disciplineById(gId, src); return Boolean(gd) && disciplineNameKey(gd.name) === disciplineNameKey(cName); }
+    return disciplineNameKey(gName) === disciplineNameKey(cName);
+  }
+  // Une entité (coach/salle) prend-elle en charge la CIBLE ? Règles canoniques (aucune sous-chaîne) :
+  //  - entité SANS aucune déclaration (ni id, ni valeur libre) : renvoie `emptyUnrestrictedMeansAll`
+  //    (coachs : false = non éligible ; salles : true = « accueille tout ») — comportement historique ;
+  //  - cible AVEC id : compatibilité = présence EXACTE de l'id dans les id canoniques de l'entité
+  //    (les noms/valeurs libres n'élargissent JAMAIS) ;
+  //  - cible SANS id (legacy) : repli nominal UNIQUEMENT si le nom désigne EXACTEMENT UNE discipline
+  //    du référentiel. Un nom absent (0) ou AMBIGU (≥ 2 homonymes) ne désigne ni l'une ni l'autre →
+  //    aucune compatibilité canonique automatique (D-LEG-1). Les valeurs libres (`entityFree`) ne
+  //    rendent jamais compatible avec une discipline.
+  function entityHandlesDisciplineTarget(entityIds, entityFree, target, src, emptyUnrestrictedMeansAll) {
+    const tgt = disciplineTargetOf(target);
+    if (!tgt.disciplineId && !tgt.discipline) return true;
+    const ids = (Array.isArray(entityIds) ? entityIds : []).map((x) => asText(x)).filter(Boolean);
+    const free = (Array.isArray(entityFree) ? entityFree : []).map((x) => asText(x)).filter(Boolean);
+    if (ids.length === 0 && free.length === 0) return Boolean(emptyUnrestrictedMeansAll);
+    if (tgt.disciplineId) return ids.includes(tgt.disciplineId);
+    const key = disciplineNameKey(tgt.discipline);
+    if (!key) return true;
+    // Cible legacy (sans id) : le nom ne fait autorité que s'il est NON AMBIGU dans le référentiel.
+    if (disciplinesByNameKey(tgt.discipline, src).length !== 1) return false;
+    return new Set(canonicalDisciplineNames(ids, src).map(disciplineNameKey)).has(key);
+  }
+
+  // Vue de sélection des disciplines d'un coach/salle : sépare les id canoniques RÉSOLUS, les id
+  // INCONNUS (discipline supprimée/importée), et les noms LIBRES/HISTORIQUES non couverts par un id
+  // sélectionné (anciens noms ambigus, valeurs libres). Aucune conversion arbitraire ; aucune
+  // duplication entre un nom canonique (dérivé d'un id sélectionné) et une valeur libre.
+  function disciplineSelectionView(idList, nameList, src) {
+    const seenId = new Set();
+    const selectedIds = [];
+    const unknownIds = [];
+    (Array.isArray(idList) ? idList : []).map((x) => asText(x)).filter(Boolean).forEach((did) => {
+      if (seenId.has(did)) return;
+      seenId.add(did);
+      (disciplineById(did, src) ? selectedIds : unknownIds).push(did);
+    });
+    const resolvedKeys = new Set(selectedIds.map((did) => disciplineNameKey(disciplineById(did, src).name)).filter(Boolean));
+    const seenFree = new Set();
+    const freeNames = [];
+    (Array.isArray(nameList) ? nameList : []).map((x) => asText(x)).filter(Boolean).forEach((n) => {
+      const k = disciplineNameKey(n);
+      if (!k || resolvedKeys.has(k) || seenFree.has(k)) return;
+      seenFree.add(k);
+      freeNames.push(n);
+    });
+    return { selectedIds, unknownIds, freeNames };
+  }
+
+  // Libellé d'option DISTINCTIF pour un formulaire : ajoute « — discipline N » UNIQUEMENT si le nom
+  // est partagé par plusieurs disciplines (homonymes), N = rang déterministe (ordre du référentiel).
+  // N'altère JAMAIS discipline.name.
+  function disciplineOptionLabel(discipline, src) {
+    const list = disciplinesListFrom(src);
+    const key = disciplineNameKey(discipline && discipline.name);
+    const base0 = asText(discipline && discipline.name) || "Sans nom";
+    if (!key) return base0;
+    const homonyms = list.filter((d) => d && disciplineNameKey(d.name) === key);
+    if (homonyms.length <= 1) return base0;
+    const rank = homonyms.findIndex((d) => d && discipline && d.id === discipline.id) + 1;
+    return rank > 0 ? `${base0} — discipline ${rank}` : base0;
+  }
+
+  // Reconstruit la liste de NOMS de compat d'une entité coach/salle : noms CANONIQUES (courants) de
+  // ses id + ses valeurs libres explicites, dédupliqués par chaîne exacte. Ne crée aucun id, ne lit
+  // pas les noms comme source. Utilisé au renommage (garde les noms frais) et à la normalisation.
+  function rebuildEntityDisciplineNames(entity, idField, nameField, freeField, src) {
+    if (!entity || typeof entity !== "object") return;
+    const free = (Array.isArray(entity[freeField]) ? entity[freeField] : []).map((x) => asText(x)).filter(Boolean);
+    entity[nameField] = [...new Set([...canonicalDisciplineNames(entity[idField], src), ...free])];
+  }
+
+  // Réconciliation CANONIQUE d'une entité coach/salle. Source de vérité = IDENTIFIANTS + valeurs
+  // libres explicites (`freeField`). `nameField` est une liste de compat DÉRIVÉE ; elle n'est lue
+  // comme source QUE pour migrer des données historiques (noms « orphelins » non encore couverts).
+  //  1) id existants conservés (inconnus/ambigus jamais effacés) ;
+  //  2) MIGRATION des noms orphelins (ni couverts par un id, ni déjà libres) : nom unique → id ajouté,
+  //     nom ambigu/libre → valeur libre. Un nom déjà couvert (canonique d'un id, ou libre) n'est
+  //     JAMAIS reparsé → aucune dérive vers un homonyme après un renommage ;
+  //  3) `nameField` reconstruit = noms canoniques des id + valeurs libres. Idempotent, isolé par club.
+  function reconcileEntityDisciplines(entity, idField, nameField, freeField, src) {
+    if (!entity || typeof entity !== "object") return;
+    const ids = [];
+    const pushId = (v) => { const i = asText(v); if (i && !ids.includes(i)) ids.push(i); };
+    (Array.isArray(entity[idField]) ? entity[idField] : []).forEach(pushId);
+    const free = [];
+    const pushFree = (v) => { const n = asText(v); if (n && !free.some((f) => disciplineNameKey(f) === disciplineNameKey(n))) free.push(n); };
+    (Array.isArray(entity[freeField]) ? entity[freeField] : []).forEach(pushFree);
+    // Noms déjà couverts : noms canoniques des id + valeurs libres (par clé).
+    const covered = new Set([...canonicalDisciplineNames(ids, src), ...free].map(disciplineNameKey).filter(Boolean));
+    // Migration des noms orphelins (données historiques uniquement).
+    (Array.isArray(entity[nameField]) ? entity[nameField] : []).forEach((raw) => {
+      const n = asText(raw);
+      const k = disciplineNameKey(n);
+      if (!k || covered.has(k)) return;
+      const rid = resolveDisciplineIdByName(n, src);
+      if (rid) { pushId(rid); } else { pushFree(n); }
+      covered.add(k);
+    });
+    entity[idField] = ids;
+    // Une valeur libre dont le nom est devenu canonique (couvert par un id) sort de la liste libre.
+    const canonKeys = new Set(canonicalDisciplineNames(ids, src).map(disciplineNameKey));
+    entity[freeField] = free.filter((f) => !canonKeys.has(disciplineNameKey(f)));
+    entity[nameField] = [...new Set([...canonicalDisciplineNames(ids, src), ...entity[freeField]])];
+  }
+
   function normalizeState(source) {
     source = migrateObsoleteSourceKeys(source || {});
     const base = {
@@ -3453,7 +3727,13 @@
       applyNormalizedTaxRate(normalizedArticle, article);
       return normalizedArticle;
     });
-    base.tariffs.disciplines.forEach((discipline) => applyNormalizedTaxRate(discipline, discipline));
+    base.tariffs.disciplines.forEach((discipline) => {
+      // Lot 3A — identité canonique : attribue un id STABLE aux anciennes disciplines qui en sont
+      // dépourvues (idempotent : n'écrase jamais un id existant, ne modifie ni le nom ni les autres
+      // champs, ne fusionne rien). Persisté atomiquement par le mécanisme de stockage du club.
+      if (discipline && typeof discipline === "object" && !asText(discipline.id)) discipline.id = id("discipline");
+      applyNormalizedTaxRate(discipline, discipline);
+    });
     base.tariffs.insurance.forEach((insurance) => applyNormalizedTaxRate(insurance, insurance));
     base.tariffs.stages.forEach((stage) => {
       applyNormalizedTaxRate(stage, stage);
@@ -3535,7 +3815,12 @@
       base.stageRegistrations[sid] = dedupeById(base.stageRegistrations[sid]);
     });
     if (!ui.noteId || !base.notes.some((note) => note.id === ui.noteId)) ui.noteId = base.notes[0]?.id || "";
-    return repairLegacyAccentData(base);
+    // Réparation d'accents AVANT la résolution des références : les libellés (disciplines ET
+    // références) sont alors dans leur forme finale, garantissant des clés cohérentes.
+    const repaired = repairLegacyAccentData(base);
+    // Lot 3A — résolution centralisée des références de discipline (non ambiguë), après que toutes
+    // les disciplines ont reçu un id et que les libellés sont réparés/dédupliqués.
+    return resolveDisciplineReferences(repaired);
   }
 
   // Champs « dossier sportif » d'un adhérent (inscription). Valeurs par défaut neutres
@@ -3559,6 +3844,10 @@
     member.rulesSigned = Boolean(member.rulesSigned);
     member.insurance = Boolean(member.insurance);
     member.groupId = str(member.groupId);
+    // Lot 3A — référence canonique de discipline (préservée si présente ; résolue par la passe
+    // centralisée). Le libellé `member.discipline` reste la source d'affichage/repli. `member.level`
+    // (note libre) et `member.practiceType` restent inchangés (hors périmètre du Lot 3A).
+    member.disciplineId = str(member.disciplineId);
     member.level = str(member.level);
     member.practiceType = ["Loisir", "Compétition", "Stage", "Autre"].includes(member.practiceType) ? member.practiceType : "";
     // Pièces jointes : on réutilise le même système que les contacts (champ `documents`),
@@ -3592,6 +3881,11 @@
       notes: asText(coach.notes || ""),
       archived: Boolean(coach.archived),
       specialties,
+      // Lot 3A (D1) — id canoniques des spécialités PRÉSERVÉS (autoritatifs) + valeurs libres/
+      // historiques explicites. reconcileEntityDisciplines (dans resolveDisciplineReferences) fait
+      // l'union des id et reconstruit `specialties` depuis les id ; rien n'est effacé en silence.
+      specialtyDisciplineIds: (Array.isArray(coach.specialtyDisciplineIds) ? coach.specialtyDisciplineIds : []).map((x) => asText(x)).filter(Boolean),
+      specialtiesFree: (Array.isArray(coach.specialtiesFree) ? coach.specialtiesFree : []).map((s) => asText(s)).filter(Boolean).filter((s) => !isWild(s)),
       versatile,
       type: types.includes(coach.type) ? coach.type : "",
       qualification: asText(coach.qualification || ""),
@@ -3689,6 +3983,11 @@
       expenseCategory: ["Location salle", "Autre dépense"].includes(room.expenseCategory) ? room.expenseCategory : "Location salle",
       expenseNote: asText(room.expenseNote || ""),
       disciplines: (Array.isArray(room.disciplines) ? room.disciplines : []).map((s) => asText(s)).filter(Boolean),
+      // Lot 3A (D1) — id canoniques des disciplines compatibles PRÉSERVÉS (autoritatifs) + valeurs
+      // libres/historiques explicites. reconcileEntityDisciplines reconstruit `disciplines` depuis
+      // les id (nom courant) + valeurs libres ; aucun id ni nom libre n'est effacé en silence.
+      disciplineIds: (Array.isArray(room.disciplineIds) ? room.disciplineIds : []).map((x) => asText(x)).filter(Boolean),
+      disciplinesFree: (Array.isArray(room.disciplinesFree) ? room.disciplinesFree : []).map((s) => asText(s)).filter(Boolean),
       availability: (Array.isArray(room.availability) ? room.availability : [])
         .filter((a) => a && days.includes(a.day))
         .map((a) => ({ day: a.day, start: asText(a.start || ""), end: asText(a.end || "") })),
@@ -3744,6 +4043,8 @@
       id: group.id || id("group"),
       name: asText(group.name) || "Groupe",
       type: types.includes(group.type) ? group.type : "Autre",
+      // Lot 3A — référence canonique (préservée si présente) + libellé historique conservé.
+      disciplineId: asText(group.disciplineId || ""),
       discipline: asText(group.discipline || ""),
       coachId: asText(group.coachId || ""),
       coach: asText(group.coach || ""),
@@ -3777,6 +4078,8 @@
     return {
       id: course.id || id("course"),
       name: asText(course.name) || "Créneau",
+      // Lot 3A — référence canonique (préservée si présente) + libellé historique conservé.
+      disciplineId: asText(course.disciplineId || ""),
       discipline: asText(course.discipline || ""),
       groupId: asText(course.groupId || ""),
       coachId: asText(course.coachId || ""),
@@ -5425,6 +5728,12 @@
   }
 
   function paymentControls(module, rowId, payments, options = {}) {
+    // Lot 3A (clôture absolue, FIN-PAY-1) — tarif ABSENT (billable=false) : aucun paiement ne doit être
+    // suggéré ni saisi tant que le tarif n'est pas défini. On remplace le tiroir par une note explicite
+    // UNIQUEMENT s'il n'existe encore aucun paiement (jamais de masquage de paiements déjà saisis).
+    if (options.billable === false && !(payments || []).some(hasPaymentContent)) {
+      return `<div class="payment-undefined-note muted">Tarif non défini — définissez le tarif de la discipline avant d'encaisser un paiement.</div>`;
+    }
     const attrs = [
       `data-payment-module="${esc(module)}"`,
       `data-id="${esc(rowId)}"`,
@@ -6466,12 +6775,52 @@
     return row.disciplinePrice !== undefined && row.disciplinePrice !== null && row.disciplinePrice !== "";
   }
 
+  // Lot 3A (clôture financière) — DÉFINITION tarifaire actuelle d'une inscription, résolue de façon
+  // AUTORITAIRE par identifiant (FIN-UNK-1) : la présence d'un `disciplineId` change définitivement la
+  // règle — un repli nominal ne peut JAMAIS suivre un `disciplineById()` dans une chaîne `||`.
+  //  - `disciplineDef` explicitement fournie (y compris null) fait autorité ;
+  //  - `disciplineId` non vide → sa discipline si connue, sinon null (id inconnu ⇒ aucune définition,
+  //    aucun emprunt par nom) ;
+  //  - aucun id → résolution nominale UNIQUEMENT si le nom est unique (via disciplineDefinitionFromTarget) ;
+  //  - nom ambigu → null (jamais le premier homonyme).
+  function membershipDisciplineDefinition(row = {}) {
+    if (row.disciplineDef !== undefined) return row.disciplineDef || null;
+    const disciplineId = asText(row.disciplineId);
+    if (disciplineId) return disciplineById(disciplineId) || null;
+    return disciplineDefinitionFromTarget({ disciplineId: "", discipline: row.discipline });
+  }
+  // Lot 3A (clôture finale, FIN-ZERO-1) — une valeur monétaire n'est ABSENTE que si elle vaut
+  // undefined, null ou "". Le nombre `0` est une valeur DÉFINIE (gratuité explicite) : il ne doit
+  // jamais être confondu avec une absence, donc jamais sélectionné via l'opérateur `||`.
+  function hasDefinedMoneyValue(value) {
+    return value !== undefined && value !== null && value !== "";
+  }
+  // Lot 3A (clôture finale, FIN-ZERO-1) — résout UNE composante monétaire (prix ou licence) selon une
+  // priorité STRICTE, sans jamais laisser `0` être écrasé :
+  //   1. instantané figé (row.disciplinePrice / row.disciplineLicense), y compris 0 → source "snapshot" ;
+  //   2. valeur canonique de la discipline résolue par identifiant, y compris 0 → source "canonical" ;
+  //   3. montant legacy historique propre à l'inscription, uniquement si 1 et 2 sont absents → "legacy" ;
+  //   4. aucune valeur définie → { value: 0, has: false, source: "none" } (tarif ABSENT ≠ gratuité 0 €).
+  function resolveMoneyComponent(snapshotValue, canonicalValue, legacyValue) {
+    if (hasDefinedMoneyValue(snapshotValue)) return { value: asNumber(snapshotValue), has: true, source: "snapshot" };
+    if (hasDefinedMoneyValue(canonicalValue)) return { value: asNumber(canonicalValue), has: true, source: "canonical" };
+    if (hasDefinedMoneyValue(legacyValue)) return { value: asNumber(legacyValue), has: true, source: "legacy" };
+    return { value: 0, has: false, source: "none" };
+  }
   function membershipDisciplinePricing(row = {}) {
-    const discipline = disciplineByName(row.discipline);
-    const hasFrozenLicense = row.disciplineLicense !== undefined && row.disciplineLicense !== null && row.disciplineLicense !== "";
+    // Résolution centrale AUTORITAIRE (aucun appel direct à disciplineByName ici). Chaque composante
+    // porte son indicateur de présence (has) et sa source, afin que l'interface distingue un tarif
+    // ABSENT d'une gratuité à 0 € et un montant HISTORIQUE legacy du tarif canonique actuel.
+    const discipline = membershipDisciplineDefinition(row) || {};
+    const gross = resolveMoneyComponent(row.disciplinePrice, discipline.price, row.legacy?.total);
+    const license = resolveMoneyComponent(row.disciplineLicense, discipline.license, row.legacy?.license);
     return {
-      grossTotal: membershipHasFrozenPrice(row) ? asNumber(row.disciplinePrice) : asNumber(discipline.price || row.legacy?.total),
-      license: hasFrozenLicense ? asNumber(row.disciplineLicense) : asNumber(discipline.license || row.legacy?.license),
+      grossTotal: gross.value,
+      license: license.value,
+      hasGrossTotal: gross.has,
+      hasLicense: license.has,
+      grossTotalSource: gross.source,
+      licenseSource: license.source,
     };
   }
 
@@ -6494,6 +6843,14 @@
       restDue,
       clubGain: total - license - Math.max(restDue, 0),
       alerts: (row.payments || []).map(paymentStatus).filter((status) => status && status !== "OK"),
+      // Lot 3A (clôture absolue, FIN-ABS-2/3, FIN-PAY-1) — métadonnées de présence/source propagées
+      // aux cartes, listes, factures et paiements : un `grossTotal` numérique de 0 ne suffit PLUS à
+      // décider quoi afficher ou facturer. `hasGrossTotal:false` = tarif ABSENT (« Non défini », non
+      // facturable) ; `grossTotalSource` distingue gratuité canonique / instantané / montant historique.
+      hasGrossTotal: pricing.hasGrossTotal,
+      hasLicense: pricing.hasLicense,
+      grossTotalSource: pricing.grossTotalSource,
+      licenseSource: pricing.licenseSource,
     };
   }
 
@@ -6509,11 +6866,56 @@
       insurancePrice,
       discount,
       total: grossTotal + license + insurancePrice - discount,
+      // Lot 3A (clôture finale, FIN-ABS-1) — indicateurs de présence et sources : l'interface s'appuie
+      // dessus pour afficher « Non défini » (tarif absent) plutôt qu'un trompeur « 0,00 € », et signaler
+      // un montant historique legacy. Les nombres restent à 0 pour la compatibilité des calculs.
+      hasGrossTotal: pricing.hasGrossTotal,
+      hasLicense: pricing.hasLicense,
+      grossTotalSource: pricing.grossTotalSource,
+      licenseSource: pricing.licenseSource,
+    };
+  }
+
+  // Lot 3A (clôture absolue, FIN-ABS-2/3) — libellés d'affichage CENTRAUX du tarif d'une inscription,
+  // réutilisés par le formulaire, les cartes, les listes, les factures et les exports. Aucune surface
+  // ne réimplémente localement la règle « 0 ≠ absent ». `values` peut être un objet issu de
+  // membershipTariffValues() OU de calcMembership() (mêmes champs hasGrossTotal/grossTotalSource/…).
+  //  - tarif ABSENT (hasGrossTotal=false) → « Non défini » / « Non calculable » ;
+  //  - gratuité 0 € (hasGrossTotal=true, valeur 0) → « 0,00 € » ;
+  //  - montant HISTORIQUE (grossTotalSource="legacy") → montant + drapeau grossHistoric.
+  function membershipTariffDisplay(values = {}) {
+    return {
+      grossText: values.hasGrossTotal ? money(values.grossTotal) : "Non défini",
+      totalText: values.hasGrossTotal ? money(values.total) : "Non calculable",
+      grossHistoric: values.grossTotalSource === "legacy",
+    };
+  }
+  // Lot 3A (clôture absolue, FIN-ABS-3/FIN-PAY-1) — éligibilité à la facturation / à l'encaissement :
+  // un tarif ABSENT n'est jamais facturable ni réglable (aucune ligne ni échéance à 0 € trompeuse).
+  // Une gratuité EXPLICITE (0 € défini) reste éligible avec son comportement normal.
+  function membershipBillingEligibility(values = {}) {
+    if (!values.hasGrossTotal) {
+      return { billable: false, reason: "Tarif non défini : définissez le tarif de la discipline avant de facturer ou d'encaisser." };
+    }
+    return { billable: true, reason: "" };
+  }
+  // Lot 3A (clôture absolue, FIN-ABS-2) — montants affichés dans les CARTES et LISTES d'adhérents à
+  // partir d'un objet calcMembership(). Un tarif ABSENT (hasGrossTotal=false) rend Total et Reste dû
+  // « Non calculable » (jamais 0,00 €). « Réglé » reste factuel (paiements réellement encaissés).
+  function membershipTotalDisplay(calc = {}) {
+    const has = calc.hasGrossTotal;
+    return {
+      total: has ? money(calc.total) : "Non calculable",
+      restDue: has ? money(calc.restDue) : "Non calculable",
+      paid: money(calc.paid),
     };
   }
 
   function membershipDefaultTaxRate(row = {}) {
-    const discipline = disciplineByName(row.discipline);
+    // Lot 3A (clôture financière) — TVA par défaut issue de la discipline résolue de façon AUTORITAIRE
+    // par identifiant (FIN-UNK-1) : un id inconnu ne fournit AUCUNE TVA (aucun emprunt par nom).
+    // L'assurance conserve sa propre logique fiscale.
+    const discipline = membershipDisciplineDefinition(row) || {};
     const insurance = insuranceChoiceByKey(membershipInsuranceChoice(row));
     return blendedTaxRate([
       { amount: asNumber(discipline.price), rate: tariffTaxRate(discipline) },
@@ -8946,7 +9348,10 @@
     state.memberships.forEach((row) => {
       if (matches([row.lastName, row.firstName, row.discipline, row.email, row.city])) {
         const calc = calcMembership(row);
-        push({ type: "Discipline", title: `${personLabel(row)} · ${row.discipline || "Sans discipline"}`, detail: `Total ${money(calc.total)} · reste ${money(calc.restDue)}`, attrs: `data-action="edit-membership" data-id="${esc(row.id)}"` });
+        // Lot 3A (clôture absolue, FIN-ABS-2) — recherche globale : « Tarif non défini » plutôt qu'un
+        // trompeur « Total 0,00 € · reste 0,00 € » pour une inscription au tarif absent.
+        const detail = calc.hasGrossTotal ? `Total ${money(calc.total)} · reste ${money(calc.restDue)}` : "Tarif non défini";
+        push({ type: "Discipline", title: `${personLabel(row)} · ${row.discipline || "Sans discipline"}`, detail, attrs: `data-action="edit-membership" data-id="${esc(row.id)}"` });
       }
     });
     if (isModuleEnabled("boutique") && hasFeature("shop")) {
@@ -10205,15 +10610,22 @@ ${esc(bodyText)}</pre>
       .filter((row) => !ui.discipline || row.discipline === ui.discipline)
       .filter((row) => !ui.disciplineDueOnly || calcMembership(row).restDue > 0)
       .sort((a, b) => personKey(a).localeCompare(personKey(b)));
-    const total = rows.reduce((sum, row) => sum + calcMembership(row).total, 0);
-    const paid = rows.reduce((sum, row) => sum + calcMembership(row).paid, 0);
-    const due = rows.reduce((sum, row) => sum + calcMembership(row).restDue, 0);
+    // Lot 3A (clôture absolue, FIN-ABS-2) — les inscriptions au tarif ABSENT ne sont pas comptées comme
+    // 0 € dans les agrégats sans le dire : elles sont exclues des sommes et signalées à part, pour que
+    // « Total »/« Reste dû » ne soient pas silencieusement sous-évalués.
+    const calcs = rows.map((row) => calcMembership(row));
+    const billableCalcs = calcs.filter((calc) => calc.hasGrossTotal);
+    const undefinedCount = calcs.length - billableCalcs.length;
+    const total = billableCalcs.reduce((sum, calc) => sum + calc.total, 0);
+    const paid = billableCalcs.reduce((sum, calc) => sum + calc.paid, 0);
+    const due = billableCalcs.reduce((sum, calc) => sum + calc.restDue, 0);
     return `
       ${overviewBand("disciplines", "Disciplines en un coup d'oeil", [
         { label: "Inscriptions", value: rows.length },
         { label: "Total", value: money(total) },
         { label: "Réglé", value: money(paid) },
         { label: "Reste dû", value: money(due), action: "show-overview-due", scope: "disciplines", title: "Voir les adhérents avec un reste dû" },
+        ...(undefinedCount > 0 ? [{ label: "Tarif non défini", value: undefinedCount }] : []),
       ])}
       <div class="band collapsible-band overview-band ${ui.overviewPanels?.disciplineManagement ? "open" : ""}">
         <div class="band-title collapsible-title-row" data-action="toggle-overview-panel" data-panel="disciplineManagement" role="button" tabindex="0" aria-expanded="${ui.overviewPanels?.disciplineManagement ? "true" : "false"}">
@@ -10238,10 +10650,12 @@ ${esc(bodyText)}</pre>
 
   function membershipRow(row) {
     const calc = calcMembership(row);
+    // Lot 3A (clôture absolue, FIN-ABS-2) — Total/Reste dû « Non calculable » pour un tarif absent.
+    const disp = membershipTotalDisplay(calc);
     return `<tr>
-      <td>${personCell(row)}</td><td>${paymentControls("membership", row.id, row.payments || [], { total: calc.total, defaultTaxRate: membershipDefaultTaxRate(row) })}</td><td>${esc(row.discipline)}</td>
+      <td>${personCell(row)}</td><td>${paymentControls("membership", row.id, row.payments || [], { total: calc.total, defaultTaxRate: membershipDefaultTaxRate(row), billable: calc.hasGrossTotal })}</td><td>${esc(row.discipline)}</td>
       <td>${row.medicalCertificate ? "Oui" : "Non"}</td>
-      <td class="money">${money(calc.total)}</td><td class="money">${money(calc.paid)}</td><td class="money">${money(calc.restDue)}</td>
+      <td class="money">${disp.total}</td><td class="money">${disp.paid}</td><td class="money">${disp.restDue}</td>
       <td><div class="actions"><button class="icon" title="Modifier" data-action="edit-membership" data-id="${row.id}">✎</button><button class="icon danger" title="Retirer" data-action="delete-membership" data-id="${row.id}">×</button></div></td>
     </tr>`;
   }
@@ -10292,20 +10706,24 @@ ${esc(bodyText)}</pre>
   function membershipCard(row) {
     const calc = calcMembership(row);
     const tone = membershipPaymentTone(row, calc);
+    // Lot 3A (clôture absolue, FIN-ABS-2) — Total/Reste dû « Non calculable » pour un tarif absent
+    // (jamais 0,00 €) ; un badge signale explicitement le tarif non défini.
+    const disp = membershipTotalDisplay(calc);
     return `<article class="membership-card payment-${tone}" data-action="edit-membership" data-id="${esc(row.id)}">
       <div class="membership-card-head">
         ${personCell(row)}
       </div>
       <div class="membership-card-meta">
         <span>${esc(row.discipline || "Sans discipline")}</span>
+        ${calc.hasGrossTotal ? "" : alertInfoBadge("Tarif non défini")}
         ${row.medicalCertificate ? `<span>Certificat OK</span>` : alertInfoBadge("Certificat manquant")}
       </div>
       <div class="membership-card-totals">
-        <div><span>Total</span><strong>${money(calc.total)}</strong></div>
-        <div><span>Réglé</span><strong>${money(calc.paid)}</strong></div>
-        <div class="${calc.restDue > 0 ? "due" : ""}"><span>Reste dû</span><strong>${money(calc.restDue)}</strong></div>
+        <div><span>Total</span><strong>${disp.total}</strong></div>
+        <div><span>Réglé</span><strong>${disp.paid}</strong></div>
+        <div class="${calc.restDue > 0 && calc.hasGrossTotal ? "due" : ""}"><span>Reste dû</span><strong>${disp.restDue}</strong></div>
       </div>
-      <div class="membership-card-payments">${paymentControls("membership", row.id, row.payments || [], { total: calc.total, defaultTaxRate: membershipDefaultTaxRate(row) })}</div>
+      <div class="membership-card-payments">${paymentControls("membership", row.id, row.payments || [], { total: calc.total, defaultTaxRate: membershipDefaultTaxRate(row), billable: calc.hasGrossTotal })}</div>
     </article>`;
   }
 
@@ -11124,7 +11542,16 @@ ${esc(bodyText)}</pre>
   }
 
   function disciplineUsageStats() {
-    const map = new Map(state.tariffs.disciplines.map((discipline) => [discipline.name, {
+    // Lot 3A (D3) — agrégation par IDENTIFIANT de discipline quand il existe : deux disciplines
+    // homonymes d'id distincts ne sont plus fusionnées. Repli historique par nom normalisé pour les
+    // adhésions anciennes sans id (jamais fusionnées au hasard avec une discipline canonique). Le
+    // libellé affiché suit l'id (nom courant), sinon le nom historique stocké. Isolé par club actif.
+    const disciplineKey = (discipline) => discipline.id ? `id:${asText(discipline.id)}` : `legacy:${disciplineNameKey(discipline.name)}`;
+    const membershipKey = (membership) => {
+      if (asText(membership.disciplineId)) return `id:${asText(membership.disciplineId)}`;
+      return `legacy:${disciplineNameKey(membership.discipline)}`;
+    };
+    const map = new Map(state.tariffs.disciplines.map((discipline) => [disciplineKey(discipline), {
       name: discipline.name || "Sans discipline",
       count: 0,
       total: 0,
@@ -11133,8 +11560,9 @@ ${esc(bodyText)}</pre>
       gain: 0,
     }]));
     for (const membership of state.memberships) {
-      const key = membership.discipline || "Sans discipline";
-      const row = map.get(key) || { name: key, count: 0, total: 0, paid: 0, due: 0, gain: 0 };
+      const key = membershipKey(membership);
+      const label = disciplineLabelFor(membership) || asText(membership.discipline) || "Sans discipline";
+      const row = map.get(key) || { name: label, count: 0, total: 0, paid: 0, due: 0, gain: 0 };
       const calc = calcMembership(membership);
       row.count += 1;
       row.total += calc.total;
@@ -13839,6 +14267,12 @@ ${esc(bodyText)}</pre>
     ui.disciplineLetter = "";
     ui.stageLetter = "";
     ui.query = "";
+    // Lot 3A (D5) — le filtre de discipline (par nom) ne doit jamais survivre à un changement de
+    // club : sans cela, filtrer « Judo » dans un club puis basculer sur un club sans « Judo »
+    // produirait une vue vide/incohérente. Point central couvrant switch, création, duplication,
+    // import, restauration et retour dans un club déjà ouvert (tous passent par ici).
+    ui.discipline = "";
+    ui.disciplineDueOnly = false;
     if (typeof invalidateSmtpUiStateForClubSwitch === "function") invalidateSmtpUiStateForClubSwitch();
     // Mode permissif (Lot 1 utilisateurs) : garantit une appartenance de l'utilisateur actif
     // sur le club désormais actif, sans jamais bloquer si elle n'existait pas encore.
@@ -16001,6 +16435,65 @@ ${esc(bodyText)}</pre>
     return `<label>${labelHtml(label)}<select name="${esc(name)}">${options.map((option) => `<option value="${esc(option)}" ${asText(option) === asText(value) ? "selected" : ""}>${esc(option)}</option>`).join("")}</select></label>`;
   }
 
+  // Lot 3A (clôture) — sélecteur de discipline CANONIQUE (Inscriptions/Groupes/Cours) : la valeur
+  // interne est l'IDENTIFIANT (discipline.id), le libellé visible est distinctif pour les homonymes
+  // (disciplineOptionLabel → « Judo — discipline 1/2 »). La sélection est déterminée par l'id, jamais
+  // par le nom : deux homonymes ne sont donc jamais tous deux `selected`. Ordre déterministe (ordre du
+  // référentiel). Le nom réel des disciplines n'est pas modifié (suffixe = libellé d'interface).
+  // Priorité (aucune rétrogradation d'un id existant vers une référence par nom) :
+  //  1. id non vide ET connu → présélectionner cet id ;
+  //  2. id non vide mais INCONNU (référence supprimée/importée) → option « indisponible » PRÉSERVANT
+  //     l'id exact (valeur "__unknown__:<id encodé>"), sans le convertir par nom ;
+  //  3. aucun id + nom résolu de façon UNIQUE → présélectionner l'id résolu (legacy non ambigu) ;
+  //  4. aucun id + nom présent ambigu/absent → option « héritée » (valeur "__legacy__") sans attribution ;
+  //  5. ni id ni nom → option vide « — Aucune — ».
+  function disciplineSelectField(name, label, entity) {
+    const list = (state.tariffs && Array.isArray(state.tariffs.disciplines)) ? state.tariffs.disciplines : [];
+    const rawId = asText(entity && entity.disciplineId);
+    const knownId = (rawId && list.some((d) => asText(d.id) === rawId)) ? rawId : "";
+    const legacyName = asText(entity && entity.discipline);
+    const hasUnknownId = !!rawId && !knownId;                                   // (2) id réel absent du référentiel
+    const resolvedLegacyId = (!rawId) ? asText(resolveDisciplineIdByName(legacyName)) : ""; // (3)
+    const selectedId = knownId || resolvedLegacyId;                            // id d'une option « normale » à cocher
+    const hasLegacyPreserved = !rawId && !resolvedLegacyId && !!legacyName;     // (4)
+    const noneSelected = !selectedId && !hasUnknownId && !hasLegacyPreserved;   // (5)
+    const options = [];
+    options.push(`<option value="" ${noneSelected ? "selected" : ""}>— Aucune —</option>`);
+    if (hasUnknownId) {
+      const lbl = legacyName ? `${legacyName} — référence de discipline indisponible` : "Référence de discipline indisponible";
+      // La valeur préserve l'id exact (encodé) sans exposer l'identifiant technique dans le libellé.
+      options.push(`<option value="__unknown__:${esc(encodeURIComponent(rawId))}" selected>${esc(lbl)}</option>`);
+    }
+    if (hasLegacyPreserved) {
+      options.push(`<option value="__legacy__" selected>${esc(legacyName)} (héritée, à préciser)</option>`);
+    }
+    list.forEach((d) => {
+      const idv = asText(d.id);
+      options.push(`<option value="${esc(idv)}" ${idv === selectedId ? "selected" : ""}>${esc(disciplineOptionLabel(d))}</option>`);
+    });
+    return `<label>${labelHtml(label)}<select name="${esc(name)}">${options.join("")}</select></label>`;
+  }
+  // Lot 3A (clôture) — nom de discipline dérivé de la valeur du select canonique d'une inscription
+  // (id connu → nom courant ; référence inconnue/héritée → libellé figé). Utilisé pour les calculs de
+  // tarif qui raisonnent PAR NOM, sans réintroduire de résolution nominale de l'identité.
+  // Lot 3A (clôture financière) — DÉFINITION tarifaire de la discipline sélectionnée dans le
+  // formulaire d'inscription, déterminée PAR IDENTIFIANT (FIN-1/FIN-2) : id connu → sa définition ;
+  // id inconnu → aucune (les instantanés figés seront utilisés) ; legacy → seulement si nom unique ;
+  // aucune → aucune. Ne tarife JAMAIS un nom homonyme.
+  function membershipSelectedDisciplineDefinition(form) {
+    return disciplineDefinitionFromTarget(membershipSelectedDisciplineTarget(form));
+  }
+  // Lot 3A (clôture financière) — CIBLE complète { disciplineId, discipline } sélectionnée dans le
+  // formulaire d'inscription (FIN-UNK-2). Transmise au calcul du résumé pour que la présence d'un id
+  // (même INCONNU, ex. option "__unknown__:ancienne-discipline") interdise tout repli nominal.
+  function membershipSelectedDisciplineTarget(form) {
+    if (!form || !form.elements) return { disciplineId: "", discipline: "" };
+    return disciplineTargetFromSelectValue(
+      form.elements.discipline ? form.elements.discipline.value : "",
+      { discipline: asText(form.elements.frozenDiscipline && form.elements.frozenDiscipline.value) },
+    );
+  }
+
   function textareaField(name, label, value = "", placeholder = "") {
     return `<label class="wide">${labelHtml(label)}<textarea name="${esc(name)}"${placeholder ? ` placeholder="${esc(placeholder)}"` : ""}>${esc(value ?? "")}</textarea></label>`;
   }
@@ -16755,16 +17248,19 @@ ${esc(bodyText)}</pre>
     return "";
   }
 
+  // Lot 3A (clôture absolue) — membershipTariffDisplay / membershipBillingEligibility sont désormais
+  // définis CENTRALEMENT dans src/10-calcs-shell.js (partagés avec cartes/listes/factures/exports).
   function membershipTariffSummary(row = {}) {
     const values = membershipTariffValues(row);
+    const display = membershipTariffDisplay(values);
     return `<div class="dialog-section tariff-summary" data-membership-tariff-summary data-membership-payment-summary>
       <h3>Tarif calculé</h3>
       <div class="tariff-summary-grid">
-        <div><span>Tarif discipline</span><strong data-tariff-value="gross">${money(values.grossTotal)}</strong></div>
-        <div data-tariff-license-line ${values.license ? "" : "hidden"}><span>Licence</span><strong data-tariff-value="license">${money(values.license)}</strong></div>
+        <div><span>Tarif discipline</span><strong data-tariff-value="gross">${esc(display.grossText)}</strong><small class="tariff-source-hint" data-tariff-source-hint ${display.grossHistoric ? "" : "hidden"}>Montant historique</small></div>
+        <div data-tariff-license-line ${values.hasLicense && values.license ? "" : "hidden"}><span>Licence</span><strong data-tariff-value="license">${money(values.license)}</strong></div>
         <div><span>Assurance</span><strong data-tariff-value="insurance">${money(values.insurancePrice)}</strong></div>
         <div><span>Remise</span><strong data-tariff-value="discount">${money(values.discount)}</strong></div>
-        <div><span>Total attendu</span><strong data-tariff-value="total">${money(values.total)}</strong></div>
+        <div><span>Total attendu</span><strong data-tariff-value="total">${esc(display.totalText)}</strong></div>
       </div>
     </div>`;
   }
@@ -16772,36 +17268,65 @@ ${esc(bodyText)}</pre>
   function updateMembershipTariffSummary(form) {
     const summary = form.querySelector("[data-membership-tariff-summary]");
     if (!summary) return;
-    const selectedDiscipline = form.elements.discipline?.value;
-    const useFrozen = asText(form.elements.frozenDiscipline?.value) === asText(selectedDiscipline)
-      && asText(form.elements.frozenDisciplinePrice?.value) !== "";
+    // Lot 3A (clôture financière) — tarif déterminé PAR IDENTIFIANT (FIN-1/FIN-2). Une inscription
+    // EXISTANTE avec instantané (`frozenHasSnapshot`) affiche EN PRIORITÉ ses valeurs figées et ne
+    // recalcule pas sur changement de discipline (FIN-3) ; une NOUVELLE inscription s'initialise depuis
+    // la définition de l'identifiant sélectionné (deux homonymes peuvent afficher des montants différents).
+    // Lot 3A (clôture financière, FIN-UNK-2) — on transmet la CIBLE complète (disciplineId + nom) : un
+    // id présent, même INCONNU, interdit tout repli nominal dans membershipDisciplineDefinition.
+    const target = membershipSelectedDisciplineTarget(form);
+    const disciplineDef = disciplineDefinitionFromTarget(target);
+    const hasSnapshot = asText(form.elements.frozenHasSnapshot?.value) === "1";
+    // Lot 3A (clôture finale, §9) — le MONTANT HISTORIQUE legacy de l'inscription est transmis au calcul
+    // pour rester affiché (libellé « Montant historique ») tant qu'aucun instantané ni tarif canonique
+    // ne le remplace. resolveMoneyComponent ne l'emploie qu'en dernier recours : un prix canonique (y
+    // compris 0) le prime toujours, donc changer pour une discipline tarifée écrase bien l'historique.
+    const legacy = {
+      total: form.elements.frozenLegacyTotal?.value ?? "",
+      license: form.elements.frozenLegacyLicense?.value ?? "",
+    };
     const values = membershipTariffValues({
-      discipline: selectedDiscipline,
+      disciplineId: target.disciplineId,
+      discipline: target.discipline,
+      disciplineDef: disciplineDef || undefined,
       insuranceChoice: form.elements.insuranceChoice?.value,
       discount: form.elements.discount?.value,
-      ...(useFrozen ? {
+      legacy,
+      ...(hasSnapshot ? {
         disciplinePrice: form.elements.frozenDisciplinePrice.value,
         disciplineLicense: form.elements.frozenDisciplineLicense?.value,
       } : {}),
     });
-    summary.querySelector('[data-tariff-value="gross"]').textContent = money(values.grossTotal);
+    // Lot 3A (clôture finale, FIN-ABS-1) — libellés distinguant absent / gratuit / historique.
+    const display = membershipTariffDisplay(values);
+    summary.querySelector('[data-tariff-value="gross"]').textContent = display.grossText;
+    const sourceHint = summary.querySelector("[data-tariff-source-hint]");
+    if (sourceHint) sourceHint.hidden = !display.grossHistoric;
     const licenseEl = summary.querySelector('[data-tariff-value="license"]');
     if (licenseEl) {
       licenseEl.textContent = money(values.license);
+      const showLicense = values.hasLicense && !!values.license;
       const line = licenseEl.closest("[data-tariff-license-line]");
-      if (line) line.hidden = !values.license;
-      else licenseEl.hidden = !values.license;
+      if (line) line.hidden = !showLicense;
+      else licenseEl.hidden = !showLicense;
     }
     summary.querySelector('[data-tariff-value="insurance"]').textContent = money(values.insurancePrice);
     summary.querySelector('[data-tariff-value="discount"]').textContent = money(values.discount);
-    summary.querySelector('[data-tariff-value="total"]').textContent = money(values.total);
+    summary.querySelector('[data-tariff-value="total"]').textContent = display.totalText;
     const disciplinePrice = form.querySelector("[data-membership-discipline-price]");
-    if (disciplinePrice) disciplinePrice.value = money(values.grossTotal);
+    if (disciplinePrice) disciplinePrice.value = display.grossText;
     const insurancePrice = form.querySelector("[data-membership-insurance-price]");
     if (insurancePrice) insurancePrice.value = money(values.insurancePrice);
-    setupAutoPaymentSplit(form, "payment", values.total);
+    // Lot 3A (clôture absolue, FIN-PAY-1) — tarif ABSENT : total « Non calculable ». On passe 0 comme
+    // base de répartition pour que distributePaymentSplit VIDE les suggestions automatiques (sans
+    // toucher aux saisies manuelles ni aux paiements validés) et n'invente aucune échéance — même si une
+    // assurance payante rendait values.total non nul. Une gratuité EXPLICITE (billable) garde son 0 € normal.
+    const billing = membershipBillingEligibility(values);
+    setupAutoPaymentSplit(form, "payment", billing.billable ? values.total : 0);
     setDefaultPaymentTaxRate(form, "payment", membershipDefaultTaxRate({
-      discipline: form.elements.discipline?.value,
+      disciplineId: target.disciplineId,
+      discipline: target.discipline,
+      disciplineDef: disciplineDef || undefined,
       insuranceChoice: form.elements.insuranceChoice?.value,
       discount: form.elements.discount?.value,
     }));
@@ -18461,11 +18986,24 @@ ${esc(bodyText)}</pre>
   }
 
   function contactRecapStatus(calc = {}) {
+    // Lot 3A (clôture absolue, FIN-ABS-2) — tarif ABSENT (membership uniquement : calcMembership pose
+    // hasGrossTotal ; commandes/stages le laissent undefined) : statut « Tarif non défini », jamais
+    // « Reste dû »/« Payé » calculés sur un total trompeur de 0.
+    if (calc.hasGrossTotal === false) return alertInfoBadge("Tarif non défini");
     if (asNumber(calc.restDue) <= 0 && asNumber(calc.total) > 0) return statusPill("Payé");
     return statusPill(asNumber(calc.paid) > 0 ? "Partiel" : "Reste dû");
   }
 
   function contactRecapAmounts(calc = {}) {
+    // Lot 3A (clôture absolue, FIN-ABS-2) — tarif ABSENT : « Non défini »/« Non calculable » plutôt
+    // qu'un 0,00 € trompeur. Le « Réglé » reste factuel (paiements réellement encaissés).
+    if (calc.hasGrossTotal === false) {
+      return `<div class="contact-recap-amounts">
+      <span>Total <strong>Non défini</strong></span>
+      <span>Réglé <strong>${money(calc.paid)}</strong></span>
+      <span>Reste <strong>Non calculable</strong></span>
+    </div>`;
+    }
     return `<div class="contact-recap-amounts">
       <span>Total <strong>${money(calc.total)}</strong></span>
       <span>Réglé <strong>${money(calc.paid)}</strong></span>
@@ -19440,6 +19978,16 @@ ${esc(bodyText)}</pre>
     openInvoiceEditor(target);
   }
 
+  // Lot 3A (clôture absolue, FIN-ABS-3) — inscriptions d'un contact dont le tarif est ABSENT (non
+  // défini). Leur cotisation n'apparaît volontairement dans AUCUNE ligne facturable (jamais une ligne à
+  // 0 € trompeuse) ; l'éditeur de facture doit toutefois le SIGNALER pour qu'on définisse le tarif avant
+  // d'émettre, plutôt que de facturer silencieusement le contact sans la discipline concernée.
+  function contactMembershipsWithUndefinedTariff(contact = {}) {
+    return state.memberships
+      .filter((row) => contactRecordMatches(contact, row))
+      .filter((row) => !membershipTariffValues(row).hasGrossTotal);
+  }
+
   function openInvoiceEditor(invoice = {}) {
     invoice = normalizeInvoice(invoice);
     const contact = invoice.contactSnapshot || invoiceContact(invoice.contactKind, invoice.contactId);
@@ -19450,6 +19998,7 @@ ${esc(bodyText)}</pre>
     const allowed = invoiceAllowedActions(invoice);
     const locked = !allowed.editLines;
     const billables = billableItemsForContact(contact, invoice.contactKind);
+    const undefinedTariffMemberships = locked ? [] : contactMembershipsWithUndefinedTariff(contact);
     const alreadyBilled = billedSourceKeys(invoice.id);
     const selectedKeys = new Set((invoice.lines || []).map((line) => line.sourceKey).filter(Boolean));
     const proposedLines = (invoice.lines || []).filter((line) => line.sourceType !== "custom");
@@ -19476,6 +20025,7 @@ ${esc(bodyText)}</pre>
         : `<div class="dialog-section invoice-editor">
         <h3>Lignes proposées</h3>
         <p class="muted">Choisis les éléments du contact à ajouter à cette facture. Les lignes déjà présentes dans une facture émise sont signalées.</p>
+        ${undefinedTariffMemberships.length ? `<div class="form-warning invoice-undefined-tariff">Tarif non défini pour ${undefinedTariffMemberships.length} inscription${undefinedTariffMemberships.length > 1 ? "s" : ""} (${esc(undefinedTariffMemberships.map((row) => `${personLabel(row)} — ${row.discipline || "sans discipline"}`).join(", "))}). Définissez le tarif de la discipline avant de facturer ${undefinedTariffMemberships.length > 1 ? "ces inscriptions" : "cette inscription"} : aucune ligne n'est proposée tant que le tarif reste indéfini.</div>` : ""}
         <div class="invoice-source-list" data-tour="invoice-lines">
           ${billables.length ? billables.map((item) => invoiceEditorSourceRow(item, selectedKeys, alreadyBilled, locked)).join("") : `<div class="empty compact">Aucun élément facturable trouvé pour ce contact.</div>`}
           ${proposedLines.filter((line) => !billables.some((item) => item.sourceKey === line.sourceKey)).map((line) => `<div class="invoice-source-row already-billed"><span class="invoice-source-type">${esc(invoiceSourceTypeLabel(line.sourceType))}</span><span><strong>${esc(line.label)}</strong><small>Source ancienne ou supprimée</small></span><span class="money">${money(line.total)}</span></div>`).join("")}
@@ -20384,10 +20934,14 @@ ${esc(bodyText)}</pre>
       field("city", "Ville *", row.city, "text", "required"),
       field("birthDate", "Date de naissance *", dateInputValue(row.birthDate), "date", "required data-birth-date"),
       field("category", "Adulte / Enfant", memberCategory(row), "text", "readonly data-birth-category"),
-      selectField("discipline", "Discipline *", row.discipline, ["", ...state.tariffs.disciplines.map((item) => item.name)]),
+      // Lot 3A (clôture) — sélecteur PAR IDENTIFIANT (homonymes distincts, id inconnu préservé).
+      disciplineSelectField("discipline", "Discipline *", row),
       `<input type="hidden" name="frozenDiscipline" value="${esc(row.discipline || "")}" />
        <input type="hidden" name="frozenDisciplinePrice" value="${esc(membershipDisciplinePricing(row).grossTotal)}" />
-       <input type="hidden" name="frozenDisciplineLicense" value="${esc(membershipDisciplinePricing(row).license)}" />`,
+       <input type="hidden" name="frozenDisciplineLicense" value="${esc(membershipDisciplinePricing(row).license)}" />
+       <input type="hidden" name="frozenHasSnapshot" value="${(row.id && membershipHasFrozenPrice(row)) ? "1" : ""}" />
+       <input type="hidden" name="frozenLegacyTotal" value="${esc(row.legacy?.total ?? "")}" />
+       <input type="hidden" name="frozenLegacyLicense" value="${esc(row.legacy?.license ?? "")}" />`,
       selectField("medicalCertificate", "Certificat médical", row.medicalCertificate ? "Oui" : "Non", ["Non", "Oui"]),
       textareaField("pathologies", "Pathologie(s)", row.pathologies || ""),
       `<div class="dialog-section"><h3>Dossier sportif</h3></div>`,
@@ -20423,7 +20977,9 @@ ${esc(bodyText)}</pre>
       `<label>Assurance<select name="insuranceChoice">${insuranceChoiceOptions(membershipInsuranceChoice(row))}</select></label>`,
       readonlyMoneyField("Prix assurance", membershipInsurancePrice(row), "data-membership-insurance-price"),
       `<div class="dialog-section"><h3>Paiements discipline</h3></div>`,
-      readonlyMoneyField("Prix discipline", membershipTariffValues(row).grossTotal, "data-membership-discipline-price"),
+      // Lot 3A (clôture finale, FIN-ABS-1) — champ lecture seule affichant « Non défini » pour un tarif
+      // absent (jamais « 0,00 € »), aligné sur le résumé (updateMembershipTariffSummary le réactualise).
+      `<label>Prix discipline<input type="text" value="${esc(membershipTariffDisplay(membershipTariffValues(row)).grossText)}" readonly data-membership-discipline-price /></label>`,
       field("discount", "Remise", row.discount || "", "number", 'step="0.01"'),
       `<div class="dialog-alert-list" data-membership-alerts></div>`,
       membershipTariffSummary(row),
@@ -20441,11 +20997,22 @@ ${esc(bodyText)}</pre>
       const insuranceChoice = insuranceChoiceByKey(form.get("insuranceChoice"));
       const contactLink = parseContactLink(form.get("contactLink"));
       const birthDate = form.get("birthDate") || "";
-      const selectedDiscipline = asText(form.get("discipline"));
-      const disciplineUnchanged = Boolean(row.id) && asText(form.get("frozenDiscipline")) === selectedDiscipline && asText(form.get("frozenDisciplinePrice")) !== "";
-      const disciplineDef = disciplineByName(selectedDiscipline);
-      const frozenPrice = disciplineUnchanged ? asNumber(form.get("frozenDisciplinePrice")) : asNumber(disciplineDef.price);
-      const frozenLicense = disciplineUnchanged ? asNumber(form.get("frozenDisciplineLicense")) : asNumber(disciplineDef.license);
+      // Lot 3A (clôture) — sélection CANONIQUE : la valeur du select est un identifiant (ou
+      // "__unknown__:<id>" / "__legacy__" / ""). On dérive { disciplineId, discipline } de l'id, sans
+      // repasser par le nom. La préservation financière reste comparée PAR NOM (le basculement d'un
+      // homonyme A↔B, de même nom, n'entraîne AUCUN recalcul des instantanés figés).
+      const disciplineTarget = disciplineTargetFromSelectValue(form.get("discipline"), row);
+      // Lot 3A (clôture financière) — FIN-1 : une NOUVELLE inscription s'initialise depuis la définition
+      // de l'IDENTIFIANT sélectionné (jamais par nom homonyme). FIN-3 : une inscription EXISTANTE dotée
+      // d'un instantané (`frozenHasSnapshot`) PRÉSERVE exactement ses valeurs figées, quel que soit le
+      // changement d'identité (aucun recalcul automatique de l'historique dans cette mission).
+      const hasSnapshot = asText(form.get("frozenHasSnapshot")) === "1";
+      const disciplineDef = disciplineDefinitionFromTarget(disciplineTarget);
+      // FIN-UNK-3 — sans instantané ET sans définition actuelle (id inconnu / legacy ambigu), le tarif
+      // est ABSENT (""), jamais inventé à 0 : on préserve la distinction « tarif absent » ≠ « gratuit 0 € ».
+      // Une définition connue initialise normalement (0 possible = gratuité explicite de la discipline).
+      const frozenPrice = hasSnapshot ? asNumber(form.get("frozenDisciplinePrice")) : (disciplineDef ? asNumber(disciplineDef.price) : "");
+      const frozenLicense = hasSnapshot ? asNumber(form.get("frozenDisciplineLicense")) : (disciplineDef ? asNumber(disciplineDef.license) : "");
       const next = {
         ...row,
         id: row.id || id("membership"),
@@ -20464,7 +21031,10 @@ ${esc(bodyText)}</pre>
         category: memberCategory({ birthDate, category: row.category }),
         identityPhotoDataUrl: isImageDataUrl(form.get("identityPhotoDataUrl")) ? form.get("identityPhotoDataUrl") : "",
         identityAvatarChoice: normalizeIdentityAvatarChoice(form.get("identityAvatarChoice")),
-        discipline: form.get("discipline"),
+        discipline: disciplineTarget.discipline,
+        // Lot 3A (clôture) — identifiant canonique lu DIRECTEMENT du select (homonymes distincts, id
+        // inconnu préservé, jamais deviné par nom).
+        disciplineId: disciplineTarget.disciplineId,
         medicalCertificate: form.get("medicalCertificate") === "Oui",
         discount: asNumber(form.get("discount")),
         pathologies: form.get("pathologies"),
@@ -20570,8 +21140,32 @@ ${esc(bodyText)}</pre>
     const rows = [];
     // Tarif « à définir » (discipline seedée par le wizard, prix vide) : note douce, non bloquante.
     // Uniquement si price === "" — un 0 explicite (gratuité voulue) ne déclenche jamais cette note.
-    const selDiscipline = asText(form.elements.discipline?.value);
-    if (selDiscipline && disciplineByName(selDiscipline).price === "") rows.push("Tarif à définir : pensez à compléter le tarif de cette discipline avant de facturer.");
+    // Lot 3A (clôture) — le select porte un identifiant : « tarif à définir » ne concerne qu'une
+    // discipline canonique connue (prix vide). Références inconnue/héritée : pas d'alerte tarifaire.
+    const selDisciplineId = asText(form.elements.discipline?.value);
+    const selDisciplineDef = (selDisciplineId && selDisciplineId.slice(0, 2) !== "__") ? disciplineById(selDisciplineId) : null;
+    if (selDisciplineDef && selDisciplineDef.price === "") rows.push("Tarif à définir : pensez à compléter le tarif de cette discipline avant de facturer.");
+    // Lot 3A (clôture finale, FIN-ABS-1/§8) — tarif ABSENT (id inconnu, référence héritée, aucun
+    // instantané ni définition) : le résumé affiche « Non défini » et NON une gratuité 0 €. On invite
+    // explicitement à définir/vérifier le tarif, sans doublonner la note « Tarif à définir » ci-dessus
+    // (qui vise une discipline canonique connue au prix vide).
+    else if (selDisciplineId) {
+      const target = membershipSelectedDisciplineTarget(form);
+      const disciplineDef = disciplineDefinitionFromTarget(target);
+      const hasSnapshot = asText(form.elements.frozenHasSnapshot?.value) === "1";
+      const pricing = membershipDisciplinePricing({
+        disciplineId: target.disciplineId,
+        discipline: target.discipline,
+        disciplineDef: disciplineDef || undefined,
+        // Un montant HISTORIQUE legacy compte comme tarif présent : pas de fausse alerte « non défini ».
+        legacy: {
+          total: form.elements.frozenLegacyTotal?.value ?? "",
+          license: form.elements.frozenLegacyLicense?.value ?? "",
+        },
+        ...(hasSnapshot ? { disciplinePrice: form.elements.frozenDisciplinePrice?.value } : {}),
+      });
+      if (!pricing.hasGrossTotal) rows.push("Tarif non défini : aucun tarif n'est enregistré pour cette discipline. Vérifiez ou définissez le tarif avant de créer un paiement.");
+    }
     if (form.elements.medicalCertificate?.value !== "Oui") rows.push("Attention : le certificat médical n'a pas encore été fourni.");
     if (!asText(form.elements.insuranceChoice?.value)) rows.push("Attention : pensez à vérifier que le membre possède une assurance.");
     box.innerHTML = rows.map((text) => `<div class="form-warning">${esc(text)}</div>`).join("");
@@ -22799,7 +23393,11 @@ ${esc(bodyText)}</pre>
       const rows = state.memberships.map((row) => {
         const calc = calcMembership(row);
         const tax = paidTaxAmount(row.payments);
-        return [row.lastName, row.firstName, row.discipline, calc.total, calc.paid, tax, calc.paid - tax, calc.restDue];
+        // Lot 3A (clôture absolue, FIN-ABS-3/§9) — tarif absent : « Non défini » plutôt qu'un 0 trompeur
+        // dans les colonnes dérivées du tarif discipline (le réglé reste factuel).
+        const totalCell = calc.hasGrossTotal ? calc.total : "Non défini";
+        const restCell = calc.hasGrossTotal ? calc.restDue : "Non défini";
+        return [row.lastName, row.firstName, row.discipline, totalCell, calc.paid, tax, calc.paid - tax, restCell];
       });
       return download("disciplines-mongestaclub.csv", toCsv(["Nom", "Prénom", "Discipline", "Total TTC", "Réglé TTC", "TVA réglée", "Réglé HT", "Reste dû"], rows), "text/csv;charset=utf-8");
     }
@@ -27227,19 +27825,24 @@ ${esc(bodyText)}</pre>
       const index = Number(button.dataset.index);
       const disc = state.tariffs.disciplines[index];
       const name = asText(disc?.name);
-      if (name) {
-        const memberships = (state.memberships || []).filter((m) => asText(m.discipline) === name).length;
-        const groups = (state.groups || []).filter((g) => !g.archived && asText(g.discipline) === name).length;
-        const courses = (state.planningCourses || []).filter((c) => !c.archived && asText(c.discipline) === name).length;
-        if (memberships || groups || courses) {
-          const impacts = [
-            memberships ? `${memberships} inscription(s)` : "",
-            groups ? `${groups} groupe(s)` : "",
-            courses ? `${courses} créneau(x) planning` : "",
-          ].filter(Boolean).join(", ");
-          alert(`Impossible de supprimer la discipline « ${name} » : elle est encore utilisée par ${impacts}. Retirez-la d'abord des inscriptions, groupes ou créneaux concernés.`);
-          return;
-        }
+      // Lot 3A — garde-fou étendu (5 collections) : une discipline référencée ne peut pas être
+      // supprimée physiquement. Le calcul des références est centralisé et testable.
+      const blockers = disciplineReferenceCounts(disc);
+      if (blockers.total > 0) {
+        const groups = blockers.groupsActive + blockers.groupsArchived;
+        const courses = blockers.coursesActive + blockers.coursesArchived;
+        const coaches = blockers.coachesActive + blockers.coachesArchived;
+        const rooms = blockers.roomsActive + blockers.roomsArchived;
+        const impacts = [
+          blockers.memberships ? `${blockers.memberships} inscription(s)` : "",
+          groups ? `${groups} groupe(s)` : "",
+          courses ? `${courses} créneau(x) planning` : "",
+          coaches ? `${coaches} coach(s)` : "",
+          rooms ? `${rooms} salle(s)` : "",
+        ].filter(Boolean).join(", ");
+        const archivedNote = blockers.archived > 0 ? ` (dont ${blockers.archived} archivé${blockers.archived > 1 ? "s" : ""})` : "";
+        alert(`Impossible de supprimer la discipline « ${name || "sans nom"} » : elle est encore utilisée par ${impacts}${archivedNote}. Retirez-la d'abord des inscriptions, groupes, créneaux, coachs ou salles concernés (y compris archivés).`);
+        return;
       }
       if (!await requestConfirm({ title: "Supprimer la discipline", message: `Supprimer définitivement la discipline « ${name || "sans nom"} » ?`, confirmLabel: "Supprimer", danger: true })) return;
       recordHistory();
@@ -27993,7 +28596,7 @@ ${esc(bodyText)}</pre>
       const discipline = state.tariffs.disciplines[index];
       const oldName = discipline.name;
       discipline.name = input.value;
-      syncDisciplineName(oldName, discipline.name);
+      syncDisciplineName(discipline.id, oldName, discipline.name);
     }
     if (kind === "discipline-price") state.tariffs.disciplines[index].price = asNumber(input.value);
     if (kind === "discipline-license") state.tariffs.disciplines[index].license = asNumber(input.value);
@@ -28273,11 +28876,86 @@ ${esc(bodyText)}</pre>
     alert(result?.message || (result?.ok ? "Licence activée." : "Numéro de série invalide."));
   }
 
-  function syncDisciplineName(oldName, nextName) {
-    if (!oldName || oldName === nextName) return;
-    state.memberships.forEach((membership) => {
-      if (membership.discipline === oldName) membership.discipline = nextName;
-    });
+  // Lot 3A — renommage SÛR d'une discipline : ne crée plus de références orphelines.
+  //  - Les entités portant `disciplineId === did` (référence canonique) suivent TOUJOURS : leur
+  //    libellé stocké est mis à jour vers le nouveau nom (et l'id confirmé) ;
+  //  - les anciennes entités liées UNIQUEMENT par le nom (sans id) ne sont mises à jour QUE si
+  //    l'ancien nom est NON AMBIGU (plus aucune autre discipline ne le porte) : on ne devine jamais
+  //    à quelle discipline appartient un libellé partagé ;
+  //  - propage aux memberships, groupes, créneaux, spécialités de coachs et disciplines de salles.
+  // À l'appel, la discipline renommée porte déjà son NOUVEAU nom (cf. updateTariff) : `oldName` sert
+  // donc à retrouver les références encore libellées par l'ancien nom.
+  function syncDisciplineName(disciplineId, oldName, nextName) {
+    const did = asText(disciplineId);
+    const oldKey = disciplineNameKey(oldName);
+    if (!asText(nextName) || (!did && !oldKey)) return;
+    if (did && asText(nextName) === asText(oldName) && disciplineNameKey(nextName) === oldKey) {
+      // Aucun changement effectif de libellé.
+      return;
+    }
+    // Ancien nom encore porté par une AUTRE discipline → propagation par nom interdite (ambiguë).
+    const nameSafe = Boolean(oldKey) && disciplinesByNameKey(oldName).length === 0;
+    const matchesRef = (ref) => {
+      if (did && asText(ref.disciplineId) === did) return true;
+      if (nameSafe && !asText(ref.disciplineId) && disciplineNameKey(ref.discipline) === oldKey) return true;
+      return false;
+    };
+    const applyRef = (ref) => {
+      if (!ref || !matchesRef(ref)) return;
+      ref.discipline = nextName;
+      if (did) ref.disciplineId = did;
+    };
+    (state.memberships || []).forEach(applyRef);
+    (state.groups || []).forEach(applyRef);
+    (state.planningCourses || []).forEach(applyRef);
+    // Coachs / salles : leurs listes de NOMS sont DÉRIVÉES des id canoniques. On les RECONSTRUIT
+    // immédiatement depuis les id (le nom de la discipline a déjà changé) afin qu'aucun libellé
+    // PÉRIMÉ ne subsiste dans specialties/disciplines : cela évite qu'une future normalisation ne
+    // reparse un ancien nom et ne fasse dériver la référence vers une discipline homonyme. Les id ne
+    // changent pas ; seule la partie libellé suit. (Le prochain normalizeState confirme l'idempotence.)
+    (state.coaches || []).forEach((coach) => rebuildEntityDisciplineNames(coach, "specialtyDisciplineIds", "specialties", "specialtiesFree", state));
+    (state.rooms || []).forEach((room) => rebuildEntityDisciplineNames(room, "disciplineIds", "disciplines", "disciplinesFree", state));
+  }
+
+  // Lot 3A — comptage centralisé des références actives à une discipline, dans les 5 collections qui
+  // en dépendent. Une référence est retenue si elle porte l'id canonique de la discipline, OU (à
+  // défaut d'id de part et d'autre) si son libellé historique correspond. Les entités archivées
+  // (groupes/créneaux/coachs/salles) ne bloquent pas. Fonction pure sur le club actif ; sert au
+  // garde-fou de suppression et aux tests.
+  // Lot 3A (D2) — une discipline encore référencée ne peut pas être supprimée physiquement, que la
+  // référence soit ACTIVE ou ARCHIVÉE, par id canonique ou par ancien nom. Le comptage distingue
+  // actif/archivé pour un message clair. Fonction pure sur le club actif ; sert au garde-fou et aux tests.
+  function disciplineReferenceCounts(disc) {
+    const did = asText(disc?.id);
+    const nameKey = disciplineNameKey(disc?.name);
+    const refByBoth = (refId, refName) =>
+      (did && asText(refId) === did) ||
+      ((!asText(refId) || !did) && Boolean(nameKey) && disciplineNameKey(refName) === nameKey);
+    const listHasId = (ids) => Array.isArray(ids) && Boolean(did) && ids.includes(did);
+    const c = {
+      memberships: 0,
+      groupsActive: 0, groupsArchived: 0,
+      coursesActive: 0, coursesArchived: 0,
+      coachesActive: 0, coachesArchived: 0,
+      roomsActive: 0, roomsArchived: 0,
+      active: 0, archived: 0, total: 0,
+    };
+    if (!did && !nameKey) return c;
+    // Les inscriptions ne sont jamais « archivées » : elles comptent toujours comme actives.
+    c.memberships = (state.memberships || []).filter((m) => refByBoth(m.disciplineId, m.discipline)).length;
+    (state.groups || []).forEach((g) => { if (refByBoth(g.disciplineId, g.discipline)) (g.archived ? c.groupsArchived++ : c.groupsActive++); });
+    (state.planningCourses || []).forEach((co) => { if (refByBoth(co.disciplineId, co.discipline)) (co.archived ? c.coursesArchived++ : c.coursesActive++); });
+    // Lot 3A (DEF-2/DEF-4) — coachs/salles : références canoniques par IDENTIFIANT UNIQUEMENT. Les
+    // noms de compat (`specialties`/`disciplines`) et les valeurs libres (`*Free`) ne bloquent PAS
+    // (une référence [A] ne bloque que A, jamais l'homonyme B ; une valeur libre « Judo » ne bloque
+    // aucune discipline canonique). Une véritable donnée legacy sans id a été résolue en id (si non
+    // ambiguë) ou en valeur libre (si ambiguë) par la normalisation — donc non bloquante ici.
+    (state.coaches || []).forEach((coach) => { if (listHasId(coach.specialtyDisciplineIds)) (coach.archived ? c.coachesArchived++ : c.coachesActive++); });
+    (state.rooms || []).forEach((room) => { if (listHasId(room.disciplineIds)) (room.archived ? c.roomsArchived++ : c.roomsActive++); });
+    c.active = c.memberships + c.groupsActive + c.coursesActive + c.coachesActive + c.roomsActive;
+    c.archived = c.groupsArchived + c.coursesArchived + c.coachesArchived + c.roomsArchived;
+    c.total = c.active + c.archived;
+    return c;
   }
 
   function syncArticlePriceToOrders(article) {
@@ -28930,7 +29608,7 @@ ${esc(bodyText)}</pre>
       </div>
       <div class="group-card-meta">
         <span>${esc(group.type || "Groupe")}</span>
-        ${group.discipline ? `<span>· ${esc(group.discipline)}</span>` : ""}
+        ${disciplineLabelFor(group) ? `<span>· ${esc(disciplineLabelFor(group))}</span>` : ""}
         ${coachLabelFor(group.coachId, group.coach) ? `<span>· Coach ${esc(coachLabelFor(group.coachId, group.coach))}</span>` : ""}
         <span>· ${esc(ageText)}</span>
       </div>
@@ -28947,7 +29625,6 @@ ${esc(bodyText)}</pre>
 
   function openGroupDialog(group = {}) {
     const types = ["Débutants", "Confirmés", "Enfants", "Adultes", "Compétition", "Loisir", "Autre"];
-    const disciplines = ["", ...(state.tariffs.disciplines || []).map((d) => d.name)];
     const body = [
       field("name", "Nom du groupe *", group.name || "", "text", "required"),
       // Lot V1 Niveaux/Groupes — "Type" n'a jamais été qu'un repère d'affichage (cf. audit
@@ -28955,8 +29632,9 @@ ${esc(bodyText)}</pre>
       // membership.level, practiceType ou ageMin/ageMax. Libellé clarifié uniquement ;
       // mêmes valeurs, même donnée stockée (group.type), aucun automatisme ajouté.
       selectField("type", "Type de groupe (repère)", group.type || "Autre", types),
-      selectField("discipline", "Discipline", group.discipline || "", disciplines),
-      `<div data-coach-field>${coachPickerHtml(group.coachId, group.discipline, group.coach, "Coach / encadrant")}</div>`,
+      // Lot 3A (clôture) — sélecteur PAR IDENTIFIANT : value = discipline.id, homonymes distincts.
+      disciplineSelectField("discipline", "Discipline", group),
+      `<div data-coach-field>${coachPickerHtml(group.coachId, { disciplineId: group.disciplineId, discipline: group.discipline }, group.coach, "Coach / encadrant")}</div>`,
       `<div class="form-grid compact">
         ${field("ageMin", "Âge min", group.ageMin ?? "", "number", 'step="1" min="0"')}
         ${field("ageMax", "Âge max", group.ageMax ?? "", "number", 'step="1" min="0"')}
@@ -28970,13 +29648,15 @@ ${esc(bodyText)}</pre>
       const name = asText(data.get("name"));
       if (!name) { alert("Le nom du groupe est obligatoire."); return false; }
       const groupCoachId = asText(data.get("coachId"));
+      // Lot 3A (clôture) — sélection CANONIQUE : la valeur du select est un identifiant (ou "__legacy__"
+      // / ""). On dérive { disciplineId, discipline } directement de l'id, sans jamais repasser par le nom.
+      const groupTarget = disciplineTargetFromSelectValue(data.get("discipline"), group);
       // Filet de sécurité : un coach lié (coachId) doit prendre en charge la discipline choisie.
       // (Coachs polyvalents, archivés ou saisis en texte libre ne sont pas concernés.)
-      const groupDiscipline = data.get("discipline") || "";
       if (groupCoachId) {
         const linkedCoach = coachById(groupCoachId);
-        if (linkedCoach && !coachHandlesDiscipline(linkedCoach, groupDiscipline)) {
-          alert(`${coachFullName(linkedCoach)} ne prend pas en charge la discipline « ${groupDiscipline} ». Choisis un coach compatible ou change la discipline.`);
+        if (linkedCoach && !coachHandlesDiscipline(linkedCoach, groupTarget)) {
+          alert(`${coachFullName(linkedCoach)} ne prend pas en charge la discipline « ${groupTarget.discipline} ». Choisis un coach compatible ou change la discipline.`);
           return false;
         }
       }
@@ -28985,7 +29665,9 @@ ${esc(bodyText)}</pre>
         id: group.id || id("group"),
         name,
         type: data.get("type") || "Autre",
-        discipline: data.get("discipline") || "",
+        discipline: groupTarget.discipline,
+        // Lot 3A (clôture) — identifiant canonique lu DIRECTEMENT du select (homonymes distincts).
+        disciplineId: groupTarget.disciplineId,
         coachId: groupCoachId,
         coach: groupCoachId ? coachFullName(coachById(groupCoachId)) : asText(data.get("coach")),
         ageMin: asText(data.get("ageMin")) === "" ? "" : asNumber(data.get("ageMin")),
@@ -29004,11 +29686,12 @@ ${esc(bodyText)}</pre>
       form.elements.discipline?.addEventListener("change", () => {
         const wrap = form.querySelector("[data-coach-field]");
         if (!wrap) return;
-        const newDiscipline = form.elements.discipline.value;
+        // Cible construite depuis l'IDENTIFIANT sélectionné (aucun détour par un nom ambigu).
+        const newTarget = disciplineTargetFromSelectValue(form.elements.discipline.value, group);
         const currentId = form.querySelector("[data-coach-select]")?.value || "";
         const currentCoach = currentId ? coachById(currentId) : null;
-        const keepId = (currentCoach && coachHandlesDiscipline(currentCoach, newDiscipline)) ? currentId : "";
-        wrap.innerHTML = coachPickerHtml(keepId, newDiscipline, form.elements.coach?.value || "", "Coach / encadrant");
+        const keepId = (currentCoach && coachHandlesDiscipline(currentCoach, newTarget)) ? currentId : "";
+        wrap.innerHTML = coachPickerHtml(keepId, newTarget, form.elements.coach?.value || "", "Coach / encadrant");
       });
     });
   }
@@ -29966,25 +30649,29 @@ ${esc(bodyText)}</pre>
   // Compatibles = groupes de la discipline choisie OU sans discipline. Le groupe déjà choisi
   // est toujours conservé (même hors discipline) pour ne pas perdre l'affectation existante.
   function planningGroupFieldHtml(course = {}) {
-    const discipline = asText(course.discipline);
+    // Lot 3A (clôture) — compatibilité Groupe ↔ Cours CANONIQUE par identifiant (F-GRP-1) : le nom
+    // n'élargit jamais la compatibilité (deux homonymes A/B restent distincts).
+    const hasDiscipline = Boolean(asText(course.disciplineId) || asText(course.discipline));
     const seen = new Set();
     const all = (state.groups || []).filter((g) => !g.archived).filter((g) => {
       if (seen.has(g.id)) return false; seen.add(g.id); return true;
     });
-    let list = discipline ? all.filter((g) => !asText(g.discipline) || asText(g.discipline) === discipline) : all;
+    let list = all.filter((g) => groupMatchesCourseDiscipline(g, course));
     const selectedId = asText(course.groupId);
     const selected = selectedId ? all.find((g) => g.id === selectedId) : null;
-    if (selected && !list.some((g) => g.id === selected.id)) list = [selected, ...list];
-    const noneMsg = discipline && !list.length ? `<p class="muted">Aucun groupe disponible pour cette discipline.</p>` : "";
+    // Un groupe sélectionné mais INCOMPATIBLE reste affiché (valeur héritée) pour ne pas perdre
+    // l'information, marqué « autre discipline » — jamais présenté comme un groupe compatible ordinaire.
+    const selectedIncompatible = Boolean(selected) && !list.some((g) => g.id === selected.id);
+    if (selectedIncompatible) list = [selected, ...list];
+    const noneMsg = hasDiscipline && !list.length ? `<p class="muted">Aucun groupe disponible pour cette discipline.</p>` : "";
     const options = `<option value="">—</option>` + list.map((g) => {
-      const tag = discipline && asText(g.discipline) && g.discipline !== discipline ? ` (${asText(g.discipline)})` : "";
+      const tag = !groupMatchesCourseDiscipline(g, course) ? ` (autre discipline)` : "";
       return `<option value="${esc(g.id)}" ${selectedId === g.id ? "selected" : ""}>${esc(g.name)}${esc(tag)}</option>`;
     }).join("");
     return `<label>Groupe<select name="groupId" data-group-select>${options}</select></label>${noneMsg}`;
   }
 
   function openCourseDialog(course = {}, contextDate = "") {
-    const disciplines = ["", ...(state.tariffs.disciplines || []).map((d) => d.name)];
     const groups = (state.groups || []).filter((g) => !g.archived);
     // Si la date consultée porte une exception, le rappeler clairement : cet éditeur modifie le
     // créneau RÉCURRENT (toutes les semaines), pas l'exception ponctuelle de cette date précise.
@@ -30019,7 +30706,8 @@ ${esc(bodyText)}</pre>
       </div>`,
       `<div data-recurrence-field>${recurrenceFieldsHtml(course)}</div>`,
       `<p class="muted">Par défaut, le créneau revient chaque semaine. Choisissez « Mensuelle » pour un cours « 1er lundi », « 3e samedi » ou « le 15 ». Pour « Même date », le jour de la semaine dépend de la date (le champ Jour est ignoré).</p>`,
-      selectField("discipline", "Discipline", course.discipline || "", disciplines),
+      // Lot 3A (clôture) — sélecteur PAR IDENTIFIANT : value = discipline.id, homonymes distincts.
+      disciplineSelectField("discipline", "Discipline", course),
       `<div data-group-field>${planningGroupFieldHtml(course)}</div>`,
       `<div data-coach-field>${planningCoachFieldHtml(course)}</div>`,
       `<div data-room-field>${planningRoomFieldHtml(course)}</div>`,
@@ -30035,13 +30723,15 @@ ${esc(bodyText)}</pre>
       // Plus de saisie libre : si un coach déclaré est choisi on prend son nom, sinon on
       // conserve telle quelle l'éventuelle ancienne saisie libre héritée (sans la ré-éditer).
       const coachText = coachId ? coachFullName(coachById(coachId)) : asText(course.coach);
+      // Lot 3A (clôture) — sélection CANONIQUE : la valeur du select est un identifiant (ou "__legacy__"
+      // / ""). On dérive { disciplineId, discipline } directement de l'id, sans repasser par le nom.
+      const courseTarget = disciplineTargetFromSelectValue(data.get("discipline"), course);
       // Filet de sécurité : un coach lié (coachId) doit prendre en charge la discipline choisie.
       // (Coachs polyvalents, archivés ou saisis en texte libre ne sont pas concernés.)
-      const courseDiscipline = data.get("discipline") || "";
       if (coachId) {
         const linkedCoach = coachById(coachId);
-        if (linkedCoach && !coachHandlesDiscipline(linkedCoach, courseDiscipline)) {
-          alert(`${coachFullName(linkedCoach)} ne prend pas en charge la discipline « ${courseDiscipline} ». Choisis un coach compatible ou change la discipline.`);
+        if (linkedCoach && !coachHandlesDiscipline(linkedCoach, courseTarget)) {
+          alert(`${coachFullName(linkedCoach)} ne prend pas en charge la discipline « ${courseTarget.discipline} ». Choisis un coach compatible ou change la discipline.`);
           return false;
         }
       }
@@ -30051,15 +30741,35 @@ ${esc(bodyText)}</pre>
       // (Salles polyvalentes, archivées ou lieux saisis en texte libre ne sont pas concernés.)
       if (roomId) {
         const linkedRoom = roomById(roomId);
-        if (linkedRoom && !roomHandlesDiscipline(linkedRoom, courseDiscipline)) {
-          alert(`${roomName(linkedRoom)} ne prend pas en charge la discipline « ${courseDiscipline} ». Choisis une salle compatible ou change la discipline.`);
+        if (linkedRoom && !roomHandlesDiscipline(linkedRoom, courseTarget)) {
+          alert(`${roomName(linkedRoom)} ne prend pas en charge la discipline « ${courseTarget.discipline} ». Choisis une salle compatible ou change la discipline.`);
           return false;
         }
       }
+      // Lot 3A (clôture) — cohérence canonique Groupe ↔ discipline (F-GRP-1 / UX-GRP-1) : un groupe
+      // incompatible par identité est RETIRÉ explicitement (jamais enregistré silencieusement sur une
+      // autre discipline), mais PAS en silence : on informe et on demande confirmation. L'utilisateur
+      // qui a déjà désélectionné le groupe n'est pas sollicité (selectedGroup null).
+      const selectedGroupId = asText(data.get("groupId"));
+      const selectedGroup = selectedGroupId ? (state.groups || []).find((g) => g.id === selectedGroupId) : null;
+      const groupIncompatible = Boolean(selectedGroup)
+        && !groupMatchesCourseDiscipline(selectedGroup, { disciplineId: courseTarget.disciplineId, discipline: courseTarget.discipline });
+      if (groupIncompatible) {
+        const confirmRemoval = await requestConfirm({
+          title: "Groupe d'une autre discipline",
+          message: `Le groupe « ${asText(selectedGroup.name)} » n'appartient pas à la discipline de ce cours.\nIl sera retiré de ce cours.`,
+          confirmLabel: "Retirer et enregistrer",
+        });
+        if (!confirmRemoval) return false; // annulation → le formulaire reste ouvert, rien n'est enregistré
+      }
+      const groupIdCoherent = groupIncompatible ? "" : selectedGroupId;
       const next = {
         ...course, id: course.id || id("course"), name,
         day: data.get("day") || "", startTime: data.get("startTime") || "", endTime: data.get("endTime") || "",
-        discipline: data.get("discipline") || "", groupId: data.get("groupId") || "",
+        discipline: courseTarget.discipline,
+        // Lot 3A (clôture) — identifiant canonique lu DIRECTEMENT du select (homonymes distincts).
+        disciplineId: courseTarget.disciplineId,
+        groupId: groupIdCoherent,
         coachId, coach: coachText,
         roomId, location: locationText, maxPlaces: asText(data.get("maxPlaces")) === "" ? "" : asNumber(data.get("maxPlaces")),
         recurrence: {
@@ -30095,9 +30805,12 @@ ${esc(bodyText)}</pre>
     }, (form) => {
       // Recalcule les listes de coachs / salles éligibles quand discipline / jour / horaires changent.
       const rebuild = () => {
+        // Lot 3A (clôture) — cible dérivée de l'IDENTIFIANT sélectionné : id → disciplineById(id) → nom.
+        const disc = disciplineTargetFromSelectValue(form.elements.discipline?.value, course);
         const cur = {
           id: course.id,
-          discipline: form.elements.discipline?.value,
+          discipline: disc.discipline,
+          disciplineId: disc.disciplineId,
           day: form.elements.day?.value,
           startTime: form.elements.startTime?.value,
           endTime: form.elements.endTime?.value,
@@ -30111,13 +30824,13 @@ ${esc(bodyText)}</pre>
         // (On ne purge pas sur la simple indisponibilité horaire, gérée par le marqueur « (indisponible) ».)
         if (cur.coachId) {
           const curCoach = coachById(cur.coachId);
-          if (curCoach && !coachHandlesDiscipline(curCoach, cur.discipline)) cur.coachId = "";
+          if (curCoach && !coachHandlesDiscipline(curCoach, { disciplineId: cur.disciplineId, discipline: cur.discipline })) cur.coachId = "";
         }
         // Salle : conservée seulement si elle prend toujours en charge la discipline ; sinon vidée.
         // (On ne purge pas sur la simple indisponibilité/conflit de réservation, gérés par « (indisponible) ».)
         if (cur.roomId) {
           const curRoom = roomById(cur.roomId);
-          if (curRoom && !roomHandlesDiscipline(curRoom, cur.discipline)) cur.roomId = "";
+          if (curRoom && !roomHandlesDiscipline(curRoom, { disciplineId: cur.disciplineId, discipline: cur.discipline })) cur.roomId = "";
         }
         // Groupe : re-filtré selon la discipline (la sélection en cours est conservée).
         const groupWrap = form.querySelector("[data-group-field]");
@@ -30275,7 +30988,7 @@ ${esc(bodyText)}</pre>
         ${field("date", "Date *", session.date || todayInputValue(), "date", "required")}
         ${`<label>Groupe<select name="groupId" data-attendance-group>${groups.map((g) => `<option value="${esc(g.id)}" ${groupId === g.id ? "selected" : ""}>${esc(g.name)}</option>`).join("")}</select></label>`}
       </div>`,
-      `<div data-coach-field>${coachPickerHtml(session.coachId || (group ? group.coachId : ""), group ? group.discipline : "", session.coach || (group ? group.coach : ""), "Coach")}</div>`,
+      `<div data-coach-field>${coachPickerHtml(session.coachId || (group ? group.coachId : ""), group ? { disciplineId: group.disciplineId, discipline: group.discipline } : "", session.coach || (group ? group.coach : ""), "Coach")}</div>`,
       `<div class="dialog-section attendance-call" data-list-search-scope>
         <h3>Appel</h3>
         <div class="dialog-list-search">
@@ -30308,7 +31021,7 @@ ${esc(bodyText)}</pre>
         const ms = getMembersByGroup(gid);
         tbody.innerHTML = ms.length ? ms.map((m) => attendanceRowHtml(m, {}, g ? g.name : "")).join("") : `<tr><td colspan="3" class="empty">Aucun adhérent dans ce groupe.</td></tr>`;
         const wrap = form.querySelector("[data-coach-field]");
-        if (wrap) wrap.innerHTML = coachPickerHtml(g ? g.coachId : "", g ? g.discipline : "", g ? g.coach : "", "Coach");
+        if (wrap) wrap.innerHTML = coachPickerHtml(g ? g.coachId : "", g ? { disciplineId: g.disciplineId, discipline: g.discipline } : "", g ? g.coach : "", "Coach");
         // Réapplique le terme de recherche courant aux nouvelles lignes.
         applyDialogListFilter(form.querySelector("[data-list-search]"));
       });
@@ -30405,28 +31118,31 @@ ${esc(bodyText)}</pre>
   // Le coach peut-il assurer cette discipline ? Oui s'il l'encadre explicitement, ou s'il
   // est marqué « polyvalent ». Le mot-clé texte « Multisport »/« Tout » n'intervient plus
   // (migré vers l'option polyvalente). Une fiche sans spécialité n'est plus éligible partout.
-  function coachHandlesDiscipline(coach, discipline) {
-    if (!asText(discipline)) return true;
+  // Lot 3A (DEF-1/DEF-3) — compatibilité CANONIQUE : `target` peut être un nom (legacy) ou un objet
+  // { disciplineId, discipline }. Quand la cible porte un id, seule la présence EXACTE de cet id
+  // parmi `coach.specialtyDisciplineIds` rend compatible (aucune correspondance par nom ni sous-chaîne,
+  // donc deux homonymes A/B restent distincts). Les valeurs libres (`specialtiesFree`) ne rendent
+  // jamais compatible avec une discipline canonique (DEF-4).
+  function coachHandlesDiscipline(coach, target) {
+    const tgt = disciplineTargetOf(target);
+    if (!tgt.disciplineId && !tgt.discipline) return true;
     if (coachIsVersatile(coach)) return true;
-    return coachHasExplicitDiscipline(coach, discipline);
+    return coachHasExplicitDiscipline(coach, target);
   }
 
-  // Le coach a-t-il EXPLICITEMENT cette discipline dans ses spécialités ? (hors joker
-  // "multisport"/"tout" et hors fiche sans aucune spécialité). Sert à informer — sans
-  // bloquer — quand un coach polyvalent assure une discipline qu'il n'encadre pas en titre.
-  function coachHasExplicitDiscipline(coach, discipline) {
-    const d = asText(discipline).toLowerCase();
-    if (!d) return true;
-    const specs = ((coach && coach.specialties) || []).map((s) => asText(s).toLowerCase()).filter(Boolean);
-    if (!specs.length) return false;
-    return specs.some((s) => s !== "multisport" && s !== "tout" && (s === d || d.indexOf(s) >= 0 || s.indexOf(d) >= 0));
+  // Le coach prend-il EXPLICITEMENT en charge la cible ? (hors joker polyvalent, géré au-dessus).
+  // Sert aussi à informer (note « hors spécialité ») sans bloquer.
+  function coachHasExplicitDiscipline(coach, target) {
+    return entityHandlesDisciplineTarget(coach && coach.specialtyDisciplineIds, coach && coach.specialtiesFree, target, undefined, false);
   }
 
   // Message d'information (non bloquant) à afficher quand un coach assure une discipline
   // hors de ses spécialités déclarées. Renvoie "" si tout est cohérent.
-  function coachOffSpecialtyNoteHtml(coach, discipline) {
-    if (!coach || !asText(discipline) || coachHasExplicitDiscipline(coach, discipline)) return "";
-    return `<p class="muted">${metaIcon("coach-meta-info")} ${esc(coachFullName(coach))} n'a pas « ${esc(asText(discipline))} » dans ses spécialités, mais peut tout de même assurer la séance.</p>`;
+  function coachOffSpecialtyNoteHtml(coach, target) {
+    const tgt = disciplineTargetOf(target);
+    const label = disciplineLabelFor({ disciplineId: tgt.disciplineId, discipline: tgt.discipline }) || tgt.discipline;
+    if (!coach || !asText(label) || coachHasExplicitDiscipline(coach, target)) return "";
+    return `<p class="muted">${metaIcon("coach-meta-info")} ${esc(coachFullName(coach))} n'a pas « ${esc(label)} » dans ses spécialités, mais peut tout de même assurer la séance.</p>`;
   }
 
   // Disponibilité hebdomadaire : la plage du créneau est-elle couverte ? (pas de dispo = dispo)
@@ -30475,7 +31191,7 @@ ${esc(bodyText)}</pre>
   // Coachs éligibles pour un créneau (discipline + dispo + pas d'indispo + pas de conflit).
   function eligibleCoachesForCourse(course = {}) {
     return activeCoaches().filter((c) =>
-      coachHandlesDiscipline(c, course.discipline) &&
+      coachHandlesDiscipline(c, { disciplineId: course.disciplineId, discipline: course.discipline }) &&
       coachAvailableForSlot(c, course.day, course.startTime, course.endTime) &&
       !coachPonctualUnavailableForCourseDay(c, course.day, course.startTime, course.endTime) &&
       !coachCourseConflict(c.id, course));
@@ -30516,9 +31232,11 @@ ${esc(bodyText)}</pre>
   // du club, filtrée par spécialité si une discipline est fournie. Conserve une saisie
   // libre "coach" pour la compatibilité avec les anciennes données (et garde le coach
   // déjà choisi même s'il a été archivé, marqué "(archivé)", pour ne rien perdre).
-  function coachPickerHtml(selectedId, discipline, freeText, label = "Coach") {
+  // Lot 3A — `target` = nom (legacy) ou { disciplineId, discipline }. Filtrage des coachs éligibles
+  // par identité canonique (les homonymes ne se mélangent plus).
+  function coachPickerHtml(selectedId, target, freeText, label = "Coach") {
     const active = activeCoaches();
-    const eligible = active.filter((c) => coachHandlesDiscipline(c, discipline));
+    const eligible = active.filter((c) => coachHandlesDiscipline(c, target));
     const selected = selectedId ? coachById(selectedId) : null;
     const opts = eligible.slice();
     if (selected && !eligible.some((c) => c.id === selected.id)) opts.unshift(selected);
@@ -30526,7 +31244,7 @@ ${esc(bodyText)}</pre>
       const archived = !active.some((a) => a.id === c.id);
       return `<option value="${esc(c.id)}" ${selectedId === c.id ? "selected" : ""}>${esc(coachFullName(c))}${archived ? " (archivé)" : ""}</option>`;
     }).join("");
-    const offSpecMsg = coachOffSpecialtyNoteHtml(selected, discipline);
+    const offSpecMsg = coachOffSpecialtyNoteHtml(selected, target);
     return `<label>${esc(label)}<select name="coachId" data-coach-select>${options}</select></label>${offSpecMsg}
       ${field("coach", "ou nom du coach (saisie libre)", freeText || "")}`;
   }
@@ -30860,7 +31578,11 @@ ${esc(bodyText)}</pre>
   }
 
   function openCoachDialog(coach = {}) {
-    const disciplines = (state.tariffs.disciplines || []).map((d) => d.name);
+    // Lot 3A — sélection CANONIQUE par identifiant. Les cases des disciplines portent discipline.id
+    // (les homonymes sont donc distinguables) ; les id inconnus et les valeurs libres/historiques
+    // sont présentés séparément et préservés.
+    const specView = disciplineSelectionView(coach.specialtyDisciplineIds, [...(coach.specialtiesFree || []), ...(coach.specialties || [])]);
+    const selectedIdSet = new Set(specView.selectedIds);
     const hasPhoto = isImageDataUrl(coach.photoDataUrl);
     const choice = coachAvatarChoiceValue(coach.avatarChoice);
     const avatarChoiceInner = (value) => {
@@ -30908,7 +31630,12 @@ ${esc(bodyText)}</pre>
       `<div class="form-grid compact">${selectField("expenseUnit", "Unité", coach.expenseUnit || "séance", ["séance", "heure", "forfait"])}${selectField("expenseCategory", "Catégorie comptable", coach.expenseCategory || "Coach / intervenant", ["Coach / intervenant", "Rémunération", "Prestation", "Autre dépense"])}</div>`,
       field("expenseNote", "Note comptable", coach.expenseNote || ""),
       `<div class="dialog-section"><h3>Spécialités (disciplines encadrées)</h3></div>`,
-      `<div class="form-check-grid">${disciplines.map((d) => `<label class="form-check"><input type="checkbox" data-coach-spec value="${esc(d)}" ${(coach.specialties || []).includes(d) ? "checked" : ""}/> ${esc(d)}</label>`).join("") || '<span class="muted">Crée d\'abord des disciplines dans Tarifs.</span>'}</div>`,
+      // Cases CANONIQUES : la valeur est discipline.id (pas le nom) ; libellé distinctif si homonyme.
+      `<div class="form-check-grid">${(state.tariffs.disciplines || []).map((d) => `<label class="form-check"><input type="checkbox" data-coach-spec value="${esc(d.id)}" ${selectedIdSet.has(d.id) ? "checked" : ""}/> ${esc(disciplineOptionLabel(d))}</label>`).join("") || '<span class="muted">Crée d\'abord des disciplines dans Tarifs.</span>'}</div>`,
+      // Références d'id INCONNUES (discipline supprimée/importée) : visibles et retirables (décocher).
+      specView.unknownIds.length ? `<div class="form-check-grid coach-spec-extra">${specView.unknownIds.map((uid) => `<label class="form-check"><input type="checkbox" data-coach-unknown-ref value="${esc(uid)}" checked/> Référence de discipline indisponible <small class="muted" title="${esc(uid)}">— décocher pour la retirer</small></label>`).join("")}</div>` : "",
+      // Spécialités LIBRES / historiques (non canoniques) : conservées, retirables (décocher).
+      specView.freeNames.length ? `<div class="form-check-grid coach-spec-extra">${specView.freeNames.map((n) => `<label class="form-check"><input type="checkbox" data-coach-free value="${esc(n)}" checked/> ${esc(n)} <small class="muted">— spécialité libre / historique</small></label>`).join("")}</div>` : "",
       `<div class="coach-option-box">
         <label class="form-check"><input type="checkbox" name="versatile" ${coach.versatile ? "checked" : ""}/> Peut intervenir exceptionnellement sur toutes les disciplines</label>
         <p class="muted coach-versatile-hint">À utiliser lorsqu'un coach peut dépanner ponctuellement hors de ses spécialités. MonGestaClub affichera simplement un message d'information sur les séances concernées.</p>
@@ -30925,11 +31652,14 @@ ${esc(bodyText)}</pre>
     showDialog(coach.id ? "Modifier le coach" : "Nouveau coach", body, (data, formElement) => {
       const lastName = asText(data.get("lastName"));
       if (!lastName) { alert("Le nom du coach est obligatoire."); return false; }
-      const checkedSpecs = [...formElement.querySelectorAll("[data-coach-spec]:checked")].map((el) => el.value);
-      // Le champ « Autres spécialités » a été retiré (plus de rôle métier depuis l'option
-      // polyvalente). On CONSERVE toutefois d'éventuelles spécialités libres déjà enregistrées
-      // pour ne rien perdre — elles restent informatives, sans effet sur l'éligibilité.
-      const extra = (coach.specialties || []).filter((s) => !disciplines.includes(s));
+      // Lot 3A — la sélection canonique est lue DIRECTEMENT depuis les identifiants cochés (valeurs =
+      // discipline.id). Les id inconnus décochés sont retirés ; les valeurs libres décochées aussi.
+      const checkedIds = [...formElement.querySelectorAll("[data-coach-spec]:checked")].map((el) => el.value);
+      const keptUnknownIds = [...formElement.querySelectorAll("[data-coach-unknown-ref]:checked")].map((el) => el.value);
+      const keptFree = [...formElement.querySelectorAll("[data-coach-free]:checked")].map((el) => el.value);
+      const specialtyDisciplineIds = [...new Set([...checkedIds, ...keptUnknownIds])];
+      // Liste de NOMS de compat DÉRIVÉE des id (nom courant) + valeurs libres conservées (dédupliquées).
+      const specialtiesNames = [...new Set([...canonicalDisciplineNames(specialtyDisciplineIds), ...keptFree])];
       const availability = [...formElement.querySelectorAll("[data-avail-row]")].map((row) => ({
         day: row.querySelector("[data-avail-day]")?.value || "Lundi",
         start: row.querySelector("[data-avail-start]")?.value || "",
@@ -30958,7 +31688,10 @@ ${esc(bodyText)}</pre>
         expenseUnit: data.get("expenseUnit") || "séance",
         expenseCategory: data.get("expenseCategory") || "Coach / intervenant",
         expenseNote: asText(data.get("expenseNote")),
-        specialties: [...new Set([...checkedSpecs, ...extra])],
+        // id canoniques AUTORITATIFS (lus des cases id) ; noms de compat dérivés ; valeurs libres explicites.
+        specialtyDisciplineIds,
+        specialties: specialtiesNames,
+        specialtiesFree: keptFree,
         versatile: Boolean(data.get("versatile")),
         availability, unavailabilities,
         notes: asText(data.get("notes")), archived: Boolean(coach.archived),
@@ -30989,12 +31722,13 @@ ${esc(bodyText)}</pre>
   function activeRooms() { return (state.rooms || []).filter((r) => !r.archived); }
 
   // Compatibilité : cette salle accueille-t-elle cette discipline ? (pas de liste = polyvalente)
-  function roomHandlesDiscipline(room, discipline) {
-    if (!asText(discipline)) return true;
-    const list = (room.disciplines || []).map((s) => asText(s).toLowerCase());
-    if (!list.length) return true;
-    const d = asText(discipline).toLowerCase();
-    return list.some((s) => s === d || s === "multisport" || s === "tout" || d.indexOf(s) >= 0 || s.indexOf(d) >= 0);
+  // Lot 3A (DEF-1/DEF-3) — compatibilité CANONIQUE : `target` = nom (legacy) ou { disciplineId,
+  // discipline }. Cible avec id => présence EXACTE de l'id parmi `room.disciplineIds` (aucune
+  // correspondance par nom/sous-chaîne). Salle SANS aucune déclaration (ni id, ni valeur libre) =
+  // « accueille tout » (comportement historique). Les valeurs libres ne rendent pas compatible avec
+  // une discipline canonique (DEF-4).
+  function roomHandlesDiscipline(room, target) {
+    return entityHandlesDisciplineTarget(room && room.disciplineIds, room && room.disciplinesFree, target, undefined, true);
   }
 
   // Disponibilité hebdomadaire : la plage du créneau est-elle couverte ? (pas de dispo = dispo)
@@ -31043,7 +31777,7 @@ ${esc(bodyText)}</pre>
   // Salles éligibles pour un créneau (compatibilité discipline + dispo + pas d'indispo + pas de conflit de réservation).
   function eligibleRoomsForCourse(course = {}) {
     return activeRooms().filter((r) =>
-      roomHandlesDiscipline(r, course.discipline) &&
+      roomHandlesDiscipline(r, { disciplineId: course.disciplineId, discipline: course.discipline }) &&
       roomAvailableForSlot(r, course.day, course.startTime, course.endTime) &&
       !roomPonctualUnavailableForCourseDay(r, course.day, course.startTime, course.endTime) &&
       !roomCourseConflict(r.id, course));
@@ -31092,9 +31826,10 @@ ${esc(bodyText)}</pre>
   // filtrée par discipline compatible si fournie. Conserve une saisie libre "location"
   // pour la compatibilité avec les anciennes données (garde la salle choisie même
   // archivée, marquée "(archivée)").
-  function roomPickerHtml(selectedId, discipline, freeText, label = "Salle / lieu") {
+  // Lot 3A — `target` = nom (legacy) ou { disciplineId, discipline } : filtrage par identité canonique.
+  function roomPickerHtml(selectedId, target, freeText, label = "Salle / lieu") {
     const active = activeRooms();
-    const eligible = active.filter((r) => roomHandlesDiscipline(r, discipline));
+    const eligible = active.filter((r) => roomHandlesDiscipline(r, target));
     const selected = selectedId ? roomById(selectedId) : null;
     const opts = eligible.slice();
     if (selected && !eligible.some((r) => r.id === selected.id)) opts.unshift(selected);
@@ -31391,8 +32126,10 @@ ${esc(bodyText)}</pre>
   }
 
   function openRoomDialog(room = {}) {
-    const disciplines = (state.tariffs.disciplines || []).map((d) => d.name);
-    const extraSpecs = (room.disciplines || []).filter((s) => !disciplines.includes(s));
+    // Lot 3A — sélection CANONIQUE par identifiant (homonymes distinguables) ; id inconnus et valeurs
+    // libres/historiques présentés séparément et préservés.
+    const specView = disciplineSelectionView(room.disciplineIds, [...(room.disciplinesFree || []), ...(room.disciplines || [])]);
+    const selectedIdSet = new Set(specView.selectedIds);
     const body = [
       `<div class="form-grid compact">${field("name", "Nom de la salle *", room.name || "", "text", "required")}${selectField("type", "Type", room.type || "", ROOM_TYPES)}</div>`,
       textareaField("description", "Description", room.description || ""),
@@ -31408,8 +32145,12 @@ ${esc(bodyText)}</pre>
       `<div class="form-grid compact">${field("expenseAmount", "Montant comptable (€)", room.expenseAmount ?? "", "number", 'step="0.01" min="0"')}${selectField("expenseUnit", "Unité", room.expenseUnit || "réservation", ["séance", "heure", "réservation", "forfait"])}</div>`,
       `<div class="form-grid compact">${selectField("expenseCategory", "Catégorie comptable", room.expenseCategory || "Location salle", ["Location salle", "Autre dépense"])}${field("expenseNote", "Note comptable", room.expenseNote || "")}</div>`,
       `<div class="dialog-section"><h3>Disciplines / activités compatibles</h3></div>`,
-      `<div class="form-check-grid">${disciplines.map((d) => `<label class="form-check"><input type="checkbox" data-room-spec value="${esc(d)}" ${(room.disciplines || []).includes(d) ? "checked" : ""}/> ${esc(d)}</label>`).join("") || '<span class="muted">Crée d\'abord des disciplines dans Tarifs.</span>'}</div>`,
-      field("disciplinesExtra", "Autres activités (séparées par des virgules)", extraSpecs.join(", "), "text", 'placeholder="Ex. Basket, Réunion, Course"'),
+      // Cases CANONIQUES : la valeur est discipline.id (pas le nom) ; libellé distinctif si homonyme.
+      `<div class="form-check-grid">${(state.tariffs.disciplines || []).map((d) => `<label class="form-check"><input type="checkbox" data-room-spec value="${esc(d.id)}" ${selectedIdSet.has(d.id) ? "checked" : ""}/> ${esc(disciplineOptionLabel(d))}</label>`).join("") || '<span class="muted">Crée d\'abord des disciplines dans Tarifs.</span>'}</div>`,
+      // Références d'id INCONNUES (discipline supprimée/importée) : visibles et retirables (décocher).
+      specView.unknownIds.length ? `<div class="form-check-grid coach-spec-extra">${specView.unknownIds.map((uid) => `<label class="form-check"><input type="checkbox" data-room-unknown-ref value="${esc(uid)}" checked/> Référence de discipline indisponible <small class="muted" title="${esc(uid)}">— décocher pour la retirer</small></label>`).join("")}</div>` : "",
+      // Valeurs LIBRES / historiques (non canoniques) : champ éditable pré-rempli (séparées par virgules).
+      field("disciplinesExtra", "Autres activités (séparées par des virgules)", specView.freeNames.join(", "), "text", 'placeholder="Ex. Basket, Réunion, Course"'),
       `<div class="dialog-section"><h3>Disponibilités hebdomadaires</h3></div>`,
       `<div data-room-avail-list>${(room.availability || []).map(roomAvailRowHtml).join("")}</div>`,
       `<button type="button" data-action="add-room-avail-row">+ Ajouter une disponibilité</button>`,
@@ -31422,8 +32163,12 @@ ${esc(bodyText)}</pre>
     showDialog(room.id ? "Modifier la salle" : "Nouvelle salle", body, (data, formElement) => {
       const name = asText(data.get("name"));
       if (!name) { alert("Le nom de la salle est obligatoire."); return false; }
-      const checkedSpecs = [...formElement.querySelectorAll("[data-room-spec]:checked")].map((el) => el.value);
-      const extra = asText(data.get("disciplinesExtra")).split(",").map((s) => s.trim()).filter(Boolean);
+      // Lot 3A — sélection canonique lue DIRECTEMENT depuis les identifiants cochés (valeurs = id).
+      const checkedIds = [...formElement.querySelectorAll("[data-room-spec]:checked")].map((el) => el.value);
+      const keptUnknownIds = [...formElement.querySelectorAll("[data-room-unknown-ref]:checked")].map((el) => el.value);
+      const freeNames = asText(data.get("disciplinesExtra")).split(",").map((s) => s.trim()).filter(Boolean);
+      const disciplineIds = [...new Set([...checkedIds, ...keptUnknownIds])];
+      const disciplinesNames = [...new Set([...canonicalDisciplineNames(disciplineIds), ...freeNames])];
       const availability = [...formElement.querySelectorAll("[data-room-avail-list] [data-avail-row]")].map((row) => ({
         day: row.querySelector("[data-avail-day]")?.value || "Lundi",
         start: row.querySelector("[data-avail-start]")?.value || "",
@@ -31452,7 +32197,10 @@ ${esc(bodyText)}</pre>
         expenseUnit: data.get("expenseUnit") || "réservation",
         expenseCategory: data.get("expenseCategory") || "Location salle",
         expenseNote: asText(data.get("expenseNote")),
-        disciplines: [...new Set([...checkedSpecs, ...extra])],
+        // id canoniques AUTORITATIFS (lus des cases id) ; noms de compat dérivés ; valeurs libres explicites.
+        disciplineIds,
+        disciplines: disciplinesNames,
+        disciplinesFree: freeNames,
         availability, unavailabilities,
         notes: asText(data.get("notes")), archived: Boolean(room.archived),
       };
@@ -34044,9 +34792,14 @@ ${esc(bodyText)}</pre>
     const days = Array.isArray(ui.availDays)
       ? ui.availDays.filter((d) => PLANNING_DAYS.includes(d))
       : PLANNING_DAYS.slice();
+    // Lot 3A — le filtre discipline est CANONIQUE : ui.availDiscipline porte un disciplineId (valeur
+    // des options du sélecteur). `discipline` reste le libellé résolu (affichage / repli). Un ancien
+    // état contenant un nom se résout en "" (→ « Toutes »), sans effet de bord.
+    const availDisc = disciplineById(asText(ui.availDiscipline));
     return {
       type: "cours",
-      discipline: asText(ui.availDiscipline),
+      disciplineId: availDisc ? asText(availDisc.id) : "",
+      discipline: availDisc ? asText(availDisc.name) : "",
       coachId: asText(ui.availCoach),
       roomId: asText(ui.availRoom),
       groupId: asText(ui.availGroup),
@@ -34144,8 +34897,9 @@ ${esc(bodyText)}</pre>
   }
 
   // ---- Faisabilité d'UNE discipline à un créneau (pour le détail cliquable) ----
+  // `disc` est une CIBLE { disciplineId, discipline } (identité canonique) — plus un simple nom.
   function availDisciplineStatus(disc, day, startMin, endMin) {
-    const probe = availProbe(day, startMin, endMin, { discipline: disc });
+    const probe = availProbe(day, startMin, endMin, { discipline: disc.discipline, disciplineId: disc.disciplineId });
     const reasons = [];
     if (availCoachDim()) {
       const coachCandidates = activeCoaches().filter((c) => coachHandlesDiscipline(c, disc));
@@ -34175,13 +34929,17 @@ ${esc(bodyText)}</pre>
   // total=0 (club sans discipline déclarée) → level=null : les appelants doivent alors
   // se rabattre sur leur propre repli (aucune activité à évaluer, pas une absence totale).
   function availSlotActivitySummary(f, day, startMin, endMin) {
-    const target = (f && asText(f.discipline)) ? [asText(f.discipline)] : (state.tariffs.disciplines || []).map((d) => d.name).filter(Boolean);
+    // Cibles CANONIQUES : la discipline filtrée (par id) si une l'est, sinon toutes les disciplines
+    // du club (chacune identifiée par son id → deux homonymes restent deux activités distinctes).
+    const target = (f && (asText(f.disciplineId) || asText(f.discipline)))
+      ? [{ disciplineId: asText(f.disciplineId), discipline: asText(f.discipline) }]
+      : (state.tariffs.disciplines || []).map((d) => ({ disciplineId: asText(d.id), discipline: asText(d.name) })).filter((t) => t.disciplineId || t.discipline);
     const total = target.length;
     const possible = [];
     const unavailable = [];
     target.forEach((disc) => {
       const st = availDisciplineStatus(disc, day, startMin, endMin);
-      if (st.ok) possible.push(disc); else unavailable.push({ name: disc, reasons: st.reasons });
+      if (st.ok) possible.push(disc.discipline); else unavailable.push({ name: disc.discipline, reasons: st.reasons });
     });
     if (!total) return { total: 0, possible, unavailable, level: null, label: "" };
     const level = !possible.length ? "full" : possible.length === total ? "free" : possible.length === 1 ? "tight" : "some";
@@ -34201,7 +34959,7 @@ ${esc(bodyText)}</pre>
   // coursesOverlap) et ne raisonne que sur les dimensions activées (isViewVisible).
   // Aucune prise en compte des stages dans ce lot (croisement futur).
   function availEvaluateSlot(f, day, startMin, endMin, opts = {}) {
-    const probe = availProbe(day, startMin, endMin, { discipline: f.discipline, groupId: f.groupId, coachId: f.coachId, roomId: f.roomId });
+    const probe = availProbe(day, startMin, endMin, { discipline: f.discipline, disciplineId: f.disciplineId, groupId: f.groupId, coachId: f.coachId, roomId: f.roomId });
     const coachDim = availCoachDim();
     const roomDim = availRoomDim();
     const groupDim = availGroupDim();
@@ -34213,11 +34971,11 @@ ${esc(bodyText)}</pre>
     let matches = true;
     if (coachDim) {
       if (f.coachId) { if (!coaches.some((c) => c.id === f.coachId)) matches = false; }
-      else if (activeCoaches().some((c) => coachHandlesDiscipline(c, f.discipline))) { if (!coaches.length) matches = false; }
+      else if (activeCoaches().some((c) => coachHandlesDiscipline(c, { disciplineId: f.disciplineId, discipline: f.discipline }))) { if (!coaches.length) matches = false; }
     }
     if (matches && roomDim) {
       if (f.roomId) { if (!rooms.some((r) => r.id === f.roomId)) matches = false; }
-      else if (activeRooms().some((r) => roomHandlesDiscipline(r, f.discipline))) { if (!rooms.length) matches = false; }
+      else if (activeRooms().some((r) => roomHandlesDiscipline(r, { disciplineId: f.disciplineId, discipline: f.discipline }))) { if (!rooms.length) matches = false; }
     }
     if (matches && !groupOk) matches = false;
     const result = { probe, coachDim, roomDim, groupDim, coaches, rooms, groupOk, overlap, matches };
@@ -34232,10 +34990,10 @@ ${esc(bodyText)}</pre>
       if (f.coachId) {
         const c = coachById(f.coachId);
         const stg = c ? availStageForCoachOnDay(c.id, probe.day) : null;
-        if (c && !coachHandlesDiscipline(c, f.discipline)) reasons.push(`${coachFullName(c)} ne prend pas en charge cette discipline`);
+        if (c && !coachHandlesDiscipline(c, { disciplineId: f.disciplineId, discipline: f.discipline })) reasons.push(`${coachFullName(c)} ne prend pas en charge cette discipline`);
         else if (c && stg) reasons.push(`${coachFullName(c)} est occupé par le stage « ${stg.name || "stage"} »`);
         else if (c && !eligibleCoachesForCourse(probe).some((x) => x.id === c.id)) reasons.push(coachCourseConflict(c.id, probe) ? `${coachFullName(c)} est déjà en séance` : `${coachFullName(c)} est indisponible`);
-      } else if (activeCoaches().some((c) => coachHandlesDiscipline(c, f.discipline)) && !availEligibleCoaches(probe).length) {
+      } else if (activeCoaches().some((c) => coachHandlesDiscipline(c, { disciplineId: f.disciplineId, discipline: f.discipline })) && !availEligibleCoaches(probe).length) {
         reasons.push("aucun coach disponible");
       }
     }
@@ -34243,10 +35001,10 @@ ${esc(bodyText)}</pre>
       if (f.roomId) {
         const r = roomById(f.roomId);
         const stg = r ? availStageForRoomOnDay(r.id, probe.day) : null;
-        if (r && !roomHandlesDiscipline(r, f.discipline)) reasons.push(`${roomName(r)} n'accueille pas cette discipline`);
+        if (r && !roomHandlesDiscipline(r, { disciplineId: f.disciplineId, discipline: f.discipline })) reasons.push(`${roomName(r)} n'accueille pas cette discipline`);
         else if (r && stg) reasons.push(`${roomName(r)} est occupée par le stage « ${stg.name || "stage"} »`);
         else if (r && !eligibleRoomsForCourse(probe).some((x) => x.id === r.id)) reasons.push(roomCourseConflict(r.id, probe) ? `${roomName(r)} est déjà occupée` : `${roomName(r)} est indisponible`);
-      } else if (activeRooms().some((r) => roomHandlesDiscipline(r, f.discipline)) && !availEligibleRooms(probe).length) {
+      } else if (activeRooms().some((r) => roomHandlesDiscipline(r, { disciplineId: f.disciplineId, discipline: f.discipline })) && !availEligibleRooms(probe).length) {
         reasons.push("aucune salle disponible");
       }
     }
@@ -34336,7 +35094,8 @@ ${esc(bodyText)}</pre>
 
   // Texte « 2 coachs et 2 salles libres » pour un créneau (dimensions ACTIVÉES seulement).
   function availSlotCapacityText(day, startMin, dur, disc) {
-    const probe = availProbe(day, startMin, startMin + dur, { discipline: disc });
+    const tgt = disciplineTargetOf(disc);
+    const probe = availProbe(day, startMin, startMin + dur, { discipline: tgt.discipline, disciplineId: tgt.disciplineId });
     const parts = [];
     if (availCoachDim()) { const n = availEligibleCoaches(probe).length; parts.push(`${n} coach${n > 1 ? "s" : ""}`); }
     if (availRoomDim()) { const n = availEligibleRooms(probe).length; parts.push(`${n} salle${n > 1 ? "s" : ""}`); }
@@ -34386,7 +35145,7 @@ ${esc(bodyText)}</pre>
     const cn = availSlotResourceNames(f, ev, "coach"); if (cn && cn.length) parts.push(`${cn.length > 1 ? "Coachs" : "Coach"} : ${availNamesText(cn, 2)}`);
     const rn = availSlotResourceNames(f, ev, "room"); if (rn && rn.length) parts.push(`${rn.length > 1 ? "Salles" : "Salle"} : ${availNamesText(rn, 2)}`);
     if (ev.groupDim && f.groupId) parts.push("groupe libre");
-    return parts.length ? parts.join(" · ") : availSlotCapacityText(day, startMin, f.duration, f.discipline);
+    return parts.length ? parts.join(" · ") : availSlotCapacityText(day, startMin, f.duration, { disciplineId: f.disciplineId, discipline: f.discipline });
   }
 
   // Résumé « par activité » du créneau recommandé (Lot vrai correctif produit) — affiché
@@ -34575,7 +35334,6 @@ ${esc(bodyText)}</pre>
     const coaches = activeCoaches();
     const rooms = activeRooms();
     const groups = (state.groups || []).filter((g) => !g.archived);
-    const disciplines = (state.tariffs.disciplines || []).map((d) => d.name).filter(Boolean);
     const courses = (state.planningCourses || []).filter((c) => !c.archived);
     if (!coaches.length && !rooms.length && !courses.length) return availEmptyHtml();
 
@@ -34584,7 +35342,7 @@ ${esc(bodyText)}</pre>
 
     // Filtres : on n'affiche QUE les dimensions activées pour ce club (Affichage).
     const fields = [
-      availSelect("availDiscipline", "Discipline", [{ value: "", label: "Toutes" }, ...disciplines.map((d) => ({ value: d, label: d }))], f.discipline),
+      availSelect("availDiscipline", "Discipline", [{ value: "", label: "Toutes" }, ...(state.tariffs.disciplines || []).map((d) => ({ value: asText(d.id), label: disciplineOptionLabel(d) }))], f.disciplineId),
       availShowCoaches() && coaches.length ? availSelect("availCoach", "Coach", [{ value: "", label: "Peu importe" }, ...coaches.map((c) => ({ value: c.id, label: coachFullName(c) }))], f.coachId) : "",
       availShowRooms() && rooms.length ? availSelect("availRoom", "Salle", [{ value: "", label: "Peu importe" }, ...rooms.map((r) => ({ value: r.id, label: roomName(r) }))], f.roomId) : "",
       availShowGroups() && groups.length ? availSelect("availGroup", "Groupe", [{ value: "", label: "Peu importe" }, ...groups.map((g) => ({ value: g.id, label: g.name }))], f.groupId) : "",
@@ -34736,7 +35494,7 @@ ${esc(bodyText)}</pre>
   // vide (pas de choix arbitraire). Les modules désactivés ne sont jamais préremplis.
   function availOpenCourseForSlot(day, startMin) {
     const f = availFilters();
-    const probe = availProbe(day, startMin, startMin + f.duration, { discipline: f.discipline });
+    const probe = availProbe(day, startMin, startMin + f.duration, { discipline: f.discipline, disciplineId: f.disciplineId });
 
     let coachId = "";
     if (availCoachDim()) {
@@ -34751,7 +35509,7 @@ ${esc(bodyText)}</pre>
 
     openCourseDialog({
       day, startTime: availMinutesToTime(startMin), endTime: availMinutesToTime(startMin + f.duration),
-      discipline: f.discipline, groupId: availGroupDim() ? f.groupId : "",
+      discipline: f.discipline, disciplineId: f.disciplineId, groupId: availGroupDim() ? f.groupId : "",
       coachId, roomId,
     });
   }
@@ -37679,7 +38437,10 @@ ${esc(bodyText)}</pre>
     // Installations.
     state0.rooms = draft.venues.map((v) => ({ id: id("room"), clubId: "", name: asText(v.name), type: v.type || "", capacity: v.capacity === "" ? "" : v.capacity, address: asText(v.address || ""), archived: false }));
     // Groupes / cours.
-    state0.groups = draft.groups.map((g) => ({ id: id("group"), clubId: "", name: asText(g.name), type: "Autre", discipline: g.discipline || "", coachId: "", coach: "", ageMin: g.ageMin === "" ? "" : g.ageMin, ageMax: g.ageMax === "" ? "" : g.ageMax, color: g.color || "", archived: false }));
+    state0.groups = draft.groups.map((g) => ({ id: id("group"), clubId: "", name: asText(g.name), type: "Autre", disciplineId: "", discipline: g.discipline || "", coachId: "", coach: "", ageMin: g.ageMin === "" ? "" : g.ageMin, ageMax: g.ageMax === "" ? "" : g.ageMax, color: g.color || "", archived: false }));
+    // Lot 3A — rattache immédiatement chaque groupe à la discipline créée juste au-dessus (id
+    // canonique), via la passe centralisée non ambiguë. Les disciplines du wizard ont déjà un id.
+    resolveDisciplineReferences(state0);
     return state0;
   }
 
