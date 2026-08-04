@@ -648,159 +648,224 @@
   // des fragments plus tardifs.
   const SPORT_CATEGORY_ORDER_STEP = 10;
 
-  // Normalise une définition de profil en une forme complète et déterministe (toutes les clés
-  // d'organisation présentes ; recommandations/exemples en tableaux copiés). Déclaratif : aucune
-  // logique métier, aucune activation réelle de fonctionnalité.
-  function makeSportProfile(def) {
-    const org = def.organization && typeof def.organization === "object" ? def.organization : {};
-    const orgValues = ["primary", "recommended", "optional", "off"];
-    const organization = {};
-    ["teams", "groups", "individual", "seasons", "categories", "competitions"].forEach((key) => {
-      organization[key] = orgValues.includes(org[key]) ? org[key] : "off";
-    });
-    const terminology = {};
-    if (def.terminology && typeof def.terminology === "object") {
-      Object.keys(def.terminology).forEach((key) => {
-        if (TERMINOLOGY_KEYS.includes(key) && typeof def.terminology[key] === "string" && def.terminology[key]) {
-          terminology[key] = def.terminology[key];
-        }
-      });
-    }
-    return {
-      id: def.id,
-      label: def.label,
-      family: SPORT_FAMILIES.includes(def.family) ? def.family : "custom",
-      icon: def.icon || def.id,
-      terminology,
-      organization,
-      recommendedFeatures: Array.isArray(def.recommendedFeatures) ? def.recommendedFeatures.slice() : [],
-      categoryExamples: Array.isArray(def.categoryExamples) ? def.categoryExamples.slice() : [],
-    };
-  }
+// FICHIER GÉNÉRÉ — NE PAS MODIFIER MANUELLEMENT.
+// Source : catalog/manifest.json et catalog/profiles/*.json.
+// Régénération : node budo-electron/scripts/build-sport-catalog.js
 
-  // Registre central des profils sportifs — gelé en profondeur, immuable à l'exécution. Les
-  // `recommendedFeatures` n'utilisent que des clés de fonctionnalités connues/déclarées
-  // (shop/stages/memberships/teams/seasons/competitions) ; une recommandation n'est JAMAIS une
-  // activation (elle n'est appliquée à aucun club dans ce lot).
-  const SPORT_PROFILE_REGISTRY = deepFreeze((() => {
-    const defs = [
-      // --- Général ---
-      { id: "custom", label: "Club personnalisé", family: "custom", icon: "settings",
-        organization: {}, recommendedFeatures: [], categoryExamples: [] },
-      { id: "multisport", label: "Club multisports", family: "custom", icon: "handshake",
-        organization: { teams: "optional", groups: "optional", individual: "optional", seasons: "recommended", categories: "recommended", competitions: "optional" },
-        recommendedFeatures: ["memberships"], categoryExamples: [] },
-      // --- Sports collectifs ---
-      { id: "football", label: "Football", family: "team-sport", icon: "football",
-        organization: { teams: "primary", groups: "optional", individual: "off", seasons: "recommended", categories: "recommended", competitions: "optional" },
-        terminology: { member: "joueur", members: "joueurs", coach: "éducateur", coaches: "éducateurs", venue: "terrain", venues: "terrains", match: "match", matches: "matchs" },
-        recommendedFeatures: ["teams", "seasons", "memberships", "competitions", "stages", "shop"],
-        categoryExamples: ["U7", "U9", "U11", "U13", "U15", "U18", "Seniors", "Vétérans"] },
-      { id: "basketball", label: "Basket-ball", family: "team-sport", icon: "basketball",
-        organization: { teams: "primary", groups: "optional", individual: "off", seasons: "recommended", categories: "recommended", competitions: "optional" },
-        terminology: { member: "joueur", members: "joueurs", coach: "entraîneur", coaches: "entraîneurs", venue: "gymnase", venues: "gymnases", match: "match", matches: "matchs" },
-        recommendedFeatures: ["teams", "seasons", "memberships", "competitions"],
-        categoryExamples: ["U9", "U11", "U13", "U15", "U18", "Seniors"] },
-      { id: "handball", label: "Handball", family: "team-sport", icon: "handball",
-        organization: { teams: "primary", groups: "optional", individual: "off", seasons: "recommended", categories: "recommended", competitions: "optional" },
-        terminology: { member: "joueur", members: "joueurs", coach: "entraîneur", coaches: "entraîneurs", venue: "gymnase", venues: "gymnases", match: "match", matches: "matchs" },
-        recommendedFeatures: ["teams", "seasons", "memberships", "competitions"],
-        categoryExamples: ["U9", "U11", "U13", "U15", "U18", "Seniors"] },
-      { id: "rugby", label: "Rugby", family: "team-sport", icon: "rugby",
-        organization: { teams: "primary", groups: "optional", individual: "off", seasons: "recommended", categories: "recommended", competitions: "optional" },
-        terminology: { member: "joueur", members: "joueurs", coach: "entraîneur", coaches: "entraîneurs", venue: "terrain", venues: "terrains", match: "match", matches: "matchs" },
-        recommendedFeatures: ["teams", "seasons", "memberships", "competitions"],
-        categoryExamples: ["U8", "U10", "U12", "U14", "U16", "U18", "Seniors"] },
-      { id: "volleyball", label: "Volley-ball", family: "team-sport", icon: "volleyball",
-        organization: { teams: "primary", groups: "optional", individual: "off", seasons: "recommended", categories: "recommended", competitions: "optional" },
-        terminology: { member: "joueur", members: "joueurs", coach: "entraîneur", coaches: "entraîneurs", venue: "gymnase", venues: "gymnases", match: "match", matches: "matchs" },
-        recommendedFeatures: ["teams", "seasons", "memberships", "competitions"],
-        categoryExamples: ["M11", "M13", "M15", "M18", "M21", "Seniors"] },
-      // --- Sports de raquette ---
-      { id: "tennis", label: "Tennis", family: "racket-sport", icon: "tennis",
-        organization: { teams: "optional", groups: "primary", individual: "recommended", seasons: "optional", categories: "recommended", competitions: "optional" },
-        terminology: { member: "joueur", members: "joueurs", coach: "entraîneur", coaches: "entraîneurs", group: "groupe d'entraînement", groups: "groupes d'entraînement", venue: "court", venues: "courts" },
-        recommendedFeatures: ["memberships", "stages"],
-        categoryExamples: ["Débutant", "Loisir", "Compétition", "Classement"] },
-      { id: "badminton", label: "Badminton", family: "racket-sport", icon: "badminton",
-        organization: { teams: "optional", groups: "primary", individual: "recommended", seasons: "optional", categories: "recommended", competitions: "optional" },
-        terminology: { member: "joueur", members: "joueurs", coach: "entraîneur", coaches: "entraîneurs", venue: "court", venues: "courts" },
-        recommendedFeatures: ["memberships"],
-        categoryExamples: ["Débutant", "Loisir", "Compétition"] },
-      { id: "padel", label: "Padel", family: "racket-sport", icon: "padel",
-        organization: { teams: "optional", groups: "primary", individual: "recommended", seasons: "optional", categories: "recommended", competitions: "optional" },
-        terminology: { member: "joueur", members: "joueurs", coach: "entraîneur", coaches: "entraîneurs", venue: "terrain", venues: "terrains" },
-        recommendedFeatures: ["memberships"],
-        categoryExamples: ["Débutant", "Loisir", "Compétition"] },
-      { id: "table-tennis", label: "Tennis de table", family: "racket-sport", icon: "table-tennis",
-        organization: { teams: "optional", groups: "primary", individual: "recommended", seasons: "optional", categories: "recommended", competitions: "optional" },
-        terminology: { member: "joueur", members: "joueurs", coach: "entraîneur", coaches: "entraîneurs", venue: "salle", venues: "salles" },
-        recommendedFeatures: ["memberships"],
-        categoryExamples: ["Poussins", "Benjamins", "Minimes", "Cadets", "Juniors", "Seniors", "Vétérans"] },
-      // --- Arts martiaux ---
-      { id: "judo", label: "Judo", family: "martial-art", icon: "belt",
-        organization: { teams: "off", groups: "primary", individual: "optional", seasons: "optional", categories: "recommended", competitions: "optional" },
-        terminology: { member: "pratiquant", members: "pratiquants", coach: "professeur", coaches: "professeurs", group: "cours", groups: "cours", venue: "dojo", venues: "dojos" },
-        recommendedFeatures: ["memberships", "stages"],
-        categoryExamples: ["Éveil", "Poussins", "Benjamins", "Minimes", "Cadets", "Juniors", "Seniors", "Vétérans"] },
-      { id: "karate", label: "Karaté", family: "martial-art", icon: "fist",
-        organization: { teams: "off", groups: "primary", individual: "optional", seasons: "optional", categories: "recommended", competitions: "optional" },
-        terminology: { member: "pratiquant", members: "pratiquants", coach: "professeur", coaches: "professeurs", group: "cours", groups: "cours", venue: "dojo", venues: "dojos" },
-        recommendedFeatures: ["memberships", "stages"],
-        categoryExamples: ["Baby", "Poussins", "Pupilles", "Benjamins", "Minimes", "Cadets", "Juniors", "Seniors"] },
-      { id: "taekwondo", label: "Taekwondo", family: "martial-art", icon: "kick",
-        organization: { teams: "off", groups: "primary", individual: "optional", seasons: "optional", categories: "recommended", competitions: "optional" },
-        terminology: { member: "pratiquant", members: "pratiquants", coach: "professeur", coaches: "professeurs", group: "cours", groups: "cours", venue: "dojo", venues: "dojos" },
-        recommendedFeatures: ["memberships", "stages"],
-        categoryExamples: ["Baby", "Poussins", "Benjamins", "Minimes", "Cadets", "Juniors", "Seniors"] },
-      { id: "boxing", label: "Boxe", family: "combat-sport", icon: "fist",
-        organization: { teams: "off", groups: "primary", individual: "optional", seasons: "optional", categories: "recommended", competitions: "optional" },
-        terminology: { member: "pratiquant", members: "pratiquants", coach: "entraîneur", coaches: "entraîneurs", group: "cours", groups: "cours", venue: "salle", venues: "salles" },
-        recommendedFeatures: ["memberships", "stages"],
-        categoryExamples: ["Loisir", "Éducative", "Amateur", "Compétition"] },
-      // --- Cours / disciplines artistiques et bien-être ---
-      { id: "dance", label: "Danse", family: "course-based", icon: "lotus",
-        organization: { teams: "off", groups: "primary", individual: "optional", seasons: "optional", categories: "recommended", competitions: "off" },
-        terminology: { member: "pratiquant", members: "pratiquants", coach: "professeur", coaches: "professeurs", group: "cours", groups: "cours", venue: "salle", venues: "salles" },
-        recommendedFeatures: ["memberships"],
-        categoryExamples: ["Éveil", "Enfants", "Adolescents", "Adultes"] },
-      { id: "gymnastics", label: "Gymnastique", family: "course-based", icon: "athlete",
-        organization: { teams: "off", groups: "primary", individual: "optional", seasons: "optional", categories: "recommended", competitions: "optional" },
-        terminology: { member: "pratiquant", members: "pratiquants", coach: "entraîneur", coaches: "entraîneurs", group: "cours", groups: "cours", venue: "salle", venues: "salles" },
-        recommendedFeatures: ["memberships"],
-        categoryExamples: ["Baby gym", "Éveil", "Enfants", "Adolescents", "Adultes"] },
-      { id: "fitness", label: "Fitness", family: "course-based", icon: "dumbbell",
-        organization: { teams: "off", groups: "primary", individual: "optional", seasons: "optional", categories: "optional", competitions: "off" },
-        terminology: { member: "pratiquant", members: "pratiquants", coach: "coach", coaches: "coachs", group: "cours", groups: "cours", venue: "salle", venues: "salles" },
-        recommendedFeatures: ["memberships"],
-        categoryExamples: ["Débutant", "Intermédiaire", "Avancé"] },
-      { id: "yoga", label: "Yoga", family: "course-based", icon: "yoga",
-        organization: { teams: "off", groups: "primary", individual: "optional", seasons: "optional", categories: "optional", competitions: "off" },
-        terminology: { member: "pratiquant", members: "pratiquants", coach: "professeur", coaches: "professeurs", group: "cours", groups: "cours", venue: "salle", venues: "salles" },
-        recommendedFeatures: ["memberships"],
-        categoryExamples: ["Débutant", "Tous niveaux", "Confirmé"] },
-      // --- Sports individuels ---
-      { id: "athletics", label: "Athlétisme", family: "individual-sport", icon: "athlete",
-        organization: { teams: "off", groups: "primary", individual: "recommended", seasons: "optional", categories: "recommended", competitions: "optional" },
-        terminology: { member: "athlète", members: "athlètes", coach: "entraîneur", coaches: "entraîneurs", venue: "stade", venues: "stades", match: "compétition", matches: "compétitions" },
-        recommendedFeatures: ["memberships", "stages"],
-        categoryExamples: ["Éveil athlétique", "Poussins", "Benjamins", "Minimes", "Cadets", "Juniors", "Seniors", "Masters"] },
-      { id: "swimming", label: "Natation", family: "individual-sport", icon: "drop",
-        organization: { teams: "off", groups: "primary", individual: "recommended", seasons: "optional", categories: "recommended", competitions: "optional" },
-        terminology: { member: "nageur", members: "nageurs", coach: "entraîneur", coaches: "entraîneurs", venue: "piscine", venues: "piscines", match: "compétition", matches: "compétitions" },
-        recommendedFeatures: ["memberships"],
-        categoryExamples: ["Débutant", "Perfectionnement", "Groupe compétition", "Maîtres"] },
-    ];
-    const reg = {};
-    defs.map(makeSportProfile).forEach((profile) => { reg[profile.id] = profile; });
-    return reg;
-  })());
+const SPORT_PROFILE_REGISTRY = Object.freeze({
+  "custom": Object.freeze({
+    id: "custom",
+    label: "Club personnalisé",
+    family: "custom",
+    icon: "settings",
+    terminology: Object.freeze({}),
+    organization: Object.freeze({ "teams": "off", "groups": "off", "individual": "off", "seasons": "off", "categories": "off", "competitions": "off" }),
+    recommendedFeatures: Object.freeze([]),
+    categoryExamples: Object.freeze([]),
+  }),
+  "multisport": Object.freeze({
+    id: "multisport",
+    label: "Club multisports",
+    family: "custom",
+    icon: "handshake",
+    terminology: Object.freeze({}),
+    organization: Object.freeze({ "teams": "optional", "groups": "optional", "individual": "optional", "seasons": "recommended", "categories": "recommended", "competitions": "optional" }),
+    recommendedFeatures: Object.freeze(["memberships"]),
+    categoryExamples: Object.freeze([]),
+  }),
+  "football": Object.freeze({
+    id: "football",
+    label: "Football",
+    family: "team-sport",
+    icon: "football",
+    terminology: Object.freeze({ "member": "joueur", "members": "joueurs", "coach": "éducateur", "coaches": "éducateurs", "venue": "terrain", "venues": "terrains", "match": "match", "matches": "matchs" }),
+    organization: Object.freeze({ "teams": "primary", "groups": "optional", "individual": "off", "seasons": "recommended", "categories": "recommended", "competitions": "optional" }),
+    recommendedFeatures: Object.freeze(["teams", "seasons", "memberships", "competitions", "stages", "shop"]),
+    categoryExamples: Object.freeze(["U7", "U9", "U11", "U13", "U15", "U18", "Seniors", "Vétérans"]),
+  }),
+  "basketball": Object.freeze({
+    id: "basketball",
+    label: "Basket-ball",
+    family: "team-sport",
+    icon: "basketball",
+    terminology: Object.freeze({ "member": "joueur", "members": "joueurs", "coach": "entraîneur", "coaches": "entraîneurs", "venue": "gymnase", "venues": "gymnases", "match": "match", "matches": "matchs" }),
+    organization: Object.freeze({ "teams": "primary", "groups": "optional", "individual": "off", "seasons": "recommended", "categories": "recommended", "competitions": "optional" }),
+    recommendedFeatures: Object.freeze(["teams", "seasons", "memberships", "competitions"]),
+    categoryExamples: Object.freeze(["U9", "U11", "U13", "U15", "U18", "Seniors"]),
+  }),
+  "handball": Object.freeze({
+    id: "handball",
+    label: "Handball",
+    family: "team-sport",
+    icon: "handball",
+    terminology: Object.freeze({ "member": "joueur", "members": "joueurs", "coach": "entraîneur", "coaches": "entraîneurs", "venue": "gymnase", "venues": "gymnases", "match": "match", "matches": "matchs" }),
+    organization: Object.freeze({ "teams": "primary", "groups": "optional", "individual": "off", "seasons": "recommended", "categories": "recommended", "competitions": "optional" }),
+    recommendedFeatures: Object.freeze(["teams", "seasons", "memberships", "competitions"]),
+    categoryExamples: Object.freeze(["U9", "U11", "U13", "U15", "U18", "Seniors"]),
+  }),
+  "rugby": Object.freeze({
+    id: "rugby",
+    label: "Rugby",
+    family: "team-sport",
+    icon: "rugby",
+    terminology: Object.freeze({ "member": "joueur", "members": "joueurs", "coach": "entraîneur", "coaches": "entraîneurs", "venue": "terrain", "venues": "terrains", "match": "match", "matches": "matchs" }),
+    organization: Object.freeze({ "teams": "primary", "groups": "optional", "individual": "off", "seasons": "recommended", "categories": "recommended", "competitions": "optional" }),
+    recommendedFeatures: Object.freeze(["teams", "seasons", "memberships", "competitions"]),
+    categoryExamples: Object.freeze(["U8", "U10", "U12", "U14", "U16", "U18", "Seniors"]),
+  }),
+  "volleyball": Object.freeze({
+    id: "volleyball",
+    label: "Volley-ball",
+    family: "team-sport",
+    icon: "volleyball",
+    terminology: Object.freeze({ "member": "joueur", "members": "joueurs", "coach": "entraîneur", "coaches": "entraîneurs", "venue": "gymnase", "venues": "gymnases", "match": "match", "matches": "matchs" }),
+    organization: Object.freeze({ "teams": "primary", "groups": "optional", "individual": "off", "seasons": "recommended", "categories": "recommended", "competitions": "optional" }),
+    recommendedFeatures: Object.freeze(["teams", "seasons", "memberships", "competitions"]),
+    categoryExamples: Object.freeze(["M11", "M13", "M15", "M18", "M21", "Seniors"]),
+  }),
+  "tennis": Object.freeze({
+    id: "tennis",
+    label: "Tennis",
+    family: "racket-sport",
+    icon: "tennis",
+    terminology: Object.freeze({ "member": "joueur", "members": "joueurs", "coach": "entraîneur", "coaches": "entraîneurs", "group": "groupe d'entraînement", "groups": "groupes d'entraînement", "venue": "court", "venues": "courts" }),
+    organization: Object.freeze({ "teams": "optional", "groups": "primary", "individual": "recommended", "seasons": "optional", "categories": "recommended", "competitions": "optional" }),
+    recommendedFeatures: Object.freeze(["memberships", "stages"]),
+    categoryExamples: Object.freeze(["Débutant", "Loisir", "Compétition", "Classement"]),
+  }),
+  "badminton": Object.freeze({
+    id: "badminton",
+    label: "Badminton",
+    family: "racket-sport",
+    icon: "badminton",
+    terminology: Object.freeze({ "member": "joueur", "members": "joueurs", "coach": "entraîneur", "coaches": "entraîneurs", "venue": "court", "venues": "courts" }),
+    organization: Object.freeze({ "teams": "optional", "groups": "primary", "individual": "recommended", "seasons": "optional", "categories": "recommended", "competitions": "optional" }),
+    recommendedFeatures: Object.freeze(["memberships"]),
+    categoryExamples: Object.freeze(["Débutant", "Loisir", "Compétition"]),
+  }),
+  "padel": Object.freeze({
+    id: "padel",
+    label: "Padel",
+    family: "racket-sport",
+    icon: "padel",
+    terminology: Object.freeze({ "member": "joueur", "members": "joueurs", "coach": "entraîneur", "coaches": "entraîneurs", "venue": "terrain", "venues": "terrains" }),
+    organization: Object.freeze({ "teams": "optional", "groups": "primary", "individual": "recommended", "seasons": "optional", "categories": "recommended", "competitions": "optional" }),
+    recommendedFeatures: Object.freeze(["memberships"]),
+    categoryExamples: Object.freeze(["Débutant", "Loisir", "Compétition"]),
+  }),
+  "table-tennis": Object.freeze({
+    id: "table-tennis",
+    label: "Tennis de table",
+    family: "racket-sport",
+    icon: "table-tennis",
+    terminology: Object.freeze({ "member": "joueur", "members": "joueurs", "coach": "entraîneur", "coaches": "entraîneurs", "venue": "salle", "venues": "salles" }),
+    organization: Object.freeze({ "teams": "optional", "groups": "primary", "individual": "recommended", "seasons": "optional", "categories": "recommended", "competitions": "optional" }),
+    recommendedFeatures: Object.freeze(["memberships"]),
+    categoryExamples: Object.freeze(["Poussins", "Benjamins", "Minimes", "Cadets", "Juniors", "Seniors", "Vétérans"]),
+  }),
+  "judo": Object.freeze({
+    id: "judo",
+    label: "Judo",
+    family: "martial-art",
+    icon: "belt",
+    terminology: Object.freeze({ "member": "pratiquant", "members": "pratiquants", "coach": "professeur", "coaches": "professeurs", "group": "cours", "groups": "cours", "venue": "dojo", "venues": "dojos" }),
+    organization: Object.freeze({ "teams": "off", "groups": "primary", "individual": "optional", "seasons": "optional", "categories": "recommended", "competitions": "optional" }),
+    recommendedFeatures: Object.freeze(["memberships", "stages"]),
+    categoryExamples: Object.freeze(["Éveil", "Poussins", "Benjamins", "Minimes", "Cadets", "Juniors", "Seniors", "Vétérans"]),
+  }),
+  "karate": Object.freeze({
+    id: "karate",
+    label: "Karaté",
+    family: "martial-art",
+    icon: "fist",
+    terminology: Object.freeze({ "member": "pratiquant", "members": "pratiquants", "coach": "professeur", "coaches": "professeurs", "group": "cours", "groups": "cours", "venue": "dojo", "venues": "dojos" }),
+    organization: Object.freeze({ "teams": "off", "groups": "primary", "individual": "optional", "seasons": "optional", "categories": "recommended", "competitions": "optional" }),
+    recommendedFeatures: Object.freeze(["memberships", "stages"]),
+    categoryExamples: Object.freeze(["Baby", "Poussins", "Pupilles", "Benjamins", "Minimes", "Cadets", "Juniors", "Seniors"]),
+  }),
+  "taekwondo": Object.freeze({
+    id: "taekwondo",
+    label: "Taekwondo",
+    family: "martial-art",
+    icon: "kick",
+    terminology: Object.freeze({ "member": "pratiquant", "members": "pratiquants", "coach": "professeur", "coaches": "professeurs", "group": "cours", "groups": "cours", "venue": "dojo", "venues": "dojos" }),
+    organization: Object.freeze({ "teams": "off", "groups": "primary", "individual": "optional", "seasons": "optional", "categories": "recommended", "competitions": "optional" }),
+    recommendedFeatures: Object.freeze(["memberships", "stages"]),
+    categoryExamples: Object.freeze(["Baby", "Poussins", "Benjamins", "Minimes", "Cadets", "Juniors", "Seniors"]),
+  }),
+  "boxing": Object.freeze({
+    id: "boxing",
+    label: "Boxe",
+    family: "combat-sport",
+    icon: "fist",
+    terminology: Object.freeze({ "member": "pratiquant", "members": "pratiquants", "coach": "entraîneur", "coaches": "entraîneurs", "group": "cours", "groups": "cours", "venue": "salle", "venues": "salles" }),
+    organization: Object.freeze({ "teams": "off", "groups": "primary", "individual": "optional", "seasons": "optional", "categories": "recommended", "competitions": "optional" }),
+    recommendedFeatures: Object.freeze(["memberships", "stages"]),
+    categoryExamples: Object.freeze(["Loisir", "Éducative", "Amateur", "Compétition"]),
+  }),
+  "dance": Object.freeze({
+    id: "dance",
+    label: "Danse",
+    family: "course-based",
+    icon: "lotus",
+    terminology: Object.freeze({ "member": "pratiquant", "members": "pratiquants", "coach": "professeur", "coaches": "professeurs", "group": "cours", "groups": "cours", "venue": "salle", "venues": "salles" }),
+    organization: Object.freeze({ "teams": "off", "groups": "primary", "individual": "optional", "seasons": "optional", "categories": "recommended", "competitions": "off" }),
+    recommendedFeatures: Object.freeze(["memberships"]),
+    categoryExamples: Object.freeze(["Éveil", "Enfants", "Adolescents", "Adultes"]),
+  }),
+  "gymnastics": Object.freeze({
+    id: "gymnastics",
+    label: "Gymnastique",
+    family: "course-based",
+    icon: "athlete",
+    terminology: Object.freeze({ "member": "pratiquant", "members": "pratiquants", "coach": "entraîneur", "coaches": "entraîneurs", "group": "cours", "groups": "cours", "venue": "salle", "venues": "salles" }),
+    organization: Object.freeze({ "teams": "off", "groups": "primary", "individual": "optional", "seasons": "optional", "categories": "recommended", "competitions": "optional" }),
+    recommendedFeatures: Object.freeze(["memberships"]),
+    categoryExamples: Object.freeze(["Baby gym", "Éveil", "Enfants", "Adolescents", "Adultes"]),
+  }),
+  "fitness": Object.freeze({
+    id: "fitness",
+    label: "Fitness",
+    family: "course-based",
+    icon: "dumbbell",
+    terminology: Object.freeze({ "member": "pratiquant", "members": "pratiquants", "coach": "coach", "coaches": "coachs", "group": "cours", "groups": "cours", "venue": "salle", "venues": "salles" }),
+    organization: Object.freeze({ "teams": "off", "groups": "primary", "individual": "optional", "seasons": "optional", "categories": "optional", "competitions": "off" }),
+    recommendedFeatures: Object.freeze(["memberships"]),
+    categoryExamples: Object.freeze(["Débutant", "Intermédiaire", "Avancé"]),
+  }),
+  "yoga": Object.freeze({
+    id: "yoga",
+    label: "Yoga",
+    family: "course-based",
+    icon: "yoga",
+    terminology: Object.freeze({ "member": "pratiquant", "members": "pratiquants", "coach": "professeur", "coaches": "professeurs", "group": "cours", "groups": "cours", "venue": "salle", "venues": "salles" }),
+    organization: Object.freeze({ "teams": "off", "groups": "primary", "individual": "optional", "seasons": "optional", "categories": "optional", "competitions": "off" }),
+    recommendedFeatures: Object.freeze(["memberships"]),
+    categoryExamples: Object.freeze(["Débutant", "Tous niveaux", "Confirmé"]),
+  }),
+  "athletics": Object.freeze({
+    id: "athletics",
+    label: "Athlétisme",
+    family: "individual-sport",
+    icon: "athlete",
+    terminology: Object.freeze({ "member": "athlète", "members": "athlètes", "coach": "entraîneur", "coaches": "entraîneurs", "venue": "stade", "venues": "stades", "match": "compétition", "matches": "compétitions" }),
+    organization: Object.freeze({ "teams": "off", "groups": "primary", "individual": "recommended", "seasons": "optional", "categories": "recommended", "competitions": "optional" }),
+    recommendedFeatures: Object.freeze(["memberships", "stages"]),
+    categoryExamples: Object.freeze(["Éveil athlétique", "Poussins", "Benjamins", "Minimes", "Cadets", "Juniors", "Seniors", "Masters"]),
+  }),
+  "swimming": Object.freeze({
+    id: "swimming",
+    label: "Natation",
+    family: "individual-sport",
+    icon: "drop",
+    terminology: Object.freeze({ "member": "nageur", "members": "nageurs", "coach": "entraîneur", "coaches": "entraîneurs", "venue": "piscine", "venues": "piscines", "match": "compétition", "matches": "compétitions" }),
+    organization: Object.freeze({ "teams": "off", "groups": "primary", "individual": "recommended", "seasons": "optional", "categories": "recommended", "competitions": "optional" }),
+    recommendedFeatures: Object.freeze(["memberships"]),
+    categoryExamples: Object.freeze(["Débutant", "Perfectionnement", "Groupe compétition", "Maîtres"]),
+  })
+});
 
-  // Ensemble des identifiants de profils OFFICIELS (repli custom exclu de la logique de collision :
-  // il est officiel mais un sport personnalisé nommé « custom » n'aurait aucun sens). Sert à
-  // empêcher qu'un sport personnalisé n'usurpe l'id d'un profil officiel (normalizeClubProfile).
-  const SPORT_PROFILE_IDS = Object.freeze(new Set(Object.keys(SPORT_PROFILE_REGISTRY)));
-
+const SPORT_PROFILE_IDS = Object.freeze(new Set(Object.freeze(["custom", "multisport", "football", "basketball", "handball", "rugby", "volleyball", "tennis", "badminton", "padel", "table-tennis", "judo", "karate", "taekwondo", "boxing", "dance", "gymnastics", "fitness", "yoga", "athletics", "swimming"])));
   let ui = {
     view: "dashboard",
     contactKind: "members",
