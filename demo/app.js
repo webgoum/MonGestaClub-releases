@@ -214,6 +214,10 @@
   const SETTINGS_PANEL_IDS = [
     "themes", "typography", "postits", "features", "display", "menu-order", "checks",
     "security", "logo", "emails", "smtp", "users", "data", "license",
+    // Lot 3B-2B — gestion des profils sportifs et des catégories par discipline. Identifiant
+    // volontairement distinct de la VUE « disciplines » (menu principal) : ce sont deux surfaces
+    // différentes, et un identifiant partagé rendrait la recherche globale ambiguë.
+    "sport-categories",
   ];
   const isSettingsPanelId = (value) => SETTINGS_PANEL_IDS.includes(value);
 
@@ -626,6 +630,23 @@
   // Clés de terminologie RECONNUES (whitelist) : seules ces clés sont acceptées dans
   // terminologyOverrides. Exclut nativement __proto__/constructor/prototype (jamais listées).
   const TERMINOLOGY_KEYS = Object.freeze(Object.keys(DEFAULT_TERMINOLOGY));
+
+  // Lot 3B-1 — capacités RECONNUES d'une discipline (whitelist). Volontairement limitée aux
+  // fonctions qui existent réellement dans l'application : les capacités liées aux équipes, matchs
+  // et compétitions attendent que les entités correspondantes existent.
+  // DÉCLARÉE ICI (et non dans 04-settings-normalize.js) parce que normalizeState — donc
+  // normalizeDisciplineCapabilities — s'exécute dès loadState() au démarrage, avant l'initialisation
+  // des `const` des fragments plus tardifs : une déclaration en 04 provoque une TDZ au boot.
+  const DISCIPLINE_CAPABILITY_KEYS = Object.freeze([
+    "supportsGroups", "supportsAgeCategories", "supportsVenues", "supportsFederationLicenses",
+  ]);
+
+  // Lot 3B-2A — pas d'espacement des `order` du catalogue de catégories sportives. Un pas > 1 laisse
+  // de la place entre deux entrées pour insérer une catégorie sans renuméroter tout le catalogue.
+  // DÉCLARÉE ICI pour la même raison de TDZ que la whitelist ci-dessus : normalizeSportCategory est
+  // appelée par normalizeState, donc dès loadState() au démarrage, avant l'initialisation des `const`
+  // des fragments plus tardifs.
+  const SPORT_CATEGORY_ORDER_STEP = 10;
 
   // Normalise une définition de profil en une forme complète et déterministe (toutes les clés
   // d'organisation présentes ; recommandations/exemples en tableaux copiés). Déclaratif : aucune
@@ -1418,6 +1439,10 @@
     scoped.expenses = (scoped.expenses || []).filter(keep).map(stamp);
     scoped.creditNotes = (scoped.creditNotes || []).filter(keep).map(stamp);
     scoped.groups = (scoped.groups || []).filter(keep).map(stamp);
+    // Lot 3B-2A — le catalogue de catégories sportives suit exactement le régime des autres
+    // collections du club : filtré à l'import (une catégorie d'un autre club n'est pas reprise) et
+    // ré-estampillé à la duplication, faute de quoi la copie conserverait le clubId de l'original.
+    scoped.sportCategories = (scoped.sportCategories || []).filter(keep).map(stamp);
     scoped.planningCourses = (scoped.planningCourses || []).filter(keep).map(stamp);
     scoped.planningExceptions = (scoped.planningExceptions || []).filter(keep).map(stamp);
     scoped.attendanceSessions = (scoped.attendanceSessions || []).filter(keep).map(stamp);
@@ -1651,6 +1676,954 @@
     if (Object.prototype.hasOwnProperty.call(term, key) && typeof term[key] === "string") return term[key];
     if (Object.prototype.hasOwnProperty.call(DEFAULT_TERMINOLOGY, key) && typeof DEFAULT_TERMINOLOGY[key] === "string") return DEFAULT_TERMINOLOGY[key];
     return key;
+  }
+
+  // ===================================================================================
+  // LOT 3B-1 — PROFIL SPORTIF ANCRÉ SUR LA DISCIPLINE
+  // ===================================================================================
+  // Relie le catalogue du Lot 1 (SPORT_PROFILE_REGISTRY) à l'identité canonique du Lot 3A
+  // (discipline.id). Le profil est porté par la DISCIPLINE, plus par le seul club : un club
+  // « Football + Judo » doit pouvoir traiter chaque discipline selon son propre sport.
+  //
+  // Principes (repris du Lot 3A, qui a banni le raisonnement par le nom) :
+  //  - `discipline.sportId` est un CHOIX explicite (assistant ou utilisateur), jamais une déduction.
+  //    Aucune fonction ici ne lit `discipline.name` : le nom n'entre dans aucune résolution.
+  //  - un sportId inconnu est CONSERVÉ tel quel et signalé (source "unknown"), jamais remplacé ni
+  //    remappé sur le profil du club — exactement comme un disciplineId inconnu au Lot 3A.
+  //  - on persiste le CHOIX, on calcule l'EFFET : famille et capacités sont résolues à la volée
+  //    depuis le registre, jamais figées en base (un enrichissement futur du catalogue profite
+  //    donc automatiquement aux clubs existants).
+  // INERTE côté interface dans ce sous-lot : aucune surface n'appelle encore ces helpers.
+
+  // La whitelist DISCIPLINE_CAPABILITY_KEYS vit en 01-constants.js (contrainte de TDZ : la
+  // normalisation des disciplines tourne dès le démarrage, avant l'initialisation de ce fragment).
+
+  // Capacités d'une discipline SANS profil officiel résolu (libre, personnalisée ou sportId
+  // inconnu) : tout reste permis. L'application actuelle n'interdit rien ; une discipline sans
+  // profil ne doit surtout pas se retrouver plus restreinte qu'avant ce lot.
+  function defaultDisciplineCapabilities() {
+    const out = {};
+    DISCIPLINE_CAPABILITY_KEYS.forEach((key) => { out[key] = true; });
+    return out;
+  }
+
+  // Capacités DÉRIVÉES d'un profil officiel, à partir de son bloc `organization` déjà déclaré au
+  // Lot 1 (seule source : aucune table parallèle à maintenir, aucune combinaison incohérente
+  // possible). "off" = capacité indisponible pour ce sport ; toute autre valeur = disponible.
+  function capabilitiesFromProfile(profile) {
+    const out = defaultDisciplineCapabilities();
+    const org = (profile && profile.organization) || null;
+    if (!org) return out;
+    out.supportsGroups = org.groups !== "off";
+    out.supportsAgeCategories = org.categories !== "off";
+    return out;
+  }
+
+  // Surcharges explicites d'une discipline : uniquement des clés reconnues, uniquement des
+  // booléens. Idempotente, ne mute pas son argument, ignore silencieusement tout le reste.
+  function normalizeDisciplineCapabilities(value) {
+    const src = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+    const out = {};
+    DISCIPLINE_CAPABILITY_KEYS.forEach((key) => {
+      if (!Object.prototype.hasOwnProperty.call(src, key)) return;
+      if (typeof src[key] !== "boolean") return;
+      out[key] = src[key];
+    });
+    return out;
+  }
+
+  // Méta-profils du registre : ils qualifient un CLUB (personnalisé / multisports), jamais un sport
+  // précis. Aucun ne peut être ancré utilement sur une discipline ni servir de repli sportif.
+  function isMetaSportProfileId(sportId) {
+    return sportId === "custom" || sportId === "multisport";
+  }
+
+  // Sport OFFICIEL unique du club, ou "" si le repli serait ambigu. Un club qui n'a qu'un seul
+  // sport configuré peut légitimement le prêter à ses disciplines sans profil ; dès qu'il en a
+  // plusieurs, attribuer le sport principal à toutes les disciplines serait arbitraire et faux
+  // (un club Football + Judo transformerait tout son judo en football). Un sport PERSONNALISÉ
+  // unique ne donne aucun profil officiel : il ne sert pas de repli.
+  function clubSoleOfficialSportId(source) {
+    const cfg = clubProfileConfig(source);
+    const known = cfg.sportIds.filter((sid) => SPORT_PROFILE_IDS.has(sid) && sid !== "custom" && sid !== "multisport");
+    const total = cfg.sportIds.length + cfg.customSports.filter((s) => !cfg.sportIds.includes(s.id)).length;
+    if (total === 1 && known.length === 1) return known[0];
+    // Club mono-sport créé avant l'assistant : aucun sportIds, mais un templateId officiel.
+    if (total === 0 && SPORT_PROFILE_IDS.has(cfg.templateId) && cfg.templateId !== "custom" && cfg.templateId !== "multisport") {
+      return cfg.templateId;
+    }
+    return "";
+  }
+
+  // Résolution CENTRALE du profil d'une discipline. Retourne toujours un objet complet :
+  //   { profile, sportId, family, source }
+  //   - source "discipline" : sportId explicite et connu du registre ;
+  //   - source "unknown"    : sportId explicite mais absent du registre → profile null, valeur
+  //                           conservée dans `sportId` (jamais de repli, ni nominal ni club) ;
+  //   - source "club"       : aucun sportId, et le club n'a qu'un seul sport officiel ;
+  //   - source "custom"     : aucun sportId et repli club ambigu (ou inexistant) → profil générique.
+  // Pure : ne mute ni la discipline, ni le registre, ni les settings. Ne lit jamais discipline.name.
+  function resolveDisciplineProfile(discipline, source) {
+    const row = discipline && typeof discipline === "object" ? discipline : {};
+    const explicit = asText(row.sportId);
+    if (explicit) {
+      // Lot 3B-2A — MÉTA-PROFILS. « custom » (Club personnalisé) et « multisport » (Club multisports)
+      // sont des identifiants CONNUS du registre, mais ils décrivent un CLUB, pas un sport à ancrer
+      // sur une discipline. Leur bloc `organization` était pourtant interprété comme une déclaration
+      // sportive : « custom » ne déclare aucune organisation, makeSportProfile remplit donc toutes ses
+      // clés par "off", et une discipline portant sportId "custom" ressortait avec supportsGroups et
+      // supportsAgeCategories à false — c'est-à-dire plus restreinte qu'une discipline entièrement
+      // libre, alors qu'elle n'exprime AUCUNE contrainte. (« multisport », lui, déclare bien son
+      // organisation et n'était pas affecté ; la règle vaut pour les deux par cohérence.)
+      // Traitement : aucun profil effectif, valeur PERSISTÉE conservée telle quelle (doctrine Lot 3A
+      // sur les identifiants), et source "custom" — surtout pas "unknown" : ces identifiants sont
+      // connus, simplement non-sportifs. Les capacités retombent ainsi sur les valeurs génériques
+      // permissives de defaultDisciplineCapabilities(). Aucun profil sportif réel n'est touché.
+      // Même exclusion que celle déjà appliquée côté club par clubSoleOfficialSportId().
+      if (isMetaSportProfileId(explicit)) {
+        return { profile: null, sportId: explicit, family: disciplineFamilyOverride(row) || "custom", source: "custom" };
+      }
+      if (Object.prototype.hasOwnProperty.call(SPORT_PROFILE_REGISTRY, explicit)) {
+        const profile = SPORT_PROFILE_REGISTRY[explicit];
+        return { profile, sportId: explicit, family: profile.family, source: "discipline" };
+      }
+      // Référence inconnue : conservée, signalée, jamais réinterprétée.
+      return { profile: null, sportId: explicit, family: disciplineFamilyOverride(row) || "custom", source: "unknown" };
+    }
+    const clubSport = clubSoleOfficialSportId(source);
+    if (clubSport) {
+      const profile = SPORT_PROFILE_REGISTRY[clubSport];
+      return { profile, sportId: clubSport, family: profile.family, source: "club" };
+    }
+    return { profile: null, sportId: "", family: disciplineFamilyOverride(row) || "custom", source: "custom" };
+  }
+
+  // Surcharge de famille portée par la discipline (uniquement une famille reconnue).
+  function disciplineFamilyOverride(discipline) {
+    const raw = discipline && typeof discipline === "object" ? asText(discipline.family) : "";
+    return SPORT_FAMILIES.includes(raw) ? raw : "";
+  }
+
+  // Famille EFFECTIVE : profil officiel explicite → surcharge de la discipline → profil club non
+  // ambigu → "custom". La famille d'un sport officiel vient TOUJOURS du catalogue (jamais recopiée
+  // dans les données), afin qu'une correction du registre se propage sans migration.
+  function disciplineFamily(discipline, source) {
+    const resolved = resolveDisciplineProfile(discipline, source);
+    if (resolved.profile) return resolved.profile.family;
+    return disciplineFamilyOverride(discipline) || resolved.family || "custom";
+  }
+
+  // Capacités EFFECTIVES : base dérivée du profil résolu, puis surcharges explicites de la
+  // discipline. Renvoie toujours un objet neuf et complet (toutes les clés reconnues présentes).
+  function disciplineCapabilities(discipline, source) {
+    const resolved = resolveDisciplineProfile(discipline, source);
+    const base = resolved.profile ? capabilitiesFromProfile(resolved.profile) : defaultDisciplineCapabilities();
+    const overrides = normalizeDisciplineCapabilities(discipline && discipline.capabilities);
+    Object.keys(overrides).forEach((key) => { base[key] = overrides[key]; });
+    return base;
+  }
+
+  function disciplineCapabilityEnabled(discipline, capability, source) {
+    if (typeof capability !== "string" || !DISCIPLINE_CAPABILITY_KEYS.includes(capability)) return false;
+    return disciplineCapabilities(discipline, source)[capability] === true;
+  }
+
+  // Terminologie CONTEXTUELLE à une discipline : profil de la discipline → terminologie du club
+  // (overrides + sport principal) → défaut générique. Introduite pour le lot suivant ; AUCUN
+  // appelant dans ce sous-lot (aucun libellé affiché ne change).
+  function disciplineTerm(discipline, key, source) {
+    if (typeof key !== "string" || !key) return "";
+    const resolved = resolveDisciplineProfile(discipline, source);
+    const cfg = clubProfileConfig(source);
+    // Un override explicite de club reste prioritaire : c'est une décision de l'utilisateur.
+    if (Object.prototype.hasOwnProperty.call(cfg.terminologyOverrides, key) && cfg.terminologyOverrides[key]) {
+      return cfg.terminologyOverrides[key];
+    }
+    if (resolved.profile && typeof resolved.profile.terminology[key] === "string" && resolved.profile.terminology[key]) {
+      return resolved.profile.terminology[key];
+    }
+    return clubTerm(source, key);
+  }
+
+  // ===================================================================================
+  // LOT 3B-2A — CATALOGUE DE CATÉGORIES SPORTIVES PAR DISCIPLINE (résolution)
+  // ===================================================================================
+  // Fonctions PURES de lecture du catalogue `state.sportCategories` (structure et normalisation
+  // dans 06-normalize-state.js). Elles ne mutent ni l'état, ni le registre, ni leurs arguments.
+  //
+  // Deux sources distinctes, d'où la séparation des paramètres là où les deux sont nécessaires :
+  //  - le CATALOGUE vit dans le `state` du club (comme groups/memberships) ;
+  //  - le PROFIL SPORTIF se résout depuis les `settings` (clubProfile), via le Lot 3B-1.
+  // Confondre les deux donnerait un catalogue vide sur un club valide.
+  //
+  // INERTE côté interface dans ce sous-lot : aucune surface n'appelle encore ces helpers, aucun
+  // libellé visible ne change, aucun calcul financier ne les consulte.
+
+  function sportCategoriesListFrom(source) {
+    const s = source || (typeof state !== "undefined" ? state : null);
+    return (s && Array.isArray(s.sportCategories)) ? s.sportCategories : [];
+  }
+
+  // Clé de comparaison de libellés de catégories : trim + minuscules, RIEN d'autre. Sert uniquement
+  // à repérer un doublon EXACT dans une même discipline ; jamais à identifier une catégorie, jamais
+  // à rapprocher deux libellés approchants (« U11 », « U11-U12 » et « Mini U11 » restent distincts).
+  function sportCategoryLabelKey(label) {
+    return asText(label).toLowerCase();
+  }
+
+  // Ordre total DÉTERMINISTE : order → libellé → identifiant. Le dernier critère garantit un tri
+  // stable même entre deux catégories de même rang et de même libellé. Comparaison par < / > (et
+  // non localeCompare) pour rester indépendante de la locale d'exécution.
+  function compareSportCategories(a, b) {
+    const oa = Number.isFinite(a && a.order) ? a.order : 0;
+    const ob = Number.isFinite(b && b.order) ? b.order : 0;
+    if (oa !== ob) return oa - ob;
+    const la = sportCategoryLabelKey(a && a.label);
+    const lb = sportCategoryLabelKey(b && b.label);
+    if (la !== lb) return la < lb ? -1 : 1;
+    const ia = asText(a && a.id);
+    const ib = asText(b && b.id);
+    return ia < ib ? -1 : ia > ib ? 1 : 0;
+  }
+
+  // Catalogue d'UNE discipline, trié. Le filtrage se fait exclusivement sur `disciplineId` : deux
+  // disciplines HOMONYMES (Lot 3A) ont donc deux catalogues disjoints sans traitement particulier,
+  // et deux catégories « Seniors » de disciplines différentes ne se rencontrent jamais.
+  // options.includeArchived = true pour inclure les catégories archivées (défaut : exclues).
+  // Un disciplineId vide ne renvoie RIEN : une catégorie sans discipline ne se rattache à personne.
+  // ===================== Doctrine UNIQUE d'appartenance à un club =====================
+  // Lot 3B-2D — règle centrale, appliquée à l'identique aux disciplines, aux catégories, aux
+  // compteurs de références, aux conflits de libellés et aux orphelines. Elle était jusqu'ici
+  // recopiée à plusieurs endroits, avec des variantes : d'où trois doctrines divergentes sur un
+  // état temporairement multi-club. Une seule source désormais.
+  //   clubId demandé vide          -> aucun filtrage (fonction neutre, contrat inchangé) ;
+  //   clubId de l'entité égal      -> appartient ;
+  //   clubId de l'entité vide      -> appartient (doctrine des imports historiques, jamais orpheline
+  //                                   d'un club par simple absence d'estampille) ;
+  //   clubId de l'entité différent -> n'appartient pas.
+  // Pure : ne lit jamais le club actif, ne mute rien.
+  function belongsToClubScope(entity, clubId) {
+    const club = asText(clubId);
+    if (!club) return true;
+    const owner = asText(entity && entity.clubId);
+    return !owner || owner === club;
+  }
+
+  // Lot 3B-2D — options.clubId restreint AUSSI par club. Sans lui, une catégorie héritée d'un import
+  // et portant le clubId d'un AUTRE club apparaissait dans le catalogue de sa discipline jusqu'à la
+  // première persistance (scopeStateToClub l'écarte ensuite). Le paramètre est EXPLICITE : la
+  // fonction reste pure et ne lit jamais le club actif d'elle-même. Un clubId vide sur la catégorie
+  // vaut « appartient au club » (doctrine d'import, cohérente avec sportCategoryAssignmentState).
+  function disciplineSportCategories(disciplineId, source, options) {
+    const key = typeof disciplineId === "string" ? asText(disciplineId) : "";
+    if (!key) return [];
+    const includeArchived = Boolean(options && options.includeArchived);
+    const club = asText(options && options.clubId);
+    return sportCategoriesListFrom(source)
+      .filter((c) => c && typeof c === "object" && asText(c.disciplineId) === key && (includeArchived || c.archived !== true))
+      .filter((c) => belongsToClubScope(c, club))
+      .sort(compareSportCategories);
+  }
+
+  function sportCategoryById(categoryId, source) {
+    const key = typeof categoryId === "string" ? asText(categoryId) : "";
+    if (!key) return null;
+    return sportCategoriesListFrom(source).find((c) => c && typeof c === "object" && asText(c.id) === key) || null;
+  }
+
+  // Résolution CENTRALE d'une référence de catégorie. Retourne toujours un objet complet :
+  //   { category, categoryId, disciplineId, foreignDisciplineId, source }
+  //   - "none"            : référence vide ;
+  //   - "known"           : catégorie trouvée, et cohérente avec la discipline attendue ;
+  //   - "unknown"         : identifiant non vide absent du catalogue → catégorie null, valeur
+  //                         CONSERVÉE dans categoryId, aucun repli nominal, aucun repli sur la
+  //                         première catégorie de la discipline (doctrine Lot 3A) ;
+  //   - "wrong-discipline": catégorie existante mais appartenant à une AUTRE discipline → jamais
+  //                         résolue comme valide (category null), identifiant conservé, discipline
+  //                         réelle exposée dans foreignDisciplineId pour le diagnostic.
+  // Une catégorie ARCHIVÉE reste résoluble : un choix passé ne doit jamais disparaître d'une fiche.
+  // Si aucune discipline attendue n'est fournie, l'appartenance n'est pas jugée (rien à confronter).
+  function resolveSportCategoryReference(categoryId, disciplineId, source) {
+    const wanted = typeof disciplineId === "string" ? asText(disciplineId) : "";
+    const key = typeof categoryId === "string" ? asText(categoryId) : "";
+    const base = { category: null, categoryId: key, disciplineId: wanted, foreignDisciplineId: "", source: "none" };
+    if (!key) return base;
+    const found = sportCategoryById(key, source);
+    if (!found) return { ...base, source: "unknown" };
+    const owner = asText(found.disciplineId);
+    if (wanted && owner !== wanted) return { ...base, source: "wrong-discipline", foreignDisciplineId: owner };
+    return { ...base, category: found, disciplineId: owner || wanted, source: "known" };
+  }
+
+  // Libellé COURANT d'une référence, ou "" dès que la référence n'est pas pleinement résolue —
+  // y compris pour une catégorie d'une autre discipline, dont le libellé ne doit jamais fuiter.
+  // La DISTINCTION entre « aucune », « indisponible » et « mauvaise discipline » appartient à
+  // resolveSportCategoryReference : une seule source de vérité, pas deux mécanismes divergents.
+  function sportCategoryLabel(categoryId, disciplineId, source) {
+    const resolved = resolveSportCategoryReference(categoryId, disciplineId, source);
+    return resolved.source === "known" ? asText(resolved.category.label) : "";
+  }
+
+  // Rang à attribuer à une NOUVELLE catégorie : après la dernière du catalogue de la discipline.
+  // Les archivées comptent, pour ne jamais réattribuer un rang déjà utilisé. Aucun compteur global,
+  // aucune dépendance au libellé ni à l'horloge : deux appels sur le même état donnent le même rang.
+  function nextSportCategoryOrder(disciplineId, source) {
+    const list = disciplineSportCategories(disciplineId, source, { includeArchived: true });
+    if (!list.length) return 0;
+    const max = list.reduce((acc, c) => (Number.isFinite(c.order) && c.order > acc ? c.order : acc), 0);
+    return max + SPORT_CATEGORY_ORDER_STEP;
+  }
+
+  // Suggestions de catégories issues du CATALOGUE DE PROFILS (Lot 1), pour une discipline donnée.
+  // Purement consultative : ne crée rien, n'écrit rien, ne mute ni l'état ni le registre (gelé) ;
+  // renvoie des libellés copiés. C'est l'interface (Lot 3B-2B) qui décidera d'en créer, sur action
+  // explicite de l'utilisateur — jamais l'assistant, jamais une migration.
+  // Renvoie [] pour : une discipline sans profil effectif (libre sans repli club possible, profil
+  // inconnu, méta-profil custom/multisport) et pour un profil dépourvu d'exemples.
+  // Quand le profil vient du repli club (source "club" du Lot 3B-1), les suggestions suivent ce
+  // profil : ce serait incohérent d'annoncer supportsAgeCategories sans proposer les catégories
+  // du sport ainsi résolu.
+  // `alreadyExists` signale un doublon EXACT dans LA MÊME discipline, archivées comprises — une
+  // catégorie archivée doit compter, sinon on recrée un doublon silencieux invisible dans la liste.
+  // Lot 3B-4B — libellés proposés par un PROFIL sportif officiel, dans l'ordre du registre.
+  // SOURCE UNIQUE des suggestions : ne lit ni état, ni discipline, ni club, et ne génère aucun
+  // identifiant. C'est ce qui la rend utilisable par l'assistant de PREMIER LANCEMENT, où aucune
+  // discipline n'existe encore et où fabriquer un id au rendu serait une faute (le même écran est
+  // redessiné à chaque clic). Les méta-profils décrivent un club : ils ne proposent rien.
+  // Déduplication par clé normalisée : deux exemples indistinguables ne peuvent pas être proposés
+  // deux fois (le registre est gelé et n'en contient aucun ; la règle protège une évolution future).
+  function sportProfileCategoryLabels(sportId) {
+    const key = asText(sportId);
+    if (!key || isMetaSportProfileId(key)) return [];
+    if (!Object.prototype.hasOwnProperty.call(SPORT_PROFILE_REGISTRY, key)) return [];
+    const examples = SPORT_PROFILE_REGISTRY[key].categoryExamples;
+    if (!Array.isArray(examples)) return [];
+    const seen = new Set();
+    const out = [];
+    examples.forEach((raw) => {
+      const label = asText(raw);
+      const normalized = sportCategoryLabelKey(label);
+      if (!normalized || seen.has(normalized)) return;
+      seen.add(normalized);
+      out.push(label);
+    });
+    return out;
+  }
+
+  function sportCategorySuggestions(discipline, stateSource, settingsSource) {
+    if (!discipline || typeof discipline !== "object") return [];
+    const resolved = resolveDisciplineProfile(discipline, settingsSource);
+    const labels = resolved.profile ? sportProfileCategoryLabels(resolved.profile.id) : [];
+    if (!labels.length) return [];
+    const existing = new Set(
+      disciplineSportCategories(discipline.id, stateSource, { includeArchived: true })
+        .map((c) => sportCategoryLabelKey(c.label))
+        .filter(Boolean)
+    );
+    return labels.map((label) => ({ label, alreadyExists: existing.has(sportCategoryLabelKey(label)) }));
+  }
+
+  // ===================================================================================
+  // LOT 3B-2B — RÈGLES MÉTIER DE GESTION DU CATALOGUE (fonctions PURES)
+  // ===================================================================================
+  // SOURCE UNIQUE des règles de doublon, de validation et de réordonnancement. Les gestionnaires
+  // d'interface (16-settings-themes.js / 21-handlers.js) ne font QU'orchestrer : ils appellent ces
+  // fonctions, puis persistent. Aucune comparaison de libellé n'est réécrite dans un handler DOM —
+  // sans quoi « ajouter », « renommer », « restaurer » et « suggestions » pourraient diverger.
+  // Aucune de ces fonctions n'écrit, ne mute son argument, ni ne consulte le DOM.
+
+  // Conflit de libellé dans UNE discipline : même clé normalisée (trim + minuscules), archivées
+  // COMPRISES — restaurer une archivée homonyme d'une active créerait deux entrées indistinguables.
+  // `excludeId` permet au renommage de s'ignorer lui-même (changer la casse de son propre libellé
+  // reste possible). Retourne la catégorie en conflit, ou null.
+  // Lot 3B-2D (correction) — `clubId` explicite : une catégorie d'un AUTRE club ne doit jamais
+  // créer de conflit, sous peine de bloquer une création, un renommage ou une restauration pour un
+  // homonyme que l'utilisateur ne voit nulle part. Le filtrage est délégué à
+  // disciplineSportCategories, donc à la doctrine unique. clubId omis = aucun filtrage (contrat
+  // inchangé pour les appels hors interface).
+  function findSportCategoryLabelConflict(disciplineId, label, source, excludeId, clubId) {
+    const key = sportCategoryLabelKey(label);
+    if (!key) return null;
+    const skip = asText(excludeId);
+    return disciplineSportCategories(disciplineId, source, { includeArchived: true, clubId })
+      .find((c) => asText(c.id) !== skip && sportCategoryLabelKey(c.label) === key) || null;
+  }
+
+  // Validation d'un libellé pour une création OU un renommage. Retourne "" si valide, sinon le
+  // message destiné à l'utilisateur. Le libellé vide est refusé À LA SAISIE (le modèle du Lot 3B-2A
+  // tolère un libellé vide sur une donnée importée, mais l'interface ne doit jamais en créer).
+  function validateSportCategoryLabel(label, disciplineId, source, excludeId, clubId) {
+    const clean = asText(label);
+    if (!clean) return "Saisissez un nom pour la catégorie.";
+    const conflict = findSportCategoryLabelConflict(disciplineId, clean, source, excludeId, clubId);
+    if (!conflict) return "";
+    return conflict.archived
+      ? `Une catégorie archivée nommée « ${conflict.label} » existe déjà dans cette discipline. Restaurez-la ou choisissez un autre nom.`
+      : `Une catégorie nommée « ${conflict.label} » existe déjà dans cette discipline.`;
+  }
+
+  // Validation d'une RESTAURATION : la catégorie archivée ne doit pas devenir homonyme d'une autre.
+  // Le conflit peut venir d'une catégorie ACTIVE comme d'une AUTRE ARCHIVÉE (findSportCategoryLabelConflict
+  // inclut les archivées) : le message doit dire laquelle, sinon l'utilisateur cherche en vain dans la
+  // liste des actives une catégorie qui se trouve en réalité dans le bloc des archivées. Même
+  // distinction que validateSportCategoryLabel, pour que les deux surfaces parlent le même langage.
+  function validateSportCategoryRestore(category, source, clubId) {
+    if (!category || typeof category !== "object") return "Catégorie introuvable.";
+    const conflict = findSportCategoryLabelConflict(category.disciplineId, category.label, source, category.id, clubId);
+    if (!conflict) return "";
+    const suite = "\nRenommez l'une des deux catégories avant de restaurer celle-ci.";
+    return conflict.archived
+      ? `Une autre catégorie archivée nommée « ${conflict.label} » existe déjà.${suite}`
+      : `Une catégorie active nommée « ${conflict.label} » existe déjà.${suite}`;
+  }
+
+  // Entrée de catalogue PRÊTE à être insérée (non écrite ici). L'ordre est calculé après la
+  // dernière catégorie de la discipline, archivées comprises : aucun rang n'est jamais réutilisé.
+  function buildSportCategory(disciplineId, label, source, clubId) {
+    return normalizeSportCategory({
+      id: id("sportcategory"),
+      clubId: asText(clubId || ""),
+      disciplineId: asText(disciplineId),
+      label: asText(label),
+      order: nextSportCategoryOrder(disciplineId, source),
+      archived: false,
+      notes: "",
+    }, 0);
+  }
+
+  // ===================================================================================
+  // Lot 3B-4A — CRÉATION D'UNE DISCIPLINE : préparation et validation PURES.
+  // ===================================================================================
+  // Doctrine reprise du Lot 2 (assistant de premier lancement) : on prépare l'état final EN
+  // MÉMOIRE, on le valide, puis une seule écriture critique le publie. Les deux fonctions
+  // ci-dessous sont la moitié « pure » de ce contrat : aucun DOM, aucune mutation de `state`,
+  // aucun `persist()`, aucun `recordHistory()`, aucun `audit`, aucun `activeClubId()` implicite.
+  // Le `clubId` est TOUJOURS explicite : c'est ce qui rend le parcours testable sans navigateur
+  // et transposable à un futur back-end multi-club.
+
+  // Choix proposés à l'utilisateur. Les méta-profils (`custom`, `multisport`) décrivent un CLUB,
+  // pas un sport : ils ne sont jamais sélectionnables ici (même règle que le sélecteur de profil
+  // du Lot 3B-1, qui ne les affiche que s'ils étaient déjà stockés).
+  const CUSTOM_DISCIPLINE_CHOICE = "__custom__";
+
+  function disciplineCreationChoices() {
+    return [
+      ...selectableDisciplineProfiles().map((profile) => ({
+        value: profile.id, label: profile.label, sportId: profile.id, custom: false,
+      })),
+      { value: CUSTOM_DISCIPLINE_CHOICE, label: "Autre / activité personnalisée", sportId: "", custom: true },
+    ];
+  }
+
+  function disciplineCreationChoice(value) {
+    return disciplineCreationChoices().find((choice) => choice.value === asText(value)) || null;
+  }
+
+  // Nom proposé automatiquement pour un choix donné ("" pour une activité personnalisée, que
+  // l'utilisateur doit nommer lui-même).
+  function disciplineCreationSuggestedName(choiceValue) {
+    const choice = disciplineCreationChoice(choiceValue);
+    return choice && !choice.custom ? asText(choice.label) : "";
+  }
+
+  // Le nom est-il ENCORE automatique ? Le brouillon mémorise le dernier nom proposé
+  // (`autoName`) : tant que le champ vaut exactement cette valeur (ou est vide), changer de sport
+  // peut le remplacer. Dès que l'utilisateur écrit autre chose — « Football loisirs » —, le nom
+  // devient personnalisé et aucun changement de sélection ne l'écrase (décision 4.5).
+  function disciplineNameIsAutomatic(draft) {
+    const typed = asText(draft && draft.name);
+    if (!typed) return true;
+    return typed === asText(draft && draft.autoName);
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // Lot 3B-4B — NOYAU PUR PARTAGÉ entre le dialogue « Nouvelle discipline » (Lot 3B-4A) et
+  // l'assistant de PREMIER LANCEMENT. Les deux surfaces créent la même chose ; elles ne doivent
+  // pas en avoir deux définitions. Ce qui les distingue n'est pas la règle métier mais le
+  // CONTEXTE : le dialogue travaille dans un club existant (identifiants générés à la volée,
+  // doublons vérifiés contre le catalogue), l'assistant dans un brouillon multi-disciplines pas
+  // encore persisté (identifiants INJECTÉS, club pas encore créé). Ces différences sont donc des
+  // paramètres, jamais des chemins de code parallèles.
+  // Aucune de ces trois fonctions ne lit le DOM, ne consulte `state`, n'écrit, ne journalise ni ne
+  // mute son argument.
+  // ---------------------------------------------------------------------------------------------
+
+  // Structure CANONIQUE d'une discipline créée (identité du Lot 3A : id + clubId + name + sportId).
+  // `family` et `capabilities` restent vides : ils sont DÉRIVÉS du profil (disciplineFamily /
+  // disciplineCapabilities) et ne doivent jamais être figés dans les données.
+  // Lot 3B-4A — tarif NON DÉFINI (""), comme les disciplines de l'assistant initial : « 0 »
+  // signifierait une gratuité voulue, alors qu'une discipline neuve n'a pas encore de prix.
+  // L'identifiant est accepté tel quel s'il est fourni : c'est l'assistant qui, lui, décide du
+  // moment unique où les identifiants définitifs sont générés (jamais au rendu).
+  function buildPreparedDiscipline(input) {
+    const src = input && typeof input === "object" ? input : {};
+    return {
+      id: asText(src.id) || id("discipline"),
+      clubId: asText(src.clubId || ""),
+      name: asText(src.name),
+      sportId: asText(src.sportId),
+      price: src.price === undefined || src.price === null ? "" : src.price,
+      license: src.license === undefined || src.license === null ? "" : src.license,
+      family: "",
+      capabilities: {},
+    };
+  }
+
+  // Catégories canoniques correspondant aux libellés RETENUS par l'utilisateur, pour une discipline
+  // déjà construite. On parcourt les suggestions DISPONIBLES du profil et on garde celles qui ont
+  // été cochées : l'ordre est donc toujours celui du REGISTRE, jamais celui des clics, et un libellé
+  // étranger au profil ne peut pas entrer par ce chemin — il ressort dans `rejectedLabels` pour que
+  // la validation le REFUSE explicitement au lieu de l'ignorer en silence.
+  // `options.makeId` permet à l'appelant de fournir ses identifiants (assistant) ; sans lui, ils
+  // sont générés ici (dialogue). `options.clubId` prime sur celui de la discipline (club pas encore
+  // créé côté assistant : chaîne vide, ré-estampillée par scopeStateToClub à la sauvegarde).
+  function buildSuggestedSportCategories(discipline, selectedLabels, source, options = {}) {
+    const row = discipline && typeof discipline === "object" ? discipline : {};
+    const wanted = Array.isArray(selectedLabels) ? selectedLabels.map((l) => asText(l)).filter(Boolean) : [];
+    const available = sportCategorySuggestions(row, source, options.settingsSource).filter((s) => !s.alreadyExists);
+    const club = asText(options.clubId !== undefined ? options.clubId : (row.clubId || ""));
+    const makeId = typeof options.makeId === "function" ? options.makeId : null;
+    const seen = new Set();
+    const categories = [];
+    available.forEach((suggestion) => {
+      const key = sportCategoryLabelKey(suggestion.label);
+      if (!wanted.includes(suggestion.label) || seen.has(key)) return;
+      seen.add(key);
+      const index = categories.length;
+      categories.push({
+        id: (makeId ? asText(makeId(suggestion.label, index)) : "") || id("sportcategory"),
+        clubId: club,
+        disciplineId: asText(row.id),
+        label: suggestion.label,
+        order: index,
+        archived: false,
+        notes: "",
+      });
+    });
+    const rejectedLabels = wanted.filter((label) => !available.some((s) => s.label === label));
+    return { categories, rejectedLabels };
+  }
+
+  // Valide un brouillon préparé. Sépare ce qui EMPÊCHE de créer (`errors`) de ce qui mérite une
+  // confirmation explicite (`warnings`) : le doublon de nom n'est pas une faute, c'est un choix
+  // dont l'utilisateur doit être averti (décision 4/§7 de l'audit de conception).
+  // `options.requireClub` (défaut : vrai) exprime le seul écart légitime entre les deux contextes.
+  // À faux, le rattachement au club n'est pas exigé — l'assistant construit un état AVANT que le
+  // club existe, et c'est scopeStateToClub qui estampille. Toutes les autres règles (profil,
+  // catégories hors profil, doublons, archivage) restent identiques : l'assistant ne contourne
+  // aucune validation, il en diffère une seule qui n'a pas encore de sens.
+  function validatePreparedDiscipline(prepared, source, options = {}) {
+    const errors = [];
+    const warnings = [];
+    if (!prepared || typeof prepared !== "object" || !prepared.discipline) {
+      return { errors: ["Brouillon de discipline invalide."], warnings, ok: false };
+    }
+    const requireClub = options.requireClub !== false;
+    const club = asText(options.clubId);
+    const discipline = prepared.discipline;
+    const name = asText(discipline.name);
+    if (requireClub) {
+      if (!club) errors.push("Aucun club actif : impossible de créer une discipline.");
+      if (asText(discipline.clubId) !== club) errors.push("La discipline ne serait pas rattachée au club actif.");
+    }
+    if (!name) errors.push("Donnez un nom à la discipline.");
+    const sportId = asText(discipline.sportId);
+    if (sportId) {
+      if (isMetaSportProfileId(sportId)) errors.push("Ce profil décrit un club, pas une discipline.");
+      else if (!SPORT_PROFILE_IDS.has(sportId)) errors.push("Le sport sélectionné est inconnu.");
+    }
+    if (prepared.rejectedLabels && prepared.rejectedLabels.length) {
+      errors.push("Une catégorie proposée ne correspond pas au sport sélectionné.");
+    }
+    const categories = Array.isArray(prepared.categories) ? prepared.categories : [];
+    const keys = new Set();
+    categories.forEach((category) => {
+      if (requireClub && asText(category.clubId) !== club) errors.push("Une catégorie ne serait pas rattachée au club actif.");
+      if (asText(category.disciplineId) !== asText(discipline.id)) errors.push("Une catégorie ne serait pas rattachée à la discipline créée.");
+      if (category.archived === true) errors.push("Aucune catégorie ne peut être créée archivée.");
+      const key = sportCategoryLabelKey(category.label);
+      if (!key) errors.push("Une catégorie sans nom ne peut pas être créée.");
+      else if (keys.has(key)) errors.push("Deux catégories porteraient le même nom.");
+      keys.add(key);
+      // Défense en profondeur : le catalogue du club ne doit pas déjà porter cette étiquette pour
+      // cette discipline. Impossible par construction sur une discipline neuve — vérifié quand même.
+      const conflict = validateSportCategoryLabel(category.label, discipline.id, source, "", club);
+      if (conflict) errors.push(conflict);
+    });
+    // AVERTISSEMENT (non bloquant) : un homonyme strict, après la normalisation historique
+    // (disciplineNameKey : NFC + espaces + casse, accents PRÉSERVÉS). Un même sportId sur deux
+    // disciplines de noms différents — « Football jeunes » / « Football adultes » — reste
+    // parfaitement légitime et ne produit aucun signal.
+    if (name && club) {
+      const key = disciplineNameKey(name);
+      const twin = disciplinesListFrom(source).find((d) => belongsToClubScope(d, club) && disciplineNameKey(d.name) === key);
+      if (twin) {
+        warnings.push(`Une discipline « ${asText(twin.name)} » existe déjà dans ce club. Vous pouvez continuer si ces deux disciplines correspondent réellement à des activités distinctes.`);
+      }
+    }
+    return { errors, warnings, ok: errors.length === 0 };
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // Lot 3B-4A — le dialogue « Nouvelle discipline » vu comme un CAS PARTICULIER du noyau ci-dessus :
+  // un club actif obligatoire, des identifiants générés à la volée, un brouillon mono-discipline
+  // issu d'un `<select>`. Aucune règle ne lui est propre ; son comportement observable est
+  // strictement celui d'avant l'extraction.
+  // ---------------------------------------------------------------------------------------------
+
+  // Prépare la discipline et ses catégories SANS rien écrire. `source` est l'état lu (jamais muté),
+  // `clubId` le club de destination. Retourne toujours un objet exploitable, même incomplet : c'est
+  // la validation qui juge.
+  function prepareDisciplineCreation(draft = {}, source, clubId) {
+    const club = asText(clubId);
+    const choice = disciplineCreationChoice(draft.choice);
+    const discipline = buildPreparedDiscipline({
+      clubId: club,
+      name: draft.name,
+      sportId: choice && !choice.custom ? choice.sportId : "",
+    });
+    const profile = resolveDisciplineProfile(discipline, source);
+    const built = buildSuggestedSportCategories(discipline, draft.categoryLabels, source, { clubId: club });
+    return { discipline, categories: built.categories, profile, rejectedLabels: built.rejectedLabels, clubId: club };
+  }
+
+  function validateDisciplineCreation(prepared, source, clubId) {
+    return validatePreparedDiscipline(prepared, source, { clubId, requireClub: true });
+  }
+
+  // Réordonnancement d'UNE catégorie active à l'intérieur de SA discipline. Retourne la collection
+  // COMPLÈTE `sportCategories` réécrite, ou null si le déplacement est impossible (catégorie
+  // introuvable, archivée, déjà en première/dernière position) — l'appelant n'écrit alors rien.
+  // Les rangs des actives déplacées sont réattribués de façon déterministe (0, pas, 2×pas…) ; les
+  // catégories ARCHIVÉES et celles des AUTRES disciplines conservent leur objet et leur rang.
+  function reorderDisciplineSportCategories(disciplineId, categoryId, direction, source) {
+    const key = asText(disciplineId);
+    const wanted = asText(categoryId);
+    const step = direction === "up" ? -1 : direction === "down" ? 1 : 0;
+    if (!key || !wanted || !step) return null;
+    const active = disciplineSportCategories(key, source, { includeArchived: false });
+    const from = active.findIndex((c) => asText(c.id) === wanted);
+    const to = from + step;
+    if (from < 0 || to < 0 || to >= active.length) return null;
+    const ordered = active.slice();
+    ordered.splice(to, 0, ordered.splice(from, 1)[0]);
+    // Nouveaux rangs, appliqués UNIQUEMENT aux actives de cette discipline.
+    const ranks = new Map(ordered.map((c, index) => [asText(c.id), index * SPORT_CATEGORY_ORDER_STEP]));
+    return sportCategoriesListFrom(source).map((c) => {
+      const rank = ranks.get(asText(c && c.id));
+      return rank === undefined ? c : { ...c, order: rank };
+    });
+  }
+
+  // Profils SÉLECTIONNABLES pour une discipline : les sports officiels du registre, méta-profils
+  // exclus (custom/multisport qualifient un CLUB, jamais une discipline — cf. Lot 3B-2A).
+  function selectableDisciplineProfiles() {
+    return Object.keys(SPORT_PROFILE_REGISTRY)
+      .filter((key) => !isMetaSportProfileId(key))
+      .map((key) => SPORT_PROFILE_REGISTRY[key]);
+  }
+
+  // Origine du profil, en clair. Le Lot 3B-1 expose une source technique ; l'interface doit dire
+  // à l'utilisateur d'où vient réellement le profil qu'il voit appliqué.
+  function disciplineProfileSourceLabel(resolved) {
+    const src = resolved && resolved.source;
+    if (src === "discipline") return "Profil propre à la discipline";
+    if (src === "club") return "Profil hérité du club";
+    if (src === "unknown") return "Profil indisponible";
+    return "Aucun profil spécifique";
+  }
+
+  // Libellés lisibles des capacités : l'utilisateur ne doit jamais voir « supportsAgeCategories ».
+  function disciplineCapabilityLabel(key) {
+    if (key === "supportsGroups") return "Groupes";
+    // Lot 3B-3 — « Catégories d'âge » et non « Catégories » : cette capacité décrit les repères
+    // d'âge habituels du profil, jamais le catalogue de catégories sportives de la discipline, qui
+    // est affiché sur le même écran (« Catégories actives »). La clé reste supportsAgeCategories.
+    if (key === "supportsAgeCategories") return "Catégories d'âge";
+    if (key === "supportsVenues") return "Installations";
+    if (key === "supportsFederationLicenses") return "Licences fédérales";
+    return key;
+  }
+
+  // Libellé lisible d'une famille : l'utilisateur ne doit jamais voir « team-sport ». Les termes
+  // reprennent ceux déjà employés par l'assistant de création (WIZARD_SPORT_FAMILIES) pour que le
+  // même sport soit nommé de la même façon partout dans le produit.
+  function disciplineFamilyLabel(family) {
+    if (family === "team-sport") return "Sports collectifs";
+    if (family === "racket-sport") return "Sports de raquette";
+    if (family === "martial-art") return "Arts martiaux";
+    if (family === "combat-sport") return "Sports de combat";
+    if (family === "course-based") return "Cours, bien-être et disciplines artistiques";
+    if (family === "individual-sport") return "Sports individuels";
+    return "Non classée";
+  }
+
+  // Libellé d'affichage d'un profil résolu (nom du sport, ou valeur brute conservée si le profil
+  // a disparu du registre — jamais réinterprétée, doctrine Lot 3A).
+  function disciplineProfileLabel(resolved) {
+    if (resolved && resolved.profile) return resolved.profile.label;
+    if (resolved && resolved.source === "unknown") return `Profil indisponible — ${resolved.sportId}`;
+    return "Aucun profil spécifique";
+  }
+
+  // Libellé de l'option VIDE du sélecteur de profil. La valeur "" ne signifie pas « aucun profil » :
+  // elle signifie « aucun profil ANCRÉ sur cette discipline ». Dans un club qui n'a qu'un seul sport
+  // officiel, le Lot 3B-1 fait alors jouer le repli du club — la discipline hérite réellement d'un
+  // profil. Annoncer « Aucun profil spécifique » dans ce cas laisserait croire que choisir cette
+  // option désactive l'héritage, ce qui est faux. Le libellé dit donc ce que l'option fait vraiment.
+  // Aucun changement de modèle : "" reste "", et le repli du Lot 3B-1 reste intact.
+  function disciplineNoProfileOptionLabel(resolved) {
+    return (resolved && resolved.source === "club")
+      ? "Aucun profil ancré — hérité du club"
+      : "Aucun profil spécifique";
+  }
+
+  // Libellé de l'option PROTÉGÉE d'un méta-profil historiquement stocké sur une discipline
+  // (custom/multisport : ils qualifient un CLUB, jamais un sport). La valeur est conservée tant que
+  // l'utilisateur ne choisit pas autre chose, mais elle ne doit pas être confondue avec l'option
+  // vide : deux entrées « Aucun profil spécifique » côte à côte seraient indiscernables.
+  function metaSportProfileOptionLabel(sportId) {
+    return `Valeur historique : ${asText(sportId)} — aucun effet sportif`;
+  }
+
+  // ===================================================================================
+  // LOT 3B-2C — AFFECTATION D'UNE CATÉGORIE À UNE INSCRIPTION OU À UN GROUPE (fonctions PURES)
+  // ===================================================================================
+  // SOURCE UNIQUE des règles d'affectation, partagée par l'inscription, le groupe, les rendus de
+  // fiche et de carte, et la validation de sauvegarde. Aucune de ces fonctions n'écrit, ne mute son
+  // argument, ni ne consulte le DOM.
+  //
+  // Le Lot 3B-2A fournit déjà `resolveSportCategoryReference` (none / known / unknown /
+  // wrong-discipline). L'affectation ajoute DEUX dimensions que la résolution du catalogue n'avait
+  // pas à connaître : l'ARCHIVAGE (une catégorie archivée reste résoluble mais n'est plus
+  // affectable) et le CLUB (une référence héritée d'un import ancien peut désigner la catégorie
+  // d'un autre club). On enrichit donc le résultat sans jamais réécrire la résolution 3B-2A.
+
+  // Préfixe des options PROTÉGÉES du sélecteur : il marque une valeur historique CONSERVÉE, par
+  // opposition à un identifiant nu qui signifie « nouvelle affectation choisie par l'utilisateur ».
+  // Même convention que `__unknown__:` de disciplineSelectField (Lot 3A). Sans ce marquage, une
+  // référence archivée réaffichée telle quelle serait indiscernable d'un choix délibéré et
+  // franchirait la validation de §9.
+  const SPORT_CATEGORY_KEEP_PREFIX = "__keep__:";
+
+  // État complet d'une référence de catégorie DU POINT DE VUE DE L'AFFECTATION.
+  // Retourne toujours { categoryId, category, status, label, selectable } avec status parmi :
+  //   "none"             : aucune référence ;
+  //   "active"           : catégorie du bon club, de la bonne discipline, non archivée -> affectable ;
+  //   "archived"         : idem mais archivée -> conservée, affichée, plus jamais réaffectable ;
+  //   "wrong-club"       : catégorie d'un autre club (import ancien) -> conservée, jamais affectable ;
+  //   "wrong-discipline" : catégorie existante d'une AUTRE discipline -> conservée, jamais affectable ;
+  //   "unknown"          : identifiant absent du catalogue -> conservé, aucun repli nominal.
+  // L'ordre de priorité est volontaire : le club prime sur la discipline (une catégorie d'un autre
+  // club n'a pas à être qualifiée par la discipline d'un club auquel elle n'appartient pas).
+  function sportCategoryAssignmentState(categoryId, disciplineId, stateSource, clubId) {
+    const key = typeof categoryId === "string" ? asText(categoryId) : "";
+    const base = { categoryId: key, category: null, status: "none", label: "", selectable: false };
+    if (!key) return base;
+    const found = sportCategoryById(key, stateSource);
+    if (!found) return { ...base, status: "unknown", label: "Catégorie indisponible" };
+    const club = asText(clubId);
+    const owner = asText(found.clubId);
+    // Un clubId vide sur la catégorie (donnée ancienne jamais estampillée) n'est PAS un conflit :
+    // scopeStateToClub l'estampillera au prochain enregistrement du club.
+    if (club && owner && owner !== club) {
+      return { ...base, category: found, status: "wrong-club", label: "Catégorie provenant d'un autre club" };
+    }
+    const wanted = asText(disciplineId);
+    if (wanted && asText(found.disciplineId) !== wanted) {
+      const named = asText(found.label);
+      return {
+        ...base, category: found, status: "wrong-discipline",
+        label: named ? `${named} — catégorie d'une autre discipline` : "Catégorie incompatible avec cette discipline",
+      };
+    }
+    if (found.archived === true) {
+      const named = asText(found.label);
+      return { ...base, category: found, status: "archived", label: named ? `${named} — catégorie archivée` : "Catégorie archivée" };
+    }
+    return { ...base, category: found, status: "active", label: asText(found.label), selectable: true };
+  }
+
+  // Options du sélecteur pour UNE discipline. Contient, dans cet ordre :
+  //   1. l'option vide « Aucune catégorie » ;
+  //   2. l'option PROTÉGÉE de la valeur courante si celle-ci n'est plus sélectionnable ;
+  //   3. les catégories ACTIVES de la discipline, dans l'ordre canonique du catalogue.
+  // Chaque option porte { value, label, selectable, status, current }.
+  function sportCategoryAssignmentOptions(currentId, disciplineId, stateSource, clubId) {
+    const current = sportCategoryAssignmentState(currentId, disciplineId, stateSource, clubId);
+    const options = [{ value: "", label: "Aucune catégorie", selectable: true, status: "none", current: current.status === "none" }];
+    if (current.status !== "none" && !current.selectable) {
+      // Valeur historique : marquée par le préfixe pour ne jamais être relue comme un choix neuf.
+      options.push({
+        value: `${SPORT_CATEGORY_KEEP_PREFIX}${current.categoryId}`,
+        label: current.label, selectable: false, status: current.status, current: true,
+      });
+    }
+    // Lot 3B-2D — le filtrage par CLUB est désormais porté par disciplineSportCategories elle-même
+    // (options.clubId), donc appliqué partout et plus seulement ici : une entrée héritée d'un import
+    // et portant le clubId d'un autre club ne devient sélectionnable nulle part.
+    disciplineSportCategories(disciplineId, stateSource, { includeArchived: false, clubId }).forEach((category) => {
+      options.push({
+        value: asText(category.id), label: asText(category.label), selectable: true,
+        status: "active", current: asText(category.id) === current.categoryId && current.selectable,
+      });
+    });
+    return options;
+  }
+
+  // Valeur SOUMISE par un formulaire -> intention réelle de l'utilisateur.
+  // `keep: true` signifie « la référence historique n'a pas été touchée » : elle désigne la valeur
+  // déjà stockée, et non une nouvelle affectation choisie. Elle reste néanmoins SOUMISE à la
+  // validation ci-dessous : conserver une référence n'est légitime que si la discipline n'a pas
+  // changé (correction D-2C-01 — sans quoi une catégorie de Football survivait à un passage au Judo).
+  function readSportCategoryAssignmentValue(rawValue) {
+    const raw = typeof rawValue === "string" ? rawValue : "";
+    if (raw.startsWith(SPORT_CATEGORY_KEEP_PREFIX)) {
+      return { categoryId: asText(raw.slice(SPORT_CATEGORY_KEEP_PREFIX.length)), keep: true };
+    }
+    return { categoryId: asText(raw), keep: false };
+  }
+
+  // Validation de l'affectation SOUMISE. Retourne "" si elle peut être enregistrée, sinon le
+  // message utilisateur. Elle juge le QUADRUPLET (catégorie précédente, catégorie soumise,
+  // discipline précédente, discipline soumise) — jamais la seule catégorie.
+  //
+  // Correction D-2C-01. L'ancienne version acceptait toute valeur égale à la précédente, ce qui
+  // laissait une catégorie de Football survivre à un passage au Judo dès que le listener `change`
+  // n'avait pas été exécuté (soumission forcée, valeur `__keep__:` ou identifiant nu). Désormais :
+  //   • référence ET discipline inchangées -> conservation (sauvegarder un autre champ ne détruit
+  //     jamais une référence archivée, inconnue ou incompatible déjà stockée) ;
+  //   • toute autre valeur est résolue contre la NOUVELLE discipline, y compris une référence
+  //     inchangée dont la discipline a bougé -> refus, avec un message qui dit pourquoi.
+  // `previousDisciplineId` omis est traité comme « discipline différente » : l'oubli d'un appelant
+  // durcit la validation au lieu de la contourner.
+  function validateSportCategoryAssignment(categoryId, disciplineId, stateSource, clubId, previousId, previousDisciplineId) {
+    const wanted = asText(categoryId);
+    if (!wanted) return "";
+    const sameReference = wanted === asText(previousId);
+    const sameDiscipline = asText(disciplineId) === asText(previousDisciplineId);
+    if (sameReference && sameDiscipline) return "";
+    const resolved = sportCategoryAssignmentState(wanted, disciplineId, stateSource, clubId);
+    // Une référence héritée peut rester valide si la discipline passe de « aucune » à celle qui
+    // possède réellement la catégorie : c'est la résolution qui tranche, jamais la comparaison.
+    if (resolved.status === "active") return "";
+    if (sameReference) return "Cette catégorie appartenait à l'ancienne discipline. Choisissez une catégorie compatible ou aucune catégorie.";
+    if (resolved.status === "archived") return "Cette catégorie est archivée : elle ne peut plus être affectée. Restaurez-la depuis Paramètres > Disciplines et catégories sportives, ou choisissez-en une autre.";
+    if (resolved.status === "wrong-discipline") return "Cette catégorie appartient à une autre discipline. Choisissez une catégorie de la discipline sélectionnée.";
+    if (resolved.status === "wrong-club") return "Cette catégorie appartient à un autre club et ne peut pas être affectée ici.";
+    return "Cette catégorie est introuvable dans le catalogue. Choisissez-en une autre.";
+  }
+
+  // Libellé d'AFFICHAGE d'une affectation (fiche, carte, liste), ou "" si aucune. Jamais
+  // d'identifiant technique : l'utilisateur lit « U11 », « U11 — catégorie archivée », etc.
+  function sportCategoryAssignmentLabel(categoryId, disciplineId, stateSource, clubId) {
+    return sportCategoryAssignmentState(categoryId, disciplineId, stateSource, clubId).label;
+  }
+
+  // ===================== Lot 3B-2D — cohérence transversale =====================
+  // Fonctions PURES : aucun DOM, aucune écriture, aucune propagation. Elles QUALIFIENT une
+  // situation pour que l'interface puisse l'annoncer ; jamais elles ne décident d'une correction.
+
+  // Une cible de discipline est-elle résoluble SANS AMBIGUÏTÉ dans le référentiel ? Identifiant
+  // connu, ou nom désignant exactement une discipline (doctrine Lot 3A). Sert uniquement à
+  // distinguer « autre discipline » (certain) de « discipline non reconnue » (douteux) : aucune
+  // écriture n'en dépend, et un nom ambigu ne désigne jamais l'une des deux homonymes.
+  function resolvedDisciplineOf(entity, source) {
+    const explicitId = asText(entity && entity.disciplineId);
+    if (explicitId) return disciplineById(explicitId, source) || null;
+    const name = asText(entity && entity.discipline);
+    if (!name) return null;
+    const matches = disciplinesByNameKey(name, source);
+    return matches.length === 1 ? matches[0] : null;
+  }
+
+  // Cohérence entre un GROUPE et une INSCRIPTION.
+  // Retourne { disciplineMatch, categoryMatch, level, status, label } avec status parmi :
+  //   "unrestricted"                       : l'un des deux ne porte aucune discipline → rien à dire ;
+  //   "same-discipline-same-category"      : cohérent ;
+  //   "same-discipline-category-missing"   : une seule des deux références est renseignée → NORMAL,
+  //                                          l'absence de catégorie est un état autorisé (§1.3) ;
+  //   "same-discipline-different-category" : information ;
+  //   "historical-category"                : catégorie du membre archivée / inconnue / incompatible ;
+  //   "different-discipline"               : avertissement ;
+  //   "unknown-discipline"                 : discipline non résoluble (nom ambigu, id absent).
+  // PRIORITÉ (§1.2) : la discipline prime. Dès qu'elle diffère, la catégorie n'est plus comparée et
+  // un seul badge est produit — jamais deux à la fois.
+  function groupMembershipConsistency(group, membership, stateSource, clubId) {
+    const g = (group && typeof group === "object") ? group : {};
+    const m = (membership && typeof membership === "object") ? membership : {};
+    const ok = { disciplineMatch: true, categoryMatch: true, level: "ok", status: "unrestricted", label: "" };
+    const groupHasDiscipline = Boolean(asText(g.disciplineId) || asText(g.discipline));
+    const memberHasDiscipline = Boolean(asText(m.disciplineId) || asText(m.discipline));
+    // Un côté non restreint n'exprime aucune attente : rien à signaler.
+    if (!groupHasDiscipline || !memberHasDiscipline) return ok;
+
+    // Comparaison CANONIQUE — aucune règle nouvelle : on délègue à groupMatchesCourseDiscipline,
+    // la comparaison déjà utilisée entre un groupe et un créneau (identité par identifiant ; repli
+    // nominal UNIQUEMENT si le nom désigne exactement une discipline). Son second argument est un
+    // simple porteur de { disciplineId, discipline } : une inscription en est un.
+    if (!groupMatchesCourseDiscipline(g, m, stateSource)) {
+      const resolved = resolvedDisciplineOf(m, stateSource);
+      const named = resolved ? asText(resolved.name) : asText(m.discipline);
+      const known = Boolean(resolved) && Boolean(resolvedDisciplineOf(g, stateSource));
+      return {
+        disciplineMatch: false, categoryMatch: false, level: "warn",
+        status: known ? "different-discipline" : "unknown-discipline",
+        label: named ? `Autre discipline : ${named}` : "Discipline non reconnue",
+      };
+    }
+
+    // Même discipline : les catégories sont comparées PAR IDENTIFIANT uniquement. Deux catégories
+    // homonymes de disciplines différentes ne sont jamais confondues — la question ne se pose pas
+    // ici, la discipline étant déjà compatible.
+    const groupCategoryId = asText(g.sportCategoryId);
+    const memberCategoryId = asText(m.sportCategoryId);
+    if (!groupCategoryId || !memberCategoryId) {
+      return { ...ok, status: "same-discipline-category-missing", categoryMatch: !groupCategoryId && !memberCategoryId };
+    }
+    if (groupCategoryId === memberCategoryId) return { ...ok, status: "same-discipline-same-category" };
+
+    // Catégories différentes : information, jamais avertissement. Le libellé réutilise le rendu
+    // PROTÉGÉ du Lot 3B-2C — une référence archivée, inconnue ou incompatible reste lisible et
+    // ne laisse jamais fuir d'identifiant technique.
+    const resolvedCategory = sportCategoryAssignmentState(memberCategoryId, m.disciplineId, stateSource, clubId);
+    const historical = resolvedCategory.status !== "active";
+    const readable = asText(resolvedCategory.label);
+    return {
+      disciplineMatch: true, categoryMatch: false, level: "info",
+      status: historical ? "historical-category" : "same-discipline-different-category",
+      // « Catégorie sportive » et non « Catégorie » : le mot désigne déjà l'état Adulte/Enfant.
+      label: readable ? `Catégorie sportive différente : ${readable}` : "Catégorie sportive indisponible",
+    };
+  }
+
+  // Catégories rattachées à une discipline qui n'existe pas (ou plus) dans le club considéré.
+  // Traite SÉPARÉMENT les quatre situations voisines :
+  //   - disciplineId vide          → PAS orpheline (elle n'a jamais prétendu appartenir à une
+  //                                  discipline ; la signaler serait un faux positif) ;
+  //   - catégorie d'un AUTRE club  → PAS orpheline pour le club actif (elle ne le concerne pas) ;
+  //   - clubId vide                → rattachée au club actif (doctrine d'import), donc évaluée ;
+  //   - disciplineId inconnu       → orpheline.
+  // Aucun rapprochement par nom, aucune action proposée : la donnée est conservée telle quelle.
+  function orphanSportCategories(stateSource, clubId) {
+    const club = asText(clubId);
+    // Lot 3B-2D (correction) — les disciplines CONNUES sont elles aussi restreintes au club demandé.
+    // Sans cela, une discipline homonyme (ou de même identifiant) appartenant à un AUTRE club
+    // masquait l'orpheline : la catégorie paraissait rattachée alors qu'aucune discipline de SON
+    // club ne la porte. Les deux côtés de la comparaison suivent maintenant la même doctrine.
+    const knownDisciplineIds = new Set(
+      disciplinesListFrom(stateSource)
+        .filter((d) => belongsToClubScope(d, club))
+        .map((d) => asText(d && d.id))
+        .filter(Boolean),
+    );
+    return sportCategoriesListFrom(stateSource).filter((category) => {
+      if (!category || typeof category !== "object") return false;
+      if (!belongsToClubScope(category, club)) return false;
+      const disciplineId = asText(category.disciplineId);
+      if (!disciplineId) return false;
+      return !knownDisciplineIds.has(disciplineId);
+    });
   }
 
   function emailTemplateDefinitions() {
@@ -3638,6 +4611,10 @@
       roomReplacements: Array.isArray(source.roomReplacements) ? source.roomReplacements : [],
       expenses: Array.isArray(source.expenses) ? source.expenses : [],
       creditNotes: Array.isArray(source.creditNotes) ? source.creditNotes : [],
+      // Lot 3B-2A — catalogue des catégories sportives (U11, Cadets, Éveil…), une entrée par
+      // catégorie, rattachée à UNE discipline. Anciennes sauvegardes : défaut [] — migration NEUTRE,
+      // aucun catalogue n'est jamais fabriqué automatiquement (voir normalizeSportCategory).
+      sportCategories: Array.isArray(source.sportCategories) ? source.sportCategories : [],
     };
     base.tariffs.articles = base.tariffs.articles || [];
     base.tariffs.disciplines = base.tariffs.disciplines || [];
@@ -3732,6 +4709,24 @@
       // dépourvues (idempotent : n'écrase jamais un id existant, ne modifie ni le nom ni les autres
       // champs, ne fusionne rien). Persisté atomiquement par le mécanisme de stockage du club.
       if (discipline && typeof discipline === "object" && !asText(discipline.id)) discipline.id = id("discipline");
+      // Lot 3B-1 — profil sportif ancré sur la discipline. Migration NEUTRE : les disciplines
+      // existantes deviennent « libres » (sportId ""), jamais rattachées à un sport déduit de leur
+      // nom (« Judo » ne devient PAS le profil judo). Le choix reste à l'utilisateur.
+      //  - sportId : conservé tel quel s'il est renseigné, MÊME inconnu du registre (principe du
+      //    Lot 3A sur les identifiants inconnus : on préserve, on ne réinterprète pas) ;
+      //  - family : surcharge facultative, retenue seulement si c'est une famille reconnue. La
+      //    famille d'un sport officiel n'est JAMAIS recopiée ici (elle se résout depuis le registre) ;
+      //  - capabilities : surcharges explicites uniquement, jamais un instantané des capacités
+      //    résolues (sinon un enrichissement futur du catalogue ne profiterait pas aux clubs).
+      // Idempotente : une seconde passe sur le résultat produit un objet strictement identique.
+      // Comme normalizeClubProfile (Lot 1), on n'accepte que des CHAÎNES : un nombre ou un objet
+      // n'est pas un identifiant de profil et est neutralisé plutôt que converti en texte.
+      if (discipline && typeof discipline === "object") {
+        discipline.sportId = typeof discipline.sportId === "string" ? asText(discipline.sportId) : "";
+        const familyOverride = typeof discipline.family === "string" ? asText(discipline.family) : "";
+        discipline.family = SPORT_FAMILIES.includes(familyOverride) ? familyOverride : "";
+        discipline.capabilities = normalizeDisciplineCapabilities(discipline.capabilities);
+      }
       applyNormalizedTaxRate(discipline, discipline);
     });
     base.tariffs.insurance.forEach((insurance) => applyNormalizedTaxRate(insurance, insurance));
@@ -3774,6 +4769,7 @@
     base.expenses = base.expenses.filter((exp) => exp && typeof exp === "object").map(normalizeExpense);
     base.creditNotes = base.creditNotes.filter((cn) => cn && typeof cn === "object").map(normalizeCreditNote);
     base.groups = base.groups.filter((group) => group && typeof group === "object").map(normalizeGroup);
+    base.sportCategories = normalizeSportCategories(base.sportCategories);
     base.planningCourses = base.planningCourses.filter((course) => course && typeof course === "object").map(normalizeCourse);
     // Exceptions par date : normalisées + nettoyage des orphelines (créneau récurrent supprimé).
     const validCourseIds = new Set(base.planningCourses.map((course) => course.id));
@@ -3808,6 +4804,7 @@
     base.expenses = dedupeById(base.expenses);
     base.creditNotes = dedupeById(base.creditNotes);
     base.groups = dedupeById(base.groups);
+    base.sportCategories = dedupeById(base.sportCategories);
     base.planningCourses = dedupeById(base.planningCourses);
     base.planningExceptions = dedupeById(base.planningExceptions);
     base.attendanceSessions = dedupeById(base.attendanceSessions);
@@ -3848,6 +4845,12 @@
     // centralisée). Le libellé `member.discipline` reste la source d'affichage/repli. `member.level`
     // (note libre) et `member.practiceType` restent inchangés (hors périmètre du Lot 3A).
     member.disciplineId = str(member.disciplineId);
+    // Lot 3B-2A — catégorie sportive de l'inscription. Référence par IDENTIFIANT, facultative,
+    // STRICTEMENT distincte de `level` (note libre) et de `practiceType` (énumération) : aucun de
+    // ces champs n'est converti, déduit ou remplacé par un autre. Une valeur inconnue du catalogue
+    // est conservée telle quelle (aucun repli nominal) ; une valeur non textuelle est neutralisée.
+    // Aucun calcul financier ne lit ce champ.
+    member.sportCategoryId = typeof member.sportCategoryId === "string" ? asText(member.sportCategoryId) : "";
     member.level = str(member.level);
     member.practiceType = ["Loisir", "Compétition", "Stage", "Autre"].includes(member.practiceType) ? member.practiceType : "";
     // Pièces jointes : on réutilise le même système que les contacts (champ `documents`),
@@ -4037,6 +5040,56 @@
     };
   }
 
+  // Lot 3B-2A — CATÉGORIE SPORTIVE (U11, Cadets, Éveil, Débutant…) : une entrée du catalogue d'UNE
+  // discipline. Collection PLATE `state.sportCategories`, délibérément PAS imbriquée dans
+  // `state.tariffs.disciplines` : une catégorie est une donnée sportive, jamais une ligne
+  // financière — aucun calcul de cotisation, licence, assurance, remise, TVA ou facture ne la lit.
+  // Le rattachement passe UNIQUEMENT par les identifiants (discipline.id ↔ sportCategory.id) : deux
+  // disciplines homonymes (Lot 3A) ont donc deux catalogues disjoints sans traitement particulier,
+  // et un « Seniors » de football ne se confond jamais avec un « Seniors » de judo.
+  //
+  // Règles de champ — toutes déterministes (ni horloge, ni aléatoire, ni libellé) et idempotentes :
+  //  - id : conservé si c'est une CHAÎNE non vide, sinon généré UNE seule fois. Comme au Lot 3B-1,
+  //    un nombre n'est pas un identifiant : il est neutralisé, jamais converti en texte (asText(42)
+  //    donnerait "42" et fabriquerait un identifiant qui n'a jamais été choisi) ;
+  //  - disciplineId : même règle. Une valeur inconnue du référentiel est CONSERVÉE telle quelle
+  //    (doctrine Lot 3A), jamais rattachée par le libellé, jamais repliée sur une autre discipline ;
+  //  - label : nettoyé, JAMAIS clé technique. Un libellé vide est conservé tel quel : on n'invente
+  //    pas de repli (« Catégorie 1 ») — ce serait une donnée que l'utilisateur n'a pas saisie — et
+  //    on ne rejette pas la ligne, qui reste identifiable par son id et peut déjà être référencée
+  //    par une inscription. Exiger un libellé est une règle de SAISIE (Lot 3B-2B), pas de modèle ;
+  //  - order : un nombre fini est arrondi et conservé ; toute autre valeur donne `index * pas`,
+  //    repli stable qui préserve l'ordre du tableau source et laisse de la place pour insérer ;
+  //  - archived : booléen STRICT (=== true). "false", 0 ou 1 n'archivent rien : une valeur non
+  //    booléenne ne doit jamais faire disparaître une catégorie d'une liste par accident ;
+  //  - clubId : convention des autres collections du club, ré-estampillé par scopeStateToClub.
+  // Ne fusionne JAMAIS deux catégories de même libellé : deux id distincts = deux entrées distinctes
+  // (la prévention des doublons à la saisie appartient au Lot 3B-2B).
+  function normalizeSportCategory(category, index) {
+    const src = category && typeof category === "object" && !Array.isArray(category) ? category : {};
+    const rawOrder = src.order;
+    const fallbackOrder = Number.isInteger(index) ? index * SPORT_CATEGORY_ORDER_STEP : 0;
+    return {
+      id: (typeof src.id === "string" && asText(src.id)) ? asText(src.id) : id("sportcategory"),
+      clubId: asText(src.clubId || ""),
+      disciplineId: typeof src.disciplineId === "string" ? asText(src.disciplineId) : "",
+      label: typeof src.label === "string" ? asText(src.label) : "",
+      order: (typeof rawOrder === "number" && Number.isFinite(rawOrder)) ? Math.round(rawOrder) : fallbackOrder,
+      archived: src.archived === true,
+      notes: typeof src.notes === "string" ? asText(src.notes) : "",
+    };
+  }
+
+  // Catalogue complet. Accepte uniquement un tableau (toute autre valeur → []), écarte les entrées
+  // non exploitables (null, primitives, tableaux) comme le font les autres collections, préserve
+  // l'ordre du tableau source et reste idempotente.
+  function normalizeSportCategories(value) {
+    if (!Array.isArray(value)) return [];
+    return value
+      .filter((entry) => entry && typeof entry === "object" && !Array.isArray(entry))
+      .map((entry, index) => normalizeSportCategory(entry, index));
+  }
+
   function normalizeGroup(group) {
     const types = ["Débutants", "Confirmés", "Enfants", "Adultes", "Compétition", "Loisir", "Autre"];
     return {
@@ -4046,6 +5099,11 @@
       // Lot 3A — référence canonique (préservée si présente) + libellé historique conservé.
       disciplineId: asText(group.disciplineId || ""),
       discipline: asText(group.discipline || ""),
+      // Lot 3B-2A — catégorie sportive du groupe. Référence par IDENTIFIANT, facultative, distincte
+      // de `type` (repère d'affichage historique) et de ageMin/ageMax (tranche indicative) : ces
+      // trois champs coexistent et aucun n'est déduit d'un autre. Une valeur inconnue du catalogue
+      // est conservée telle quelle ; une valeur non textuelle est neutralisée.
+      sportCategoryId: typeof group.sportCategoryId === "string" ? asText(group.sportCategoryId) : "",
       coachId: asText(group.coachId || ""),
       coach: asText(group.coach || ""),
       ageMin: group.ageMin === "" || group.ageMin === undefined || group.ageMin === null ? "" : asNumber(group.ageMin),
@@ -6082,8 +7140,14 @@
       ["contacts", "Adhérents et non-adhérents du club : fiches, coordonnées, photos.", ["adherent", "adherents", "membre", "membres", "personne", "personnes", "prospect", "fiche", "annuaire"]],
       ["invoices", "Factures émises, brouillons et avoirs.", ["facture", "facturation", "devis", "avoir", "note de credit"]],
       ["newsletter", "Envoyer un e-mail aux contacts à partir d'un modèle.", ["email", "e mail", "mail", "courriel", "message", "messagerie", "newsletter", "infolettre"]],
-      ["disciplines", "Disciplines enseignées et inscriptions associées.", ["discipline", "cours", "activite", "activites", "sport"]],
-      ["groups", "Groupes de pratiquants et leurs membres.", ["groupe", "equipe", "equipes", "categorie"]],
+      // Lot 3B-3 — l'inscription d'un adhérent se crée depuis sa fiche, pas depuis une action
+      // globale : la recherche conduit donc à la page qui rassemble les inscriptions, au lieu
+      // d'inventer une action exécutable sans contact.
+      ["disciplines", "Disciplines enseignées et inscriptions associées.", ["discipline", "cours", "activite", "activites", "sport", "inscription", "inscriptions", "ajouter une inscription", "nouvelle inscription", "inscrire un adherent"]],
+      // Lot 3B-3 — le mot-clé « categorie » est RETIRÉ de cette entrée : il conduisait aux Groupes,
+      // c'est-à-dire à la mauvaise notion, et c'était le seul résultat rendu pour cette recherche.
+      // Il appartient désormais à la bande « Disciplines et catégories sportives » (ci-dessous).
+      ["groups", "Groupes de pratiquants et leurs membres.", ["groupe", "groupes", "equipe", "equipes", "niveau", "niveaux", "membre", "membres"]],
       ["coaches", "Coachs du club : fiches, spécialités, disponibilités, photos.", ["coach", "entraineur", "entraineurs", "professeur", "prof", "encadrant", "moniteur", "instructeur"]],
       ["rooms", "Salles et lieux de pratique.", ["salle", "gymnase", "dojo", "lieu", "lieux", "site", "installation"]],
       ["planning", "Planning des séances et des cours.", ["planning", "agenda", "calendrier", "horaire", "horaires", "seance", "seances", "emploi du temps"]],
@@ -6135,6 +7199,14 @@
       ["users", "Utilisateurs", "Profils locaux, code PIN et profil actif.", ["utilisateur", "utilisateurs", "utilisateur local", "profil", "profils", "pin", "code pin", "compte", "session"]],
       ["data", "Données", "Sauvegarde, restauration, import/export et vidage.", ["donnee", "donnees", "sauvegarde", "backup", "restauration", "restaurer", "import", "importer", "export", "exporter", "archive", "archivage", "vider", "reinitialiser"]],
       ["license", "Licence", "Activation et état de la licence.", ["licence", "license", "activation", "cle", "abonnement", "essai"]],
+      // Lot 3B-3 — la bande « sport-categories » était un panneau VALIDE (SETTINGS_PANEL_IDS) mais
+      // jamais indexé : le catalogue des catégories sportives, les profils sportifs et tout ce que
+      // les Lots 3B-2B/2C/2D y ont ajouté étaient introuvables depuis la recherche globale. Les
+      // mots-clés sont déclarés sans accent : normalizeSearchText les retire des deux côtés, donc
+      // « catégorie » et « categorie » atteignent la même entrée.
+      ["sport-categories", "Disciplines et catégories sportives", "Profil sportif et catalogue de catégories de chaque discipline.",
+        ["categorie", "categories", "categorie sportive", "categories sportives", "catalogue", "profil", "profil sportif",
+          "discipline", "disciplines", "u11", "u13", "u15", "poussins", "benjamins", "cadets", "seniors"]],
     ];
 
     settingsBands.forEach(([panel, title, description, keywords]) => {
@@ -6173,6 +7245,15 @@
       ["action-add-group", "Ajouter un groupe", "Créer un groupe de pratiquants.",
         ["ajouter un groupe", "nouveau groupe", "creer un groupe", "ajouter une equipe"],
         "add-group", "groups", null],
+      // Lot 3B-4A — la création d'une discipline manquait à cet inventaire alors que toutes les
+      // autres entités du club y figurent. Contrairement à « Ajouter une inscription » (écartée au
+      // Lot 3B-3), elle n'exige AUCUN contexte : ni contact, ni groupe — seulement le club actif.
+      // L'entrée de réglage « Disciplines et catégories sportives » reste distincte : elle conduit
+      // au catalogue existant, celle-ci ouvre le dialogue de création.
+      ["action-add-discipline", "Nouvelle discipline", "Créer une discipline et, si besoin, ses premières catégories sportives.",
+        ["ajouter une discipline", "ajouter une autre discipline", "nouvelle discipline", "creer une discipline",
+          "multisport", "sport", "activite sportive", "nouvelle activite"],
+        "open-discipline-creation", "settings", null],
       ["action-add-stage", "Ajouter un stage", "Créer un stage ou une session.",
         ["ajouter un stage", "nouveau stage", "creer un stage", "ajouter un camp", "nouvelle session"],
         "add-stage", "stages", "stages"],
@@ -7736,7 +8817,18 @@
       const label = personLabel(person);
       const email = asText(person.email);
       const phone = asText(person.phone || person.tel);
-      const category = asText(person.discipline || person.category);
+      // Lot 3B-3 — MODIFICATION STRICTEMENT PRÉSENTATIONNELLE. Ce sous-titre portait autrefois
+      // `person.discipline || person.category`, c'est-à-dire une discipline OU la classe d'âge
+      // (Adulte / Enfant, voire « Non-membre ») : le même emplacement visuel disait deux choses.
+      // Un repli sur « Adhésion » a d'abord été essayé, puis écarté : une carte peut n'agréger
+      // qu'une commande Boutique ou qu'une inscription de Stage, et le mot affirmait alors une
+      // nature de créance que la ligne de détail juste en dessous démentait — sur un non-adhérent,
+      // notamment. Il N'EXISTE aucun mot juste pour toutes les cartes, puisqu'une seule carte peut
+      // agréger plusieurs modules. Le sous-titre ne porte donc plus QUE la discipline, et n'est pas
+      // rendu du tout quand il n'y en a pas : la nature réelle de chaque créance est déjà nommée sur
+      // sa propre ligne (« Boutique — … », « Stage — … », « Discipline — Disciplines »).
+      // Aucun montant, aucun classement, aucune action, aucune donnée n'est touché.
+      const category = asText(person.discipline);
       const itemRows = items.map((item) => {
         // Lot 2G-C1 — les TROIS types de créance (Stage, Boutique, Adhésion) exposent désormais le même
         // tiroir de paiement financier (registrationPaymentHtml / orderPaymentHtml / membershipPaymentHtml).
@@ -10533,6 +11625,17 @@ ${esc(bodyText)}</pre>
       </div>`;
   }
 
+  // Lot 3B-3 — cette colonne n'a pas d'en-tête et sert les DEUX onglets. Pour un adhérent elle
+  // affiche la classe d'âge calculée (Adulte / Enfant), qui se lit seule ; pour un non-adhérent elle
+  // affiche « Non-membre », qui n'est pas une classe d'âge et que rien ne qualifiait. La valeur des
+  // non-adhérents est donc préfixée « Statut : », conformément à la doctrine du lot. Le champ
+  // technique `category` et sa valeur sont inchangés — seul le texte rendu diffère.
+  function contactStatusCellText(row = {}, kind, fallback = "") {
+    if (kind === "members") return memberCategory(row);
+    const value = asText(row.category) || asText(fallback);
+    return value ? `Statut : ${value}` : "";
+  }
+
   function contactRow(row, kind) {
     const tel = row.mobile || row.phone || "";
     return `<tr class="clickable-row" data-action="edit-contact" data-kind="${esc(kind)}" data-id="${esc(row.id)}">
@@ -10543,7 +11646,7 @@ ${esc(bodyText)}</pre>
       <td>${esc(row.city)}</td>
       <td>${dateDisplay(row.birthDate) || `<span class="muted">-</span>`}</td>
       <td>${memberAgeLabel(row) || `<span class="muted">-</span>`}</td>
-      <td>${esc(kind === "members" ? memberCategory(row) : row.category)}</td>
+      <td>${esc(contactStatusCellText(row, kind))}</td>
     </tr>`;
   }
 
@@ -10579,7 +11682,7 @@ ${esc(bodyText)}</pre>
         ${memberAgeLabel(row) ? `<span>${memberAgeLabel(row)}</span>` : alertInfoBadge("Âge non calculé")}
       </div>
       <div class="membership-card-meta contact-line-status">
-        <span>${esc(kind === "members" ? memberCategory(row) : row.category || "Non adhérent")}</span>
+        <span>${esc(contactStatusCellText(row, kind, "Non adhérent"))}</span>
         ${documentCount ? `<span class="contact-paperclip" title="${documentCount} document${documentCount > 1 ? "s" : ""} joint${documentCount > 1 ? "s" : ""}">📎 ${intValue(documentCount)}</span>` : ""}
       </div>
     </article>`;
@@ -10634,7 +11737,7 @@ ${esc(bodyText)}</pre>
             <p class="muted">Ajoute, modifie ou supprime les disciplines utilisées dans les inscriptions.</p>
           </div>
           <span class="collapsible-meta">${ui.overviewPanels?.disciplineManagement ? "Masquer" : "Afficher"}</span>
-          <button data-action="add-tariff-discipline">Nouvelle discipline</button>
+          <button data-action="add-tariff-discipline" data-origin="disciplines">Nouvelle discipline</button>
           <span class="collapsible-arrow">›</span>
         </div>
         <div class="collapsible-content">
@@ -10644,7 +11747,11 @@ ${esc(bodyText)}</pre>
       ${toolbar("add-membership", "Nouvelle inscription", `<select data-filter="discipline">${options}</select><div class="segmented">${dueFilterButton("disciplineDueOnly", ui.disciplineDueOnly)}</div>`)}
       <div class="band discipline-binder">
         <div class="band-title"><h2>${ui.discipline ? esc(ui.discipline) : "Toutes les disciplines"}</h2><strong>${rows.length} adhérents</strong></div>
-        ${(state.memberships || []).length === 0 ? emptyStateHtml("disciplines") : membershipBinder(rows)}
+        ${(state.memberships || []).length === 0
+          // Lot 3B-4A — deux états vides DISTINCTS : sans discipline au catalogue, on ne propose
+          // pas de créer une inscription (elle n'aurait rien à quoi se rattacher).
+          ? emptyStateHtml(disciplinesList().length === 0 ? "disciplines-empty-catalog" : "disciplines")
+          : membershipBinder(rows)}
       </div>`;
   }
 
@@ -12711,7 +13818,7 @@ ${esc(bodyText)}</pre>
       <div class="band-title collapsible-title-row" data-action="toggle-tariff-panel" data-panel="${esc(idValue)}" role="button" tabindex="0" aria-expanded="${open ? "true" : "false"}">
         <h2>${esc(title)}</h2>
         <span class="collapsible-meta">${esc(summary)}</span>
-        ${addAction ? `<button class="icon" title="Ajouter" data-action="${esc(addAction)}">+</button>` : ""}
+        ${addAction ? `<button class="icon" title="${esc(addAction === "add-tariff-discipline" ? "Nouvelle discipline" : "Ajouter")}" data-action="${esc(addAction)}" ${addAction === "add-tariff-discipline" ? `data-origin="tarifs"` : ""}>+</button>` : ""}
         <span class="collapsible-arrow">›</span>
       </div>
       <div class="collapsible-content">
@@ -13701,6 +14808,7 @@ ${esc(bodyText)}</pre>
       ${settingsCollapsibleBand("typography", "Polices", "Titres, texte, boutons", typographySettingsHtml())}
       ${settingsCollapsibleBand("postits", "Post-it À faire", "Couleurs et modèles", postitSettingsHtml())}
       ${settingsCollapsibleBand("features", "Fonctionnalités du club", featuresClubBandSummary(), featuresClubBandBody())}
+      ${settingsCollapsibleBand("sport-categories", "Disciplines et catégories sportives", sportCategoriesBandSummary(), sportCategoriesBandBody())}
       ${settingsCollapsibleBand("display", "Affichage", displayModeSummary(), `<div class="settings-panel display-settings-panel">
           <label class="layout-mode-select">
             <span><strong>Disposition de l'interface</strong><small>Choisissez entre l'affichage moderne actuel et une interface classique avec menus en haut.</small></span>
@@ -14238,20 +15346,41 @@ ${esc(bodyText)}</pre>
       if (beforeActiveClubId) appStorage.setItem(ACTIVE_CLUB_KEY, beforeActiveClubId);
       throw new Error("Sécurité multi-club : la sauvegarde aurait supprimé un club existant.");
     }
-    if (options.create) {
-      // La duplication peut avoir lieu SANS copie des données ("Identité seulement") : on se
-      // base sur duplicateSourceId (toujours renseigné en cas de duplication), pas sur
-      // cloneFromClubId (qui ne l'est que pour la copie "avec toutes les données").
-      const isDuplicateAction = Boolean(options.duplicateSourceId);
-      if (isDuplicateAction) {
-        const sourceClub = store.clubs.find((row) => row.id === options.duplicateSourceId);
-        audit.clubDuplicated(normalizedClub, options.duplicateSourceId, sourceClub);
-      } else {
+    // Journal — APRÈS l'écriture réussie du magasin, jamais avant.
+    //
+    // `options.auditAction` (Lot 3B-4B-0) : un appelant peut déclarer l'action MÉTIER réelle quand
+    // elle diffère du détail technique du stockage. Le premier lancement réutilise le club bootstrap
+    // (create:false) : techniquement une mise à jour, métier une création. Le journal doit décrire
+    // le geste de l'utilisateur, pas la mécanique du magasin.
+    //
+    // `options.onAuditFailure` (Lot 3B-4B-0) : sans ce rappel, une panne du journal remonte comme
+    // avant — comportement historique STRICTEMENT inchangé pour tous les autres appelants. Avec lui,
+    // elle est capturée et transmise : le club est déjà sur le disque à cet instant, une erreur de
+    // journal ne peut donc plus transformer une création persistée en faux échec (même doctrine que
+    // la création de disciplines du Lot 3B-4A).
+    const auditFailures = [];
+    try {
+      if (options.auditAction === "club.created") {
         audit.clubCreated(normalizedClub);
+      } else if (options.create) {
+        // La duplication peut avoir lieu SANS copie des données ("Identité seulement") : on se
+        // base sur duplicateSourceId (toujours renseigné en cas de duplication), pas sur
+        // cloneFromClubId (qui ne l'est que pour la copie "avec toutes les données").
+        const isDuplicateAction = Boolean(options.duplicateSourceId);
+        if (isDuplicateAction) {
+          const sourceClub = store.clubs.find((row) => row.id === options.duplicateSourceId);
+          audit.clubDuplicated(normalizedClub, options.duplicateSourceId, sourceClub);
+        } else {
+          audit.clubCreated(normalizedClub);
+        }
+      } else {
+        audit.clubSettingsUpdated(normalizedClub);
       }
-    } else {
-      audit.clubSettingsUpdated(normalizedClub);
+    } catch (error) {
+      if (typeof options.onAuditFailure !== "function") throw error;
+      auditFailures.push(error);
     }
+    if (auditFailures.length) options.onAuditFailure(auditFailures);
     if (savedStore.activeClubId === normalizedClub.id) loadActiveClubFromStore(savedStore);
     return savedStore;
   }
@@ -15308,7 +16437,10 @@ ${esc(bodyText)}</pre>
       "{contactCodePostal}": "code postal du contact",
       "{contactVille}": "ville du contact",
       "{contactDateNaissance}": "date de naissance du contact",
-      "{contactCategorie}": "adulte, enfant ou catégorie connue",
+      // Lot 3B-3 — la CLÉ {contactCategorie} est inchangée (modèles enregistrés, remplacements
+      // existants). Seule son aide visible est précisée : elle décrivait « catégorie connue »,
+      // formule qui ne disait ni ce qui est produit ni pour qui.
+      "{contactCategorie}": "Adulte ou Enfant pour un adhérent ; Non-membre pour un non-adhérent.",
       "{clubNom}": "nom du club actif",
       "{clubSigle}": "sigle du club actif",
       "{clubEmail}": "e-mail officiel du club",
@@ -15538,6 +16670,671 @@ ${esc(bodyText)}</pre>
   function computedThemeColor(field) {
     const raw = getComputedStyle(document.documentElement).getPropertyValue(field.css).trim();
     return cssColorToHex(raw, cssColorToHex(field.fallback, "#000000"));
+  }
+
+  // =========================================================================================
+  // LOT 3B-2B — DISCIPLINES ET CATÉGORIES SPORTIVES (paramètres du club)
+  // =========================================================================================
+  // Surface de configuration SPORTIVE, délibérément séparée de « Tarifs > Disciplines » qui reste
+  // centrée sur cotisation / licence / TVA / régime tarifaire. Aucune valeur financière n'est ni
+  // lue ni écrite ici. Toutes les règles métier (doublon, validation, réordonnancement) viennent
+  // de 04-settings-normalize.js : ce module ne fait qu'afficher et orchestrer.
+  // Les disciplines sont TOUJOURS manipulées par `discipline.id` (Lot 3A) : deux disciplines
+  // homonymes restent deux entrées distinctes, avec deux catalogues disjoints.
+
+  function disciplinesList() {
+    return (state.tariffs && Array.isArray(state.tariffs.disciplines)) ? state.tariffs.disciplines : [];
+  }
+
+  function disciplineByIdStrict(disciplineId) {
+    const key = asText(disciplineId);
+    if (!key) return null;
+    return disciplinesList().find((d) => asText(d.id) === key) || null;
+  }
+
+  function sportCategoriesBandSummary() {
+    const list = disciplinesList();
+    if (!list.length) return "Aucune discipline";
+    // Le résumé doit annoncer ce que l'utilisateur peut RÉELLEMENT voir et administrer sous la bande.
+    // Une catégorie orpheline (disciplineId ne désignant plus aucune discipline) n'apparaît dans
+    // aucune ligne : la compter ferait annoncer « 2 catégories » là où une seule est atteignable.
+    // Elle n'est ni supprimée, ni rattachée, ni réaffectée — seulement exclue du décompte visible.
+    const disciplineIds = new Set(list.map((d) => asText(d && d.id)).filter(Boolean));
+    const active = (state.sportCategories || [])
+      .filter((c) => c && c.archived !== true && disciplineIds.has(asText(c.disciplineId))).length;
+    const disciplines = list.length;
+    return `${intValue(disciplines)} discipline${disciplines > 1 ? "s" : ""} · ${intValue(active)} catégorie${active > 1 ? "s" : ""}`;
+  }
+
+  // Lot 3B-2D — avertissement UNIQUE et purement informatif sur les catégories rattachées à une
+  // discipline absente. Volontairement dépourvu de liste, d'identifiant, de bouton de correction et
+  // de suppression : l'origine de la situation (import ancien, sauvegarde, donnée incomplète,
+  // suppression historique) n'est pas connue, et rien ne permet de trancher à la place de
+  // l'utilisateur. Aucun message si le compte est nul.
+  function orphanSportCategoriesNoticeHtml() {
+    const count = orphanSportCategories(state, activeClubId()).length;
+    if (!count) return "";
+    const phrase = count > 1
+      ? `${intValue(count)} catégories sportives sont liées à une discipline absente. Ces données historiques sont conservées mais ne peuvent plus être utilisées.`
+      : `${intValue(count)} catégorie sportive est liée à une discipline absente. Cette donnée historique est conservée mais ne peut plus être utilisée.`;
+    return `<p class="muted sport-categories-orphan-note" data-orphan-categories="${esc(String(count))}">${esc(phrase)}</p>`;
+  }
+
+  function sportCategoriesBandBody() {
+    const disciplines = disciplinesList();
+    // Lot 3B-4A — cette bande est LA surface du domaine « disciplines, profils, catégories », et
+    // c'était la seule qui ne permettait pas d'en créer une : elle renvoyait l'utilisateur vers
+    // Tarifs. Le bouton ouvre exactement le même dialogue que les autres points d'entrée.
+    const addButton = `<button type="button" class="primary" data-action="open-discipline-creation" data-origin="settings">Nouvelle discipline</button>`;
+    if (!disciplines.length) {
+      return `<div class="settings-panel sport-categories-panel">
+        <p class="muted">Aucune discipline n'est encore définie. Créez la première discipline du club : elle recevra ici son profil sportif et ses catégories.</p>
+        <div class="group-card-actions">${addButton}</div>
+      </div>`;
+    }
+    return `<div class="settings-panel sport-categories-panel">
+      <p class="muted">Le profil sportif adapte le vocabulaire et les fonctions proposées. Les catégories (U11, Cadets, Seniors…) sont propres à chaque discipline : deux disciplines peuvent avoir une catégorie du même nom sans qu'elles soient confondues. Aucun tarif n'est modifié depuis cet écran.</p>
+      <div class="group-card-actions">${addButton}</div>
+      ${orphanSportCategoriesNoticeHtml()}
+      <div class="sport-discipline-list">${disciplines.map(sportDisciplineRowHtml).join("")}</div>
+    </div>`;
+  }
+
+  function sportDisciplineRowHtml(discipline) {
+    const resolved = resolveDisciplineProfile(discipline);
+    // Lot 3B-2D — restreint au club actif : une catégorie héritée d'un autre club ne doit pas
+    // gonfler le décompte affiché sous la discipline.
+    const active = disciplineSportCategories(discipline.id, state, { includeArchived: false, clubId: activeClubId() }).length;
+    const all = disciplineSportCategories(discipline.id, state, { includeArchived: true, clubId: activeClubId() }).length;
+    const archived = all - active;
+    return `<article class="band sport-discipline-row">
+      <div class="sport-discipline-head">
+        <strong>${esc(discipline.name || "Discipline")}</strong>
+        <span class="cap-badge">${esc(disciplineProfileLabel(resolved))}</span>
+      </div>
+      <div class="sport-discipline-meta muted">
+        <span>${esc(disciplineProfileSourceLabel(resolved))}</span>
+        <span>· ${intValue(active)} catégorie${active > 1 ? "s" : ""} active${active > 1 ? "s" : ""}</span>
+        <span>· ${intValue(archived)} archivée${archived > 1 ? "s" : ""}</span>
+      </div>
+      <div class="group-card-actions">
+        <button type="button" data-action="manage-discipline-categories" data-id="${esc(discipline.id)}">Gérer</button>
+      </div>
+    </article>`;
+  }
+
+  // ---------------------------------------------------------------------------------------
+  // Dialogue de gestion d'UNE discipline
+  // ---------------------------------------------------------------------------------------
+  // Réutilise showInfoDialog + le patron de rafraîchissement sur place déjà employé par
+  // « Membres +/− » (groupMembersDialogBody) : le contenu est reconstruit sans refermer la
+  // fenêtre, donc sans perdre le contexte de l'utilisateur après chaque action.
+
+  function openDisciplineCategoriesDialog(disciplineId) {
+    const discipline = disciplineByIdStrict(disciplineId);
+    if (!discipline) return;
+    showInfoDialog(`Discipline « ${discipline.name || "Discipline"} »`, disciplineCategoriesDialogBody(discipline.id));
+    setupDisciplineCategoriesDialog();
+  }
+
+  function refreshDisciplineCategoriesDialog() {
+    const root = document.querySelector("[data-discipline-categories-dialog]");
+    if (!root) return;
+    const disciplineId = root.dataset.disciplineId;
+    const host = root.closest(".dialog-body") || root.parentElement;
+    if (host) host.innerHTML = disciplineCategoriesDialogBody(disciplineId);
+    setupDisciplineCategoriesDialog();
+  }
+
+  // Le sélecteur de profil est un <select> : son changement est une action EXPLICITE de
+  // l'utilisateur. Aucun ancrage n'a lieu à la simple ouverture du dialogue.
+  function setupDisciplineCategoriesDialog() {
+    const root = document.querySelector("[data-discipline-categories-dialog]");
+    if (!root) return;
+    const select = root.querySelector("[data-sport-profile-select]");
+    if (select) select.addEventListener("change", () => applyDisciplineProfileChange(root.dataset.disciplineId, select.value));
+  }
+
+  function disciplineCategoriesDialogBody(disciplineId) {
+    const discipline = disciplineByIdStrict(disciplineId);
+    if (!discipline) return `<p class="muted">Discipline introuvable.</p>`;
+    const resolved = resolveDisciplineProfile(discipline);
+    const capabilities = disciplineCapabilities(discipline);
+    const active = disciplineSportCategories(discipline.id, state, { includeArchived: false, clubId: activeClubId() });
+    const archived = disciplineSportCategories(discipline.id, state, { includeArchived: true, clubId: activeClubId() }).filter((c) => c.archived === true);
+    return `<div data-discipline-categories-dialog data-discipline-id="${esc(discipline.id)}">
+      ${disciplineProfileSectionHtml(discipline, resolved, capabilities)}
+      ${disciplineActiveCategoriesHtml(discipline, active)}
+      ${disciplineSuggestionsHtml(discipline)}
+      ${disciplineArchivedCategoriesHtml(discipline, archived)}
+    </div>`;
+  }
+
+  function disciplineProfileSectionHtml(discipline, resolved, capabilities) {
+    const current = asText(discipline.sportId);
+    const known = current && !isMetaSportProfileId(current) && SPORT_PROFILE_IDS.has(current) ? current : "";
+    const unknown = current && !SPORT_PROFILE_IDS.has(current) ? current : "";
+    // Un profil disparu du registre reste sélectionné et CONSERVÉ : il n'est remplacé que si
+    // l'utilisateur choisit explicitement autre chose (doctrine Lot 3A sur les références inconnues).
+    const options = [
+      // Le libellé de l'option vide dépend de l'ORIGINE réelle du profil : dans un club mono-sport,
+      // "" laisse jouer le repli du Lot 3B-1, donc l'option n'annule pas l'héritage (cf.
+      // disciplineNoProfileOptionLabel). La valeur envoyée reste "" dans tous les cas.
+      `<option value="" ${!current ? "selected" : ""}>${esc(disciplineNoProfileOptionLabel(resolved))}</option>`,
+      unknown ? `<option value="${esc(unknown)}" selected>Profil indisponible — ${esc(unknown)}</option>` : "",
+      // Un méta-profil explicitement stocké (custom/multisport) n'est pas un sport : sa valeur est
+      // conservée, mais son option est nommée pour ce qu'elle est — une valeur historique sans effet
+      // sportif — afin de ne pas doubler l'option vide d'un libellé quasi identique.
+      current && isMetaSportProfileId(current) ? `<option value="${esc(current)}" selected>${esc(metaSportProfileOptionLabel(current))}</option>` : "",
+      ...selectableDisciplineProfiles().map((p) => `<option value="${esc(p.id)}" ${p.id === known ? "selected" : ""}>${esc(p.label)}</option>`),
+    ].filter(Boolean).join("");
+    // Lot 3B-3 — les capacités sont des REPÈRES, jamais des interrupteurs. L'ancien rendu
+    // « Catégories : oui / non » posait deux problèmes distincts sur le même badge :
+    //   1. le mot « Catégories » désignait ici les catégories d'ÂGE du profil, à trois lignes de la
+    //      section « Catégories actives » qui liste le catalogue réel de la discipline ;
+    //   2. la forme « oui / non » se lisait comme une activation, alors que supportsAgeCategories
+    //      === false n'a JAMAIS interdit la moindre catégorie manuelle (doctrine Lot 3B-2A).
+    // Le rendu n'énumère donc plus que les capacités VRAIES, sans oui/non, sous une étiquette qui
+    // dit d'où vient l'information. Les clés et les valeurs des capacités sont inchangées.
+    const trueCaps = DISCIPLINE_CAPABILITY_KEYS.filter((key) => capabilities[key] === true);
+    const capsHtml = trueCaps.length
+      ? trueCaps.map((key) => `<span class="cap-badge">${esc(disciplineCapabilityLabel(key))}</span>`).join("")
+      : `<span class="cap-badge cap-off">aucun repère particulier</span>`;
+    return `<section class="dialog-section sport-profile-section">
+      <h3>Profil sportif</h3>
+      <label>Profil sportif de cette discipline
+        <select data-sport-profile-select>${options}</select>
+      </label>
+      <p class="muted">
+        ${esc(disciplineProfileSourceLabel(resolved))} · Famille : ${esc(disciplineFamilyLabel(disciplineFamily(discipline)))}
+      </p>
+      <div class="sport-capability-list"><span class="sport-capability-title">Prévu par le profil :</span>${capsHtml}</div>
+      <p class="muted">Indicatif : ces repères viennent du profil sportif et n'activent ni ne limitent aucune fonction.</p>
+      <p class="muted">Le changement de profil ne modifie pas les catégories existantes.</p>
+    </section>`;
+  }
+
+  function disciplineActiveCategoriesHtml(discipline, active) {
+    const rows = active.map((category, index) => `<li class="sport-category-row">
+      <span class="sport-category-label">${esc(category.label || "(sans nom)")}</span>
+      <span class="sport-category-actions">
+        <button type="button" class="icon" data-action="move-sport-category" data-id="${esc(category.id)}" data-direction="up" ${index === 0 ? "disabled" : ""} title="Monter" aria-label="Monter « ${esc(category.label)} »">↑</button>
+        <button type="button" class="icon" data-action="move-sport-category" data-id="${esc(category.id)}" data-direction="down" ${index === active.length - 1 ? "disabled" : ""} title="Descendre" aria-label="Descendre « ${esc(category.label)} »">↓</button>
+        <button type="button" data-action="rename-sport-category" data-id="${esc(category.id)}">Renommer</button>
+        <button type="button" data-action="archive-sport-category" data-id="${esc(category.id)}">Archiver</button>
+      </span>
+    </li>`).join("");
+    return `<section class="dialog-section">
+      <h3>Catégories actives</h3>
+      ${active.length ? `<ul class="sport-category-list">${rows}</ul>` : `<p class="muted">Aucune catégorie pour l'instant.</p>`}
+      <div class="group-card-actions">
+        <button type="button" class="primary" data-action="add-sport-category" data-id="${esc(discipline.id)}">Ajouter une catégorie</button>
+      </div>
+    </section>`;
+  }
+
+  function disciplineSuggestionsHtml(discipline) {
+    const suggestions = sportCategorySuggestions(discipline, state);
+    if (!suggestions.length) {
+      return `<section class="dialog-section">
+        <h3>Suggestions</h3>
+        <p class="muted">Aucune suggestion disponible pour ce profil.</p>
+      </section>`;
+    }
+    const resolved = resolveDisciplineProfile(discipline);
+    const available = suggestions.filter((s) => !s.alreadyExists).length;
+    const chips = suggestions.map((s) => s.alreadyExists
+      ? `<span class="cap-badge">${esc(s.label)} — Déjà créée</span>`
+      : `<button type="button" data-action="add-sport-category-suggestion" data-id="${esc(discipline.id)}" data-label="${esc(s.label)}">${esc(s.label)} +</button>`).join("");
+    return `<section class="dialog-section">
+      <h3>Suggestions du profil ${esc(resolved.profile ? resolved.profile.label : "")}</h3>
+      <p class="muted">Ces catégories ne sont que des propositions : rien n'est créé tant que vous ne le demandez pas.</p>
+      <div class="sport-suggestion-list">${chips}</div>
+      ${available ? `<div class="group-card-actions"><button type="button" data-action="add-all-sport-category-suggestions" data-id="${esc(discipline.id)}">Ajouter toutes les suggestions disponibles (${intValue(available)})</button></div>` : ""}
+    </section>`;
+  }
+
+  function disciplineArchivedCategoriesHtml(discipline, archived) {
+    if (!archived.length) return "";
+    const rows = archived.map((category) => `<li class="sport-category-row">
+      <span class="sport-category-label muted">${esc(category.label || "(sans nom)")}</span>
+      <span class="sport-category-actions">
+        <button type="button" data-action="restore-sport-category" data-id="${esc(category.id)}">Restaurer</button>
+      </span>
+    </li>`).join("");
+    return `<details class="sport-archived-block">
+      <summary>Catégories archivées (${intValue(archived.length)})</summary>
+      <ul class="sport-category-list">${rows}</ul>
+    </details>`;
+  }
+
+  // ---------------------------------------------------------------------------------------
+  // Mutations — patron canonique du projet : recordHistory → mutation → persist → audit → render
+  // ---------------------------------------------------------------------------------------
+  // Une seule écriture de l'état du club par action (persist). Le journal d'audit possède son
+  // propre stockage par conception (voir 29-audit-log.js) et est écrit APRÈS la persistance, donc
+  // jamais avant qu'une mutation soit réellement enregistrée.
+
+  function sportCategoryById2(categoryId) {
+    const key = asText(categoryId);
+    return (state.sportCategories || []).find((c) => asText(c.id) === key) || null;
+  }
+
+  // Rerendu commun : la page de paramètres ET le dialogue ouvert doivent refléter la mutation.
+  function afterSportCategoryMutation() {
+    render();
+    refreshDisciplineCategoriesDialog();
+  }
+
+  function applyDisciplineProfileChange(disciplineId, nextSportId) {
+    const discipline = disciplineByIdStrict(disciplineId);
+    if (!discipline) return;
+    const previousSportId = asText(discipline.sportId);
+    const wanted = asText(nextSportId);
+    if (wanted === previousSportId) return;
+    // Un méta-profil ne peut pas être CHOISI : il n'apparaît dans la liste que s'il était déjà
+    // stocké, et sélectionner « Aucun profil spécifique » le remplace par "".
+    const nextValue = isMetaSportProfileId(wanted) ? "" : wanted;
+    const previousLabel = disciplineProfileLabel(resolveDisciplineProfile(discipline));
+    recordHistory();
+    // SEUL sportId change : id, nom, prix, licence, TVA, family, capabilities et les catégories
+    // restent strictement en l'état (les surcharges explicites ne sont jamais réinitialisées).
+    discipline.sportId = nextValue;
+    const newLabel = disciplineProfileLabel(resolveDisciplineProfile(discipline));
+    persist(`Profil sportif : ${discipline.name || "discipline"}`);
+    audit.sportDisciplineProfileUpdated(discipline, {
+      previousSportId, newSportId: nextValue, previousProfileLabel: previousLabel, newProfileLabel: newLabel,
+    });
+    afterSportCategoryMutation();
+  }
+
+  async function addSportCategory(disciplineId) {
+    const discipline = disciplineByIdStrict(disciplineId);
+    if (!discipline) return;
+    const label = await requestTextInput({
+      title: "Ajouter une catégorie",
+      label: `Nom de la catégorie (${discipline.name || "discipline"})`,
+      placeholder: "Ex. U11, Cadets, Seniors, Éveil",
+      confirmLabel: "Ajouter",
+    });
+    if (label === null) return;
+    createSportCategoryFromLabel(discipline, label);
+  }
+
+  function createSportCategoryFromLabel(discipline, label) {
+    const error = validateSportCategoryLabel(label, discipline.id, state, "", activeClubId());
+    if (error) { alert(error); return; }
+    recordHistory();
+    const category = buildSportCategory(discipline.id, label, state, activeClubId());
+    state.sportCategories = [...(state.sportCategories || []), category];
+    persist(`Catégorie ajoutée : ${category.label}`);
+    audit.sportCategoryCreated(category, discipline);
+    afterSportCategoryMutation();
+  }
+
+  async function renameSportCategory(categoryId) {
+    const category = sportCategoryById2(categoryId);
+    if (!category) return;
+    const discipline = disciplineByIdStrict(category.disciplineId);
+    const previousLabel = asText(category.label);
+    const label = await requestTextInput({
+      title: "Renommer la catégorie",
+      label: "Nouveau nom",
+      value: previousLabel,
+      confirmLabel: "Renommer",
+    });
+    if (label === null) return;
+    const clean = asText(label);
+    if (clean === previousLabel) return;
+    // Le renommage s'ignore lui-même dans le contrôle de doublon : corriger la casse de son propre
+    // libellé reste possible tant qu'aucune AUTRE catégorie ne porte déjà ce nom.
+    const error = validateSportCategoryLabel(clean, category.disciplineId, state, category.id, activeClubId());
+    if (error) { alert(error); return; }
+    recordHistory();
+    category.label = clean;
+    persist(`Catégorie renommée : ${clean}`);
+    audit.sportCategoryRenamed(category, discipline, previousLabel);
+    afterSportCategoryMutation();
+  }
+
+  function moveSportCategory(categoryId, direction) {
+    const category = sportCategoryById2(categoryId);
+    if (!category) return;
+    const next = reorderDisciplineSportCategories(category.disciplineId, categoryId, direction, state);
+    if (!next) return; // déjà en première/dernière position : aucune écriture
+    recordHistory();
+    state.sportCategories = next;
+    persist(`Ordre des catégories : ${category.label}`);
+    afterSportCategoryMutation();
+  }
+
+  async function archiveSportCategory(categoryId) {
+    const category = sportCategoryById2(categoryId);
+    if (!category) return;
+    const discipline = disciplineByIdStrict(category.disciplineId);
+    const ok = await requestConfirm({
+      title: "Archiver la catégorie",
+      message: `« ${category.label} » sera retirée des listes mais conservée, avec toutes ses références. Vous pourrez la restaurer à tout moment.`,
+      confirmLabel: "Archiver",
+    });
+    if (!ok) return;
+    recordHistory();
+    category.archived = true;
+    persist(`Catégorie archivée : ${category.label}`);
+    audit.sportCategoryArchived(category, discipline);
+    afterSportCategoryMutation();
+  }
+
+  function restoreSportCategory(categoryId) {
+    const category = sportCategoryById2(categoryId);
+    if (!category) return;
+    const discipline = disciplineByIdStrict(category.disciplineId);
+    const error = validateSportCategoryRestore(category, state, activeClubId());
+    if (error) { alert(error); return; }
+    recordHistory();
+    category.archived = false;
+    persist(`Catégorie restaurée : ${category.label}`);
+    audit.sportCategoryRestored(category, discipline);
+    afterSportCategoryMutation();
+  }
+
+  // Ajout groupé : une SEULE écriture pour l'ensemble, un événement de journal par catégorie
+  // réellement créée. Les suggestions déjà présentes (actives OU archivées) sont ignorées, jamais
+  // restaurées automatiquement. L'ordre du registre est conservé.
+  function addAllSportCategorySuggestions(disciplineId) {
+    const discipline = disciplineByIdStrict(disciplineId);
+    if (!discipline) return;
+    const pending = sportCategorySuggestions(discipline, state).filter((s) => !s.alreadyExists);
+    if (!pending.length) return;
+    recordHistory();
+    const created = [];
+    let next = [...(state.sportCategories || [])];
+    pending.forEach((suggestion) => {
+      // Revalidation à chaque tour sur l'état EN COURS de construction : deux suggestions ne
+      // peuvent pas produire un doublon entre elles.
+      const draft = { sportCategories: next };
+      if (validateSportCategoryLabel(suggestion.label, discipline.id, draft, "", activeClubId())) return;
+      const category = buildSportCategory(discipline.id, suggestion.label, draft, activeClubId());
+      next = [...next, category];
+      created.push(category);
+    });
+    if (!created.length) return;
+    state.sportCategories = next;
+    persist(`${created.length} catégorie${created.length > 1 ? "s" : ""} ajoutée${created.length > 1 ? "s" : ""} : ${discipline.name || "discipline"}`);
+    created.forEach((category) => audit.sportCategoryCreated(category, discipline));
+    afterSportCategoryMutation();
+  }
+
+  // ===================================================================================
+  // Lot 3B-4A — CRÉATION D'UNE DISCIPLINE : écriture atomique + dialogue.
+  // ===================================================================================
+  // Avant ce lot, « Nouvelle discipline » poussait immédiatement une ligne « Nouvelle discipline »
+  // à 0 € et persistait : aucune confirmation, aucune annulation, aucun profil, et un double clic
+  // créait deux disciplines. Le parcours suit désormais la doctrine du Lot 2 : brouillon en
+  // mémoire → validation → UNE écriture critique → seulement ensuite le journal.
+
+  // Verrou anti-double soumission, jumeau de `clubWizardCreating` (31-club-wizard.js).
+  let disciplineCreating = false;
+
+  // SEULE fonction autorisée à muter, persister et journaliser. Retourne un compte rendu ; ne
+  // touche jamais au DOM (le dialogue en dérive son affichage).
+  function commitDisciplineCreation(prepared, options = {}) {
+    const clubId = asText(options.clubId || prepared && prepared.clubId);
+    // 1. Revalidation : le brouillon a pu vieillir (autre onglet, autre mutation entre-temps).
+    const check = validateDisciplineCreation(prepared, state, clubId);
+    if (!check.ok) return { ok: false, errors: check.errors, warnings: check.warnings, reason: "invalid" };
+    // 2. Verrou.
+    if (disciplineCreating) return { ok: false, errors: [], warnings: [], reason: "busy" };
+    disciplineCreating = true;
+    // 3. État nécessaire au rollback. `persist()` journalise l'activité AVANT d'écrire : en cas
+    //    d'échec, activityLog doit être restauré lui aussi, sinon la trace reste sans la donnée.
+    //    `recordHistory()` vide inconditionnellement `history.redo` (07-history-nav.js) : une
+    //    création qui n'a finalement pas eu lieu ne doit pas coûter à l'utilisateur un Refaire
+    //    légitime, la pile est donc COPIÉE (jamais partagée) puis rendue telle quelle.
+    const previous = {
+      disciplines: state.tariffs.disciplines,
+      sportCategories: state.sportCategories,
+      activityLog: state.activityLog,
+      undoDepth: history.undo.length,
+      redo: [...history.redo],
+    };
+    try {
+      // 4. Un seul point d'entrée dans l'historique pour toute l'opération groupée.
+      recordHistory();
+      // 5. Mutation mémoire : la discipline ET toutes ses catégories, ensemble.
+      const discipline = { ...prepared.discipline };
+      const categories = prepared.categories.map((category) => normalizeSportCategory({ ...category }, 0));
+      state.tariffs.disciplines = [...(state.tariffs.disciplines || []), discipline];
+      if (categories.length) state.sportCategories = [...(state.sportCategories || []), ...categories];
+      // 6. UNE persistance logique du club.
+      const message = categories.length
+        ? `Discipline créée : ${discipline.name} (${categories.length} catégorie${categories.length > 1 ? "s" : ""})`
+        : `Discipline créée : ${discipline.name}`;
+      persist(message);
+      // `persist()` avale l'erreur de stockage et se contente de poser « Erreur d'enregistrement »
+      // (07-history-nav.js, hors périmètre de ce lot) : c'est le seul signal disponible pour
+      // distinguer une écriture réussie d'une écriture perdue.
+      if (ui.saveMessage !== message) {
+        state.tariffs.disciplines = previous.disciplines;
+        state.sportCategories = previous.sportCategories;
+        state.activityLog = previous.activityLog;
+        // Aucune entrée d'historique ne doit survivre à une création qui n'a pas eu lieu : ni la
+        // trace ajoutée dans `undo`, ni la pile `redo` effacée au passage.
+        while (history.undo.length > previous.undoDepth) history.undo.pop();
+        history.redo = [...previous.redo];
+        return { ok: false, errors: ["L'enregistrement a échoué. La discipline n'a pas été créée."], warnings: [], reason: "persist" };
+      }
+      // 7. Journal — APRÈS la persistance réussie, jamais avant, et JAMAIS fatal : à ce point la
+      //    discipline et ses catégories sont réellement sur le disque. Une erreur d'écriture du
+      //    journal (quota, stockage indisponible) ne doit pas transformer une création réussie en
+      //    échec, ni laisser le formulaire resoumissible — elle rendrait la création dupliquable.
+      //    Chaque événement est tenté indépendamment : un événement perdu n'emporte pas les suivants.
+      const auditFailures = [];
+      const tryAudit = (action, write, extra) => {
+        try {
+          write();
+        } catch (error) {
+          auditFailures.push({ action, ...(extra || {}), error });
+        }
+      };
+      tryAudit("sport.discipline.created", () => audit.sportDisciplineCreated(discipline, categories));
+      categories.forEach((category) => {
+        tryAudit("sport.category.created", () => audit.sportCategoryCreated(category, discipline), { categoryId: category.id });
+      });
+      if (auditFailures.length) {
+        console.error("Discipline créée, mais le journal d'activité n'a pas pu être entièrement mis à jour.", auditFailures);
+      }
+      return {
+        ok: true, errors: [], warnings: [], discipline, categories, message,
+        auditFailed: auditFailures.length > 0,
+        auditFailureCount: auditFailures.length,
+      };
+    } finally {
+      disciplineCreating = false;
+    }
+  }
+
+  // --- Brouillon (jamais persisté) -------------------------------------------------------------
+  function freshDisciplineCreationDraft() {
+    return { choice: "", name: "", autoName: "", categoryLabels: [], duplicateAccepted: false };
+  }
+
+  function disciplineCreationBodyHtml(draft, feedback = {}) {
+    const choices = disciplineCreationChoices();
+    const prepared = draft.choice ? prepareDisciplineCreation(draft, state, activeClubId()) : null;
+    const suggestions = prepared
+      ? sportCategorySuggestions(prepared.discipline, state).filter((s) => !s.alreadyExists)
+      : [];
+    const selected = new Set(draft.categoryLabels || []);
+    const count = suggestions.filter((s) => selected.has(s.label)).length;
+    // `form-warning` / `form-error` sont les classes déjà employées par les autres dialogues :
+    // aucune règle CSS nouvelle n'est nécessaire pour ce lot.
+    const warning = feedback.warning ? `<div class="form-warning" role="alert" data-discipline-warning>${esc(feedback.warning)}</div>` : "";
+    const error = feedback.error ? `<div class="form-error" role="alert" data-discipline-error>${esc(feedback.error)}</div>` : "";
+    return `<div class="dialog-section">
+        <label>Sport ou activité
+          <select data-discipline-choice required>
+            <option value="" ${draft.choice ? "" : "selected"}>Choisir un sport ou une activité…</option>
+            ${choices.map((c) => `<option value="${esc(c.value)}" ${c.value === draft.choice ? "selected" : ""}>${esc(c.label)}</option>`).join("")}
+          </select>
+        </label>
+        <label>Nom de la discipline
+          <input type="text" data-discipline-name value="${esc(draft.name)}" placeholder="Football, Football loisirs, Éveil sportif…" required />
+        </label>
+      </div>
+      ${suggestions.length ? `<div class="dialog-section" data-discipline-categories>
+        <h3>Catégories sportives proposées</h3>
+        <div class="inline-actions">
+          <button type="button" data-discipline-select-all>Tout sélectionner</button>
+          <button type="button" data-discipline-select-none>Tout désélectionner</button>
+          <span class="muted" data-discipline-count>${intValue(count)} sélectionnée${count > 1 ? "s" : ""}</span>
+        </div>
+        <div class="sport-suggestion-list">
+          ${suggestions.map((s) => `<label class="cap-badge"><input type="checkbox" data-discipline-category value="${esc(s.label)}" ${selected.has(s.label) ? "checked" : ""} /> ${esc(s.label)}</label>`).join("")}
+        </div>
+        <p class="muted">Facultatif : seules les catégories cochées seront créées. Aucun groupe, coach, salle, tarif ou inscription ne sera ajouté automatiquement.</p>
+      </div>` : ""}
+      ${warning}${error}`;
+  }
+
+  function disciplineCreationSubmitLabel(draft) {
+    const n = (draft.categoryLabels || []).length;
+    if (!n) return "Créer la discipline";
+    return `Créer la discipline et ${intValue(n)} catégorie${n > 1 ? "s" : ""}`;
+  }
+
+  // Point d'entrée UNIQUE de tous les boutons « Nouvelle discipline ».
+  function openDisciplineCreationDialog(options = {}) {
+    const trigger = options.trigger || null;
+    const origin = asText(options.origin);
+    const draft = freshDisciplineCreationDraft();
+    // Un brouillon n'est créé qu'UNE fois. Le verrou global `disciplineCreating` protège des
+    // soumissions concurrentes ; celui-ci protège de la resoumission d'un brouillon déjà abouti,
+    // même si le formulaire survit dans le DOM après la fermeture du dialogue.
+    let creationDone = false;
+    const targetDialog = dialogForNewWindow();
+    targetDialog.classList.remove("has-identity-photo");
+    const render = (feedback = {}) => {
+      targetDialog.innerHTML = `<form class="discipline-creation-form">
+        <div class="dialog-header"><h2>Nouvelle discipline</h2><button class="icon" type="button" data-dialog-close title="Fermer" aria-label="Fermer">×</button></div>
+        <div class="dialog-body"><div class="form-grid">${disciplineCreationBodyHtml(draft, feedback)}</div></div>
+        <div class="dialog-footer">
+          <span></span>
+          <div class="dialog-footer-actions">
+            <button type="button" data-dialog-close>Annuler</button>
+            <button class="primary" type="submit" data-discipline-submit>${esc(feedback.confirmLabel || disciplineCreationSubmitLabel(draft))}</button>
+          </div>
+        </div>
+      </form>`;
+      bind(feedback);
+    };
+    const closeDialog = () => targetDialog.close();
+    const restoreFocus = () => {
+      // Le focus revient au bouton qui a ouvert le dialogue (exigence d'accessibilité). Le
+      // déclencheur peut avoir disparu du DOM après un rerendu, ou ne pas être un élément du tout
+      // (la recherche globale exécute l'action via un bouton synthétique) : on ne force rien alors.
+      if (!trigger || trigger.nodeType !== 1 || typeof trigger.focus !== "function") return;
+      if (typeof document.contains === "function" && !document.contains(trigger)) return;
+      trigger.focus();
+    };
+    function bind(feedback) {
+      const form = targetDialog.querySelector("form");
+      form.querySelectorAll("[data-dialog-close]").forEach((b) => b.addEventListener("click", closeDialog));
+      const select = form.querySelector("[data-discipline-choice]");
+      const nameInput = form.querySelector("[data-discipline-name]");
+      // Toute modification du sport ou du nom invalide une confirmation de doublon déjà donnée.
+      const resetDuplicate = () => { draft.duplicateAccepted = false; };
+      select.addEventListener("change", () => {
+        draft.choice = select.value;
+        const suggested = disciplineCreationSuggestedName(draft.choice);
+        // Décision 4.5 — le nom prérempli n'écrase JAMAIS un nom personnalisé.
+        if (disciplineNameIsAutomatic(draft)) { draft.name = suggested; draft.autoName = suggested; }
+        draft.categoryLabels = [];
+        resetDuplicate();
+        render();
+      });
+      nameInput.addEventListener("input", () => { draft.name = nameInput.value; resetDuplicate(); });
+      const refreshCount = () => {
+        const submit = form.querySelector("[data-discipline-submit]");
+        if (submit) submit.textContent = disciplineCreationSubmitLabel(draft);
+        const counter = form.querySelector("[data-discipline-count]");
+        const n = draft.categoryLabels.length;
+        if (counter) counter.textContent = `${intValue(n)} sélectionnée${n > 1 ? "s" : ""}`;
+      };
+      form.querySelectorAll("[data-discipline-category]").forEach((box) => {
+        box.addEventListener("change", () => {
+          const label = box.value;
+          draft.categoryLabels = box.checked
+            ? [...draft.categoryLabels.filter((l) => l !== label), label]
+            : draft.categoryLabels.filter((l) => l !== label);
+          refreshCount();
+        });
+      });
+      form.querySelector("[data-discipline-select-all]")?.addEventListener("click", () => {
+        draft.categoryLabels = [...form.querySelectorAll("[data-discipline-category]")].map((b) => b.value);
+        render();
+      });
+      form.querySelector("[data-discipline-select-none]")?.addEventListener("click", () => {
+        draft.categoryLabels = [];
+        render();
+      });
+      form.addEventListener("submit", (event) => {
+        event.preventDefault();
+        if (creationDone || disciplineCreating) return;
+        draft.name = asText(nameInput.value);
+        const clubId = activeClubId();
+        const prepared = prepareDisciplineCreation(draft, state, clubId);
+        const check = validateDisciplineCreation(prepared, state, clubId);
+        if (!check.ok) { render({ error: check.errors[0] }); return; }
+        // Doublon strict : avertissement d'abord, création seulement après confirmation explicite.
+        if (check.warnings.length && !draft.duplicateAccepted) {
+          draft.duplicateAccepted = true;
+          render({ warning: check.warnings[0], confirmLabel: "Créer quand même" });
+          return;
+        }
+        const submit = form.querySelector("[data-discipline-submit]");
+        if (submit) submit.disabled = true;
+        const result = commitDisciplineCreation(prepared, { clubId });
+        if (!result.ok) {
+          if (submit) submit.disabled = false;
+          render({ error: result.errors[0] || "La discipline n'a pas pu être créée.", confirmLabel: draft.duplicateAccepted ? "Créer quand même" : "" });
+          return;
+        }
+        // Succès — y compris avec un journal incomplet : les données SONT enregistrées, le
+        // dialogue se ferme et le brouillon devient définitivement non resoumissible.
+        creationDone = true;
+        closeDialog();
+        afterDisciplineCreated(result, origin);
+      });
+      // Focus initial sur le PREMIER champ utile, jamais sur la croix ni sur Annuler. Les messages
+      // portent role="alert" : ils sont annoncés sans avoir à leur voler le focus.
+      focusDialogControl(form, "[data-discipline-choice]");
+    }
+    targetDialog.addEventListener("close", restoreFocus, { once: true });
+    render();
+    showFloatingDialog(targetDialog, "[data-discipline-choice]", targetDialog);
+    return targetDialog;
+  }
+
+  // Retour à la surface d'origine, sans navigation surprise.
+  function afterDisciplineCreated(result, origin) {
+    // La création reste un succès même si le journal est incomplet : la réserve est discrète et
+    // s'ajoute au message existant, elle ne le remplace pas.
+    ui.saveMessage = result.auditFailed
+      ? `${result.message} — le journal d'activité n'a pas pu être entièrement mis à jour.`
+      : result.message;
+    if (origin === "settings" || origin === "search") {
+      ui.view = "settings";
+      if (!ui.settingsPanels) ui.settingsPanels = {};
+      ui.settingsPanels["sport-categories"] = true;
+    } else if (origin === "tarifs") {
+      if (!ui.tariffPanels) ui.tariffPanels = {};
+      ui.tariffPanels.disciplines = true;
+    } else if (origin === "disciplines") {
+      if (!ui.overviewPanels) ui.overviewPanels = {};
+      ui.overviewPanels.disciplineManagement = true;
+    }
+    render();
   }
 
   // Vidage de données par module, regroupé par catégorie. Chaque entrée décrit précisément ce qui
@@ -16472,6 +18269,121 @@ ${esc(bodyText)}</pre>
       options.push(`<option value="${esc(idv)}" ${idv === selectedId ? "selected" : ""}>${esc(disciplineOptionLabel(d))}</option>`);
     });
     return `<label>${labelHtml(label)}<select name="${esc(name)}">${options.join("")}</select></label>`;
+  }
+
+  // Lot 3B-2C — sélecteur de catégorie sportive, PARTAGÉ par l'inscription et le groupe. Toute la
+  // règle vient de sportCategoryAssignmentOptions (04-settings-normalize.js) : ce champ ne fait
+  // que rendre. Il est reconstruit à l'identique lors d'un changement de discipline, ce qui garde
+  // une seule source de vérité entre l'ouverture et le rebuild.
+  // `disciplineId` est passé explicitement (et non lu sur l'entité) car, pendant l'édition, la
+  // discipline du BROUILLON peut déjà différer de celle enregistrée.
+  function sportCategorySelectFieldHtml(name, currentId, disciplineId, help) {
+    const hasDiscipline = !!asText(disciplineId);
+    // Sans discipline, aucun catalogue n'a de sens : le champ reste présent (l'utilisateur voit
+    // qu'il existe) mais désactivé, avec l'aide qui dit quoi faire.
+    if (!hasDiscipline) {
+      // Même piège FormData que l'option protégée, un cran plus haut : un <select> DÉSACTIVÉ n'est
+      // pas soumis du tout (form.get() renvoie null), ce qui effacerait la référence historique
+      // d'une entité sans discipline au premier enregistrement d'un autre champ. Le select reste
+      // désactivé (rien à choisir sans catalogue), mais un champ caché porte la valeur conservée —
+      // il est seul à porter ce `name`, sans collision possible.
+      const kept = asText(currentId);
+      return `<label class="sport-category-field">${labelHtml("Catégorie sportive")}
+        ${kept ? `<input type="hidden" name="${esc(name)}" value="${esc(SPORT_CATEGORY_KEEP_PREFIX + kept)}" />` : ""}
+        <select disabled data-sport-category-select><option value="">Aucune catégorie</option></select>
+        <small class="muted sport-category-help">Choisissez d'abord une discipline.</small>
+      </label>`;
+    }
+    const options = sportCategoryAssignmentOptions(currentId, disciplineId, state, activeClubId());
+    // L'option protégée n'est JAMAIS `disabled` : une <option disabled> sélectionnée n'est pas
+    // soumise par FormData (form.get() renvoie null), ce qui EFFACERAIT la référence historique au
+    // premier enregistrement. Sa protection ne repose donc pas sur un attribut HTML, mais sur son
+    // préfixe `__keep__:` : readSportCategoryAssignmentValue la relit comme « valeur conservée »,
+    // jamais comme un choix neuf, et validateSportCategoryAssignment refuse de toute façon toute
+    // NOUVELLE affectation d'une catégorie archivée, inconnue ou incompatible.
+    const html = options.map((option) => `<option value="${esc(option.value)}" ${option.current ? "selected" : ""}>${esc(option.label)}</option>`).join("");
+    const empty = options.filter((option) => option.selectable).length <= 1;
+    const note = asText(help) || (empty
+      ? "Aucune catégorie active pour cette discipline. Vous pouvez en créer dans Paramètres > Disciplines et catégories sportives."
+      : "");
+    return `<label class="sport-category-field">${labelHtml("Catégorie sportive")}
+      <select name="${esc(name)}" data-sport-category-select>${html}</select>
+      ${note ? `<small class="muted sport-category-help">${esc(note)}</small>` : ""}
+    </label>`;
+  }
+
+  // ===== Lot 3B-2D — sélecteur de GROUPE d'une inscription, organisé par discipline =====
+  // Ordre imposé (§7.1) : option vide, groupes de la même discipline, groupes sans discipline,
+  // groupes d'une autre discipline. Aucun groupe n'est masqué, aucun n'est rendu insélectionnable :
+  // constituer volontairement un groupe transversal reste possible. Le marquage est en TEXTE CLAIR,
+  // jamais un identifiant ni un statut technique.
+  function groupSelectOptionsFor(disciplineTarget, currentGroupId) {
+    const target = { disciplineId: asText(disciplineTarget && disciplineTarget.disciplineId), discipline: asText(disciplineTarget && disciplineTarget.discipline) };
+    const current = asText(currentGroupId);
+    const rank = (group) => {
+      if (!asText(group.disciplineId) && !asText(group.discipline)) return 1;   // sans discipline
+      // Comparaison CANONIQUE du Lot 3A, la même que partout ailleurs.
+      return groupMatchesCourseDiscipline(group, target, state) ? 0 : 2;
+    };
+    // Un groupe archivé n'est proposé que s'il est DÉJÀ celui de l'inscription : on ne détruit
+    // jamais une référence existante, mais on n'en propose pas de nouvelle.
+    const rows = (state.groups || []).filter((g) => !g.archived || asText(g.id) === current);
+    return rows
+      .map((group) => ({ group, rank: rank(group) }))
+      .sort((a, b) => (a.rank - b.rank) || asText(a.group.name).localeCompare(asText(b.group.name), "fr", { sensitivity: "base" }))
+      .map(({ group, rank: groupRank }) => {
+        const name = asText(group.name) || "Groupe";
+        let suffix = "";
+        if (groupRank === 1) suffix = " — discipline non renseignée";
+        else if (groupRank === 2) {
+          const label = disciplineLabelFor(group, state);
+          suffix = label ? ` — autre discipline : ${label}` : " — autre discipline";
+        }
+        return { value: asText(group.id), label: `${name}${suffix}`, current: asText(group.id) === current, rank: groupRank };
+      });
+  }
+
+  function groupSelectFieldHtml(name, disciplineTarget, currentGroupId) {
+    const options = groupSelectOptionsFor(disciplineTarget, currentGroupId);
+    const html = options.map((option) => `<option value="${esc(option.value)}" ${option.current ? "selected" : ""}>${esc(option.label)}</option>`).join("");
+    return `<label>Groupe<select name="${esc(name)}" data-group-select><option value="" ${options.some((o) => o.current) ? "" : "selected"}>—</option>${html}</select></label>`;
+  }
+
+  function groupSelectField(name, entity) {
+    const row = entity || {};
+    return `<div data-group-field>${groupSelectFieldHtml(name, row, row.groupId)}</div>`;
+  }
+
+  // Reconstruction après un changement de DISCIPLINE dans le brouillon (§7.4) : la liste est
+  // réordonnée et remarquée, mais le groupe déjà choisi est CONSERVÉ tel quel — aucun groupe
+  // homonyme n'est recherché, aucune réaffectation automatique n'a lieu, et le groupe lui-même
+  // n'est jamais modifié.
+  function refreshGroupFieldForDiscipline(form, name, disciplineTarget) {
+    const wrap = form && form.querySelector("[data-group-field]");
+    if (!wrap) return;
+    const select = wrap.querySelector("[data-group-select]");
+    const kept = select ? asText(select.value) : "";
+    wrap.innerHTML = groupSelectFieldHtml(name, disciplineTarget, kept);
+  }
+
+  // Champ initial d'un formulaire : la discipline du brouillon est celle de l'entité à l'ouverture.
+  function sportCategorySelectField(name, entity) {
+    const row = entity || {};
+    return `<div data-sport-category-field>${sportCategorySelectFieldHtml(name, row.sportCategoryId, row.disciplineId)}</div>`;
+  }
+
+  // Reconstruction du champ après un changement de DISCIPLINE dans le brouillon (§8) : la catégorie
+  // est remise à vide — jamais de rapprochement par nom vers une homonyme de la nouvelle discipline
+  // — et un message explique pourquoi. Aucune écriture : tout reste au niveau du formulaire.
+  function refreshSportCategoryFieldForDiscipline(form, name, newDisciplineId, previousCategoryId, previousDisciplineId) {
+    const wrap = form && form.querySelector("[data-sport-category-field]");
+    if (!wrap) return;
+    const changed = asText(newDisciplineId) !== asText(previousDisciplineId);
+    const hadCategory = !!asText(previousCategoryId);
+    const help = (changed && hadCategory) ? "La catégorie a été retirée, car elle appartenait à l'ancienne discipline." : "";
+    // Discipline inchangée -> on réaffiche la valeur courante telle quelle (aucune destruction).
+    const keptId = changed ? "" : previousCategoryId;
+    wrap.innerHTML = sportCategorySelectFieldHtml(name, keptId, newDisciplineId, help);
   }
   // Lot 3A (clôture) — nom de discipline dérivé de la valeur du select canonique d'une inscription
   // (id connu → nom courant ; référence inconnue/héritée → libellé figé). Utilisé pour les calculs de
@@ -18951,11 +20863,14 @@ ${esc(bodyText)}</pre>
       ${kind === "members" && isViewVisible("disciplines")
         // Disciplines sort ici du mécanisme générique contactRecapSection (qui masque toute la
         // section, bouton d'ajout compris, dès que la liste est vide) : un adhérent sans discipline
-        // doit quand même voir "+ Ajouter une discipline" et comprendre comment en ajouter une,
+        // doit quand même voir le bouton d'ajout et comprendre comment en ajouter une,
+        // Lot 3B-3 — ce bouton crée une INSCRIPTION, pas une discipline du catalogue : il portait
+        // exactement le même libellé que l'action de Tarifs/Paramètres qui, elle, crée une
+        // discipline. Seul ce libellé change ; l'action, le dialogue et la donnée sont identiques.
         // au lieu que la section disparaisse silencieusement (c'était la cause probable du "je ne
         // trouve pas où ajouter une discipline" remonté par Thierry).
         ? `<section class="contact-recap-section">
-            <div class="dialog-mini-title"><h4>Disciplines</h4>${contact.id ? `<button type="button" data-action="add-contact-membership" data-contact-link="${esc(`member:${contact.id}`)}" title="Ajouter une nouvelle inscription discipline/groupe pour ce contact">+ Ajouter une discipline</button>` : ""}</div>
+            <div class="dialog-mini-title"><h4>Disciplines</h4>${contact.id ? `<button type="button" data-action="add-contact-membership" data-contact-link="${esc(`member:${contact.id}`)}" title="Ajouter une nouvelle inscription discipline/groupe pour ce contact">+ Ajouter une inscription</button>` : ""}</div>
             ${memberships.length
               ? `<p class="muted">Un adhérent peut avoir plusieurs disciplines, tant que les horaires ne se chevauchent pas.</p><div class="contact-recap-list">${memberships.map(contactRecapMembership).join("")}</div>`
               : `<p class="contact-recap-empty">Aucune discipline enregistrée pour le moment.</p>`}
@@ -19027,7 +20942,17 @@ ${esc(bodyText)}</pre>
     // Judo enfants" vs "Self-défense — Self-défense ados"), sans quoi deux inscriptions à la
     // même discipline mais des groupes différents seraient indiscernables.
     const group = getGroupById(row.groupId);
-    const titleText = [row.discipline || "Discipline non renseignée", group?.name || ""].filter(Boolean).join(" — ");
+    // Lot 3B-2C — la catégorie affectée s'affiche à côté de la discipline (« Football · U11 »), pour
+    // qu'elle soit lisible sans rouvrir l'inscription. Recalculée à chaque rendu : un renommage du
+    // catalogue se propage à l'affichage, une archivée s'annonce comme telle, et aucune référence
+    // n'est modifiée. Jamais d'identifiant technique.
+    // Lot démo 3B — discipline résolue PAR IDENTIFIANT (disciplineLabelFor, comme la catégorie
+    // ci-dessus), repli sur le texte historique seulement si l'identifiant est absent/introuvable :
+    // un renommage de la discipline se propage désormais ici aussi, au lieu d'un texte figé au
+    // moment de l'inscription.
+    const categoryLabel = sportCategoryAssignmentLabel(row.sportCategoryId, row.disciplineId, state, activeClubId());
+    const disciplineText = [disciplineLabelFor(row, state) || "Discipline non renseignée", categoryLabel].filter(Boolean).join(" · ");
+    const titleText = [disciplineText, group?.name || ""].filter(Boolean).join(" — ");
     // Bouton "Retirer" imbriqué dans la ligne cliquable (edit-membership) : le delegate de clic
     // résout via closest("[data-action]") en partant de l'élément cliqué, donc ce bouton intercepte
     // le clic avant qu'il n'atteigne l'article parent -> pas de double action, pas besoin de
@@ -19280,7 +21205,7 @@ ${esc(bodyText)}</pre>
       <input name="customQty_${index}" type="number" min="0" step="0.01" value="${esc(line.quantity || 1)}" ${locked ? "readonly" : ""} />
       <input name="customUnit_${index}" type="number" step="0.01" value="${esc(line.unitPrice || "")}" ${locked ? "readonly" : ""} />
       <input name="customVat_${index}" type="number" min="0" step="0.01" value="${esc(line.vatRate ?? effectiveDefaultVatRate())}" ${locked || isClubVatExempt() ? "readonly" : ""} />
-      <select name="customCat_${index}" title="Catégorie comptable (recette)" ${locked ? "disabled" : ""}>${cats.map((c) => `<option value="${esc(c)}" ${asText(line.category) === c ? "selected" : ""}>${c ? esc(c) : "Catégorie…"}</option>`).join("")}</select>
+      <select name="customCat_${index}" title="Catégorie comptable (recette)" ${locked ? "disabled" : ""}>${cats.map((c) => `<option value="${esc(c)}" ${asText(line.category) === c ? "selected" : ""}>${c ? esc(c) : "Catégorie comptable…"}</option>`).join("")}</select>
       <button type="button" class="icon danger" data-action="remove-invoice-custom-line" ${locked ? "disabled" : ""}>×</button>
     </div>`;
   }
@@ -20441,6 +22366,16 @@ ${esc(bodyText)}</pre>
     </select></label>`;
   }
 
+  // Lot 3B-3 — le champ technique `category` porte DEUX sémantiques : la classe d'âge calculée
+  // (Adulte / Enfant) pour un adhérent, et la valeur héritée « Non-membre » pour un non-adhérent.
+  // Ce widget est partagé par les deux (alertes, popovers, fiches), d'où un libellé choisi sur la
+  // valeur réellement affichée. « Catégorie » disparaît des deux cas : le mot désignait ici une
+  // notion qui n'a rien de commun avec les catégories sportives visibles sur la même fiche.
+  // Aucune donnée n'est modifiée, aucune clé n'est renommée.
+  function contactCategoryFieldLabel(value) {
+    return asText(value) === "Non-membre" ? "Statut" : "Adulte / Enfant";
+  }
+
   function contactBody(row = {}) {
     const tel = row.mobile || row.phone || "";
     const address = [row.address, row.postalCode, row.city].filter(Boolean).join(" ");
@@ -20472,7 +22407,7 @@ ${esc(bodyText)}</pre>
         <div><dt>Adresse</dt><dd>${address ? esc(address) : `<span class="muted">Non renseignée</span>`}</dd></div>
         <div><dt>Date de naissance</dt><dd>${dateDisplay(row.birthDate) || `<span class="muted">Non renseignée</span>`}</dd></div>
         <div><dt>Âge</dt><dd>${memberAgeLabel(row) || `<span class="muted">Non calculé</span>`}</dd></div>
-        <div><dt>Catégorie</dt><dd>${category ? esc(category) : `<span class="muted">Non calculée</span>`}</dd></div>
+        <div><dt>${esc(contactCategoryFieldLabel(category))}</dt><dd>${category ? esc(category) : `<span class="muted">Non calculée</span>`}</dd></div>
       </dl>
       ${contactLinkForRow(row) ? `<div class="inline-actions">${contactLinkAction(row, "Ouvrir la fiche contact / facture")}</div>` : ""}
     </div>`;
@@ -20936,6 +22871,9 @@ ${esc(bodyText)}</pre>
       field("category", "Adulte / Enfant", memberCategory(row), "text", "readonly data-birth-category"),
       // Lot 3A (clôture) — sélecteur PAR IDENTIFIANT (homonymes distincts, id inconnu préservé).
       disciplineSelectField("discipline", "Discipline *", row),
+      // Lot 3B-2C — catégorie sportive, immédiatement après la discipline dont elle dépend.
+      // Purement sportive : aucun calcul financier ne lit ce champ.
+      sportCategorySelectField("sportCategoryId", row),
       `<input type="hidden" name="frozenDiscipline" value="${esc(row.discipline || "")}" />
        <input type="hidden" name="frozenDisciplinePrice" value="${esc(membershipDisciplinePricing(row).grossTotal)}" />
        <input type="hidden" name="frozenDisciplineLicense" value="${esc(membershipDisciplinePricing(row).license)}" />
@@ -20945,7 +22883,11 @@ ${esc(bodyText)}</pre>
       selectField("medicalCertificate", "Certificat médical", row.medicalCertificate ? "Oui" : "Non", ["Non", "Oui"]),
       textareaField("pathologies", "Pathologie(s)", row.pathologies || ""),
       `<div class="dialog-section"><h3>Dossier sportif</h3></div>`,
-      `<label>Groupe<select name="groupId"><option value="">—</option>${(state.groups || []).filter((g) => !g.archived).map((g) => `<option value="${esc(g.id)}" ${row.groupId === g.id ? "selected" : ""}>${esc(g.name)}</option>`).join("")}</select></label>`,
+      // Lot 3B-2D — la liste est organisée par discipline : groupes de la discipline de
+      // l'inscription d'abord, groupes sans discipline ensuite, autres disciplines en dernier et
+      // marquées en clair. Aucun n'est masqué ni bloqué (§7.1/§7.2), et un groupe historique d'une
+      // autre discipline reste sélectionné avec son marquage (§7.3).
+      groupSelectField("groupId", row),
       // Lot V1 Niveaux — note libre assumée (pas de select, pas d'automatisme, cf. audit
       // Niveaux/Groupes/Disciplines) : libellé et placeholder rendent explicite qu'il s'agit
       // d'une indication saisie librement, affichée ensuite dans le récap de cette inscription.
@@ -21007,6 +22949,23 @@ ${esc(bodyText)}</pre>
       // d'un instantané (`frozenHasSnapshot`) PRÉSERVE exactement ses valeurs figées, quel que soit le
       // changement d'identité (aucun recalcul automatique de l'historique dans cette mission).
       const hasSnapshot = asText(form.get("frozenHasSnapshot")) === "1";
+      // Lot 3B-2C — catégorie sportive. La valeur soumise distingue une référence HISTORIQUE
+      // conservée (préfixe `__keep__:`) d'une NOUVELLE affectation choisie par l'utilisateur.
+      // Correction D-2C-01 : les DEUX chemins sont revalidés avec l'état courant, en confrontant la
+      // discipline précédente à la discipline soumise. Conserver une référence reste légitime tant
+      // que la discipline n'a pas changé (enregistrer un autre champ ne détruit rien) ; dès qu'elle
+      // change, la référence est refusée, y compris en soumission forcée sans listener `change`.
+      const categoryChoice = readSportCategoryAssignmentValue(form.get("sportCategoryId"));
+      const previousCategoryId = asText(row.sportCategoryId);
+      const previousDisciplineId = asText(row.disciplineId);
+      const nextCategoryId = categoryChoice.keep ? previousCategoryId : categoryChoice.categoryId;
+      // Revalidation avec l'état COURANT (jamais sur la seule foi du contenu du <select>), AVANT
+      // toute mutation de l'inscription.
+      const categoryError = validateSportCategoryAssignment(
+        nextCategoryId, disciplineTarget.disciplineId, state, activeClubId(),
+        previousCategoryId, previousDisciplineId,
+      );
+      if (categoryError) { alert(categoryError); return false; }
       const disciplineDef = disciplineDefinitionFromTarget(disciplineTarget);
       // FIN-UNK-3 — sans instantané ET sans définition actuelle (id inconnu / legacy ambigu), le tarif
       // est ABSENT (""), jamais inventé à 0 : on préserve la distinction « tarif absent » ≠ « gratuit 0 € ».
@@ -21035,6 +22994,9 @@ ${esc(bodyText)}</pre>
         // Lot 3A (clôture) — identifiant canonique lu DIRECTEMENT du select (homonymes distincts, id
         // inconnu préservé, jamais deviné par nom).
         disciplineId: disciplineTarget.disciplineId,
+        // Lot 3B-2C — référence de catégorie : soit la valeur historique conservée, soit la nouvelle
+        // affectation validée ci-dessus. Jamais déduite d'un groupe, d'un âge ni d'un libellé.
+        sportCategoryId: nextCategoryId,
         medicalCertificate: form.get("medicalCertificate") === "Oui",
         discount: asNumber(form.get("discount")),
         pathologies: form.get("pathologies"),
@@ -21108,6 +23070,20 @@ ${esc(bodyText)}</pre>
       if (originalMembershipId) {
         logPaymentAuditTransitions(paymentAuditTransitions(beforeMembershipPayments, next.payments), { module: "membership", id: next.id });
       }
+      // Lot 3B-2C — journalisation de l'AFFECTATION. Correction D-2C-02 : l'appel n'est plus
+      // conditionné à l'existence préalable de l'inscription. Une catégorie posée dès la CRÉATION
+      // ("" -> U11) est un changement de référence comme un autre, et aucun événement générique de
+      // création d'inscription ne la couvre : sans cet appel elle n'était tracée nulle part.
+      // Le helper compare lui-même les identifiants et renvoie `null` s'ils sont égaux — une
+      // création sans catégorie, comme un enregistrement sans changement, n'écrit donc rien.
+      audit.membershipSportCategoryChanged(next, {
+        previousSportCategoryId: previousCategoryId,
+        // Une discipline changée explique pourquoi la catégorie a disparu : on l'indique pour
+        // que le journal reste compréhensible des mois plus tard. À la création, il n'y a pas
+        // d'« ancienne discipline » : le motif reste vide.
+        reason: (originalMembershipId && previousDisciplineId !== asText(next.disciplineId)) ? "discipline-changed" : "",
+        previousDisciplineId,
+      });
       return promoted ? {
         message: `Inscription de ${personLabel(next)} à la discipline ${next.discipline}`,
         notice: `${personLabel(next)} est devenu adhérent.`,
@@ -21127,6 +23103,18 @@ ${esc(bodyText)}</pre>
       form.elements.birthDate?.addEventListener("change", () => updateDossierGuardianFields(form, row));
       updateDossierGuardianFields(form, row); // état initial cohérent
       form.elements.discipline?.addEventListener("change", update);
+      // Lot 3B-2C — la discipline pilote le catalogue de catégories : à chaque changement, le champ
+      // est reconstruit et le BROUILLON de catégorie remis à vide (aucune homonyme sélectionnée
+      // automatiquement dans la nouvelle discipline). Rien n'est écrit tant que le formulaire n'est
+      // pas validé : annuler le dialogue laisse l'état persistant intact.
+      form.elements.discipline?.addEventListener("change", () => {
+        const target = disciplineTargetFromSelectValue(form.elements.discipline.value, row);
+        refreshSportCategoryFieldForDiscipline(form, "sportCategoryId", target.disciplineId, row.sportCategoryId, row.disciplineId);
+        // Lot 3B-2D — la liste des groupes est réordonnée et remarquée pour la nouvelle discipline.
+        // Le groupe choisi est CONSERVÉ : aucun homonyme n'est cherché, aucune réaffectation n'a
+        // lieu, et le groupe lui-même n'est jamais modifié.
+        refreshGroupFieldForDiscipline(form, "groupId", target);
+      });
       form.elements.insuranceChoice?.addEventListener("change", update);
       form.elements.medicalCertificate?.addEventListener("change", update);
       form.elements.discount?.addEventListener("input", update);
@@ -22477,13 +24465,19 @@ ${esc(bodyText)}</pre>
       ["prospect-orbel-lison", "ORBEL", "Lison", "1986-01-05", "1 route du Lot", "47110", "Sainte-Livrade-sur-Lot", "06 00 00 01 05", "lison.orbel@example.test"],
     ].map(([idValue, lastName, firstName, birthDate, address, postalCode, city, mobile, email]) => demoContact({ id: idValue, lastName, firstName, birthDate, address, postalCode, city, mobile, email }, clubId, "prospects"));
 
+    // Lot démo 3B — sportId ancré sur les 3 variantes locales de Judo (même profil officiel,
+    // trois disciplines locales distinctes : exactement le cas légitime déjà documenté ailleurs,
+    // ex. « Football jeunes »/« Football adultes »). Préparation physique porte le profil officiel
+    // « fitness » (famille différente de Judo : démontre une vraie diversité de profils dans la
+    // démo). Self-défense/Taïso restent des activités personnalisées (sportId ""), sans suggestion
+    // automatique de catégorie : aucun profil officiel ne leur correspond dans le registre.
     const disciplines = [
-      { id: "demo-discipline-judo-enfant", clubId, name: "Judo enfant", price: 110, license: 40, taxRate: 0 },
-      { id: "demo-discipline-judo-adulte", clubId, name: "Judo adulte", price: 140, license: 40, taxRate: 0 },
-      { id: "demo-discipline-self-defense", clubId, name: "Self-défense", price: 120, license: 40, taxRate: 0 },
-      { id: "demo-discipline-taiso", clubId, name: "Taïso", price: 80, license: 40, taxRate: 0 },
-      { id: "demo-discipline-prepa", clubId, name: "Préparation physique", price: 100, license: 40, taxRate: 0 },
-      { id: "demo-discipline-baby-judo", clubId, name: "Baby judo", price: 60, license: 40, taxRate: 0 },
+      { id: "demo-discipline-judo-enfant", clubId, name: "Judo enfant", sportId: "judo", price: 110, license: 40, taxRate: 0 },
+      { id: "demo-discipline-judo-adulte", clubId, name: "Judo adulte", sportId: "judo", price: 140, license: 40, taxRate: 0 },
+      { id: "demo-discipline-self-defense", clubId, name: "Self-défense", sportId: "", price: 120, license: 40, taxRate: 0 },
+      { id: "demo-discipline-taiso", clubId, name: "Taïso", sportId: "", price: 80, license: 40, taxRate: 0 },
+      { id: "demo-discipline-prepa", clubId, name: "Préparation physique", sportId: "fitness", price: 100, license: 40, taxRate: 0 },
+      { id: "demo-discipline-baby-judo", clubId, name: "Baby judo", sportId: "judo", price: 60, license: 40, taxRate: 0 },
     ];
     const insurance = [
       { id: "demo-insurance-standard", clubId, category: "Première", label: "Standard", options: [15], taxRate: 0 },
@@ -22813,8 +24807,8 @@ ${esc(bodyText)}</pre>
 
     // --- Modules sport : exemples (groupes, planning, présences) ---
     const groups = [
-      { id: "demo-group-judo-enfants", clubId, name: "Judo enfants", type: "Enfants", discipline: "Judo enfant", coach: "Laurent", ageMin: 6, ageMax: 11, maxMembers: 16, color: "#3a7d44", notes: "", archived: false },
-      { id: "demo-group-judo-adultes", clubId, name: "Judo adultes", type: "Adultes", discipline: "Judo adulte", coach: "Laurent", ageMin: 16, ageMax: "", maxMembers: 20, color: "#4d5966", notes: "", archived: false },
+      { id: "demo-group-judo-enfants", clubId, name: "Judo enfants", type: "Enfants", discipline: "Judo enfant", sportCategoryId: "demo-category-judo-enfant-poussins", coach: "Laurent", ageMin: 6, ageMax: 11, maxMembers: 16, color: "#3a7d44", notes: "", archived: false },
+      { id: "demo-group-judo-adultes", clubId, name: "Judo adultes", type: "Adultes", discipline: "Judo adulte", sportCategoryId: "demo-category-judo-adulte-seniors", coach: "Laurent", ageMin: 16, ageMax: "", maxMembers: 20, color: "#4d5966", notes: "", archived: false },
       { id: "demo-group-self-ados", clubId, name: "Self-défense ados", type: "Confirmés", discipline: "Self-défense", coach: "Karim", ageMin: 12, ageMax: 17, maxMembers: 12, color: "#9a5148", notes: "", archived: false },
       // Lot Démo Club (repeuplement) — Taïso ouvert à tous âges (pratique courante pour ce type de
       // discipline gymnique douce), pour rester cohérent avec des adhérents multi-disciplines aussi
@@ -22822,7 +24816,7 @@ ${esc(bodyText)}</pre>
       { id: "demo-group-taiso", clubId, name: "Taïso", type: "Tous niveaux", discipline: "Taïso", coach: "Sophie", ageMin: "", ageMax: "", maxMembers: 20, color: "#7d5ba6", notes: "", archived: false },
       // Petit groupe volontairement peu rempli : sert de cas "faible effectif" pour tester
       // l'affichage planning/inscrits avec peu d'inscrits.
-      { id: "demo-group-baby-judo", clubId, name: "Baby judo", type: "Enfants", discipline: "Baby judo", coach: "Sophie", ageMin: "", ageMax: 6, maxMembers: 10, color: "#e0a458", notes: "", archived: false },
+      { id: "demo-group-baby-judo", clubId, name: "Baby judo", type: "Enfants", discipline: "Baby judo", sportCategoryId: "demo-category-baby-judo-eveil", coach: "Sophie", ageMin: "", ageMax: 6, maxMembers: 10, color: "#e0a458", notes: "", archived: false },
     ];
     const groupByDiscipline = {
       "Judo enfant": "demo-group-judo-enfants",
@@ -22859,6 +24853,30 @@ ${esc(bodyText)}</pre>
     setDoc("demo-membership-zoe-prepa", { licenseNumber: "FFJDA-100403", licenseFederation: "FFJDA", licenseEndDate: plusDays(240) });
     setDoc("demo-membership-paul-judo", { licenseNumber: "FFJDA-100404", licenseFederation: "FFJDA", licenseEndDate: plusDays(250) });
     setDoc("demo-membership-sara-judo", { licenseNumber: "FFJDA-100405", licenseFederation: "FFJDA", licenseEndDate: plusDays(260) });
+
+    // Lot démo 3B — catalogue de catégories sportives, réparti sur les 3 disciplines ancrées sur
+    // le profil judo. Une catégorie ARCHIVÉE (« Loisir (ancien groupe) ») reste rattachée à une
+    // inscription existante (Eliott) : référence historique lisible, non proposée pour une
+    // nouvelle affectation — exactement la doctrine déjà validée par le Lot 3B-2B/2C.
+    const sportCategories = [
+      { id: "demo-category-judo-enfant-poussins", clubId, disciplineId: "demo-discipline-judo-enfant", label: "Poussins", order: 0, archived: false, notes: "" },
+      { id: "demo-category-judo-enfant-benjamins", clubId, disciplineId: "demo-discipline-judo-enfant", label: "Benjamins", order: 10, archived: false, notes: "" },
+      { id: "demo-category-judo-adulte-seniors", clubId, disciplineId: "demo-discipline-judo-adulte", label: "Seniors", order: 0, archived: false, notes: "" },
+      { id: "demo-category-judo-adulte-loisir-ancien", clubId, disciplineId: "demo-discipline-judo-adulte", label: "Loisir (ancien groupe)", order: 10, archived: true, notes: "" },
+      { id: "demo-category-baby-judo-eveil", clubId, disciplineId: "demo-discipline-baby-judo", label: "Éveil", order: 0, archived: false, notes: "" },
+    ];
+    setDoc("demo-membership-noe-judo", { sportCategoryId: "demo-category-judo-enfant-poussins" });
+    setDoc("demo-membership-tom-judo", { sportCategoryId: "demo-category-judo-enfant-poussins" });
+    setDoc("demo-membership-jade-judo", { sportCategoryId: "demo-category-judo-enfant-benjamins" });
+    setDoc("demo-membership-noa-judo", { sportCategoryId: "demo-category-judo-enfant-benjamins" });
+    setDoc("demo-membership-maelys-judo", { sportCategoryId: "demo-category-judo-adulte-seniors" });
+    setDoc("demo-membership-paul-judo", { sportCategoryId: "demo-category-judo-adulte-seniors" });
+    setDoc("demo-membership-sara-judo", { sportCategoryId: "demo-category-judo-adulte-seniors" });
+    // Référence historique : Eliott reste affecté à une catégorie désormais archivée (ancien
+    // groupe "Loisir" fermé) — lisible dans sa fiche, non resélectionnable, jamais recalculée.
+    setDoc("demo-membership-eliott-judo", { sportCategoryId: "demo-category-judo-adulte-loisir-ancien" });
+    setDoc("demo-membership-yanis-baby", { sportCategoryId: "demo-category-baby-judo-eveil" });
+    setDoc("demo-membership-elio-baby", { sportCategoryId: "demo-category-baby-judo-eveil" });
     setDoc("demo-membership-marc-judo", { licenseNumber: "FFJDA-100406", licenseFederation: "FFJDA", licenseEndDate: plusDays(270) });
     setDoc("demo-membership-eva-judo", { licenseNumber: "FFJDA-100407", licenseFederation: "FFJDA", licenseEndDate: plusDays(300) });
     setDoc("demo-membership-tess-self", { licenseNumber: "FFJDA-100408", licenseFederation: "FFJDA", licenseEndDate: plusDays(320) });
@@ -22958,6 +24976,7 @@ ${esc(bodyText)}</pre>
       tariffs: { disciplines, insurance, stages, articles },
       contacts: { members, prospects },
       memberships: membershipRows,
+      sportCategories,
       shopOrders,
       invoices,
       creditNotes,
@@ -23054,13 +25073,17 @@ ${esc(bodyText)}</pre>
       season: club.season,
       display: {
         ...settings.display,
-        // Démo uniquement : mode « personnalisé » affichant l'ensemble « petit club » (mode Simple)
-        // PLUS les modules qui forment un parcours cohérent : Sport (Groupes, Coachs, Salles,
-        // Planning, Présences) et Stock (gestion des articles, qui complète le parcours Boutique
-        // « créer un article → le vendre »). Réglage propre à la démo : n'affecte aucun club réel
-        // ni les règles de visibilité globales. (Documents reste volontairement masqué : outil de
-        // suivi autonome, hors parcours — on garde une démo représentative d'un petit club.)
-        mode: "custom",
+        // Démo uniquement : mode Avancé dès la construction, pour que l'utilisateur découvre
+        // immédiatement l'ensemble des options du logiciel sans avoir à les chercher dans les
+        // paramètres. Réglage INITIAL, pas permanent : une fois la démo ouverte, un passage manuel
+        // en Simple/Personnalisé est respecté et survit au rechargement (isModuleVisibleByMode lit
+        // le mode courant à chaque rendu, jamais réécrit ici après la création). N'affecte aucun
+        // club réel : demoSettingsForClub n'est appelée que pour le club démo (setupDemoClub /
+        // createDemoData) — "Peupler avec la démo" sur un club réel ne touche jamais ces settings.
+        // visibleModules reste néanmoins renseigné avec un jeu cohérent : si l'utilisateur bascule
+        // ensuite manuellement en Personnalisé, il retrouve un point de départ pertinent plutôt que
+        // les défauts génériques.
+        mode: "advanced",
         visibleModules: Object.fromEntries(DISPLAY_MODULE_KEYS.map((key) =>
           [key, DISPLAY_SIMPLE_MODULES.includes(key)
             || ["groups", "coaches", "rooms", "planning", "availability", "attendance", "stock"].includes(key)])),
@@ -23068,6 +25091,20 @@ ${esc(bodyText)}</pre>
     }, club);
     normalized.logoDataUrl = club.logoDataUrl || "";
     return normalized;
+  }
+
+  // Lot démo 3B (correction D-06) — comptes calculés depuis l'état réellement généré, jamais
+  // codés en dur : évite qu'un futur enrichissement du générateur ne rende le message affiché
+  // silencieusement faux, comme c'était le cas des nombres figés précédemment utilisés ici.
+  function demoStateSummary(state) {
+    return {
+      members: (state.contacts && state.contacts.members || []).length,
+      prospects: (state.contacts && state.contacts.prospects || []).length,
+      memberships: (state.memberships || []).length,
+      stages: (state.tariffs && state.tariffs.stages || []).length,
+      articles: (state.tariffs && state.tariffs.articles || []).length,
+      invoices: (state.invoices || []).length,
+    };
   }
 
   async function createDemoClub({ resetExisting = false } = {}) {
@@ -23128,7 +25165,8 @@ ${esc(bodyText)}</pre>
     ui.stageId = "demo-stage-ete-self";
     ui.invoiceFilter = "all";
     ui.invoiceSearch = "";
-    ui.saveMessage = `${DEMO_CLUB_NAME} prêt : 10 adhérents, 5 prospects, 11 inscriptions, 3 stages, 7 articles, 6 factures`;
+    const counts = demoStateSummary(demoState);
+    ui.saveMessage = `${DEMO_CLUB_NAME} prêt : ${counts.members} adhérents, ${counts.prospects} prospects, ${counts.memberships} inscriptions, ${counts.stages} stages, ${counts.articles} articles, ${counts.invoices} factures`;
     render();
   }
 
@@ -23148,7 +25186,13 @@ ${esc(bodyText)}</pre>
 
   // Applique les données démo au state du club actif : "replace" remplace, "add" ajoute.
   function applyDemoToActiveState(demo, mode) {
-    const arrays = ["memberships", "shopOrders", "invoices", "notes", "coaches", "coachReplacements", "rooms", "roomReplacements", "expenses", "creditNotes", "groups", "planningCourses", "attendanceSessions", "memoRows", "activityLog"];
+    // Lot 3B-2B — `sportCategories` rejoint le mécanisme central des collections remplacées.
+    // Sans elle, « Remplacer par la démo » laissait le catalogue du club précédent en place alors
+    // que `tariffs.disciplines` était remplacé : les catégories devenaient ORPHELINES (leur
+    // disciplineId ne désignait plus rien), silencieusement conservées et invisibles.
+    // Le mode « Ajouter » n'est pas modifié : il passe par le même tableau et applique déjà
+    // appendNew (déduplication par id), ce qui est le comportement non destructif attendu.
+    const arrays = ["memberships", "shopOrders", "invoices", "notes", "coaches", "coachReplacements", "rooms", "roomReplacements", "expenses", "creditNotes", "groups", "planningCourses", "attendanceSessions", "memoRows", "activityLog", "sportCategories"];
     const tariffKeys = ["articles", "disciplines", "insurance", "stages"];
     if (mode === "replace") {
       state.contacts = { members: demo.contacts.members, prospects: demo.contacts.prospects };
@@ -26800,6 +28844,43 @@ ${esc(bodyText)}</pre>
       render();
       return;
     }
+    // --- Lot 3B-2B — Disciplines et catégories sportives (paramètres du club) ---
+    // Chaque action délègue à une fonction dédiée de 16-settings-themes.js, qui applique le patron
+    // canonique : validation (règles pures de 04-settings-normalize.js) → mutation → persist →
+    // audit → rerendu. Aucune règle métier n'est écrite ici.
+    if (action === "manage-discipline-categories") {
+      openDisciplineCategoriesDialog(button.dataset.id);
+      return;
+    }
+    if (action === "add-sport-category") {
+      await addSportCategory(button.dataset.id);
+      return;
+    }
+    if (action === "add-sport-category-suggestion") {
+      const discipline = (state.tariffs?.disciplines || []).find((d) => asText(d.id) === asText(button.dataset.id));
+      if (discipline) createSportCategoryFromLabel(discipline, button.dataset.label);
+      return;
+    }
+    if (action === "add-all-sport-category-suggestions") {
+      addAllSportCategorySuggestions(button.dataset.id);
+      return;
+    }
+    if (action === "rename-sport-category") {
+      await renameSportCategory(button.dataset.id);
+      return;
+    }
+    if (action === "move-sport-category") {
+      moveSportCategory(button.dataset.id, button.dataset.direction);
+      return;
+    }
+    if (action === "archive-sport-category") {
+      await archiveSportCategory(button.dataset.id);
+      return;
+    }
+    if (action === "restore-sport-category") {
+      restoreSportCategory(button.dataset.id);
+      return;
+    }
     if (action === "save-smtp-settings") {
       await commitSmtpDraftSettings();
       ui.saveMessage = "Configuration e-mail enregistrée";
@@ -27804,16 +29885,16 @@ ${esc(bodyText)}</pre>
       render();
       return;
     }
-    if (action === "add-tariff-discipline") {
-      recordHistory();
-      state.tariffs.disciplines.push(stampRecordClubId({ id: id("discipline"), name: "Nouvelle discipline", price: 0, license: 0 }));
-      ui.tariffEditKey = tariffKey("discipline", state.tariffs.disciplines.length - 1);
-      if (!ui.tariffPanels) ui.tariffPanels = {};
-      if (!ui.overviewPanels) ui.overviewPanels = {};
-      ui.tariffPanels.disciplines = true;
-      ui.overviewPanels.disciplineManagement = true;
-      persist("Discipline ajoutée");
-      render();
+    // Lot 3B-4A — TOUS les points d'entrée (page Disciplines, Tarifs, Paramètres, Centre
+    // d'accompagnement, recherche globale) ouvrent le même dialogue. L'ancien comportement
+    // — pousser une ligne « Nouvelle discipline » à 0 € et persister aussitôt — ne laissait ni
+    // annulation, ni choix de profil, ni protection contre le double clic. `add-tariff-discipline`
+    // est conservé comme alias : le CTA du Centre d'accompagnement et d'anciens rendus le portent.
+    if (action === "add-tariff-discipline" || action === "open-discipline-creation") {
+      openDisciplineCreationDialog({
+        trigger: button,
+        origin: asText(button.dataset.origin) || (ui.view === "settings" ? "settings" : ui.view === "tarifs" ? "tarifs" : "disciplines"),
+      });
       return;
     }
     if (action === "delete-tariff-discipline") {
@@ -27827,21 +29908,40 @@ ${esc(bodyText)}</pre>
       const name = asText(disc?.name);
       // Lot 3A — garde-fou étendu (5 collections) : une discipline référencée ne peut pas être
       // supprimée physiquement. Le calcul des références est centralisé et testable.
-      const blockers = disciplineReferenceCounts(disc);
+      const blockers = disciplineReferenceCounts(disc, activeClubId());
       if (blockers.total > 0) {
         const groups = blockers.groupsActive + blockers.groupsArchived;
         const courses = blockers.coursesActive + blockers.coursesArchived;
         const coaches = blockers.coachesActive + blockers.coachesArchived;
         const rooms = blockers.roomsActive + blockers.roomsArchived;
+        // Lot 3B-2D — les catégories sportives rejoignent la même phrase, construite de la même
+        // façon : aucune formulation parallèle, aucun message séparé.
+        const categories = blockers.sportCategoriesActive + blockers.sportCategoriesArchived;
         const impacts = [
           blockers.memberships ? `${blockers.memberships} inscription(s)` : "",
           groups ? `${groups} groupe(s)` : "",
           courses ? `${courses} créneau(x) planning` : "",
           coaches ? `${coaches} coach(s)` : "",
           rooms ? `${rooms} salle(s)` : "",
+          // Lot 3B-3 — pluriel RÉDIGÉ, comme le fait déjà le résumé de la bande Paramètres
+          // (16-settings-themes.js). Les autres éléments de cette liste gardent leur forme
+          // historique : ils sont hors du périmètre lexical de ce lot.
+          categories ? `${categories} catégorie${categories > 1 ? "s" : ""} sportive${categories > 1 ? "s" : ""}` : "",
         ].filter(Boolean).join(", ");
-        const archivedNote = blockers.archived > 0 ? ` (dont ${blockers.archived} archivé${blockers.archived > 1 ? "s" : ""})` : "";
-        alert(`Impossible de supprimer la discipline « ${name || "sans nom"} » : elle est encore utilisée par ${impacts}${archivedNote}. Retirez-la d'abord des inscriptions, groupes, créneaux, coachs ou salles concernés (y compris archivés).`);
+        // Lot 3B-3 — le participe s'accorde avec ce qui est RÉELLEMENT archivé. Ce compteur agrège
+        // des groupes, créneaux, coachs, salles et catégories : le masculin reste l'accord correct
+        // d'un ensemble mixte, mais quand les seuls éléments archivés sont des catégories sportives,
+        // « dont 1 archivé » est une faute. Aucune règle de blocage n'est touchée.
+        const archivedFeminine = blockers.archived > 0 && blockers.archived === blockers.sportCategoriesArchived;
+        const archivedNote = blockers.archived > 0
+          ? ` (dont ${blockers.archived} archivé${archivedFeminine ? "e" : ""}${blockers.archived > 1 ? "s" : ""})`
+          : "";
+        // La consigne de sortie mentionne les catégories UNIQUEMENT quand il y en a : proposer de
+        // « retirer les catégories » alors qu'aucune n'existe désignerait une action sans objet.
+        const howTo = categories
+          ? "Retirez-la d'abord des inscriptions, groupes, créneaux, coachs ou salles concernés (y compris archivés). Ses catégories sportives, elles, sont conservées avec la discipline : elles ne peuvent pas être détachées."
+          : "Retirez-la d'abord des inscriptions, groupes, créneaux, coachs ou salles concernés (y compris archivés).";
+        alert(`Impossible de supprimer la discipline « ${name || "sans nom"} » : elle est encore utilisée par ${impacts}${archivedNote}. ${howTo}`);
         return;
       }
       if (!await requestConfirm({ title: "Supprimer la discipline", message: `Supprimer définitivement la discipline « ${name || "sans nom"} » ?`, confirmLabel: "Supprimer", danger: true })) return;
@@ -28925,7 +31025,11 @@ ${esc(bodyText)}</pre>
   // Lot 3A (D2) — une discipline encore référencée ne peut pas être supprimée physiquement, que la
   // référence soit ACTIVE ou ARCHIVÉE, par id canonique ou par ancien nom. Le comptage distingue
   // actif/archivé pour un message clair. Fonction pure sur le club actif ; sert au garde-fou et aux tests.
-  function disciplineReferenceCounts(disc) {
+  // Lot 3B-2D (correction) — `clubId` explicite en second paramètre. Sans lui, une catégorie
+  // portant le clubId d'un AUTRE club bloquait la suppression d'une discipline du club actif, pour
+  // une donnée que l'utilisateur ne voit dans aucune surface. Omis = aucun filtrage : le contrat
+  // des appelants historiques (qui travaillent sur un état mono-club) est inchangé.
+  function disciplineReferenceCounts(disc, clubId) {
     const did = asText(disc?.id);
     const nameKey = disciplineNameKey(disc?.name);
     const refByBoth = (refId, refName) =>
@@ -28938,6 +31042,12 @@ ${esc(bodyText)}</pre>
       coursesActive: 0, coursesArchived: 0,
       coachesActive: 0, coachesArchived: 0,
       roomsActive: 0, roomsArchived: 0,
+      // Lot 3B-2D — le catalogue de catégories est la 6e collection référençante. Sans lui, une
+      // discipline sans inscription ni groupe pouvait être supprimée en laissant ses catégories
+      // ORPHELINES : plus rattachées à aucune discipline, elles disparaissaient de toute surface
+      // d'administration et devenaient impossibles à archiver, renommer ou retirer — aucune
+      // suppression physique de catégorie n'existe. On BLOQUE, on ne supprime jamais en cascade.
+      sportCategoriesActive: 0, sportCategoriesArchived: 0,
       active: 0, archived: 0, total: 0,
     };
     if (!did && !nameKey) return c;
@@ -28952,8 +31062,20 @@ ${esc(bodyText)}</pre>
     // ambiguë) ou en valeur libre (si ambiguë) par la normalisation — donc non bloquante ici.
     (state.coaches || []).forEach((coach) => { if (listHasId(coach.specialtyDisciplineIds)) (coach.archived ? c.coachesArchived++ : c.coachesActive++); });
     (state.rooms || []).forEach((room) => { if (listHasId(room.disciplineIds)) (room.archived ? c.roomsArchived++ : c.roomsActive++); });
-    c.active = c.memberships + c.groupsActive + c.coursesActive + c.coachesActive + c.roomsActive;
-    c.archived = c.groupsArchived + c.coursesArchived + c.coachesArchived + c.roomsArchived;
+    // Lot 3B-2D — catégories sportives : rattachement PAR IDENTIFIANT EXCLUSIVEMENT. Une catégorie
+    // ne porte aucun nom de discipline : aucun repli nominal n'est possible, ni souhaitable. Les
+    // archivées comptent comme les actives — ce sont des données à préserver, pas des rebuts.
+    if (did) {
+      (state.sportCategories || []).forEach((cat) => {
+        if (!cat || asText(cat.disciplineId) !== did) return;
+        // Doctrine UNIQUE d'appartenance (belongsToClubScope) : même règle que le catalogue, les
+        // conflits de libellés et les orphelines. Une catégorie sans clubId reste rattachée.
+        if (!belongsToClubScope(cat, clubId)) return;
+        (cat.archived === true ? c.sportCategoriesArchived++ : c.sportCategoriesActive++);
+      });
+    }
+    c.active = c.memberships + c.groupsActive + c.coursesActive + c.coachesActive + c.roomsActive + c.sportCategoriesActive;
+    c.archived = c.groupsArchived + c.coursesArchived + c.coachesArchived + c.roomsArchived + c.sportCategoriesArchived;
     c.total = c.active + c.archived;
     return c;
   }
@@ -29601,17 +31723,26 @@ ${esc(bodyText)}</pre>
     const capText = cap.max > 0 ? `${cap.count} / ${cap.max} membres` : `${cap.count} membre${cap.count > 1 ? "s" : ""}`;
     const ageText = asText(group.ageMin) !== "" || asText(group.ageMax) !== ""
       ? `${asText(group.ageMin) !== "" ? group.ageMin : "?"}–${asText(group.ageMax) !== "" ? group.ageMax : "?"} ans` : "Tous âges";
+    // Lot 3B-2C — la catégorie affectée doit être lisible sur la CARTE, pas seulement dans le
+    // dialogue d'édition. Le libellé est recalculé à chaque rendu : renommer une catégorie met donc
+    // l'affichage à jour partout, sans toucher à la moindre référence.
+    // Lot 3B-3 — ORDRE de la carte : discipline, catégorie sportive, coach, tranche d'âge. Le champ
+    // libre `type` sortait en TÊTE de cette énumération (« Enfants · Football · U11 · 9–11 ans ») :
+    // quatre classifications indistinctes, dont la première ressemblait à une catégorie d'âge alors
+    // qu'elle n'est qu'un repère libre. Il descend donc sur une seconde ligne, explicitement nommée.
+    const categoryLabel = sportCategoryAssignmentLabel(group.sportCategoryId, group.disciplineId, state, activeClubId());
     return `<div class="group-card paper ${group.archived ? "group-archived" : ""}" ${group.color ? `style="border-left:6px solid ${esc(group.color)}"` : ""}>
       <div class="group-card-head">
         <h3>${group.color ? `<span class="group-color-dot" style="background:${esc(group.color)}"></span>` : ""}${esc(group.name)}</h3>
         <span class="cap-badge ${capacityBadgeClass(cap.status)}">${esc(capText)}</span>
       </div>
       <div class="group-card-meta">
-        <span>${esc(group.type || "Groupe")}</span>
-        ${disciplineLabelFor(group) ? `<span>· ${esc(disciplineLabelFor(group))}</span>` : ""}
+        <span>${esc(disciplineLabelFor(group) || "Groupe sans discipline")}</span>
+        ${categoryLabel ? `<span class="sport-category-tag">· ${esc(categoryLabel)}</span>` : ""}
         ${coachLabelFor(group.coachId, group.coach) ? `<span>· Coach ${esc(coachLabelFor(group.coachId, group.coach))}</span>` : ""}
         <span>· ${esc(ageText)}</span>
       </div>
+      ${asText(group.type) ? `<div class="group-card-meta group-card-marker"><span>Repère : ${esc(group.type)}</span></div>` : ""}
       ${group.notes ? `<p class="muted group-card-notes">${esc(group.notes)}</p>` : ""}
       <div class="group-card-actions">
         <button type="button" data-action="view-group-members" data-id="${esc(group.id)}">Membres +/−</button>
@@ -29634,6 +31765,9 @@ ${esc(bodyText)}</pre>
       selectField("type", "Type de groupe (repère)", group.type || "Autre", types),
       // Lot 3A (clôture) — sélecteur PAR IDENTIFIANT : value = discipline.id, homonymes distincts.
       disciplineSelectField("discipline", "Discipline", group),
+      // Lot 3B-2C — catégorie sportive du groupe, indépendante de celle des inscriptions : affecter
+      // ici ne modifie AUCUN membre, et l'appartenance à ce groupe n'affecte aucune catégorie.
+      sportCategorySelectField("sportCategoryId", group),
       `<div data-coach-field>${coachPickerHtml(group.coachId, { disciplineId: group.disciplineId, discipline: group.discipline }, group.coach, "Coach / encadrant")}</div>`,
       `<div class="form-grid compact">
         ${field("ageMin", "Âge min", group.ageMin ?? "", "number", 'step="1" min="0"')}
@@ -29660,6 +31794,19 @@ ${esc(bodyText)}</pre>
           return false;
         }
       }
+      // Lot 3B-2C — même règle que pour l'inscription. Correction D-2C-01 : la référence HISTORIQUE
+      // conservée (préfixe `__keep__:`) est elle aussi revalidée avec l'état COURANT, jamais sur la
+      // foi du <select>. Elle n'est conservée que si la discipline n'a pas changé ; sinon la
+      // sauvegarde est refusée, AVANT toute mutation du groupe.
+      const categoryChoice = readSportCategoryAssignmentValue(data.get("sportCategoryId"));
+      const previousCategoryId = asText(group.sportCategoryId);
+      const previousDisciplineId = asText(group.disciplineId);
+      const nextCategoryId = categoryChoice.keep ? previousCategoryId : categoryChoice.categoryId;
+      const categoryError = validateSportCategoryAssignment(
+        nextCategoryId, groupTarget.disciplineId, state, activeClubId(),
+        previousCategoryId, previousDisciplineId,
+      );
+      if (categoryError) { alert(categoryError); return false; }
       const next = {
         ...group,
         id: group.id || id("group"),
@@ -29668,6 +31815,8 @@ ${esc(bodyText)}</pre>
         discipline: groupTarget.discipline,
         // Lot 3A (clôture) — identifiant canonique lu DIRECTEMENT du select (homonymes distincts).
         disciplineId: groupTarget.disciplineId,
+        // Lot 3B-2C — catégorie du groupe seule : aucune propagation vers les inscriptions.
+        sportCategoryId: nextCategoryId,
         coachId: groupCoachId,
         coach: groupCoachId ? coachFullName(coachById(groupCoachId)) : asText(data.get("coach")),
         ageMin: asText(data.get("ageMin")) === "" ? "" : asNumber(data.get("ageMin")),
@@ -29679,6 +31828,15 @@ ${esc(bodyText)}</pre>
       };
       state.groups = state.groups || [];
       upsert(state.groups, next);
+      // Lot 3B-2C — journalisation de l'affectation. Correction D-2C-02 : plus de condition sur
+      // l'existence préalable du groupe. Une catégorie posée dès la création est tracée, car aucun
+      // événement générique de création de groupe ne la couvre. Le helper compare les identifiants
+      // et renvoie `null` s'ils sont égaux : création sans catégorie -> aucun événement.
+      audit.groupSportCategoryChanged(next, {
+        previousSportCategoryId: previousCategoryId,
+        reason: (group.id && previousDisciplineId !== asText(next.disciplineId)) ? "discipline-changed" : "",
+        previousDisciplineId,
+      });
       return `${group.id ? "Modification" : "Création"} du groupe ${name}`;
     }, (form) => {
       // Re-filtre la liste des coachs selon la discipline choisie. Le coach sélectionné (coachId)
@@ -29692,6 +31850,9 @@ ${esc(bodyText)}</pre>
         const currentCoach = currentId ? coachById(currentId) : null;
         const keepId = (currentCoach && coachHandlesDiscipline(currentCoach, newTarget)) ? currentId : "";
         wrap.innerHTML = coachPickerHtml(keepId, newTarget, form.elements.coach?.value || "", "Coach / encadrant");
+        // Lot 3B-2C — le catalogue de catégories suit la discipline du brouillon ; la catégorie est
+        // remise à vide, sans jamais chercher une homonyme dans la nouvelle discipline.
+        refreshSportCategoryFieldForDiscipline(form, "sportCategoryId", newTarget.disciplineId, group.sportCategoryId, group.disciplineId);
       });
     });
   }
@@ -29720,12 +31881,24 @@ ${esc(bodyText)}</pre>
   // Inscriptions « affectables » à un groupe : inscriptions actives (avec discipline),
   // pas déjà dans CE groupe, et — si le groupe vise une discipline — de cette discipline.
   // L'âge n'est pas bloquant : on le signale (chip) sans masquer la ligne.
+  // Lot 3B-2D — les candidats ne sont plus FILTRÉS par discipline, ils sont CLASSÉS puis MARQUÉS.
+  // Deux changements, tous deux voulus :
+  //   1. la comparaison est CANONIQUE (Lot 3A, via groupMatchesCourseDiscipline) et non plus faite
+  //      sur le nom affiché : deux disciplines homonymes d'identifiants distincts ne sont plus
+  //      confondues — un membre de « Football » (D-FOOT-2) n'est plus proposé comme relevant de
+  //      « Football » (D-FOOT-1) ;
+  //   2. un adhérent d'une autre discipline reste PROPOSÉ, en fin de liste et porteur d'un badge
+  //      d'avertissement, au lieu d'être silencieusement masqué. Constituer volontairement un groupe
+  //      transversal redevient possible sans contourner l'interface. Aucun ajout n'est bloqué.
   function groupMemberCandidates(group) {
-    const wantDiscipline = asText(group.discipline);
+    const compatible = (m) => groupMatchesCourseDiscipline(group, m, state);
     return (state.memberships || [])
-      .filter((m) => asText(m.discipline) && m.groupId !== group.id
-        && (!wantDiscipline || asText(m.discipline) === wantDiscipline))
-      .sort((a, b) => personLabel(a).localeCompare(personLabel(b), "fr", { sensitivity: "base" }));
+      .filter((m) => asText(m.discipline) && m.groupId !== group.id)
+      .sort((a, b) => {
+        const rank = Number(compatible(b)) - Number(compatible(a));
+        if (rank !== 0) return rank;
+        return personLabel(a).localeCompare(personLabel(b), "fr", { sensitivity: "base" });
+      });
   }
 
   function groupMemberContactLine(m) {
@@ -29735,21 +31908,59 @@ ${esc(bodyText)}</pre>
     return [tel, mail].filter(Boolean).join(" · ");
   }
 
+  // Lot 3B-3 — libellé de la catégorie SPORTIVE d'une inscription pour la ligne d'un membre.
+  // Réutilise l'état protégé du Lot 3B-2C (aucune seconde logique de résolution, aucun identifiant
+  // technique ne peut fuiter) et n'ajuste qu'un seul cas : une référence absente du catalogue est
+  // annoncée « Catégorie sportive indisponible » plutôt que « Catégorie indisponible », parce que
+  // cette ligne affiche aussi une discipline et que le mot seul y serait ambigu. Les autres
+  // libellés — « U15 — catégorie archivée », « U11 — catégorie d'une autre discipline »,
+  // « Catégorie provenant d'un autre club » — sont ceux, validés, des Lots 3B-2C/2D.
+  function groupMemberSportCategoryLabel(m) {
+    const resolved = sportCategoryAssignmentState(m && m.sportCategoryId, m && m.disciplineId, state, activeClubId());
+    if (resolved.status === "none") return "";
+    if (resolved.status === "unknown") return "Catégorie sportive indisponible";
+    return asText(resolved.label);
+  }
+
+  // Lot 3B-3 — la classe d'âge Adulte/Enfant a été RETIRÉE de cette ligne. Elle y occupait la
+  // position où l'œil attend la catégorie sportive (« Football · Enfant · 10 ans »), juste au-dessus
+  // d'un badge nommé « Catégorie sportive différente » : deux notions se disputaient le même
+  // emplacement. L'âge réel reste affiché, il porte déjà la même information sans ambiguïté ; la
+  // catégorie sportive de l'inscription, elle, n'était visible nulle part sur cette ligne.
   function groupMemberMetaLine(m) {
     const parts = [];
     if (asText(m.discipline)) parts.push(esc(m.discipline));
-    const cat = memberCategory(m);
+    const categoryLabel = groupMemberSportCategoryLabel(m);
+    if (categoryLabel) parts.push(esc(categoryLabel));
     const ageLabel = memberAgeLabel(m);
-    if (cat) parts.push(esc(ageLabel ? `${cat} · ${ageLabel}` : cat));
-    else if (ageLabel) parts.push(esc(ageLabel));
+    if (ageLabel) parts.push(esc(ageLabel));
     const contactLine = groupMemberContactLine(m);
     if (contactLine) parts.push(esc(contactLine));
     return parts.join(" · ");
   }
 
   // Chips d'information sur un candidat (hors tranche d'âge, déjà dans un autre groupe).
+  // Lot 3B-2D — badge de cohérence groupe/inscription. Réutilise EXACTEMENT les classes du badge
+  // « Hors tranche d'âge » : même mécanisme, même style, même doctrine (signaler, jamais bloquer).
+  // La décision est prise par groupMembershipConsistency ; ici on ne fait que rendre son verdict.
+  function groupConsistencyTagHtml(group, membership) {
+    const verdict = groupMembershipConsistency(group, membership, state, activeClubId());
+    if (!verdict.label) return "";
+    return `<span class="group-add-tag ${verdict.level === "warn" ? "warn" : ""}" data-consistency="${esc(verdict.status)}">${esc(verdict.label)}</span>`;
+  }
+
+  // Y a-t-il au moins une incohérence AFFICHÉE dans ce dialogue ? Sert uniquement à n'afficher la
+  // phrase de tolérance que lorsqu'elle explique quelque chose de visible (§6.3).
+  function groupHasConsistencyNotice(group, members, candidates) {
+    return [...(members || []), ...(candidates || [])]
+      .some((m) => Boolean(groupMembershipConsistency(group, m, state, activeClubId()).label));
+  }
+
   function groupCandidateTags(group, m) {
     const tags = [];
+    // La cohérence prime dans l'ordre d'affichage : discipline, puis catégorie, puis âge.
+    const consistency = groupConsistencyTagHtml(group, m);
+    if (consistency) tags.push(consistency);
     const age = getMemberAge(m);
     const min = asText(group.ageMin) !== "" ? asNumber(group.ageMin) : null;
     const max = asText(group.ageMax) !== "" ? asNumber(group.ageMax) : null;
@@ -29774,12 +31985,20 @@ ${esc(bodyText)}</pre>
     const hasAgeReq = asText(group.ageMin) !== "" || asText(group.ageMax) !== "";
     const ageReq = hasAgeReq
       ? ` (${asText(group.ageMin) !== "" ? group.ageMin : "?"}–${asText(group.ageMax) !== "" ? group.ageMax : "?"} ans)` : "";
+    // Lot 3B-2D — la phrase décrit la nouvelle réalité : les adhérents de la discipline d'abord,
+    // les autres ensuite et signalés. Aucun n'est masqué.
     const filterDesc = wantDiscipline
-      ? `Adhérents inscrits en « ${esc(wantDiscipline)} »${esc(ageReq)} qui ne sont pas déjà dans ce groupe.`
+      ? `Adhérents inscrits${esc(ageReq)} qui ne sont pas déjà dans ce groupe : ceux de « ${esc(wantDiscipline)} » d'abord, les autres disciplines ensuite et signalées.`
       : `Tous les adhérents inscrits${esc(ageReq)} qui ne sont pas déjà dans ce groupe.`;
     // Tolérance d'âge : la tranche est indicative, on n'empêche pas l'ajout d'un cas particulier.
     const ageToleranceNote = hasAgeReq
       ? `<p class="muted group-age-tolerance">La tranche d'âge est indicative : un adhérent en dehors est signalé « Hors tranche d'âge », mais tu peux quand même l'ajouter si tu veux faire une exception.</p>`
+      : "";
+    // Lot 3B-2D — même doctrine que la tolérance d'âge, et affichée aux mêmes conditions : seulement
+    // si au moins un badge de cohérence est réellement visible dans ce dialogue. Sans incohérence,
+    // la phrase n'expliquerait rien et ne ferait qu'alourdir l'écran.
+    const consistencyNote = groupHasConsistencyNotice(group, members, candidates)
+      ? `<p class="muted group-consistency-tolerance">La discipline et la catégorie sportive sont indicatives : une différence est signalée, mais elle ne bloque pas l'ajout au groupe.</p>`
       : "";
 
     const membersHtml = members.length
@@ -29788,6 +32007,7 @@ ${esc(bodyText)}</pre>
             <div class="group-member-id">
               <strong>${esc(personLabel(m))}</strong>
               <span class="muted">${groupMemberMetaLine(m)}</span>
+              ${groupConsistencyTagHtml(group, m) ? `<span class="group-add-tags group-member-tags">${groupConsistencyTagHtml(group, m)}</span>` : ""}
             </div>
             <button type="button" class="danger small" data-action="remove-member-from-group" data-membership-id="${esc(m.id)}">Retirer du groupe</button>
           </div>`).join("")}</div>`
@@ -29822,6 +32042,7 @@ ${esc(bodyText)}</pre>
         <h3>Ajouter des membres</h3>
         <p class="muted">${filterDesc}</p>
         ${ageToleranceNote}
+        ${consistencyNote}
         ${candidates.length ? `<div class="dialog-list-search">
           <input type="search" class="group-member-search" data-list-search placeholder="Rechercher un adhérent (nom, prénom, téléphone, e-mail…)" autocomplete="off" />
           <span class="dialog-list-search-count muted" data-list-search-count></span>
@@ -33088,6 +35309,25 @@ ${esc(bodyText)}</pre>
       media: {},
       visibleIf: ["module-visible"],
     },
+    // Lot 3B-4A — état vide DISTINCT quand le club n'a encore aucune discipline. L'état
+    // « disciplines » ci-dessus parle d'inscriptions : le proposer à un club sans catalogue revient
+    // à offrir l'objet dépendant avant celui dont il dépend (on ne peut pas inscrire quelqu'un à
+    // une discipline qui n'existe pas). Les deux états ne se mélangent jamais.
+    "disciplines-empty-catalog": {
+      icon: "🥋",
+      title: "Aucune discipline n'est encore configurée.",
+      lead: "Créez la première discipline du club avant d'ajouter des inscriptions.",
+      why: "Une discipline est une activité proposée par le club. Elle porte son nom, son tarif et, si vous le souhaitez, un profil sportif qui suggère des catégories. Les inscriptions relient ensuite vos adhérents à ces disciplines.",
+      priority: 95,
+      difficulty: "facile",
+      estimateMinutes: 1,
+      cta: {
+        first: { action: "add-tariff-discipline", label: "Créer ma première discipline" },
+        more: { action: "add-tariff-discipline", label: "Créer ma première discipline" },
+      },
+      media: {},
+      visibleIf: ["module-visible"],
+    },
     groups: {
       icon: "👥",
       title: "Vous n'avez encore créé aucun groupe.",
@@ -36052,6 +38292,23 @@ ${esc(bodyText)}</pre>
     // DÉRIVÉE recalculée à l'affichage (voir stockRows()) : aucune vente ni suppression de commande
     // ne produit d'événement ici, seule une modification manuelle des champs de l'article compte.
     "shop.item.created", "shop.item.updated", "shop.item.deleted",
+    // Lot 3B-2B — cycle de vie du catalogue de catégories sportives et ancrage du profil sportif
+    // d'une discipline. Ce sont des changements de CONFIGURATION du club, au même titre que
+    // club.feature.updated. L'AFFECTATION d'une catégorie à une inscription ou à un groupe n'est
+    // volontairement PAS journalisée : ces surfaces n'existent pas encore (Lot 3B-2C), et le journal
+    // ne trace aujourd'hui aucune modification d'inscription ni de groupe — n'en tracer qu'un champ
+    // mineur produirait une journalisation partielle incohérente.
+    "sport.category.created", "sport.category.updated", "sport.category.archived", "sport.category.restored",
+    "sport.discipline.profile.updated",
+    // Lot 3B-4A — création d'une discipline. C'était la seule action structurante du domaine
+    // sportif qui n'était pas tracée : l'ancien bouton poussait une ligne et persistait sans rien
+    // journaliser. La suppression reste non journalisée (elle est bloquée dès qu'il y a des
+    // références, cf. Lot 3A) et n'entre pas dans ce lot.
+    "sport.discipline.created",
+    // Lot 3B-2C — AFFECTATION d'une catégorie à une inscription ou à un groupe. Le Lot 3B-2B ne les
+    // avait volontairement pas déclarées : les surfaces n'existaient pas encore. Ces deux actions
+    // décrivent un rattachement sportif, jamais une modification financière.
+    "membership.sportCategory.changed", "group.sportCategory.changed",
   ];
 
   function rawAuditLogFromStorage() {
@@ -36806,6 +39063,148 @@ ${esc(bodyText)}</pre>
         },
       });
     },
+    // --- Lot 3B-2B — catalogue de catégories sportives ---
+    // `disciplineId` est la référence canonique (Lot 3A) ; `disciplineLabel` n'est qu'un instantané
+    // de LECTURE pour le rendu, jamais utilisé pour retrouver la discipline.
+    sportCategoryCreated(category, discipline) {
+      return recordAuditEvent({
+        action: "sport.category.created",
+        entityType: "sportCategory",
+        entityId: category.id,
+        entityLabel: category.label,
+        clubId: category.clubId,
+        metadata: { disciplineId: asText(discipline && discipline.id), disciplineLabel: asText(discipline && discipline.name) },
+      });
+    },
+    // Lot 3B-4A — la discipline elle-même. Le profil est journalisé sous sa forme technique
+    // (`sportId`) ET son libellé lisible : le premier survit à un renommage du registre, le second
+    // reste compréhensible dans le journal exporté. Aucune donnée financière n'y figure.
+    sportDisciplineCreated(discipline, categories) {
+      const list = Array.isArray(categories) ? categories : [];
+      return recordAuditEvent({
+        action: "sport.discipline.created",
+        entityType: "discipline",
+        entityId: discipline.id,
+        entityLabel: discipline.name,
+        clubId: discipline.clubId,
+        metadata: {
+          sportId: asText(discipline.sportId),
+          profileLabel: disciplineProfileLabel(resolveDisciplineProfile(discipline)),
+          categoryCount: list.length,
+          categoryLabels: list.map((c) => asText(c && c.label)).filter(Boolean),
+        },
+      });
+    },
+    sportCategoryRenamed(category, discipline, previousLabel) {
+      return recordAuditEvent({
+        action: "sport.category.updated",
+        entityType: "sportCategory",
+        entityId: category.id,
+        entityLabel: category.label,
+        clubId: category.clubId,
+        metadata: {
+          disciplineId: asText(discipline && discipline.id),
+          disciplineLabel: asText(discipline && discipline.name),
+          previousLabel: asText(previousLabel),
+          newLabel: asText(category.label),
+        },
+      });
+    },
+    sportCategoryArchived(category, discipline) {
+      return recordAuditEvent({
+        action: "sport.category.archived",
+        entityType: "sportCategory",
+        entityId: category.id,
+        entityLabel: category.label,
+        clubId: category.clubId,
+        metadata: { disciplineId: asText(discipline && discipline.id), disciplineLabel: asText(discipline && discipline.name) },
+      });
+    },
+    sportCategoryRestored(category, discipline) {
+      return recordAuditEvent({
+        action: "sport.category.restored",
+        entityType: "sportCategory",
+        entityId: category.id,
+        entityLabel: category.label,
+        clubId: category.clubId,
+        metadata: { disciplineId: asText(discipline && discipline.id), disciplineLabel: asText(discipline && discipline.name) },
+      });
+    },
+    // Ancrage du profil sportif. L'entité journalisée est la DISCIPLINE (c'est elle qui change),
+    // pas une catégorie. Les libellés avant/après sont résolus par l'appelant (04-settings-normalize).
+    // --- Lot 3B-2C — affectation d'une catégorie ---
+    // (auditMembershipPersonLabel est défini plus bas, hors de cet objet : voir sa définition.)
+    // Les deux helpers ne journalisent QUE si la référence a réellement changé : c'est la garantie
+    // qu'un enregistrement sans modification, une réouverture ou un rerendu n'écrit rien.
+    // Les libellés sont résolus ICI, à l'instant de l'événement : le journal conserve ce que
+    // l'utilisateur voyait, même si la catégorie est renommée ou archivée plus tard.
+    membershipSportCategoryChanged(membership, { previousSportCategoryId, reason, previousDisciplineId } = {}) {
+      const previousId = asText(previousSportCategoryId);
+      const newId = asText(membership && membership.sportCategoryId);
+      if (previousId === newId) return null;
+      const disciplineId = asText(membership && membership.disciplineId);
+      return recordAuditEvent({
+        action: "membership.sportCategory.changed",
+        entityType: "membership",
+        entityId: asText(membership && membership.id),
+        // Le nom vit normalement SUR l'inscription (le formulaire l'y recopie), mais une inscription
+        // importée peut n'avoir que `contactId` : on se rabat alors sur la fiche contact, pour ne
+        // jamais écrire « Le contact » dans le journal.
+        entityLabel: auditMembershipPersonLabel(membership),
+        clubId: asText(membership && membership.clubId),
+        metadata: {
+          membershipId: asText(membership && membership.id),
+          contactId: asText(membership && membership.contactId),
+          disciplineId,
+          disciplineLabel: asText(membership && membership.discipline),
+          previousSportCategoryId: previousId,
+          // L'ancien libellé est résolu contre l'ANCIENNE discipline : après un changement de
+          // discipline, le confronter à la nouvelle le rendrait « incompatible » à tort.
+          previousSportCategoryLabel: sportCategoryLabel(previousId, asText(previousDisciplineId) || disciplineId, state),
+          newSportCategoryId: newId,
+          newSportCategoryLabel: sportCategoryLabel(newId, disciplineId, state),
+          reason: asText(reason),
+        },
+      });
+    },
+    groupSportCategoryChanged(group, { previousSportCategoryId, reason, previousDisciplineId } = {}) {
+      const previousId = asText(previousSportCategoryId);
+      const newId = asText(group && group.sportCategoryId);
+      if (previousId === newId) return null;
+      const disciplineId = asText(group && group.disciplineId);
+      return recordAuditEvent({
+        action: "group.sportCategory.changed",
+        entityType: "group",
+        entityId: asText(group && group.id),
+        entityLabel: asText(group && group.name),
+        clubId: asText(group && group.clubId),
+        metadata: {
+          groupId: asText(group && group.id),
+          disciplineId,
+          disciplineLabel: asText(group && group.discipline),
+          previousSportCategoryId: previousId,
+          previousSportCategoryLabel: sportCategoryLabel(previousId, asText(previousDisciplineId) || disciplineId, state),
+          newSportCategoryId: newId,
+          newSportCategoryLabel: sportCategoryLabel(newId, disciplineId, state),
+          reason: asText(reason),
+        },
+      });
+    },
+    sportDisciplineProfileUpdated(discipline, { previousSportId, newSportId, previousProfileLabel, newProfileLabel } = {}) {
+      return recordAuditEvent({
+        action: "sport.discipline.profile.updated",
+        entityType: "discipline",
+        entityId: asText(discipline && discipline.id),
+        entityLabel: asText(discipline && discipline.name),
+        clubId: asText(discipline && discipline.clubId),
+        metadata: {
+          previousSportId: asText(previousSportId),
+          newSportId: asText(newSportId),
+          previousProfileLabel: asText(previousProfileLabel),
+          newProfileLabel: asText(newProfileLabel),
+        },
+      });
+    },
   };
 
   // --- Export / import (Lot 2) ---
@@ -36834,6 +39233,18 @@ ${esc(bodyText)}</pre>
 
   // --- Rendu humain (séparé des données stockées, jamais l'inverse) ---
 
+  // Lot 3B-2C — nom lisible de l'adhérent d'une inscription, pour le journal. L'inscription porte
+  // normalement lastName/firstName (le formulaire les y recopie) ; sinon on résout la fiche contact
+  // par `contactId`. Aucun rapprochement approximatif : sans nom nulle part, le repli de
+  // personLabel s'applique.
+  function auditMembershipPersonLabel(membership) {
+    const row = (membership && typeof membership === "object") ? membership : {};
+    const direct = personLabel(row);
+    if (direct !== "Le contact") return direct;
+    const contact = (typeof contactForMembership === "function") ? contactForMembership(row) : null;
+    return contact ? personLabel(contact) : direct;
+  }
+
   function auditEntityTypeLabelFr(entityType) {
     if (entityType === "user") return "un utilisateur";
     if (entityType === "club") return "un club";
@@ -36842,6 +39253,12 @@ ${esc(bodyText)}</pre>
     if (entityType === "stage") return "un stage";
     if (entityType === "stageRegistration") return "une inscription à un stage";
     if (entityType === "shopItem") return "un article boutique";
+    // Lot 3B-2B — repli générique si un rendu dédié venait à manquer pour ces types.
+    if (entityType === "sportCategory") return "une catégorie sportive";
+    if (entityType === "discipline") return "une discipline";
+    // Lot 3B-2C — replis génériques pour les deux surfaces d'affectation.
+    if (entityType === "membership") return "une inscription";
+    if (entityType === "group") return "un groupe";
     return "un élément";
   }
 
@@ -37077,6 +39494,82 @@ ${esc(bodyText)}</pre>
       return orderCount > 0
         ? `${actor} a supprimé l'article « ${label || "?"} » (référencé dans ${orderCount} commande${orderCount > 1 ? "s" : ""})`
         : `${actor} a supprimé l'article « ${label || "?"} »`;
+    },
+    // Lot 3B-2B — catalogue de catégories sportives. La discipline est TOUJOURS rappelée : dans un
+    // club multidisciplinaire, « la catégorie Seniors » sans sa discipline est ambiguë (le football
+    // et le judo peuvent chacun avoir la leur).
+    "sport.category.created": (actor, label, metadata) => {
+      const discipline = asText(metadata.disciplineLabel);
+      return discipline
+        ? `${actor} a créé la catégorie « ${label || "?"} » pour ${discipline}`
+        : `${actor} a créé la catégorie « ${label || "?"} »`;
+    },
+    // Lot 3B-4A — le profil est rappelé quand il existe : « Football » créé avec le profil Football
+    // et « Éveil sportif » sans profil ne se lisent pas de la même façon dans le journal.
+    "sport.discipline.created": (actor, label, metadata) => {
+      const profile = asText(metadata.profileLabel);
+      const count = Number(metadata.categoryCount) || 0;
+      const suffix = count ? ` avec ${count} catégorie${count > 1 ? "s" : ""}` : "";
+      return profile
+        ? `${actor} a créé la discipline « ${label || "?"} » (profil ${profile})${suffix}`
+        : `${actor} a créé la discipline « ${label || "?"} »${suffix}`;
+    },
+    "sport.category.updated": (actor, label, metadata) => {
+      const discipline = asText(metadata.disciplineLabel);
+      const before = asText(metadata.previousLabel);
+      const suffix = discipline ? ` pour ${discipline}` : "";
+      return before && before !== label
+        ? `${actor} a renommé la catégorie « ${before} » en « ${label || "?"} »${suffix}`
+        : `${actor} a modifié la catégorie « ${label || "?"} »${suffix}`;
+    },
+    "sport.category.archived": (actor, label, metadata) => {
+      const discipline = asText(metadata.disciplineLabel);
+      return discipline
+        ? `${actor} a archivé la catégorie « ${label || "?"} » pour ${discipline}`
+        : `${actor} a archivé la catégorie « ${label || "?"} »`;
+    },
+    "sport.category.restored": (actor, label, metadata) => {
+      const discipline = asText(metadata.disciplineLabel);
+      return discipline
+        ? `${actor} a restauré la catégorie « ${label || "?"} » pour ${discipline}`
+        : `${actor} a restauré la catégorie « ${label || "?"} »`;
+    },
+    // Ancrage du profil sportif sur une discipline. Aucun événement générique existant ne convenait :
+    // club.settings.updated porte sur le club, et un tarif n'est pas modifié ici. L'ancienne et la
+    // nouvelle valeur sont rendues en clair, jamais l'identifiant technique seul.
+    "sport.discipline.profile.updated": (actor, label, metadata) => {
+      const before = asText(metadata.previousProfileLabel) || "aucun profil spécifique";
+      const after = asText(metadata.newProfileLabel) || "aucun profil spécifique";
+      return `${actor} a changé le profil sportif de la discipline « ${label || "?"} » : ${before} → ${after}`;
+    },
+    // Lot 3B-2C — affectations. Trois phrases distinctes (affecter / retirer / remplacer) : « a
+    // modifié la catégorie » ne dirait pas ce qui a changé. La discipline est toujours rappelée,
+    // sans quoi « la catégorie Seniors » resterait ambiguë dans un club multidisciplinaire.
+    "membership.sportCategory.changed": (actor, label, metadata) => {
+      const who = label || "?";
+      const discipline = asText(metadata.disciplineLabel);
+      const suffix = discipline ? ` pour ${discipline}` : "";
+      const before = asText(metadata.previousSportCategoryLabel);
+      const after = asText(metadata.newSportCategoryLabel);
+      const because = asText(metadata.reason) === "discipline-changed" ? " (la discipline a changé)" : "";
+      if (before && after) return `${actor} a remplacé la catégorie « ${before} » par « ${after} » sur l'inscription de ${who}${suffix}${because}`;
+      if (after) return `${actor} a affecté la catégorie « ${after} » à l'inscription de ${who}${suffix}`;
+      if (before) return `${actor} a retiré la catégorie « ${before} » de l'inscription de ${who}${suffix}${because}`;
+      // Les deux libellés sont vides mais les identifiants diffèrent : référence devenue
+      // indisponible (catégorie supprimée du catalogue, import ancien). On reste honnête.
+      return `${actor} a modifié la catégorie sportive de l'inscription de ${who}${suffix}${because}`;
+    },
+    "group.sportCategory.changed": (actor, label, metadata) => {
+      const name = label || "?";
+      const discipline = asText(metadata.disciplineLabel);
+      const suffix = discipline ? ` pour ${discipline}` : "";
+      const before = asText(metadata.previousSportCategoryLabel);
+      const after = asText(metadata.newSportCategoryLabel);
+      const because = asText(metadata.reason) === "discipline-changed" ? " (la discipline a changé)" : "";
+      if (before && after) return `${actor} a remplacé la catégorie « ${before} » par « ${after} » sur le groupe « ${name} »${suffix}${because}`;
+      if (after) return `${actor} a affecté la catégorie « ${after} » au groupe « ${name} »${suffix}`;
+      if (before) return `${actor} a retiré la catégorie « ${before} » du groupe « ${name} »${suffix}${because}`;
+      return `${actor} a modifié la catégorie sportive du groupe « ${name} »${suffix}${because}`;
     },
   };
 
@@ -37737,6 +40230,42 @@ ${esc(bodyText)}</pre>
     { key: "individual-sport", label: "Sports individuels", families: ["individual-sport"] },
   ]);
 
+  // --- Collision de libellé entre une activité personnalisée et un profil officiel (Lot 3B-1) ---
+  // Clé de comparaison des libellés : trim + minuscules, RIEN de plus. Aucune suppression d'accent,
+  // aucune recherche par sous-chaîne, aucune approximation : « Basket loisir adapté » n'est pas
+  // « Basket-ball ». Même normalisation légère que le contrôle de doublon entre activités.
+  function wizardSportLabelKey(label) {
+    return asText(label).toLowerCase();
+  }
+
+  // Profil officiel dont le libellé correspond EXACTEMENT (après normalisation) à `label`, sinon
+  // null. Compare aux libellés du registre — jamais à une liste recopiée.
+  function officialProfileByLabel(label) {
+    const key = wizardSportLabelKey(label);
+    if (!key) return null;
+    return wizardSelectableProfiles().find((p) => wizardSportLabelKey(p.label) === key) || null;
+  }
+
+  // Motif de refus d'un libellé d'activité personnalisée, ou "" s'il est acceptable. Pur et
+  // testable sans DOM (wizardAddCustomSport n'en est que l'habillage).
+  function wizardCustomSportRejection(label, customSports) {
+    const clean = asText(label);
+    if (!clean) return "Saisissez un nom pour l'activité personnalisée.";
+    const key = wizardSportLabelKey(clean);
+    const existing = Array.isArray(customSports) ? customSports : [];
+    if (existing.some((c) => wizardSportLabelKey(c && c.label) === key)) {
+      return "Cette activité personnalisée existe déjà.";
+    }
+    // Lot 3B-1 — un libellé identique à un sport officiel créerait deux entrées de même nom : la
+    // déduplication n'en garderait qu'une et le profil choisi risquait d'être perdu. On oriente
+    // l'utilisateur vers la sélection du sport officiel, qui porte son profil.
+    const official = officialProfileByLabel(clean);
+    if (official) {
+      return `Cette activité correspond déjà au sport « ${official.label} ». Sélectionnez ce sport dans la liste ou choisissez un autre nom.`;
+    }
+    return "";
+  }
+
   // Profils officiels sélectionnables dans la grille (exclut les méta-profils custom/multisport).
   function wizardSelectableProfiles() {
     return Object.keys(SPORT_PROFILE_REGISTRY)
@@ -37832,27 +40361,56 @@ ${esc(bodyText)}</pre>
 
   // Disciplines (state.tariffs.disciplines) à créer : une par sport, sport principal en premier,
   // label = libellé du profil officiel ou de l'activité perso. Dédupliqué par nom (insensible à la
-  // casse). §6. Pur : retourne des objets de définition {name} (les id/clubId sont posés à la création).
-  function wizardDisciplineNames(clubProfile) {
+  // casse). §6. Pur : retourne des définitions {name, sportId} (les id/clubId sont posés à la création).
+  //
+  // Lot 3B-1 — le sportId CHOISI par l'utilisateur est désormais conservé et transmis à la
+  // discipline créée : c'est le chaînon qui manquait entre le catalogue (Lot 1) et l'identité
+  // canonique des disciplines (Lot 3A). Une activité PERSONNALISÉE ne porte aucun profil officiel
+  // et sort donc avec sportId "" (elle reste libre tant que l'utilisateur n'a pas choisi).
+  function wizardDisciplineDefs(clubProfile) {
     const cp = normalizeClubProfile(clubProfile);
     const ordered = [];
     const pushId = (sportId) => { if (sportId && !ordered.includes(sportId)) ordered.push(sportId); };
     pushId(cp.primarySportId);
     cp.sportIds.forEach(pushId);
-    const names = [];
-    const seenLower = new Set();
+    const defs = [];
+    const indexByLabel = new Map();
     ordered.forEach((sportId) => {
       let label = "";
-      if (SPORT_PROFILE_IDS.has(sportId)) label = SPORT_PROFILE_REGISTRY[sportId].label;
+      let official = false;
+      if (SPORT_PROFILE_IDS.has(sportId)) { label = SPORT_PROFILE_REGISTRY[sportId].label; official = true; }
       else { const cs = cp.customSports.find((c) => c.id === sportId); label = cs ? cs.label : ""; }
       const clean = asText(label);
       if (!clean) return;
-      const low = clean.toLowerCase();
-      if (seenLower.has(low)) return;
-      seenLower.add(low);
-      names.push(clean);
+      const key = wizardSportLabelKey(clean);
+      // Les méta-profils custom/multisport ne sont pas des sports : aucun profil ancré.
+      const anchored = official && sportId !== "custom" && sportId !== "multisport" ? sportId : "";
+      // Déduplication par libellé, avec PRIORITÉ AU PROFIL OFFICIEL (Lot 3B-1, défense en
+      // profondeur). Une activité personnalisée homonyme d'un sport officiel ne doit jamais faire
+      // disparaître le profil explicitement sélectionné — y compris si elle est le sport principal
+      // et donc parcourue en premier, ou si les données viennent d'un import ancien que la
+      // validation de saisie n'a pas pu filtrer. Le remplacement conserve la POSITION d'origine :
+      // le résultat ne dépend pas de l'ordre de parcours.
+      if (indexByLabel.has(key)) {
+        const at = indexByLabel.get(key);
+        if (anchored && !defs[at].sportId) defs[at] = { name: clean, sportId: anchored, sourceId: anchored };
+        return;
+      }
+      indexByLabel.set(key, defs.length);
+      // Lot 3B-4B — `sourceId` : la clé STABLE de l'étape « activités », celle sous laquelle le
+      // brouillon range les catégories choisies. Pour un sport officiel c'est son sportId ; pour
+      // une activité personnalisée c'est son identifiant `custom-…`, jamais son `sportId` final —
+      // qui vaut "" pour TOUTES les activités personnalisées et les confondrait donc toutes.
+      // Une collision résolue en faveur du profil officiel bascule aussi sa clé : le résultat ne
+      // dépend jamais de l'ordre de parcours.
+      defs.push({ name: clean, sportId: anchored, sourceId: sportId });
     });
-    return names;
+    return defs;
+  }
+
+  // Noms seuls (sélecteur de discipline de l'étape « Groupes »). Dérivé, jamais dupliqué.
+  function wizardDisciplineNames(clubProfile) {
+    return wizardDisciplineDefs(clubProfile).map((d) => d.name);
   }
 
   // ----------------------------------------------------------------------------------------------
@@ -37878,6 +40436,12 @@ ${esc(bodyText)}</pre>
       selectedSportIds: [],
       primarySportId: "",
       customSports: [],
+      // Lot 3B-4B — catégories initiales FACULTATIVES, par clé stable de l'étape « activités »
+      // (sportId officiel, ou identifiant custom-… d'une activité personnalisée). Valeurs : des
+      // LIBELLÉS, jamais des objets ni des identifiants définitifs — le brouillon ne doit rien
+      // porter qui ressemble à de la donnée créée. Aucune catégorie n'est cochée par défaut.
+      sportCategories: {},
+      categoryPanel: "", // discipline dont le panneau de catégories est ouvert (cas multisport)
       featureSelection: {},   // { shop: bool, stages: bool } — uniquement des clés available:true
       featureTouched: {},     // clés que l'utilisateur a explicitement (dé)cochées (prioritaires sur les recommandations)
       venues: [],
@@ -37945,6 +40509,10 @@ ${esc(bodyText)}</pre>
     if (step === "sports") {
       const total = d.selectedSportIds.length + d.customSports.length;
       if (total === 0) return "Sélectionnez au moins une activité, ou ajoutez une activité personnalisée.";
+      // Lot 3B-4B — les catégories initiales appartiennent à cette étape : elles sont donc validées
+      // ici, ce qui couvre à la fois le passage d'étape et la revalidation finale de la création.
+      const categoryError = validateWizardSportCategories(d);
+      if (categoryError) return categoryError;
     }
     return "";
   }
@@ -37983,6 +40551,143 @@ ${esc(bodyText)}</pre>
   function wizardHasEnteredData() {
     const d = clubWizardDraft();
     return Boolean(asText(d.identity.clubName) || d.selectedSportIds.length || d.customSports.length || d.venues.length || d.groups.length);
+  }
+
+  // ----------------------------------------------------------------------------------------------
+  // Lot 3B-4B — CATÉGORIES SPORTIVES INITIALES (facultatives) de l'étape « activités ».
+  // ----------------------------------------------------------------------------------------------
+  // Le brouillon ne mémorise que des LIBELLÉS, rangés sous la clé stable de l'étape sports. Aucune
+  // catégorie n'est créée, aucun identifiant n'est fabriqué ici : la construction finale (§13) est
+  // le seul endroit où des objets métier apparaissent, et elle n'est appelée qu'une fois.
+  // Ces fonctions ne touchent ni le DOM, ni `state`, ni le stockage ; elles ne mutent que le
+  // brouillon qu'on leur donne (celui de l'assistant par défaut).
+
+  function wizardCategoryStore(draft) {
+    const d = draft && typeof draft === "object" ? draft : clubWizardDraft();
+    if (!d.sportCategories || typeof d.sportCategories !== "object" || Array.isArray(d.sportCategories)) {
+      d.sportCategories = {};
+    }
+    return d.sportCategories;
+  }
+
+  // Lecture TOLÉRANTE, pour l'interface : les entrées inexploitables sont ignorées (c'est la
+  // validation, elle, qui refuse de créer plutôt que de deviner).
+  function wizardCategoryRawLabels(sportKey, draft) {
+    const store = wizardCategoryStore(draft);
+    const raw = store[asText(sportKey)];
+    if (!Array.isArray(raw)) return [];
+    return raw.filter((v) => typeof v === "string" && asText(v));
+  }
+
+  function wizardCategoryChecked(sportKey, label, draft) {
+    const wanted = sportCategoryLabelKey(label);
+    if (!wanted) return false;
+    return wizardCategoryRawLabels(sportKey, draft).some((l) => sportCategoryLabelKey(l) === wanted);
+  }
+
+  // Libellés RETENUS, dans l'ordre du REGISTRE et limités aux suggestions du profil. Le brouillon
+  // conserve l'ordre des clics (trace fidèle du geste) ; l'ordre affiché et l'ordre créé, eux, sont
+  // toujours celui du catalogue — sans quoi deux utilisateurs ayant coché les mêmes catégories
+  // obtiendraient des catalogues différents.
+  function wizardSelectedCategoryLabels(sportKey, draft) {
+    const chosen = new Set(wizardCategoryRawLabels(sportKey, draft).map((l) => sportCategoryLabelKey(l)));
+    if (!chosen.size) return [];
+    return sportProfileCategoryLabels(sportKey).filter((label) => chosen.has(sportCategoryLabelKey(label)));
+  }
+
+  function wizardSelectedCategoryCount(sportKey, draft) {
+    return wizardSelectedCategoryLabels(sportKey, draft).length;
+  }
+
+  function wizardSetCategory(sportKey, label, on, draft) {
+    const store = wizardCategoryStore(draft);
+    const key = asText(sportKey);
+    const clean = asText(label);
+    if (!key || !clean) return;
+    const wanted = sportCategoryLabelKey(clean);
+    const without = wizardCategoryRawLabels(key, draft).filter((l) => sportCategoryLabelKey(l) !== wanted);
+    store[key] = on ? [...without, clean] : without;
+  }
+
+  function wizardToggleCategory(sportKey, label, draft) {
+    wizardSetCategory(sportKey, label, !wizardCategoryChecked(sportKey, label, draft), draft);
+  }
+
+  function wizardSelectAllCategories(sportKey, draft) {
+    const store = wizardCategoryStore(draft);
+    const key = asText(sportKey);
+    if (!key) return;
+    store[key] = sportProfileCategoryLabels(key);
+  }
+
+  function wizardClearCategories(sportKey, draft) {
+    const store = wizardCategoryStore(draft);
+    const key = asText(sportKey);
+    if (!key) return;
+    store[key] = [];
+  }
+
+  // Purge d'une clé de brouillon. Appelée quand une activité personnalisée est SUPPRIMÉE : son
+  // identifiant est dérivé de son libellé, donc réajouter plus tard une activité du même nom
+  // ressusciterait sinon une sélection que l'utilisateur croyait effacée. Un sport officiel
+  // simplement DÉCOCHÉ n'est jamais purgé (décision D2 : le recocher restaure ses choix).
+  function wizardPurgeCategoryKey(sportKey, draft) {
+    const store = wizardCategoryStore(draft);
+    delete store[asText(sportKey)];
+  }
+
+  // Disciplines OFFICIELLES pouvant recevoir des catégories, dans l'ordre exact de l'assistant
+  // (sport principal en premier). L'ordre vient de wizardDisciplineDefs : la zone de choix, le
+  // récapitulatif et l'état final ne peuvent donc jamais diverger. Les activités personnalisées
+  // (sportId "") et les profils sans suggestion en sont absents — aucun bloc vide.
+  function wizardCategoryTargets(draft) {
+    const d = draft && typeof draft === "object" ? draft : clubWizardDraft();
+    return wizardDisciplineDefs(buildClubProfileFromWizard(d))
+      .filter((def) => Boolean(def.sportId))
+      .map((def) => ({ key: def.sourceId, name: def.name, labels: sportProfileCategoryLabels(def.sportId) }))
+      .filter((target) => target.labels.length > 0);
+  }
+
+  // Validation des catégories du brouillon, avant toute création. Refuse ce qui ne PEUT PAS être
+  // créé ; ignore ce qui ne SERA PAS créé. Une catégorie mémorisée pour un sport finalement décoché
+  // n'entre pas dans l'état final : elle ne doit donc bloquer personne (décision D2).
+  // Les messages nomment la discipline, jamais un identifiant technique.
+  function validateWizardSportCategories(draft) {
+    const d = draft && typeof draft === "object" ? draft : clubWizardDraft();
+    const raw = d.sportCategories;
+    if (raw !== undefined && raw !== null && (typeof raw !== "object" || Array.isArray(raw))) {
+      return "Les catégories retenues sont illisibles. Revenez à l'étape des activités et refaites votre choix.";
+    }
+    const store = (raw && typeof raw === "object" && !Array.isArray(raw)) ? raw : {};
+    const officials = Array.isArray(d.selectedSportIds) ? d.selectedSportIds : [];
+    for (const sportId of officials) {
+      const known = typeof sportId === "string" && SPORT_PROFILE_IDS.has(sportId) && sportId !== "custom" && sportId !== "multisport";
+      const name = known ? asText(SPORT_PROFILE_REGISTRY[sportId].label) : "";
+      if (!name) return "Une activité sélectionnée n'est plus reconnue. Revenez à l'étape des activités et vérifiez votre sélection.";
+      if (!Object.prototype.hasOwnProperty.call(store, sportId)) continue;
+      const entry = store[sportId];
+      if (!Array.isArray(entry)) return `Les catégories retenues pour « ${name} » sont illisibles. Décochez puis re-cochez vos catégories.`;
+      const allowed = new Set(sportProfileCategoryLabels(sportId).map((l) => sportCategoryLabelKey(l)));
+      const seen = new Set();
+      for (const value of entry) {
+        if (typeof value !== "string") return `Une catégorie retenue pour « ${name} » est illisible. Décochez puis re-cochez vos catégories.`;
+        const clean = asText(value);
+        if (!clean) return `Une catégorie sans nom ne peut pas être créée pour « ${name} ».`;
+        const key = sportCategoryLabelKey(clean);
+        if (!allowed.has(key)) return `La catégorie « ${clean} » n'est pas proposée pour « ${name} ».`;
+        if (seen.has(key)) return `La catégorie « ${clean} » est retenue deux fois pour « ${name} ».`;
+        seen.add(key);
+      }
+    }
+    // Aucune catégorie n'est proposée pour une activité personnalisée : l'interface n'en offre
+    // aucune, et l'état final n'en créerait aucune. Une entrée non vide signale un brouillon abîmé.
+    const customs = (Array.isArray(d.customSports) ? d.customSports : []).filter((c) => c && typeof c.id === "string" && c.id);
+    for (const custom of customs) {
+      if (!Object.prototype.hasOwnProperty.call(store, custom.id)) continue;
+      const entry = store[custom.id];
+      if (!Array.isArray(entry) || entry.length) return "Aucune catégorie n'est proposée pour une activité personnalisée.";
+    }
+    return "";
   }
 
   // ----------------------------------------------------------------------------------------------
@@ -38101,6 +40806,79 @@ ${esc(bodyText)}</pre>
       ${chosen.length ? `<label class="wizard-primary">Sport principal
         <select data-wizard-primary>${primaryOptions}</select>
       </label>` : ""}
+      ${wizardCategoriesSectionHtml()}
+    </div>`;
+  }
+
+  // --- Lot 3B-4B — zone « Catégories initiales facultatives » -----------------------------------
+  // Deux présentations pour une seule et même donnée (décision D1) : une discipline concernée →
+  // les cases sont directement là (aucun clic de plus pour le cas le plus fréquent) ; plusieurs →
+  // une ligne par discipline avec son décompte, une seule ouverte à la fois. Le passage de l'une à
+  // l'autre est une affaire d'AFFICHAGE : il ne touche jamais le brouillon, donc aucune sélection
+  // n'est perdue en cochant ou décochant un sport.
+
+  function wizardCategoryPanelId(sportKey) {
+    return `wizardCategoryPanel-${asText(sportKey).replace(/[^A-Za-z0-9_-]/g, "-")}`;
+  }
+
+  function wizardCategoryCountLabel(count) {
+    return `${intValue(count)} catégorie${count > 1 ? "s" : ""} sélectionnée${count > 1 ? "s" : ""}`;
+  }
+
+  function wizardCategoryFieldsetHtml(target, draft, options = {}) {
+    const boxes = target.labels.map((label) => `<label class="cap-badge">
+      <input type="checkbox" data-wizard-category="${esc(target.key)}" value="${esc(label)}" ${wizardCategoryChecked(target.key, label, draft) ? "checked" : ""} /> ${esc(label)}
+    </label>`).join("");
+    const count = wizardSelectedCategoryCount(target.key, draft);
+    // `hidden` plutôt qu'un panneau absent : le bouton peut alors désigner son panneau par
+    // aria-controls en permanence, et refermer une discipline ne peut rien effacer. Un contenu
+    // `hidden` sort aussi de l'ordre de tabulation : une seule discipline reste navigable.
+    return `<fieldset class="wizard-category-group"${options.id ? ` id="${esc(options.id)}"` : ""}${options.hidden ? " hidden" : ""}>
+      <legend>Catégories initiales facultatives — ${esc(target.name)}</legend>
+      <div class="inline-actions">
+        <button type="button" class="secondary" data-wizard-category-all="${esc(target.key)}">Tout sélectionner</button>
+        <button type="button" class="secondary" data-wizard-category-none="${esc(target.key)}">Tout désélectionner</button>
+        <span class="muted" data-wizard-category-count="${esc(target.key)}">${esc(wizardCategoryCountLabel(count))}</span>
+      </div>
+      <div class="sport-suggestion-list">${boxes}</div>
+    </fieldset>`;
+  }
+
+  // Formulation VOLONTAIREMENT étroite : elle nie une création AUTOMATIQUE « à partir de ces
+  // catégories », et surtout pas toute création — l'utilisateur peut parfaitement avoir ajouté des
+  // installations ou des groupes aux étapes prévues pour cela, et l'assistant les créera.
+  const WIZARD_CATEGORY_AUTO_NOTE = "Aucun groupe, coach, salle, tarif ou inscription ne sera créé automatiquement à partir de ces catégories.";
+  const WIZARD_CATEGORY_NOTE = `Facultatif : aucune catégorie n'est cochée par défaut. ${WIZARD_CATEGORY_AUTO_NOTE}`;
+
+  function wizardCategoriesSectionHtml() {
+    const d = clubWizardDraft();
+    const targets = wizardCategoryTargets(d);
+    if (!targets.length) return "";
+    const note = `<p class="muted">${esc(WIZARD_CATEGORY_NOTE)}</p>`;
+    if (targets.length === 1) {
+      return `<div class="wizard-categories" data-wizard-categories="single">
+        ${wizardCategoryFieldsetHtml(targets[0], d)}
+        ${note}
+      </div>`;
+    }
+    const open = targets.some((target) => target.key === asText(d.categoryPanel)) ? asText(d.categoryPanel) : "";
+    const rows = targets.map((target) => {
+      const count = wizardSelectedCategoryCount(target.key, d);
+      const expanded = target.key === open;
+      const panelId = wizardCategoryPanelId(target.key);
+      return `<li class="wizard-category-row">
+        <div class="wizard-category-head">
+          <span class="wizard-category-name">${esc(target.name)}</span>
+          <span class="muted" data-wizard-category-count="${esc(target.key)}">${esc(wizardCategoryCountLabel(count))}</span>
+          <button type="button" class="secondary" data-wizard-category-toggle="${esc(target.key)}" aria-expanded="${expanded ? "true" : "false"}" aria-controls="${esc(panelId)}">${count ? "Modifier" : "Choisir"}</button>
+        </div>
+        ${wizardCategoryFieldsetHtml(target, d, { id: panelId, hidden: !expanded })}
+      </li>`;
+    }).join("");
+    return `<div class="wizard-categories" data-wizard-categories="multi">
+      <h3 class="wizard-categories-title">Catégories initiales facultatives</h3>
+      <ul class="wizard-category-list">${rows}</ul>
+      ${note}
     </div>`;
   }
 
@@ -38233,8 +41011,27 @@ ${esc(bodyText)}</pre>
         ${row("Groupes à créer", d.groups.length ? esc(d.groups.map((g) => g.name).join(", ")) : "<span class=\"muted\">Aucun</span>")}
         ${row("Thème", esc(themeName))}
       </dl>
+      ${wizardSummaryDisciplinesHtml(d, cp)}
       <p class="wizard-note muted">Non encore disponibles : Équipes, Saisons, Rencontres — à configurer dans une prochaine étape.</p>
     </div>`;
+  }
+
+  // Lot 3B-4B — récapitulatif des disciplines et de leurs catégories initiales, dans l'ORDRE RÉEL
+  // de création (celui de wizardDisciplineDefs). Aucune discipline n'est masquée : une discipline
+  // officielle sans sélection le dit explicitement, une activité personnalisée porte un tiret —
+  // un simple décompte laisserait l'utilisateur découvrir ses catégories après la création.
+  function wizardSummaryDisciplinesHtml(draft, clubProfile) {
+    const defs = wizardDisciplineDefs(clubProfile);
+    if (!defs.length) return "";
+    const rows = defs.map((def) => {
+      if (!def.sportId) return `<div class="wizard-summary-row"><dt>${esc(def.name)}</dt><dd><span class="muted">—</span></dd></div>`;
+      const labels = wizardSelectedCategoryLabels(def.sourceId, draft);
+      const value = labels.length ? esc(labels.join(", ")) : '<span class="muted">Aucune catégorie initiale</span>';
+      return `<div class="wizard-summary-row"><dt>${esc(def.name)}</dt><dd>${value}</dd></div>`;
+    }).join("");
+    return `<h3 class="wizard-summary-title">Disciplines</h3>
+      <dl class="wizard-summary-list wizard-summary-disciplines">${rows}</dl>
+      <p class="wizard-note muted">${esc(WIZARD_CATEGORY_AUTO_NOTE)}</p>`;
   }
 
   function wizardStepBodyHtml(step) {
@@ -38345,6 +41142,30 @@ ${esc(bodyText)}</pre>
     root.querySelectorAll("[data-wizard-custom-remove]").forEach((btn) => btn.addEventListener("click", () => wizardRemoveCustomSport(btn.dataset.wizardCustomRemove)));
     root.querySelector("[data-wizard-primary]")?.addEventListener("change", (e) => { d.primarySportId = e.target.value; });
 
+    // Catégories initiales (Lot 3B-4B). Cocher, tout sélectionner et tout désélectionner NE
+    // redessinent pas l'écran : les cases et les décomptes sont mis à jour sur place, ce qui garde
+    // le focus exactement où l'utilisateur l'a laissé. Seule l'ouverture d'une discipline redessine
+    // (la visibilité des panneaux change), et le focus revient alors sur le bouton actionné.
+    root.querySelectorAll("[data-wizard-category]").forEach((box) => box.addEventListener("change", () => {
+      wizardSetCategory(box.dataset.wizardCategory, box.value, box.checked);
+      wizardRefreshCategoryUi(root);
+    }));
+    root.querySelectorAll("[data-wizard-category-all]").forEach((btn) => btn.addEventListener("click", () => {
+      wizardSelectAllCategories(btn.dataset.wizardCategoryAll);
+      wizardRefreshCategoryUi(root);
+    }));
+    root.querySelectorAll("[data-wizard-category-none]").forEach((btn) => btn.addEventListener("click", () => {
+      wizardClearCategories(btn.dataset.wizardCategoryNone);
+      wizardRefreshCategoryUi(root);
+    }));
+    root.querySelectorAll("[data-wizard-category-toggle]").forEach((btn) => btn.addEventListener("click", () => {
+      const key = asText(btn.dataset.wizardCategoryToggle);
+      d.categoryPanel = asText(d.categoryPanel) === key ? "" : key;
+      renderClubWizard();
+      const again = app.querySelector(`[data-wizard-category-toggle="${key.replace(/["\\]/g, "\\$&")}"]`);
+      if (again) again.focus();
+    }));
+
     // Étape installations / groupes.
     root.querySelector("[data-wizard-venue-add]")?.addEventListener("click", () => wizardAddVenue());
     root.querySelectorAll("[data-wizard-venue-remove]").forEach((btn) => btn.addEventListener("click", () => { d.venues.splice(Number(btn.dataset.wizardVenueRemove), 1); renderClubWizard(); }));
@@ -38366,10 +41187,12 @@ ${esc(bodyText)}</pre>
     const d = clubWizardDraft();
     const input = app.querySelector("[data-wizard-custom-input]");
     const label = asText(input ? input.value : "");
-    if (!label) { renderClubWizard("Saisissez un nom pour l'activité personnalisée."); return; }
-    // Pas de doublon (par libellé insensible à la casse) avec un custom existant ou un profil officiel.
-    const low = label.toLowerCase();
-    if (d.customSports.some((c) => c.label.toLowerCase() === low)) { renderClubWizard("Cette activité personnalisée existe déjà."); return; }
+    // Pas de doublon (par libellé normalisé) avec un custom existant NI avec un profil officiel :
+    // la règle vit dans wizardCustomSportRejection (pure, testable), cette fonction n'en est que
+    // l'habillage. Aucun nouveau système de notification : on réutilise le message d'erreur de
+    // l'assistant, comme les autres validations.
+    const rejection = wizardCustomSportRejection(label, d.customSports);
+    if (rejection) { renderClubWizard(rejection); return; }
     const taken = new Set([...d.customSports.map((c) => c.id), ...d.selectedSportIds]);
     const newId = wizardCustomSportId(label, taken);
     d.customSports.push({ id: newId, label, family: "custom" });
@@ -38382,7 +41205,24 @@ ${esc(bodyText)}</pre>
     const d = clubWizardDraft();
     d.customSports = d.customSports.filter((c) => c.id !== customId);
     if (d.primarySportId === customId) d.primarySportId = d.selectedSportIds[0] || (d.customSports[0] && d.customSports[0].id) || "";
+    // L'identifiant d'une activité personnalisée est dérivé de son libellé : sans cette purge, la
+    // réajouter plus tard ressusciterait une sélection invisible (décision D2).
+    wizardPurgeCategoryKey(customId, d);
     renderClubWizard();
+  }
+
+  // Remet cases, décomptes et libellés de bouton en accord avec le brouillon, sans redessiner.
+  function wizardRefreshCategoryUi(root) {
+    const d = clubWizardDraft();
+    root.querySelectorAll("[data-wizard-category]").forEach((box) => {
+      box.checked = wizardCategoryChecked(box.dataset.wizardCategory, box.value, d);
+    });
+    root.querySelectorAll("[data-wizard-category-count]").forEach((span) => {
+      span.textContent = wizardCategoryCountLabel(wizardSelectedCategoryCount(span.dataset.wizardCategoryCount, d));
+    });
+    root.querySelectorAll("[data-wizard-category-toggle]").forEach((btn) => {
+      btn.textContent = wizardSelectedCategoryCount(btn.dataset.wizardCategoryToggle, d) ? "Modifier" : "Choisir";
+    });
   }
 
   function wizardAddVenue() {
@@ -38431,9 +41271,33 @@ ${esc(bodyText)}</pre>
   function buildInitialStateFromWizard(draft, clubProfile) {
     const state0 = normalizeState({});
     const cp = clubProfile;
-    // Disciplines (tarifs) — sport principal en premier, dédupliquées.
+    // Disciplines (tarifs) — sport principal en premier, dédupliquées. Lot 3B-1 : le profil sportif
+    // choisi est ANCRÉ sur la discipline créée (sportId), au lieu d'être perdu après en avoir
+    // dérivé un simple nom. Les activités personnalisées restent libres (sportId "").
+    //
+    // Lot 3B-4B — les catégories initiales sont construites DANS LA MÊME PASSE, discipline par
+    // discipline : l'identifiant définitif de la discipline vient d'être créé, les catégories s'y
+    // rattachent immédiatement. Aucun rattachement par nom, par index ni par sportId (qui vaut ""
+    // pour toutes les activités personnalisées) ; aucune catégorie orpheline possible, puisqu'aucune
+    // n'existe en dehors de cette boucle. C'est le SEUL endroit où ces identifiants sont générés.
     state0.tariffs = state0.tariffs || {};
-    state0.tariffs.disciplines = wizardDisciplineNames(cp).map((name) => ({ id: id("discipline"), clubId: "", name, price: "", license: "" }));
+    const disciplines = [];
+    const categories = [];
+    wizardDisciplineDefs(cp).forEach((def) => {
+      const discipline = buildPreparedDiscipline({ id: id("discipline"), clubId: "", name: def.name, sportId: def.sportId });
+      disciplines.push(discipline);
+      // Une activité personnalisée n'a aucun profil officiel, donc aucune suggestion : rien à créer.
+      if (!def.sportId) return;
+      const labels = wizardSelectedCategoryLabels(def.sourceId, draft);
+      if (!labels.length) return;
+      // Le noyau partagé (Lot 3B-4A) refait le filtrage par le profil : un libellé étranger ne peut
+      // pas passer, même si la validation d'étape avait été contournée. `state0` ne contient encore
+      // aucune catégorie, l'ordre reste donc strictement celui du registre.
+      buildSuggestedSportCategories(discipline, labels, state0, { clubId: "" }).categories
+        .forEach((category) => categories.push(normalizeSportCategory(category, categories.length)));
+    });
+    state0.tariffs.disciplines = disciplines;
+    state0.sportCategories = categories;
     // Installations.
     state0.rooms = draft.venues.map((v) => ({ id: id("room"), clubId: "", name: asText(v.name), type: v.type || "", capacity: v.capacity === "" ? "" : v.capacity, address: asText(v.address || ""), archived: false }));
     // Groupes / cours.
@@ -38494,14 +41358,31 @@ ${esc(bodyText)}</pre>
       }, initialState);
       club.contact = { ...(club.contact || {}), email: asText(d.identity.email), phone: asText(d.identity.phone), address: asText(d.identity.address) };
       // Création ATOMIQUE : un seul saveClub avec state + settings pré-construits.
-      saveClub(club, { activate: true, create: !reuseClub, initialState, initialSettings: baseSettings });
+      // Lot 3B-4B-0 — deux intentions déclarées explicitement :
+      //  · `auditAction` : au premier lancement le club bootstrap est RÉUTILISÉ (create:false), ce
+      //    qui produisait « paramètres du club modifiés » alors que l'utilisateur vient de créer son
+      //    club. Le journal doit nommer le geste réel, dans les deux parcours.
+      //  · `onAuditFailure` : passé ce point, le club est écrit. Une panne du journal ne doit plus
+      //    interrompre la finalisation (initialSetupDone, fermeture de l'assistant) ni laisser
+      //    croire à un échec — elle se signale par une réserve, sans rien annuler.
+      const auditFailures = [];
+      saveClub(club, {
+        activate: true, create: !reuseClub, initialState, initialSettings: baseSettings,
+        auditAction: "club.created",
+        onAuditFailure: (errors) => { auditFailures.push(...errors); },
+      });
+      if (auditFailures.length) {
+        console.error("Club créé, mais le journal d'activité n'a pas pu être entièrement mis à jour.", auditFailures);
+      }
       settings.initialSetupDone = true;
       persistSettings();
       const resolve = clubWizardResolve;
       clubWizardResolve = null;
       clearClubWizardDraft();
       ui.view = "dashboard";
-      ui.saveMessage = `Club « ${club.name} » créé`;
+      ui.saveMessage = auditFailures.length
+        ? `Club « ${club.name} » créé — le journal d'activité n'a pas pu être entièrement mis à jour.`
+        : `Club « ${club.name} » créé`;
       if (fromMes) { render(); }
       else if (resolve) { resolve(); }
       else { render(); }
