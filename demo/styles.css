@@ -5346,9 +5346,14 @@ input.locked-price {
   border: 1px solid var(--line);
 }
 .group-add-tag.warn {
-  color: #92400e;
-  background: color-mix(in srgb, #f59e0b 18%, transparent);
-  border-color: color-mix(in srgb, #f59e0b 38%, transparent);
+  /* Lot 3B-2D — la couleur du texte n'est plus imposée : elle est HÉRITÉE du thème, comme le fait
+     déjà .group-cap-warn. Le brun fixe précédent tombait à un contraste mesuré de ~1,9 sur les
+     thèmes sombres (seuil AA : 4,5), rendant le badge illisible ; la teinte orangée du fond et de
+     la bordure suffit à le distinguer, et vaut pour les thèmes clairs comme sombres. Corrige du
+     même coup le badge « Hors tranche d'âge », qui partage cette classe. */
+  background: color-mix(in srgb, #f59e0b 22%, transparent);
+  border-color: color-mix(in srgb, #f59e0b 45%, transparent);
+  font-weight: 600;
 }
 .group-add-tag.move {
   background: color-mix(in srgb, var(--accent) 12%, transparent);
@@ -12031,3 +12036,23 @@ td.due,
   .wizard-sport-grid { grid-template-columns: 1fr; }
   .wizard-feature-grid { grid-template-columns: 1fr; }
 }
+
+/* --- Lot 3B-2B — Disciplines et catégories sportives (paramètres) ---------------------------
+   Bloc minimal : uniquement la mise en page dont la surface a besoin. Aucune couleur codée en
+   dur (les badges/boutons héritent des thèmes existants), aucune règle globale modifiée. */
+.sport-discipline-list { display: grid; gap: 10px; }
+.sport-discipline-row { padding: 12px; }
+/* Nom de la discipline et badge de profil sur une ligne, qui se replie en largeur mobile. */
+.sport-discipline-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.sport-discipline-meta { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; font-size: 0.9em; }
+/* Badges de capacités et pastilles de suggestions : flux souple, jamais de débordement latéral. */
+.sport-capability-list, .sport-suggestion-list { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+/* Une capacité indisponible doit se distinguer d'une capacité active sans recourir à la couleur seule. */
+.cap-badge.cap-off { opacity: 0.55; text-decoration: line-through; }
+.sport-category-list { list-style: none; margin: 8px 0; padding: 0; display: grid; gap: 6px; }
+/* Libellé à gauche, actions à droite ; passage à la ligne sur écran étroit. */
+.sport-category-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+.sport-category-label { font-weight: 600; }
+.sport-category-actions { display: flex; gap: 4px; flex-wrap: wrap; }
+.sport-archived-block { margin-top: 12px; }
+.sport-archived-block summary { cursor: pointer; }
