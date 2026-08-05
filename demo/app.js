@@ -14435,7 +14435,7 @@ ${esc(bodyText)}</pre>
         <td><textarea data-memo-field="note" data-id="${esc(row.id)}">${esc(display.note)}</textarea></td>
         <td><input data-memo-field="amount" data-id="${esc(row.id)}" value="${esc(display.amount)}" /></td>
         <td><select data-memo-field="priority" data-id="${esc(row.id)}">${memoPriorityOptions(row.priority)}</select></td>
-        <td><div class="actions"><button class="icon" title="Terminer la modification" data-action="close-memo-row">✓</button><button class="icon danger" title="Supprimer" data-action="delete-memo-row" data-id="${esc(row.id)}">×</button></div></td>
+        <td><div class="actions"><button class="icon" title="Terminer la modification" data-action="close-memo-row">✓</button>${row.sourceType === "discipline" ? "" : `<button class="icon danger" title="Supprimer" data-action="delete-memo-row" data-id="${esc(row.id)}">×</button>`}</div></td>
       </tr>`;
     }
     return `<tr class="memo-row">
@@ -14444,7 +14444,7 @@ ${esc(bodyText)}</pre>
       <td class="memo-note">${esc(display.note) || `<span class="muted">-</span>`}</td>
       <td>${esc(display.amount) || `<span class="muted">-</span>`}</td>
       <td>${statusPill(row.priority || "Normale")}</td>
-      <td><div class="actions"><button class="icon" title="Modifier cette ligne" data-action="edit-memo-row" data-id="${esc(row.id)}">✎</button><button class="icon danger" title="Supprimer" data-action="delete-memo-row" data-id="${esc(row.id)}">×</button></div></td>
+      <td><div class="actions"><button class="icon" title="Modifier cette ligne" data-action="edit-memo-row" data-id="${esc(row.id)}">✎</button>${row.sourceType === "discipline" ? "" : `<button class="icon danger" title="Supprimer" data-action="delete-memo-row" data-id="${esc(row.id)}">×</button>`}</div></td>
     </tr>`;
   }
 
@@ -17234,12 +17234,31 @@ ${esc(bodyText)}</pre>
     const capabilities = disciplineCapabilities(discipline);
     const active = disciplineSportCategories(discipline.id, state, { includeArchived: false, clubId: activeClubId() });
     const archived = disciplineSportCategories(discipline.id, state, { includeArchived: true, clubId: activeClubId() }).filter((c) => c.archived === true);
+    const deletionBlockers = disciplineReferenceCounts(discipline, activeClubId());
     return `<div data-discipline-categories-dialog data-discipline-id="${esc(discipline.id)}">
       ${disciplineProfileSectionHtml(discipline, resolved, capabilities)}
       ${disciplineActiveCategoriesHtml(discipline, active)}
       ${disciplineSuggestionsHtml(discipline)}
       ${disciplineArchivedCategoriesHtml(discipline, archived)}
+      ${disciplineDangerZoneHtml(discipline, deletionBlockers)}
     </div>`;
+  }
+
+  // Lot suppression sûre — seule action de sortie du cycle de vie d'une discipline actuellement
+  // disponible (pas de retrait/archivage dans ce lot, voir le rapport d'analyse produit). Le bouton
+  // est TOUJOURS visible (jamais une simple croix) ; il n'est actif que si aucune dépendance
+  // n'existe (même règle que Tarifs, via requestDisciplineDeletion/disciplineReferenceCounts —
+  // aucune logique de blocage n'est recalculée ici, seul le texte de résumé est propre à cet écran).
+  function disciplineDangerZoneHtml(discipline, blockers) {
+    const blocked = blockers.total > 0;
+    const summary = blocked
+      ? `<p class="muted">Cette discipline est encore utilisée par ${esc(disciplineDeletionImpactSummary(blockers))}. Elle ne peut pas être supprimée définitivement tant que ces éléments existent.</p>`
+      : `<p class="muted">Aucune inscription, groupe, créneau, coach, salle ou catégorie n'est lié à cette discipline : elle peut être supprimée définitivement.</p>`;
+    return `<section class="dialog-section">
+      <h3>Zone de danger</h3>
+      ${summary}
+      <button type="button" class="danger" data-action="delete-discipline" data-id="${esc(discipline.id)}"${blocked ? ` disabled title="Retirez d'abord cette discipline des éléments qui l'utilisent encore"` : ""}>Supprimer la discipline</button>
+    </section>`;
   }
 
   function disciplineProfileSectionHtml(discipline, resolved, capabilities) {
@@ -30334,53 +30353,27 @@ ${esc(bodyText)}</pre>
       // (inscriptions, groupes, planning...) : la supprimer alors qu'elle est utilisée
       // laisserait ces données pointer vers un nom fantôme, sans rien casser visiblement.
       // Blocage si références actives (même modèle que delete-group), sinon confirmation
-      // explicite (il n'y en avait aucune). Pas d'archivage discipline dans ce lot.
+      // explicite. Lot suppression sûre — la logique (garde-fou, message, confirmation,
+      // suppression, journal) est désormais centralisée dans requestDisciplineDeletion, PARTAGÉE
+      // avec le bouton « Supprimer la discipline » du dialogue « Discipline « Nom » ».
       const index = Number(button.dataset.index);
       const disc = state.tariffs.disciplines[index];
-      const name = asText(disc?.name);
-      // Lot 3A — garde-fou étendu (5 collections) : une discipline référencée ne peut pas être
-      // supprimée physiquement. Le calcul des références est centralisé et testable.
-      const blockers = disciplineReferenceCounts(disc, activeClubId());
-      if (blockers.total > 0) {
-        const groups = blockers.groupsActive + blockers.groupsArchived;
-        const courses = blockers.coursesActive + blockers.coursesArchived;
-        const coaches = blockers.coachesActive + blockers.coachesArchived;
-        const rooms = blockers.roomsActive + blockers.roomsArchived;
-        // Lot 3B-2D — les catégories sportives rejoignent la même phrase, construite de la même
-        // façon : aucune formulation parallèle, aucun message séparé.
-        const categories = blockers.sportCategoriesActive + blockers.sportCategoriesArchived;
-        const impacts = [
-          blockers.memberships ? `${blockers.memberships} inscription(s)` : "",
-          groups ? `${groups} groupe(s)` : "",
-          courses ? `${courses} créneau(x) planning` : "",
-          coaches ? `${coaches} coach(s)` : "",
-          rooms ? `${rooms} salle(s)` : "",
-          // Lot 3B-3 — pluriel RÉDIGÉ, comme le fait déjà le résumé de la bande Paramètres
-          // (16-settings-themes.js). Les autres éléments de cette liste gardent leur forme
-          // historique : ils sont hors du périmètre lexical de ce lot.
-          categories ? `${categories} catégorie${categories > 1 ? "s" : ""} sportive${categories > 1 ? "s" : ""}` : "",
-        ].filter(Boolean).join(", ");
-        // Lot 3B-3 — le participe s'accorde avec ce qui est RÉELLEMENT archivé. Ce compteur agrège
-        // des groupes, créneaux, coachs, salles et catégories : le masculin reste l'accord correct
-        // d'un ensemble mixte, mais quand les seuls éléments archivés sont des catégories sportives,
-        // « dont 1 archivé » est une faute. Aucune règle de blocage n'est touchée.
-        const archivedFeminine = blockers.archived > 0 && blockers.archived === blockers.sportCategoriesArchived;
-        const archivedNote = blockers.archived > 0
-          ? ` (dont ${blockers.archived} archivé${archivedFeminine ? "e" : ""}${blockers.archived > 1 ? "s" : ""})`
-          : "";
-        // La consigne de sortie mentionne les catégories UNIQUEMENT quand il y en a : proposer de
-        // « retirer les catégories » alors qu'aucune n'existe désignerait une action sans objet.
-        const howTo = categories
-          ? "Retirez-la d'abord des inscriptions, groupes, créneaux, coachs ou salles concernés (y compris archivés). Ses catégories sportives, elles, sont conservées avec la discipline : elles ne peuvent pas être détachées."
-          : "Retirez-la d'abord des inscriptions, groupes, créneaux, coachs ou salles concernés (y compris archivés).";
-        alert(`Impossible de supprimer la discipline « ${name || "sans nom"} » : elle est encore utilisée par ${impacts}${archivedNote}. ${howTo}`);
-        return;
-      }
-      if (!await requestConfirm({ title: "Supprimer la discipline", message: `Supprimer définitivement la discipline « ${name || "sans nom"} » ?`, confirmLabel: "Supprimer", danger: true })) return;
-      recordHistory();
+      if (!await requestDisciplineDeletion(disc)) return;
       if (ui.tariffEditKey === tariffKey("discipline", index)) ui.tariffEditKey = "";
-      state.tariffs.disciplines.splice(index, 1);
-      persist("Discipline supprimée");
+      render();
+      return;
+    }
+    if (action === "delete-discipline") {
+      // Lot suppression sûre — bouton de la zone de danger du dialogue « Discipline « Nom » »
+      // (16-settings-themes.js, disciplineDangerZoneHtml). Même orchestrateur que Tarifs ci-dessus :
+      // aucune règle, aucun message, aucune confirmation dupliqués.
+      const discipline = disciplineByIdStrict(button.dataset.id);
+      if (!await requestDisciplineDeletion(discipline)) return;
+      // La discipline n'existe plus : on ferme le dialogue plutôt que de le rafraîchir sur place
+      // (refreshDisciplineCategoriesDialog rechargerait une discipline introuvable).
+      const container = document.querySelector("[data-discipline-categories-dialog]");
+      const target = dialogForContainer(container);
+      if (target) target.close();
       render();
       return;
     }
@@ -31512,6 +31505,81 @@ ${esc(bodyText)}</pre>
     return c;
   }
 
+  // =====================================================================================================
+  // Lot suppression sûre — logique de suppression PHYSIQUE d'une discipline, centralisée pour n'exister
+  // qu'à UN seul endroit : la page Tarifs (action historique delete-tariff-discipline) et le dialogue
+  // « Discipline « Nom » » (action delete-discipline) appellent tous deux requestDisciplineDeletion.
+  // Ce lot ne traite QUE la suppression d'une discipline sans aucune référence : pas de retrait, pas
+  // d'archivage, pas de réactivation (hors périmètre, cf. rapport d'analyse produit/architecture).
+  // =====================================================================================================
+
+  // Fragment de phrase partagé : "12 inscription(s), 2 groupe(s) (dont 1 archivé)". Utilisé à la fois
+  // par le message de blocage (alerte) et par le résumé affiché dans la zone de danger du dialogue —
+  // une seule formulation, jamais deux qui pourraient diverger.
+  function disciplineDeletionImpactSummary(blockers) {
+    const groups = blockers.groupsActive + blockers.groupsArchived;
+    const courses = blockers.coursesActive + blockers.coursesArchived;
+    const coaches = blockers.coachesActive + blockers.coachesArchived;
+    const rooms = blockers.roomsActive + blockers.roomsArchived;
+    const categories = blockers.sportCategoriesActive + blockers.sportCategoriesArchived;
+    const impacts = [
+      blockers.memberships ? `${blockers.memberships} inscription(s)` : "",
+      groups ? `${groups} groupe(s)` : "",
+      courses ? `${courses} créneau(x) planning` : "",
+      coaches ? `${coaches} coach(s)` : "",
+      rooms ? `${rooms} salle(s)` : "",
+      categories ? `${categories} catégorie${categories > 1 ? "s" : ""} sportive${categories > 1 ? "s" : ""}` : "",
+    ].filter(Boolean).join(", ");
+    // Le participe s'accorde avec ce qui est RÉELLEMENT archivé (Lot 3B-3) : le masculin reste
+    // l'accord correct d'un ensemble mixte, mais quand les seuls éléments archivés sont des
+    // catégories sportives, « dont 1 archivé » serait une faute.
+    const archivedFeminine = blockers.archived > 0 && blockers.archived === blockers.sportCategoriesArchived;
+    const archivedNote = blockers.archived > 0
+      ? ` (dont ${blockers.archived} archivé${archivedFeminine ? "e" : ""}${blockers.archived > 1 ? "s" : ""})`
+      : "";
+    return `${impacts}${archivedNote}`;
+  }
+
+  function disciplineDeletionBlockedMessage(name, blockers) {
+    const categories = blockers.sportCategoriesActive + blockers.sportCategoriesArchived;
+    // La consigne de sortie ne mentionne les catégories QUE quand il y en a : proposer de « retirer
+    // les catégories » alors qu'aucune n'existe désignerait une action sans objet.
+    const howTo = categories
+      ? "Retirez-la d'abord des inscriptions, groupes, créneaux, coachs ou salles concernés (y compris archivés). Ses catégories sportives, elles, sont conservées avec la discipline : elles ne peuvent pas être détachées."
+      : "Retirez-la d'abord des inscriptions, groupes, créneaux, coachs ou salles concernés (y compris archivés).";
+    return `Impossible de supprimer la discipline « ${name || "sans nom"} » : elle est encore utilisée par ${disciplineDeletionImpactSummary(blockers)}. ${howTo}`;
+  }
+
+  // PURE — suppose déjà vérifié blockers.total === 0. Ne demande aucune confirmation, n'affiche
+  // aucune alerte : c'est le rôle de requestDisciplineDeletion (seul appelant prévu hors tests).
+  // Supprime UNIQUEMENT la discipline ciblée, jamais en cascade : aucune catégorie, aucune autre
+  // discipline, aucune autre donnée du club n'est touchée.
+  function performDisciplineDeletion(discipline) {
+    recordHistory();
+    removeById(state.tariffs.disciplines, discipline.id);
+    persist(`Discipline supprimée : ${discipline.name}`);
+    audit.sportDisciplineDeleted(discipline);
+  }
+
+  // Orchestrateur PARTAGÉ par les deux surfaces (Tarifs, dialogue « Discipline « Nom » ») : calcule
+  // les dépendances via disciplineReferenceCounts (même garde-fou que le Lot 3A, jamais dupliquée),
+  // bloque avec message détaillé si nécessaire, sinon demande confirmation puis supprime. Retourne
+  // true si la discipline a réellement été supprimée, false sinon (bloquée OU annulée) — chaque
+  // surface décide ensuite de son propre rafraîchissement (render() pour Tarifs, fermeture du
+  // dialogue + render() pour le dialogue de gestion).
+  async function requestDisciplineDeletion(discipline) {
+    if (!discipline) return false;
+    const name = asText(discipline.name);
+    const blockers = disciplineReferenceCounts(discipline, activeClubId());
+    if (blockers.total > 0) {
+      alert(disciplineDeletionBlockedMessage(name, blockers));
+      return false;
+    }
+    if (!await requestConfirm({ title: "Supprimer la discipline", message: `Supprimer définitivement la discipline « ${name || "sans nom"} » ?`, confirmLabel: "Supprimer", danger: true })) return false;
+    performDisciplineDeletion(discipline);
+    return true;
+  }
+
   function syncArticlePriceToOrders(article) {
     const price = asNumber(article.priceOptions?.[0] ?? article.defaultPrice);
     state.shopOrders.forEach((order) => {
@@ -31558,10 +31626,14 @@ ${esc(bodyText)}</pre>
       return true;
     }
     if (row.sourceType === "discipline") {
-      const source = memoSource(row);
-      if (!source) return false;
-      removeById(state.tariffs.disciplines, source.id || row.sourceId);
-      return true;
+      // Lot suppression sûre — garde DÉFENSIVE : la page Mémos ne doit plus jamais pouvoir
+      // supprimer une discipline directement (le bouton est déjà masqué pour ces lignes,
+      // 15-memo-notes-help.js). Si ce chemin est malgré tout atteint (ancienne interface, appel
+      // programmatique), on REFUSE sans rien muter — aucune suppression ne doit pouvoir contourner
+      // disciplineReferenceCounts. La suppression protégée vit exclusivement dans
+      // requestDisciplineDeletion (Tarifs, dialogue « Discipline « Nom » »), jamais ici.
+      alert("Cette discipline se supprime depuis la page Tarifs ou depuis sa fiche de gestion (Paramètres > Disciplines), où les dépendances sont vérifiées.");
+      return false;
     }
     if (row.sourceType === "stage") {
       if (stageParticipantCount(row.sourceId)) {
@@ -38734,9 +38806,12 @@ ${esc(bodyText)}</pre>
     "sport.discipline.profile.updated",
     // Lot 3B-4A — création d'une discipline. C'était la seule action structurante du domaine
     // sportif qui n'était pas tracée : l'ancien bouton poussait une ligne et persistait sans rien
-    // journaliser. La suppression reste non journalisée (elle est bloquée dès qu'il y a des
-    // références, cf. Lot 3A) et n'entre pas dans ce lot.
+    // journaliser.
     "sport.discipline.created",
+    // Lot suppression sûre — suppression physique d'une discipline SANS aucune référence (le
+    // blocage lui-même, cf. Lot 3A, n'écrit rien : seule une suppression réellement effectuée est
+    // journalisée).
+    "sport.discipline.deleted",
     // Lot 3B-2C — AFFECTATION d'une catégorie à une inscription ou à un groupe. Le Lot 3B-2B ne les
     // avait volontairement pas déclarées : les surfaces n'existaient pas encore. Ces deux actions
     // décrivent un rattachement sportif, jamais une modification financière.
@@ -39527,6 +39602,21 @@ ${esc(bodyText)}</pre>
         },
       });
     },
+    // Lot suppression sûre — n'est appelé qu'APRÈS une suppression physique réellement effectuée
+    // (disciplineReferenceCounts().total === 0 déjà vérifié par l'appelant, requestDisciplineDeletion
+    // dans 21-handlers.js) : jamais pour un retrait bloqué, jamais pour un simple blocage.
+    sportDisciplineDeleted(discipline) {
+      return recordAuditEvent({
+        action: "sport.discipline.deleted",
+        entityType: "discipline",
+        entityId: asText(discipline && discipline.id),
+        entityLabel: asText(discipline && discipline.name),
+        clubId: asText(discipline && discipline.clubId),
+        metadata: {
+          sportId: asText(discipline && discipline.sportId),
+        },
+      });
+    },
     sportCategoryRenamed(category, discipline, previousLabel) {
       return recordAuditEvent({
         action: "sport.category.updated",
@@ -39946,6 +40036,9 @@ ${esc(bodyText)}</pre>
         ? `${actor} a créé la discipline « ${label || "?"} » (profil ${profile})${suffix}`
         : `${actor} a créé la discipline « ${label || "?"} »${suffix}`;
     },
+    // Lot suppression sûre — toujours une suppression physique réelle (jamais un blocage, jamais
+    // un retrait/désactivation, qui n'existent pas encore).
+    "sport.discipline.deleted": (actor, label) => `${actor} a supprimé la discipline « ${label || "?"} »`,
     "sport.category.updated": (actor, label, metadata) => {
       const discipline = asText(metadata.disciplineLabel);
       const before = asText(metadata.previousLabel);
