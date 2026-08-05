@@ -649,7 +649,8 @@
   const SPORT_CATEGORY_ORDER_STEP = 10;
 
 // FICHIER GÉNÉRÉ — NE PAS MODIFIER MANUELLEMENT.
-// Source : catalog/manifest.json et catalog/profiles/*.json.
+// Source : catalog/manifest.json, catalog/profiles/*.json, catalog/disciplines/manifest.json,
+// catalog/disciplines/*.json.
 // Régénération : node budo-electron/scripts/build-sport-catalog.js
 
 const SPORT_PROFILE_REGISTRY = Object.freeze({
@@ -662,6 +663,7 @@ const SPORT_PROFILE_REGISTRY = Object.freeze({
     organization: Object.freeze({ "teams": "off", "groups": "off", "individual": "off", "seasons": "off", "categories": "off", "competitions": "off" }),
     recommendedFeatures: Object.freeze([]),
     categoryExamples: Object.freeze([]),
+    aliases: Object.freeze([]),
   }),
   "multisport": Object.freeze({
     id: "multisport",
@@ -672,6 +674,7 @@ const SPORT_PROFILE_REGISTRY = Object.freeze({
     organization: Object.freeze({ "teams": "optional", "groups": "optional", "individual": "optional", "seasons": "recommended", "categories": "recommended", "competitions": "optional" }),
     recommendedFeatures: Object.freeze(["memberships"]),
     categoryExamples: Object.freeze([]),
+    aliases: Object.freeze([]),
   }),
   "football": Object.freeze({
     id: "football",
@@ -682,6 +685,7 @@ const SPORT_PROFILE_REGISTRY = Object.freeze({
     organization: Object.freeze({ "teams": "primary", "groups": "optional", "individual": "off", "seasons": "recommended", "categories": "recommended", "competitions": "optional" }),
     recommendedFeatures: Object.freeze(["teams", "seasons", "memberships", "competitions", "stages", "shop"]),
     categoryExamples: Object.freeze(["U7", "U9", "U11", "U13", "U15", "U18", "Seniors", "Vétérans"]),
+    aliases: Object.freeze([]),
   }),
   "basketball": Object.freeze({
     id: "basketball",
@@ -692,6 +696,7 @@ const SPORT_PROFILE_REGISTRY = Object.freeze({
     organization: Object.freeze({ "teams": "primary", "groups": "optional", "individual": "off", "seasons": "recommended", "categories": "recommended", "competitions": "optional" }),
     recommendedFeatures: Object.freeze(["teams", "seasons", "memberships", "competitions"]),
     categoryExamples: Object.freeze(["U9", "U11", "U13", "U15", "U18", "Seniors"]),
+    aliases: Object.freeze([]),
   }),
   "handball": Object.freeze({
     id: "handball",
@@ -702,6 +707,7 @@ const SPORT_PROFILE_REGISTRY = Object.freeze({
     organization: Object.freeze({ "teams": "primary", "groups": "optional", "individual": "off", "seasons": "recommended", "categories": "recommended", "competitions": "optional" }),
     recommendedFeatures: Object.freeze(["teams", "seasons", "memberships", "competitions"]),
     categoryExamples: Object.freeze(["U9", "U11", "U13", "U15", "U18", "Seniors"]),
+    aliases: Object.freeze([]),
   }),
   "rugby": Object.freeze({
     id: "rugby",
@@ -712,6 +718,7 @@ const SPORT_PROFILE_REGISTRY = Object.freeze({
     organization: Object.freeze({ "teams": "primary", "groups": "optional", "individual": "off", "seasons": "recommended", "categories": "recommended", "competitions": "optional" }),
     recommendedFeatures: Object.freeze(["teams", "seasons", "memberships", "competitions"]),
     categoryExamples: Object.freeze(["U8", "U10", "U12", "U14", "U16", "U18", "Seniors"]),
+    aliases: Object.freeze([]),
   }),
   "volleyball": Object.freeze({
     id: "volleyball",
@@ -722,6 +729,7 @@ const SPORT_PROFILE_REGISTRY = Object.freeze({
     organization: Object.freeze({ "teams": "primary", "groups": "optional", "individual": "off", "seasons": "recommended", "categories": "recommended", "competitions": "optional" }),
     recommendedFeatures: Object.freeze(["teams", "seasons", "memberships", "competitions"]),
     categoryExamples: Object.freeze(["M11", "M13", "M15", "M18", "M21", "Seniors"]),
+    aliases: Object.freeze([]),
   }),
   "tennis": Object.freeze({
     id: "tennis",
@@ -732,6 +740,7 @@ const SPORT_PROFILE_REGISTRY = Object.freeze({
     organization: Object.freeze({ "teams": "optional", "groups": "primary", "individual": "recommended", "seasons": "optional", "categories": "recommended", "competitions": "optional" }),
     recommendedFeatures: Object.freeze(["memberships", "stages"]),
     categoryExamples: Object.freeze(["Débutant", "Loisir", "Compétition", "Classement"]),
+    aliases: Object.freeze([]),
   }),
   "badminton": Object.freeze({
     id: "badminton",
@@ -742,6 +751,7 @@ const SPORT_PROFILE_REGISTRY = Object.freeze({
     organization: Object.freeze({ "teams": "optional", "groups": "primary", "individual": "recommended", "seasons": "optional", "categories": "recommended", "competitions": "optional" }),
     recommendedFeatures: Object.freeze(["memberships"]),
     categoryExamples: Object.freeze(["Débutant", "Loisir", "Compétition"]),
+    aliases: Object.freeze([]),
   }),
   "padel": Object.freeze({
     id: "padel",
@@ -752,6 +762,7 @@ const SPORT_PROFILE_REGISTRY = Object.freeze({
     organization: Object.freeze({ "teams": "optional", "groups": "primary", "individual": "recommended", "seasons": "optional", "categories": "recommended", "competitions": "optional" }),
     recommendedFeatures: Object.freeze(["memberships"]),
     categoryExamples: Object.freeze(["Débutant", "Loisir", "Compétition"]),
+    aliases: Object.freeze([]),
   }),
   "table-tennis": Object.freeze({
     id: "table-tennis",
@@ -762,6 +773,7 @@ const SPORT_PROFILE_REGISTRY = Object.freeze({
     organization: Object.freeze({ "teams": "optional", "groups": "primary", "individual": "recommended", "seasons": "optional", "categories": "recommended", "competitions": "optional" }),
     recommendedFeatures: Object.freeze(["memberships"]),
     categoryExamples: Object.freeze(["Poussins", "Benjamins", "Minimes", "Cadets", "Juniors", "Seniors", "Vétérans"]),
+    aliases: Object.freeze([]),
   }),
   "judo": Object.freeze({
     id: "judo",
@@ -772,6 +784,7 @@ const SPORT_PROFILE_REGISTRY = Object.freeze({
     organization: Object.freeze({ "teams": "off", "groups": "primary", "individual": "optional", "seasons": "optional", "categories": "recommended", "competitions": "optional" }),
     recommendedFeatures: Object.freeze(["memberships", "stages"]),
     categoryExamples: Object.freeze(["Éveil", "Poussins", "Benjamins", "Minimes", "Cadets", "Juniors", "Seniors", "Vétérans"]),
+    aliases: Object.freeze([]),
   }),
   "karate": Object.freeze({
     id: "karate",
@@ -782,6 +795,7 @@ const SPORT_PROFILE_REGISTRY = Object.freeze({
     organization: Object.freeze({ "teams": "off", "groups": "primary", "individual": "optional", "seasons": "optional", "categories": "recommended", "competitions": "optional" }),
     recommendedFeatures: Object.freeze(["memberships", "stages"]),
     categoryExamples: Object.freeze(["Baby", "Poussins", "Pupilles", "Benjamins", "Minimes", "Cadets", "Juniors", "Seniors"]),
+    aliases: Object.freeze([]),
   }),
   "taekwondo": Object.freeze({
     id: "taekwondo",
@@ -792,6 +806,7 @@ const SPORT_PROFILE_REGISTRY = Object.freeze({
     organization: Object.freeze({ "teams": "off", "groups": "primary", "individual": "optional", "seasons": "optional", "categories": "recommended", "competitions": "optional" }),
     recommendedFeatures: Object.freeze(["memberships", "stages"]),
     categoryExamples: Object.freeze(["Baby", "Poussins", "Benjamins", "Minimes", "Cadets", "Juniors", "Seniors"]),
+    aliases: Object.freeze([]),
   }),
   "boxing": Object.freeze({
     id: "boxing",
@@ -802,6 +817,7 @@ const SPORT_PROFILE_REGISTRY = Object.freeze({
     organization: Object.freeze({ "teams": "off", "groups": "primary", "individual": "optional", "seasons": "optional", "categories": "recommended", "competitions": "optional" }),
     recommendedFeatures: Object.freeze(["memberships", "stages"]),
     categoryExamples: Object.freeze(["Loisir", "Éducative", "Amateur", "Compétition"]),
+    aliases: Object.freeze([]),
   }),
   "dance": Object.freeze({
     id: "dance",
@@ -812,6 +828,7 @@ const SPORT_PROFILE_REGISTRY = Object.freeze({
     organization: Object.freeze({ "teams": "off", "groups": "primary", "individual": "optional", "seasons": "optional", "categories": "recommended", "competitions": "off" }),
     recommendedFeatures: Object.freeze(["memberships"]),
     categoryExamples: Object.freeze(["Éveil", "Enfants", "Adolescents", "Adultes"]),
+    aliases: Object.freeze([]),
   }),
   "gymnastics": Object.freeze({
     id: "gymnastics",
@@ -822,6 +839,7 @@ const SPORT_PROFILE_REGISTRY = Object.freeze({
     organization: Object.freeze({ "teams": "off", "groups": "primary", "individual": "optional", "seasons": "optional", "categories": "recommended", "competitions": "optional" }),
     recommendedFeatures: Object.freeze(["memberships"]),
     categoryExamples: Object.freeze(["Baby gym", "Éveil", "Enfants", "Adolescents", "Adultes"]),
+    aliases: Object.freeze([]),
   }),
   "fitness": Object.freeze({
     id: "fitness",
@@ -832,6 +850,7 @@ const SPORT_PROFILE_REGISTRY = Object.freeze({
     organization: Object.freeze({ "teams": "off", "groups": "primary", "individual": "optional", "seasons": "optional", "categories": "optional", "competitions": "off" }),
     recommendedFeatures: Object.freeze(["memberships"]),
     categoryExamples: Object.freeze(["Débutant", "Intermédiaire", "Avancé"]),
+    aliases: Object.freeze([]),
   }),
   "yoga": Object.freeze({
     id: "yoga",
@@ -842,6 +861,7 @@ const SPORT_PROFILE_REGISTRY = Object.freeze({
     organization: Object.freeze({ "teams": "off", "groups": "primary", "individual": "optional", "seasons": "optional", "categories": "optional", "competitions": "off" }),
     recommendedFeatures: Object.freeze(["memberships"]),
     categoryExamples: Object.freeze(["Débutant", "Tous niveaux", "Confirmé"]),
+    aliases: Object.freeze([]),
   }),
   "athletics": Object.freeze({
     id: "athletics",
@@ -852,6 +872,7 @@ const SPORT_PROFILE_REGISTRY = Object.freeze({
     organization: Object.freeze({ "teams": "off", "groups": "primary", "individual": "recommended", "seasons": "optional", "categories": "recommended", "competitions": "optional" }),
     recommendedFeatures: Object.freeze(["memberships", "stages"]),
     categoryExamples: Object.freeze(["Éveil athlétique", "Poussins", "Benjamins", "Minimes", "Cadets", "Juniors", "Seniors", "Masters"]),
+    aliases: Object.freeze([]),
   }),
   "swimming": Object.freeze({
     id: "swimming",
@@ -862,10 +883,20 @@ const SPORT_PROFILE_REGISTRY = Object.freeze({
     organization: Object.freeze({ "teams": "off", "groups": "primary", "individual": "recommended", "seasons": "optional", "categories": "recommended", "competitions": "optional" }),
     recommendedFeatures: Object.freeze(["memberships"]),
     categoryExamples: Object.freeze(["Débutant", "Perfectionnement", "Groupe compétition", "Maîtres"]),
+    aliases: Object.freeze([]),
   })
 });
 
 const SPORT_PROFILE_IDS = Object.freeze(new Set(Object.freeze(["custom", "multisport", "football", "basketball", "handball", "rugby", "volleyball", "tennis", "badminton", "padel", "table-tennis", "judo", "karate", "taekwondo", "boxing", "dance", "gymnastics", "fitness", "yoga", "athletics", "swimming"])));
+
+// Lot 1B-2 — disciplines nommées (id, label, profileId, aliases). Vide en production tant qu'aucun
+// contenu P1 réel n'a été ajouté à catalog/disciplines/. Une discipline nommée n'existe QUE pour la
+// sélection/recherche : son id catalogue n'est jamais persisté dans les données d'un club (cf.
+// catalog/README.md) — seuls discipline.name (= son label) et discipline.sportId (= son profileId)
+// le sont, exactement comme pour un profil sélectionné directement.
+const SPORT_DISCIPLINE_REGISTRY = Object.freeze({});
+
+const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze([])));
   let ui = {
     view: "dashboard",
     contactKind: "members",
@@ -2171,10 +2202,61 @@ const SPORT_PROFILE_IDS = Object.freeze(new Set(Object.freeze(["custom", "multis
   // du Lot 3B-1, qui ne les affiche que s'ils étaient déjà stockés).
   const CUSTOM_DISCIPLINE_CHOICE = "__custom__";
 
+  // ---------------------------------------------------------------------------------------------
+  // Lot 1B-2 — choix sportifs sélectionnables : un profil comportemental directement, OU une
+  // discipline nommée (catalog/disciplines/*.json) rattachée à un profil. Source PARTAGÉE par la
+  // modale « Nouvelle discipline » (ci-dessous) et l'assistant de premier lancement (src/31). Une
+  // discipline nommée hérite INTÉGRALEMENT du profil désigné par son `sportId` (= son `profileId`
+  // catalogue) : `kind` ne sert qu'à l'affichage (ex. distinguer visuellement les deux dans la
+  // grille du wizard), il n'est JAMAIS persisté dans les données d'un club (cf. catalog/README.md).
+  // Catalogue de disciplines vide en production à l'issue de ce sous-lot → comportement observable
+  // strictement inchangé pour tout utilisateur réel tant qu'aucun contenu P1 n'est ajouté (1B-3).
+  // ---------------------------------------------------------------------------------------------
+  function selectableSportChoices() {
+    const profiles = selectableDisciplineProfiles().map((profile) => ({
+      id: profile.id, label: profile.label, sportId: profile.id, kind: "profile",
+      aliases: Array.isArray(profile.aliases) ? profile.aliases : [],
+    }));
+    const disciplines = Object.keys(SPORT_DISCIPLINE_REGISTRY).map((id) => {
+      const def = SPORT_DISCIPLINE_REGISTRY[id];
+      return {
+        id: def.id, label: def.label, sportId: def.profileId, kind: "named-discipline",
+        aliases: Array.isArray(def.aliases) ? def.aliases : [],
+      };
+    });
+    return [...profiles, ...disciplines];
+  }
+
+  // Définition catalogue d'une discipline nommée par id, ou null (contrairement à sportProfile(),
+  // qui replie sur "custom" : ici l'absence est un fait normal — id inconnu, pas une erreur à masquer).
+  function sportDisciplineDefinition(id) {
+    return (typeof id === "string" && Object.prototype.hasOwnProperty.call(SPORT_DISCIPLINE_REGISTRY, id))
+      ? SPORT_DISCIPLINE_REGISTRY[id]
+      : null;
+  }
+
+  // Termes de recherche normalisés d'un choix (id, label, alias), via normalizeSearchText —
+  // RÉUTILISE la normalisation déjà en place pour la recherche globale de l'application
+  // (src/11b-command-registry.js : minuscules, diacritiques retirés, apostrophes/tirets/ponctuation
+  // réduits à des espaces, espaces multiples réduits) plutôt que d'en dupliquer une nouvelle.
+  function sportChoiceSearchTerms(choice) {
+    if (!choice || typeof choice !== "object") return [];
+    const raw = [choice.id, choice.label, ...(Array.isArray(choice.aliases) ? choice.aliases : [])];
+    return raw.map((value) => normalizeSearchText(value)).filter(Boolean);
+  }
+
+  // Un choix correspond-il à la requête tapée par l'utilisateur (recherche partielle, insensible à
+  // la casse et aux accents, sur l'id, le label ET les alias) ? Requête vide = tout correspond.
+  function sportChoiceMatchesQuery(choice, query) {
+    const q = normalizeSearchText(query);
+    if (!q) return true;
+    return sportChoiceSearchTerms(choice).some((term) => term.includes(q));
+  }
+
   function disciplineCreationChoices() {
     return [
-      ...selectableDisciplineProfiles().map((profile) => ({
-        value: profile.id, label: profile.label, sportId: profile.id, custom: false,
+      ...selectableSportChoices().map((choice) => ({
+        value: choice.id, label: choice.label, sportId: choice.sportId, custom: false,
       })),
       { value: CUSTOM_DISCIPLINE_CHOICE, label: "Autre / activité personnalisée", sportId: "", custom: true },
     ];
@@ -40303,12 +40385,14 @@ ${esc(bodyText)}</pre>
     return asText(label).toLowerCase();
   }
 
-  // Profil officiel dont le libellé correspond EXACTEMENT (après normalisation) à `label`, sinon
-  // null. Compare aux libellés du registre — jamais à une liste recopiée.
+  // Choix sportif officiel (profil OU discipline nommée, Lot 1B-2) dont le libellé correspond
+  // EXACTEMENT (après normalisation) à `label`, sinon null. Compare aux libellés du catalogue —
+  // jamais à une liste recopiée. Élargi aux disciplines nommées : une activité personnalisée
+  // baptisée « Futsal » doit être détectée au même titre qu'une baptisée « Football ».
   function officialProfileByLabel(label) {
     const key = wizardSportLabelKey(label);
     if (!key) return null;
-    return wizardSelectableProfiles().find((p) => wizardSportLabelKey(p.label) === key) || null;
+    return selectableSportChoices().find((c) => wizardSportLabelKey(c.label) === key) || null;
   }
 
   // Motif de refus d'un libellé d'activité personnalisée, ou "" s'il est acceptable. Pur et
@@ -40332,20 +40416,37 @@ ${esc(bodyText)}</pre>
   }
 
   // Profils officiels sélectionnables dans la grille (exclut les méta-profils custom/multisport).
+  // Conservé pour compatibilité (utilisé par du code/des tests antérieurs au Lot 1B-2) — équivalent
+  // au sous-ensemble `kind === "profile"` de selectableSportChoices().
   function wizardSelectableProfiles() {
     return Object.keys(SPORT_PROFILE_REGISTRY)
       .map((key) => SPORT_PROFILE_REGISTRY[key])
       .filter((p) => p.id !== "custom" && p.id !== "multisport");
   }
 
-  // Profils regroupés par famille d'affichage (ordre stable = ordre du registre dans chaque groupe).
-  function wizardProfilesByFamily() {
-    const all = wizardSelectableProfiles();
-    return WIZARD_SPORT_FAMILIES.map((group) => ({
-      key: group.key,
-      label: group.label,
-      profiles: all.filter((p) => group.families.includes(p.family)),
-    })).filter((group) => group.profiles.length > 0);
+  // Lot 1B-2 — choix sportifs (profils ET disciplines nommées) regroupés par famille d'affichage.
+  // Une discipline nommée hérite de la famille de SON PROFIL (jamais une famille propre) et apparaît
+  // JUSTE APRÈS lui dans son groupe (ordre du registre) : « Football » puis « Futsal » juste après,
+  // pas mélangés au hasard. Catalogue de disciplines vide en production → strictement équivalent à
+  // l'ancien regroupement par profils tant qu'aucun contenu n'est ajouté (1B-3).
+  function wizardChoicesByFamily() {
+    const allChoices = selectableSportChoices();
+    const disciplinesByProfile = new Map();
+    allChoices.forEach((c) => {
+      if (c.kind !== "named-discipline") return;
+      if (!disciplinesByProfile.has(c.sportId)) disciplinesByProfile.set(c.sportId, []);
+      disciplinesByProfile.get(c.sportId).push(c);
+    });
+    return WIZARD_SPORT_FAMILIES.map((group) => {
+      const choices = [];
+      allChoices
+        .filter((c) => c.kind === "profile" && group.families.includes(SPORT_PROFILE_REGISTRY[c.id].family))
+        .forEach((profileChoice) => {
+          choices.push(profileChoice);
+          (disciplinesByProfile.get(profileChoice.id) || []).forEach((d) => choices.push(d));
+        });
+      return { key: group.key, label: group.label, choices };
+    }).filter((group) => group.choices.length > 0);
   }
 
   // Identifiant STABLE pour une activité personnalisée. Slug ASCII kebab dérivé du label, préfixé
@@ -40359,8 +40460,10 @@ ${esc(bodyText)}</pre>
     const root = "custom-" + (base || "activite");
     let candidate = root;
     let n = 2;
-    // Collision avec un profil officiel OU un id déjà pris → suffixe numérique déterministe.
-    while (SPORT_PROFILE_IDS.has(candidate) || taken.has(candidate)) {
+    // Collision avec un profil officiel, une discipline nommée (Lot 1B-2) OU un id déjà pris →
+    // suffixe numérique déterministe. Sans risque en pratique (préfixe "custom-" impossible pour un
+    // id catalogue, cf. leur pattern ^[a-z]...) : défense en profondeur, même doctrine que ci-dessus.
+    while (SPORT_PROFILE_IDS.has(candidate) || SPORT_DISCIPLINE_IDS.has(candidate) || taken.has(candidate)) {
       candidate = `${root}-${n}`;
       n += 1;
     }
@@ -40374,20 +40477,42 @@ ${esc(bodyText)}</pre>
   // Pur : ne mute pas le brouillon, ne touche aucun registre ; délègue le nettoyage à normalizeClubProfile.
   function buildClubProfileFromWizard(draft) {
     const d = draft && typeof draft === "object" ? draft : {};
-    const officials = (Array.isArray(d.selectedSportIds) ? d.selectedSportIds : [])
+    const officialFromSports = (Array.isArray(d.selectedSportIds) ? d.selectedSportIds : [])
       .filter((v) => typeof v === "string" && SPORT_PROFILE_IDS.has(v) && v !== "custom" && v !== "multisport");
+    // Lot 1B-2 — une discipline nommée choisie (ex. « Futsal ») résout vers le PROFIL qu'elle porte
+    // (son profileId, ex. "football") pour tout ce qui touche au comportement du club (fonctionnalités
+    // recommandées, famille…) : jamais son propre id catalogue, qui n'existe que pour la sélection/le
+    // nommage (§3.4). Deux disciplines nommées du même profil (voire une discipline nommée + son
+    // profil choisi directement) se réduisent donc au MÊME sportId ici — la déduplication porte sur
+    // le SPORT pratiqué, jamais sur le NOM affiché (cf. wizardDisciplineDefs, qui seul connaît les noms).
+    const selectedDisciplineDefs = (Array.isArray(d.selectedDisciplineChoices) ? d.selectedDisciplineChoices : [])
+      .map((disciplineId) => sportDisciplineDefinition(disciplineId))
+      .filter((def) => def && SPORT_PROFILE_IDS.has(def.profileId));
+    const officialFromDisciplines = selectedDisciplineDefs.map((def) => def.profileId);
+    const officials = [...officialFromSports, ...officialFromDisciplines];
     const customSports = (Array.isArray(d.customSports) ? d.customSports : [])
       .filter((c) => c && typeof c === "object" && typeof c.id === "string" && c.id && typeof c.label === "string" && asText(c.label))
       .map((c) => ({ id: c.id, label: asText(c.label), family: "custom" }));
     const officialIds = [...new Set(officials)];
     const customIds = customSports.map((c) => c.id);
     const sportIds = [...officialIds, ...customIds];
-    const total = sportIds.length;
+    // Correctif (audit indépendant 1B-2, défaut 4) — templateId reflète le NOMBRE D'ACTIVITÉS
+    // réellement choisies (profils directs + disciplines nommées + activités personnalisées),
+    // jamais le nombre de sportId comportementaux distincts après résolution. Football (direct) et
+    // Futsal (discipline nommée) partagent le MÊME sportId "football" une fois résolus — sportIds
+    // reste dédupliqué à ["football"] pour tout ce qui touche au comportement (recommandations,
+    // terminologie…) — mais ce sont bien DEUX activités choisies : le club est multisports, comme
+    // l'annonce l'assistant (« Plusieurs activités créent un club multisports »).
+    const activityCount = officialFromSports.length + selectedDisciplineDefs.length + customSports.length;
     let templateId;
-    if (total >= 2) templateId = "multisport";
-    else if (total === 1) templateId = officialIds.length === 1 ? officialIds[0] : "custom";
+    if (activityCount >= 2) templateId = "multisport";
+    else if (activityCount === 1) templateId = officialIds.length === 1 ? officialIds[0] : "custom";
     else templateId = "custom";
-    const wanted = typeof d.primarySportId === "string" ? d.primarySportId : "";
+    // primarySportId choisi par l'utilisateur peut référencer un profil, une discipline nommée (→
+    // résolue vers son profileId) ou une activité personnalisée.
+    const wantedRaw = typeof d.primarySportId === "string" ? d.primarySportId : "";
+    const wantedDiscipline = sportDisciplineDefinition(wantedRaw);
+    const wanted = wantedDiscipline && SPORT_PROFILE_IDS.has(wantedDiscipline.profileId) ? wantedDiscipline.profileId : wantedRaw;
     const primarySportId = sportIds.includes(wanted) ? wanted : (sportIds[0] || "");
     return normalizeClubProfile({
       version: CLUB_PROFILE_VERSION,
@@ -40432,50 +40557,95 @@ ${esc(bodyText)}</pre>
   // discipline créée : c'est le chaînon qui manquait entre le catalogue (Lot 1) et l'identité
   // canonique des disciplines (Lot 3A). Une activité PERSONNALISÉE ne porte aucun profil officiel
   // et sort donc avec sportId "" (elle reste libre tant que l'utilisateur n'a pas choisi).
-  function wizardDisciplineDefs(clubProfile) {
+  // Lot 1B-2 — `options.directSportIds` / `options.selectedDisciplineChoices` permettent de
+  // distinguer, au sein de cp.sportIds, ce qui vient d'un choix DIRECT de profil (mérite une
+  // discipline nommée d'après le libellé du profil) de ce qui n'y figure QUE parce qu'une discipline
+  // nommée l'y a fait entrer pour le calcul des fonctionnalités recommandées (buildClubProfileFromWizard)
+  // — sans quoi choisir uniquement « Futsal » créerait AUSSI une discipline fantôme « Football ».
+  // Sans `options` (tous les appels historiques, y compris un clubProfile construit à la main hors
+  // wizard, qui ne connaît pas cette distinction) : cp.sportIds EST la liste directe, comportement
+  // RIGOUREUSEMENT inchangé.
+  //
+  // Correctif (audit indépendant 1B-2, défaut 3) — `options.primaryChoiceId` porte l'identifiant
+  // BRUT du choix principal (celui du brouillon, d.primarySportId : un profil, une discipline
+  // nommée OU une activité personnalisée), voir le repli et son usage plus bas.
+  function wizardDisciplineDefs(clubProfile, options) {
     const cp = normalizeClubProfile(clubProfile);
+    const opts = options && typeof options === "object" ? options : {};
+    const directSportIds = Array.isArray(opts.directSportIds) ? opts.directSportIds : cp.sportIds;
+
     const ordered = [];
     const pushId = (sportId) => { if (sportId && !ordered.includes(sportId)) ordered.push(sportId); };
-    pushId(cp.primarySportId);
-    cp.sportIds.forEach(pushId);
+    directSportIds.forEach(pushId);
+    cp.customSports.forEach((c) => pushId(c.id));
+
     const defs = [];
     const indexByLabel = new Map();
+    // Ajoute une entrée déduplique par libellé normalisé, avec PRIORITÉ AU PROFIL OFFICIEL (Lot
+    // 3B-1, défense en profondeur) : une entrée homonyme d'un sport officiel ne doit jamais faire
+    // disparaître le profil explicitement ancré. Le remplacement conserve la POSITION d'origine.
+    const addEntry = (label, anchoredSportId, sourceId) => {
+      const clean = asText(label);
+      if (!clean) return;
+      const key = wizardSportLabelKey(clean);
+      if (indexByLabel.has(key)) {
+        const at = indexByLabel.get(key);
+        if (anchoredSportId && !defs[at].sportId) defs[at] = { name: clean, sportId: anchoredSportId, sourceId: anchoredSportId };
+        return;
+      }
+      indexByLabel.set(key, defs.length);
+      // Lot 3B-4B — `sourceId` : la clé STABLE de l'étape « activités », celle sous laquelle le
+      // brouillon range les catégories choisies. Pour un sport officiel c'est son sportId ; pour une
+      // activité personnalisée c'est son identifiant `custom-…` ; pour une discipline nommée (Lot
+      // 1B-2) c'est SON PROPRE id catalogue — jamais son profileId, qui confondrait deux disciplines
+      // nommées partageant un même profil (ex. Football + Futsal doivent garder des catégories
+      // choisies indépendantes, même si toutes deux suggèrent les catégories du profil football).
+      defs.push({ name: clean, sportId: anchoredSportId, sourceId });
+    };
+
     ordered.forEach((sportId) => {
       let label = "";
       let official = false;
       if (SPORT_PROFILE_IDS.has(sportId)) { label = SPORT_PROFILE_REGISTRY[sportId].label; official = true; }
       else { const cs = cp.customSports.find((c) => c.id === sportId); label = cs ? cs.label : ""; }
-      const clean = asText(label);
-      if (!clean) return;
-      const key = wizardSportLabelKey(clean);
       // Les méta-profils custom/multisport ne sont pas des sports : aucun profil ancré.
       const anchored = official && sportId !== "custom" && sportId !== "multisport" ? sportId : "";
-      // Déduplication par libellé, avec PRIORITÉ AU PROFIL OFFICIEL (Lot 3B-1, défense en
-      // profondeur). Une activité personnalisée homonyme d'un sport officiel ne doit jamais faire
-      // disparaître le profil explicitement sélectionné — y compris si elle est le sport principal
-      // et donc parcourue en premier, ou si les données viennent d'un import ancien que la
-      // validation de saisie n'a pas pu filtrer. Le remplacement conserve la POSITION d'origine :
-      // le résultat ne dépend pas de l'ordre de parcours.
-      if (indexByLabel.has(key)) {
-        const at = indexByLabel.get(key);
-        if (anchored && !defs[at].sportId) defs[at] = { name: clean, sportId: anchored, sourceId: anchored };
-        return;
-      }
-      indexByLabel.set(key, defs.length);
-      // Lot 3B-4B — `sourceId` : la clé STABLE de l'étape « activités », celle sous laquelle le
-      // brouillon range les catégories choisies. Pour un sport officiel c'est son sportId ; pour
-      // une activité personnalisée c'est son identifiant `custom-…`, jamais son `sportId` final —
-      // qui vaut "" pour TOUTES les activités personnalisées et les confondrait donc toutes.
-      // Une collision résolue en faveur du profil officiel bascule aussi sa clé : le résultat ne
-      // dépend jamais de l'ordre de parcours.
-      defs.push({ name: clean, sportId: anchored, sourceId: sportId });
+      addEntry(label, anchored, sportId);
     });
+
+    // Lot 1B-2 — disciplines nommées choisies : leur PROPRE libellé, ancrées sur LEUR profileId
+    // (jamais leur id catalogue), à la suite des entrées directes ci-dessus.
+    (Array.isArray(opts.selectedDisciplineChoices) ? opts.selectedDisciplineChoices : []).forEach((disciplineId) => {
+      const def = sportDisciplineDefinition(disciplineId);
+      if (!def) return;
+      const anchored = SPORT_PROFILE_IDS.has(def.profileId) ? def.profileId : "";
+      addEntry(def.label, anchored, def.id);
+    });
+
+    // Correctif (audit indépendant 1B-2, défaut 3) — le choix marqué PRINCIPAL par l'utilisateur
+    // est créé en premier, quel que soit son type (profil direct, discipline nommée, activité
+    // personnalisée). `cp.primarySportId` est déjà résolu vers un profileId par
+    // buildClubProfileFromWizard : il ne permet plus de retrouver une discipline nommée choisie
+    // comme principale (« futsal » → « football », qui ne correspond au sourceId d'aucune entrée
+    // s'il existe aussi une entrée Football distincte). `opts.primaryChoiceId` porte l'identifiant
+    // BRUT (d.primarySportId), qui correspond toujours au sourceId d'AU PLUS une entrée. Repli sur
+    // cp.primarySportId quand l'option est absente (tous les appels historiques, pour lesquels
+    // sourceId === sportId === le seul primarySportId possible) : comportement inchangé.
+    const rawPrimaryId = opts.primaryChoiceId !== undefined ? asText(opts.primaryChoiceId) : cp.primarySportId;
+    if (rawPrimaryId) {
+      const primaryIndex = defs.findIndex((def) => def.sourceId === rawPrimaryId);
+      if (primaryIndex > 0) {
+        const [primaryDef] = defs.splice(primaryIndex, 1);
+        defs.unshift(primaryDef);
+      }
+    }
+
     return defs;
   }
 
   // Noms seuls (sélecteur de discipline de l'étape « Groupes »). Dérivé, jamais dupliqué.
-  function wizardDisciplineNames(clubProfile) {
-    return wizardDisciplineDefs(clubProfile).map((d) => d.name);
+  function wizardDisciplineNames(clubProfile, options) {
+    return wizardDisciplineDefs(clubProfile, options).map((d) => d.name);
   }
 
   // ----------------------------------------------------------------------------------------------
@@ -40499,6 +40669,10 @@ ${esc(bodyText)}</pre>
       fromMesClubs: false,
       identity: { clubName: "", clubSubtitle: "", theme: settings.theme || "graphite", logoDataUrl: "", email: "", phone: "", address: "" },
       selectedSportIds: [],
+      // Lot 1B-2 — disciplines nommées choisies (catalog/disciplines/*.json, ex. "futsal"), séparément
+      // des profils directement choisis : leur `sportId` (le profileId qu'elles portent) n'est résolu
+      // qu'à la construction du clubProfile (buildClubProfileFromWizard), jamais stocké ici tel quel.
+      selectedDisciplineChoices: [],
       primarySportId: "",
       customSports: [],
       // Lot 3B-4B — catégories initiales FACULTATIVES, par clé stable de l'étape « activités »
@@ -40572,7 +40746,7 @@ ${esc(bodyText)}</pre>
       if (!asText(d.identity.clubName)) return "Le nom du club est obligatoire.";
     }
     if (step === "sports") {
-      const total = d.selectedSportIds.length + d.customSports.length;
+      const total = d.selectedSportIds.length + (d.selectedDisciplineChoices ? d.selectedDisciplineChoices.length : 0) + d.customSports.length;
       if (total === 0) return "Sélectionnez au moins une activité, ou ajoutez une activité personnalisée.";
       // Lot 3B-4B — les catégories initiales appartiennent à cette étape : elles sont donc validées
       // ici, ce qui couvre à la fois le passage d'étape et la revalidation finale de la création.
@@ -40615,7 +40789,7 @@ ${esc(bodyText)}</pre>
 
   function wizardHasEnteredData() {
     const d = clubWizardDraft();
-    return Boolean(asText(d.identity.clubName) || d.selectedSportIds.length || d.customSports.length || d.venues.length || d.groups.length);
+    return Boolean(asText(d.identity.clubName) || d.selectedSportIds.length || (d.selectedDisciplineChoices && d.selectedDisciplineChoices.length) || d.customSports.length || d.venues.length || d.groups.length);
   }
 
   // ----------------------------------------------------------------------------------------------
@@ -40654,14 +40828,22 @@ ${esc(bodyText)}</pre>
   // conserve l'ordre des clics (trace fidèle du geste) ; l'ordre affiché et l'ordre créé, eux, sont
   // toujours celui du catalogue — sans quoi deux utilisateurs ayant coché les mêmes catégories
   // obtiendraient des catalogues différents.
-  function wizardSelectedCategoryLabels(sportKey, draft) {
-    const chosen = new Set(wizardCategoryRawLabels(sportKey, draft).map((l) => sportCategoryLabelKey(l)));
+  //
+  // Correctif (audit indépendant 1B-2, défaut 1) — `sourceId` (clé du store, ex. "futsal") et
+  // `sportId` (profil comportemental dont les catégories sont suggérées, ex. "football") sont
+  // DEUX identifiants distincts dès qu'il s'agit d'une discipline nommée : les confondre (comme
+  // avant ce correctif, un seul paramètre servant aux deux usages) fait toujours renvoyer un
+  // tableau vide pour une discipline nommée, puisque sportProfileCategoryLabels("futsal") est
+  // systématiquement []. Pour un profil choisi directement ou une activité personnalisée,
+  // sourceId === sportId : le comportement historique est donc rigoureusement inchangé.
+  function wizardSelectedCategoryLabels(sourceId, sportId, draft) {
+    const chosen = new Set(wizardCategoryRawLabels(sourceId, draft).map((l) => sportCategoryLabelKey(l)));
     if (!chosen.size) return [];
-    return sportProfileCategoryLabels(sportKey).filter((label) => chosen.has(sportCategoryLabelKey(label)));
+    return sportProfileCategoryLabels(sportId).filter((label) => chosen.has(sportCategoryLabelKey(label)));
   }
 
-  function wizardSelectedCategoryCount(sportKey, draft) {
-    return wizardSelectedCategoryLabels(sportKey, draft).length;
+  function wizardSelectedCategoryCount(sourceId, sportId, draft) {
+    return wizardSelectedCategoryLabels(sourceId, sportId, draft).length;
   }
 
   function wizardSetCategory(sportKey, label, on, draft) {
@@ -40678,11 +40860,19 @@ ${esc(bodyText)}</pre>
     wizardSetCategory(sportKey, label, !wizardCategoryChecked(sportKey, label, draft), draft);
   }
 
+  // Correctif (deuxième audit indépendant 1B-2) — `sportKey` reçu ici est le `sourceId` (clé du
+  // store, ex. "futsal"), jamais forcément un `sportId` comportemental valide : pour une discipline
+  // nommée, sportProfileCategoryLabels(sourceId) renverrait toujours [] (« futsal » n'existe pas
+  // dans SPORT_PROFILE_REGISTRY), sélectionnant silencieusement zéro catégorie. Résolution via
+  // wizardCategoryTargets (même source de vérité que wizardRefreshCategoryUi juste plus bas) :
+  // pour un profil direct ou une activité personnalisée, sourceId === sportId, donc `sportId ||
+  // key` retombe exactement sur l'ancien comportement — inchangé.
   function wizardSelectAllCategories(sportKey, draft) {
     const store = wizardCategoryStore(draft);
     const key = asText(sportKey);
     if (!key) return;
-    store[key] = sportProfileCategoryLabels(key);
+    const target = wizardCategoryTargets(draft).find((t) => t.key === key);
+    store[key] = sportProfileCategoryLabels((target && target.sportId) || key);
   }
 
   function wizardClearCategories(sportKey, draft) {
@@ -40707,9 +40897,12 @@ ${esc(bodyText)}</pre>
   // (sportId "") et les profils sans suggestion en sont absents — aucun bloc vide.
   function wizardCategoryTargets(draft) {
     const d = draft && typeof draft === "object" ? draft : clubWizardDraft();
-    return wizardDisciplineDefs(buildClubProfileFromWizard(d))
+    return wizardDisciplineDefs(buildClubProfileFromWizard(d), { directSportIds: d.selectedSportIds, selectedDisciplineChoices: d.selectedDisciplineChoices, primaryChoiceId: d.primarySportId })
       .filter((def) => Boolean(def.sportId))
-      .map((def) => ({ key: def.sourceId, name: def.name, labels: sportProfileCategoryLabels(def.sportId) }))
+      // Correctif (audit indépendant 1B-2) — `sportId` (comportemental, ex. "football") est
+      // porté à côté de `key` (= sourceId, ex. "futsal") : pour une discipline nommée les deux
+      // diffèrent, et toute résolution de catégories DOIT utiliser `sportId`, jamais `key`.
+      .map((def) => ({ key: def.sourceId, name: def.name, sportId: def.sportId, labels: sportProfileCategoryLabels(def.sportId) }))
       .filter((target) => target.labels.length > 0);
   }
 
@@ -40724,15 +40917,14 @@ ${esc(bodyText)}</pre>
       return "Les catégories retenues sont illisibles. Revenez à l'étape des activités et refaites votre choix.";
     }
     const store = (raw && typeof raw === "object" && !Array.isArray(raw)) ? raw : {};
-    const officials = Array.isArray(d.selectedSportIds) ? d.selectedSportIds : [];
-    for (const sportId of officials) {
-      const known = typeof sportId === "string" && SPORT_PROFILE_IDS.has(sportId) && sportId !== "custom" && sportId !== "multisport";
-      const name = known ? asText(SPORT_PROFILE_REGISTRY[sportId].label) : "";
-      if (!name) return "Une activité sélectionnée n'est plus reconnue. Revenez à l'étape des activités et vérifiez votre sélection.";
-      if (!Object.prototype.hasOwnProperty.call(store, sportId)) continue;
-      const entry = store[sportId];
+
+    // Factorisé (Lot 1B-2) : un profil choisi directement et une discipline nommée choisie valident
+    // leurs catégories retenues de façon IDENTIQUE — seule la source du sportId à suggérer diffère.
+    const validateEntryFor = (sourceId, name, sportIdForSuggestions) => {
+      if (!Object.prototype.hasOwnProperty.call(store, sourceId)) return "";
+      const entry = store[sourceId];
       if (!Array.isArray(entry)) return `Les catégories retenues pour « ${name} » sont illisibles. Décochez puis re-cochez vos catégories.`;
-      const allowed = new Set(sportProfileCategoryLabels(sportId).map((l) => sportCategoryLabelKey(l)));
+      const allowed = new Set(sportProfileCategoryLabels(sportIdForSuggestions).map((l) => sportCategoryLabelKey(l)));
       const seen = new Set();
       for (const value of entry) {
         if (typeof value !== "string") return `Une catégorie retenue pour « ${name} » est illisible. Décochez puis re-cochez vos catégories.`;
@@ -40743,7 +40935,28 @@ ${esc(bodyText)}</pre>
         if (seen.has(key)) return `La catégorie « ${clean} » est retenue deux fois pour « ${name} ».`;
         seen.add(key);
       }
+      return "";
+    };
+
+    const officials = Array.isArray(d.selectedSportIds) ? d.selectedSportIds : [];
+    for (const sportId of officials) {
+      const known = typeof sportId === "string" && SPORT_PROFILE_IDS.has(sportId) && sportId !== "custom" && sportId !== "multisport";
+      const name = known ? asText(SPORT_PROFILE_REGISTRY[sportId].label) : "";
+      if (!name) return "Une activité sélectionnée n'est plus reconnue. Revenez à l'étape des activités et vérifiez votre sélection.";
+      const error = validateEntryFor(sportId, name, sportId);
+      if (error) return error;
     }
+
+    // Lot 1B-2 — disciplines nommées choisies : mêmes règles, suggestions résolues via LEUR
+    // profileId (jamais leur propre id catalogue), store indexé par leur propre id (sourceId).
+    const namedDisciplines = Array.isArray(d.selectedDisciplineChoices) ? d.selectedDisciplineChoices : [];
+    for (const disciplineId of namedDisciplines) {
+      const def = sportDisciplineDefinition(disciplineId);
+      if (!def) return "Une activité sélectionnée n'est plus reconnue. Revenez à l'étape des activités et vérifiez votre sélection.";
+      const error = validateEntryFor(def.id, asText(def.label), def.profileId);
+      if (error) return error;
+    }
+
     // Aucune catégorie n'est proposée pour une activité personnalisée : l'interface n'en offre
     // aucune, et l'état final n'en créerait aucune. Une entrée non vide signale un brouillon abîmé.
     const customs = (Array.isArray(d.customSports) ? d.customSports : []).filter((c) => c && typeof c.id === "string" && c.id);
@@ -40831,15 +41044,20 @@ ${esc(bodyText)}</pre>
 
   function wizardSportsStepHtml() {
     const d = clubWizardDraft();
-    const q = asText(d.sportQuery).toLowerCase();
-    const selected = new Set(d.selectedSportIds);
-    const groups = wizardProfilesByFamily().map((group) => {
-      const cards = group.profiles
-        .filter((p) => !q || p.label.toLowerCase().includes(q) || p.id.includes(q))
-        .map((p) => {
-          const on = selected.has(p.id);
-          return `<button type="button" role="checkbox" aria-checked="${on}" class="wizard-sport-card ${on ? "selected" : ""}" data-wizard-sport="${esc(p.id)}">
-            <span class="wizard-sport-label">${esc(p.label)}</span>
+    const selectedProfiles = new Set(d.selectedSportIds);
+    const selectedDisciplines = new Set(Array.isArray(d.selectedDisciplineChoices) ? d.selectedDisciplineChoices : []);
+    const groups = wizardChoicesByFamily().map((group) => {
+      const cards = group.choices
+        .filter((c) => sportChoiceMatchesQuery(c, d.sportQuery))
+        .map((c) => {
+          const isDiscipline = c.kind === "named-discipline";
+          const on = isDiscipline ? selectedDisciplines.has(c.id) : selectedProfiles.has(c.id);
+          const attr = isDiscipline ? `data-wizard-discipline="${esc(c.id)}"` : `data-wizard-sport="${esc(c.id)}"`;
+          // Une discipline nommée reste visuellement rattachée à son profil (indentation légère,
+          // classe dédiée) — jamais une famille ou une carte de même niveau qu'un profil autonome.
+          const cardClass = isDiscipline ? "wizard-sport-card wizard-discipline-card" : "wizard-sport-card";
+          return `<button type="button" role="checkbox" aria-checked="${on}" class="${cardClass} ${on ? "selected" : ""}" ${attr}>
+            <span class="wizard-sport-label">${esc(c.label)}</span>
             ${on ? '<span class="wizard-sport-check" aria-hidden="true">✓</span>' : ""}
           </button>`;
         }).join("");
@@ -40847,8 +41065,13 @@ ${esc(bodyText)}</pre>
       return `<fieldset class="wizard-sport-group"><legend>${esc(group.label)}</legend><div class="wizard-sport-grid">${cards}</div></fieldset>`;
     }).join("");
 
-    const chosen = [...d.selectedSportIds.map((sid) => ({ id: sid, label: SPORT_PROFILE_IDS.has(sid) ? SPORT_PROFILE_REGISTRY[sid].label : sid })),
-      ...d.customSports.map((c) => ({ id: c.id, label: c.label + " (perso)" }))];
+    const chosen = [
+      ...d.selectedSportIds.map((sid) => ({ id: sid, label: SPORT_PROFILE_IDS.has(sid) ? SPORT_PROFILE_REGISTRY[sid].label : sid })),
+      ...selectedDisciplines.size
+        ? [...selectedDisciplines].map((did) => { const def = sportDisciplineDefinition(did); return def ? { id: def.id, label: def.label } : null; }).filter(Boolean)
+        : [],
+      ...d.customSports.map((c) => ({ id: c.id, label: c.label + " (perso)" })),
+    ];
     const primaryOptions = chosen.map((c) => `<option value="${esc(c.id)}" ${d.primarySportId === c.id ? "selected" : ""}>${esc(c.label)}</option>`).join("");
 
     const customList = d.customSports.map((c) => `<li class="wizard-custom-item"><span>${esc(c.label)}</span>
@@ -40894,7 +41117,7 @@ ${esc(bodyText)}</pre>
     const boxes = target.labels.map((label) => `<label class="cap-badge">
       <input type="checkbox" data-wizard-category="${esc(target.key)}" value="${esc(label)}" ${wizardCategoryChecked(target.key, label, draft) ? "checked" : ""} /> ${esc(label)}
     </label>`).join("");
-    const count = wizardSelectedCategoryCount(target.key, draft);
+    const count = wizardSelectedCategoryCount(target.key, target.sportId, draft);
     // `hidden` plutôt qu'un panneau absent : le bouton peut alors désigner son panneau par
     // aria-controls en permanence, et refermer une discipline ne peut rien effacer. Un contenu
     // `hidden` sort aussi de l'ordre de tabulation : une seule discipline reste navigable.
@@ -40928,7 +41151,7 @@ ${esc(bodyText)}</pre>
     }
     const open = targets.some((target) => target.key === asText(d.categoryPanel)) ? asText(d.categoryPanel) : "";
     const rows = targets.map((target) => {
-      const count = wizardSelectedCategoryCount(target.key, d);
+      const count = wizardSelectedCategoryCount(target.key, target.sportId, d);
       const expanded = target.key === open;
       const panelId = wizardCategoryPanelId(target.key);
       return `<li class="wizard-category-row">
@@ -41027,7 +41250,7 @@ ${esc(bodyText)}</pre>
     const d = clubWizardDraft();
     const cp = buildClubProfileFromWizard(d);
     const isTeamSport = cp.sportIds.some((sid) => SPORT_PROFILE_IDS.has(sid) && SPORT_PROFILE_REGISTRY[sid].family === "team-sport");
-    const disciplineOptions = ["", ...wizardDisciplineNames(cp)];
+    const disciplineOptions = ["", ...wizardDisciplineNames(cp, { directSportIds: d.selectedSportIds, selectedDisciplineChoices: d.selectedDisciplineChoices, primaryChoiceId: d.primarySportId })];
     const list = d.groups.map((g, i) => `<li class="wizard-group-item">
       <span class="wizard-group-name">${g.color ? `<span class="group-color-dot" style="background:${esc(g.color)}"></span>` : ""}${esc(g.name)}</span>
       <span class="muted">${esc(g.discipline || "")}</span>
@@ -41056,10 +41279,16 @@ ${esc(bodyText)}</pre>
   function wizardSummaryStepHtml() {
     const d = clubWizardDraft();
     const cp = buildClubProfileFromWizard(d);
-    const primaryLabel = cp.primarySportId
-      ? (SPORT_PROFILE_IDS.has(cp.primarySportId) ? SPORT_PROFILE_REGISTRY[cp.primarySportId].label : (cp.customSports.find((c) => c.id === cp.primarySportId)?.label || cp.primarySportId))
-      : "Aucun";
-    const others = cp.sportIds.filter((s) => s !== cp.primarySportId).map((s) => SPORT_PROFILE_IDS.has(s) ? SPORT_PROFILE_REGISTRY[s].label : (cp.customSports.find((c) => c.id === s)?.label || s));
+    // Correctif (audit indépendant 1B-2, défaut 2) — dérivé des VRAIES disciplines qui seront
+    // créées (wizardDisciplineDefs, même source que wizardSummaryDisciplinesHtml juste en dessous,
+    // et déjà réordonnée « principal en premier », défaut 3), jamais de cp.primarySportId/
+    // cp.sportIds seuls : ces champs sont résolus vers leur profil comportemental et ne permettent
+    // plus de retrouver le NOM d'une discipline nommée choisie (« Futsal » → « football »), ni de
+    // distinguer deux activités partageant le même profil (Football + Futsal ne s'y réduisaient
+    // qu'à une seule entrée « football »).
+    const defs = wizardDisciplineDefs(cp, { directSportIds: d.selectedSportIds, selectedDisciplineChoices: d.selectedDisciplineChoices, primaryChoiceId: d.primarySportId });
+    const primaryLabel = defs.length ? defs[0].name : "Aucun";
+    const others = defs.slice(1).map((def) => def.name);
     const features = Object.keys(d.featureSelection).filter((k) => d.featureSelection[k]).map((k) => (FEATURE_REGISTRY[k] ? FEATURE_REGISTRY[k].label : k));
     const themeName = (themes.find((t) => t.id === d.identity.theme) || {}).name || d.identity.theme;
     const row = (label, value) => `<div class="wizard-summary-row"><dt>${esc(label)}</dt><dd>${value}</dd></div>`;
@@ -41086,11 +41315,11 @@ ${esc(bodyText)}</pre>
   // officielle sans sélection le dit explicitement, une activité personnalisée porte un tiret —
   // un simple décompte laisserait l'utilisateur découvrir ses catégories après la création.
   function wizardSummaryDisciplinesHtml(draft, clubProfile) {
-    const defs = wizardDisciplineDefs(clubProfile);
+    const defs = wizardDisciplineDefs(clubProfile, { directSportIds: draft.selectedSportIds, selectedDisciplineChoices: draft.selectedDisciplineChoices, primaryChoiceId: draft.primarySportId });
     if (!defs.length) return "";
     const rows = defs.map((def) => {
       if (!def.sportId) return `<div class="wizard-summary-row"><dt>${esc(def.name)}</dt><dd><span class="muted">—</span></dd></div>`;
-      const labels = wizardSelectedCategoryLabels(def.sourceId, draft);
+      const labels = wizardSelectedCategoryLabels(def.sourceId, def.sportId, draft);
       const value = labels.length ? esc(labels.join(", ")) : '<span class="muted">Aucune catégorie initiale</span>';
       return `<div class="wizard-summary-row"><dt>${esc(def.name)}</dt><dd>${value}</dd></div>`;
     }).join("");
@@ -41201,6 +41430,7 @@ ${esc(bodyText)}</pre>
 
     // Étape sports.
     root.querySelectorAll("[data-wizard-sport]").forEach((btn) => btn.addEventListener("click", () => wizardToggleSport(btn.dataset.wizardSport)));
+    root.querySelectorAll("[data-wizard-discipline]").forEach((btn) => btn.addEventListener("click", () => wizardToggleDiscipline(btn.dataset.wizardDiscipline)));
     const search = root.querySelector("[data-wizard-search]");
     if (search) search.addEventListener("input", (e) => { d.sportQuery = e.target.value; const grids = root.querySelector(".wizard-sports"); /* re-render partiel */ renderClubWizard(); const s2 = app.querySelector("[data-wizard-search]"); if (s2) { s2.focus(); s2.setSelectionRange(s2.value.length, s2.value.length); } });
     root.querySelector("[data-wizard-custom-add]")?.addEventListener("click", () => wizardAddCustomSport());
@@ -41238,13 +41468,37 @@ ${esc(bodyText)}</pre>
     root.querySelectorAll("[data-wizard-group-remove]").forEach((btn) => btn.addEventListener("click", () => { d.groups.splice(Number(btn.dataset.wizardGroupRemove), 1); renderClubWizard(); }));
   }
 
+  // Premier choix disponible, tous types confondus, pour le repli du sport principal — même ordre
+  // de priorité que l'affichage (profils, puis disciplines nommées, puis activités personnalisées).
+  function wizardFirstChoiceId(d) {
+    return d.selectedSportIds[0]
+      || (Array.isArray(d.selectedDisciplineChoices) && d.selectedDisciplineChoices[0])
+      || (d.customSports[0] && d.customSports[0].id)
+      || "";
+  }
+
   function wizardToggleSport(sportId) {
     if (!SPORT_PROFILE_IDS.has(sportId) || sportId === "custom" || sportId === "multisport") return;
     const d = clubWizardDraft();
     const i = d.selectedSportIds.indexOf(sportId);
     if (i >= 0) { d.selectedSportIds.splice(i, 1); if (d.primarySportId === sportId) d.primarySportId = ""; }
     else d.selectedSportIds.push(sportId);
-    if (!d.primarySportId) d.primarySportId = d.selectedSportIds[0] || (d.customSports[0] && d.customSports[0].id) || "";
+    if (!d.primarySportId) d.primarySportId = wizardFirstChoiceId(d);
+    renderClubWizard();
+  }
+
+  // Lot 1B-2 — sélection/désélection d'une discipline nommée (catalog/disciplines/*.json). Miroir
+  // exact de wizardToggleSport, sur la liste dédiée d.selectedDisciplineChoices : une discipline
+  // nommée n'est PAS un profil, elle ne touche jamais d.selectedSportIds directement (la résolution
+  // vers son profileId a lieu plus tard, dans buildClubProfileFromWizard).
+  function wizardToggleDiscipline(disciplineId) {
+    if (!sportDisciplineDefinition(disciplineId)) return;
+    const d = clubWizardDraft();
+    if (!Array.isArray(d.selectedDisciplineChoices)) d.selectedDisciplineChoices = [];
+    const i = d.selectedDisciplineChoices.indexOf(disciplineId);
+    if (i >= 0) { d.selectedDisciplineChoices.splice(i, 1); if (d.primarySportId === disciplineId) d.primarySportId = ""; }
+    else d.selectedDisciplineChoices.push(disciplineId);
+    if (!d.primarySportId) d.primarySportId = wizardFirstChoiceId(d);
     renderClubWizard();
   }
 
@@ -41252,13 +41506,13 @@ ${esc(bodyText)}</pre>
     const d = clubWizardDraft();
     const input = app.querySelector("[data-wizard-custom-input]");
     const label = asText(input ? input.value : "");
-    // Pas de doublon (par libellé normalisé) avec un custom existant NI avec un profil officiel :
-    // la règle vit dans wizardCustomSportRejection (pure, testable), cette fonction n'en est que
-    // l'habillage. Aucun nouveau système de notification : on réutilise le message d'erreur de
-    // l'assistant, comme les autres validations.
+    // Pas de doublon (par libellé normalisé) avec un custom existant NI avec un profil officiel ou
+    // une discipline nommée : la règle vit dans wizardCustomSportRejection (pure, testable), cette
+    // fonction n'en est que l'habillage. Aucun nouveau système de notification : on réutilise le
+    // message d'erreur de l'assistant, comme les autres validations.
     const rejection = wizardCustomSportRejection(label, d.customSports);
     if (rejection) { renderClubWizard(rejection); return; }
-    const taken = new Set([...d.customSports.map((c) => c.id), ...d.selectedSportIds]);
+    const taken = new Set([...d.customSports.map((c) => c.id), ...d.selectedSportIds, ...(d.selectedDisciplineChoices || [])]);
     const newId = wizardCustomSportId(label, taken);
     d.customSports.push({ id: newId, label, family: "custom" });
     if (!d.primarySportId) d.primarySportId = newId;
@@ -41269,7 +41523,7 @@ ${esc(bodyText)}</pre>
   function wizardRemoveCustomSport(customId) {
     const d = clubWizardDraft();
     d.customSports = d.customSports.filter((c) => c.id !== customId);
-    if (d.primarySportId === customId) d.primarySportId = d.selectedSportIds[0] || (d.customSports[0] && d.customSports[0].id) || "";
+    if (d.primarySportId === customId) d.primarySportId = wizardFirstChoiceId(d);
     // L'identifiant d'une activité personnalisée est dérivé de son libellé : sans cette purge, la
     // réajouter plus tard ressusciterait une sélection invisible (décision D2).
     wizardPurgeCategoryKey(customId, d);
@@ -41279,14 +41533,19 @@ ${esc(bodyText)}</pre>
   // Remet cases, décomptes et libellés de bouton en accord avec le brouillon, sans redessiner.
   function wizardRefreshCategoryUi(root) {
     const d = clubWizardDraft();
+    // sourceId (attribut DOM) -> sportId comportemental (correctif audit 1B-2, défaut 1) : calculé
+    // UNE FOIS ici plutôt qu'à chaque élément, à partir de la même source que le rendu initial.
+    const sportIdByKey = new Map(wizardCategoryTargets(d).map((t) => [t.key, t.sportId]));
     root.querySelectorAll("[data-wizard-category]").forEach((box) => {
       box.checked = wizardCategoryChecked(box.dataset.wizardCategory, box.value, d);
     });
     root.querySelectorAll("[data-wizard-category-count]").forEach((span) => {
-      span.textContent = wizardCategoryCountLabel(wizardSelectedCategoryCount(span.dataset.wizardCategoryCount, d));
+      const key = span.dataset.wizardCategoryCount;
+      span.textContent = wizardCategoryCountLabel(wizardSelectedCategoryCount(key, sportIdByKey.get(key) || key, d));
     });
     root.querySelectorAll("[data-wizard-category-toggle]").forEach((btn) => {
-      btn.textContent = wizardSelectedCategoryCount(btn.dataset.wizardCategoryToggle, d) ? "Modifier" : "Choisir";
+      const key = btn.dataset.wizardCategoryToggle;
+      btn.textContent = wizardSelectedCategoryCount(key, sportIdByKey.get(key) || key, d) ? "Modifier" : "Choisir";
     });
   }
 
@@ -41348,12 +41607,12 @@ ${esc(bodyText)}</pre>
     state0.tariffs = state0.tariffs || {};
     const disciplines = [];
     const categories = [];
-    wizardDisciplineDefs(cp).forEach((def) => {
+    wizardDisciplineDefs(cp, { directSportIds: draft.selectedSportIds, selectedDisciplineChoices: draft.selectedDisciplineChoices, primaryChoiceId: draft.primarySportId }).forEach((def) => {
       const discipline = buildPreparedDiscipline({ id: id("discipline"), clubId: "", name: def.name, sportId: def.sportId });
       disciplines.push(discipline);
       // Une activité personnalisée n'a aucun profil officiel, donc aucune suggestion : rien à créer.
       if (!def.sportId) return;
-      const labels = wizardSelectedCategoryLabels(def.sourceId, draft);
+      const labels = wizardSelectedCategoryLabels(def.sourceId, def.sportId, draft);
       if (!labels.length) return;
       // Le noyau partagé (Lot 3B-4A) refait le filtrage par le profil : un libellé étranger ne peut
       // pas passer, même si la validation d'étape avait été contournée. `state0` ne contient encore
