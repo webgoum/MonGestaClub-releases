@@ -21512,11 +21512,16 @@ ${esc(bodyText)}</pre>
     // le clic avant qu'il n'atteigne l'article parent -> pas de double action, pas besoin de
     // stopPropagation. Réutilise tel quel l'action delete-membership déjà existante (confirmation,
     // undo, contact jamais supprimé) : aucune nouvelle logique de suppression créée.
+    // Avertissement persistant de tranche d'âge (groupe) — même encadré et même verdict que dans le
+    // dialogue Membres du groupe (groupMemberAgeStatus), aucune logique recalculée ici. "" si le
+    // membership n'a pas de groupe ou si l'âge est dans la tranche.
+    const ageWarningHtml = group ? groupAgeWarningBoxHtml(groupMemberAgeStatus(row, group)) : "";
     return `<article class="contact-recap-row clickable-card" data-action="edit-membership" data-id="${esc(row.id)}" title="Ouvrir cette inscription">
       <div class="contact-recap-main">
         <strong>${esc(titleText)}</strong>
         <span>${esc(subtitle || "Inscription discipline")}</span>
         <button type="button" class="contact-recap-remove-btn" data-action="delete-membership" data-id="${esc(row.id)}" title="Retirer cette discipline de la fiche">Retirer</button>
+        ${ageWarningHtml}
       </div>
       ${contactRecapStatus(entry.calc)}
       ${contactRecapAmounts(entry.calc)}
@@ -23264,6 +23269,13 @@ ${esc(bodyText)}</pre>
         rulesSigned: Boolean(form.get("rulesSigned")),
       };
       upsert(target, next);
+      // Mécanisme central de synchronisation (pas une exception pour un seul badge) : la date de
+      // naissance est un fait unique de la personne, contrairement aux coordonnées (téléphone,
+      // adresse…) qui peuvent légitimement différer d'une inscription à l'autre. Sans cette
+      // propagation, `membership.birthDate` (dénormalisée à la création de l'inscription) restait
+      // figée après une correction faite depuis la fiche contact, faussant silencieusement tout
+      // calcul d'âge dérivé (dossier sportif, tranche d'âge des groupes).
+      if (isMember) syncContactBirthDateToMemberships(next);
       // Action secondaire en attente (boutons Disciplines / Stages / Boutique / Facture cliqués depuis
       // un NOUVEAU contact) : on fournit le lien du contact désormais créé pour que showDialog ouvre
       // l'action sur ce contact après la sauvegarde. Réutilise le mécanisme follow-up existant.
@@ -24555,6 +24567,18 @@ ${esc(bodyText)}</pre>
     contact.identityAvatarChoice = Object.prototype.hasOwnProperty.call(membership, "identityAvatarChoice") ? normalizeIdentityAvatarChoice(membership.identityAvatarChoice) : normalizeIdentityAvatarChoice(contact.identityAvatarChoice);
     contact.category = memberCategory(contact);
     return contact.id;
+  }
+
+  // Sens INVERSE de syncMemberContact (membership -> contact) : ici, contact -> ses inscriptions.
+  // Volontairement restreint à birthDate — voir le commentaire d'appel dans openContactDialog.
+  function syncContactBirthDateToMemberships(contact = {}) {
+    if (!contact.id) return;
+    const birthDate = dateInputValue(contact.birthDate);
+    (state.memberships || []).forEach((membership) => {
+      if (membership.contactId === contact.id && membership.birthDate !== birthDate) {
+        membership.birthDate = birthDate;
+      }
+    });
   }
 
   function updateLinkedContactCoordinates(source = {}) {
@@ -26956,9 +26980,14 @@ ${esc(bodyText)}</pre>
       .filter((c) => !c.archived && c.groupId === group.id)
       .sort((a, b) => (PLANNING_DAYS.indexOf(a.day) - PLANNING_DAYS.indexOf(b.day)) || (timeToMinutes(a.startTime) - timeToMinutes(b.startTime)));
 
-    const ageTextOf = (group) => (asText(group.ageMin) !== "" || asText(group.ageMax) !== "")
-      ? `${asText(group.ageMin) !== "" ? group.ageMin : "?"}–${asText(group.ageMax) !== "" ? group.ageMax : "?"} ans`
-      : "Tous âges";
+    // Jamais « 15–10 ans » imprimée comme une tranche normale : source unique groupAgeRangeValidation
+    // (mêmes nombres, même comparaison que l'interface — voir src/23-sport-modules.js). Un document
+    // imprimé n'a pas d'appel à l'action ("Modifiez le groupe") : withCallToAction=false.
+    const ageTextOf = (group) => {
+      const validation = groupAgeRangeValidation(group);
+      if (validation.invalidRange) return groupAgeRangeIncoherentSentence(validation, false);
+      return groupAgeRangeDashLabel(group) || "Tous âges";
+    };
 
     const recapRow = (group) => {
       const coach = coachLabelFor(group.coachId, group.coach);
@@ -32000,10 +32029,12 @@ ${esc(bodyText)}</pre>
   // =========================================================================
 
   // ---- Utilitaires réutilisables ----
-  function getMemberAge(member = {}) {
+  // `referenceDate` est optionnel et réservé aux tests déterministes (anniversaires, bornes
+  // exactes) : omis, le comportement normal de l'application est inchangé (date du jour).
+  function getMemberAge(member = {}, referenceDate) {
     const birth = parseDate(member.birthDate);
     if (!birth) return null;
-    const now = new Date();
+    const now = referenceDate instanceof Date && !Number.isNaN(referenceDate.getTime()) ? referenceDate : new Date();
     let age = now.getFullYear() - birth.getFullYear();
     const m = now.getMonth() - birth.getMonth();
     if (m < 0 || (m === 0 && now.getDate() < birth.getDate())) age -= 1;
@@ -32013,6 +32044,141 @@ ${esc(bodyText)}</pre>
   function isMinor(member = {}) {
     const age = getMemberAge(member);
     return age !== null && age < 18;
+  }
+
+  // ===== Avertissements persistants de tranche d'âge (groupe) =====
+  // Doctrine : `group.ageMin`/`group.ageMax` restent la SEULE source de la tranche (jamais sur
+  // sportCategories). La comparaison n'est jamais bloquante : elle sert uniquement à signaler.
+  // Un côté absent (borne non renseignée, date de naissance manquante/invalide) ne produit jamais
+  // d'avertissement — comportement neutre.
+
+  // Fragment de phrase décrivant une tranche déjà connue comme configurée (au moins une borne) ET
+  // déjà connue comme VALIDE. N'est jamais appelée directement sur une tranche non vérifiée —
+  // toujours en aval de groupAgeRangeValidation (voir ses appelants ci-dessous).
+  function groupAgeRangeFragment(min, max) {
+    if (min !== null && max !== null) return `de ${min} à ${max} ans`;
+    if (min !== null) return `à partir de ${min} ans`;
+    return `jusqu'à ${max} ans`;
+  }
+
+  // ===== Validation CENTRALE de la tranche d'âge d'un groupe =====
+  // Source UNIQUE de la comparaison `ageMin > ageMax` — aucun formulaire, aucun helper textuel,
+  // aucun verdict individuel ne doit la refaire ailleurs. Fonction PURE (aucune écriture, aucun DOM).
+  // Règles : une borne vide, les deux vides, min < max, min == max -> valide. min > max -> invalide.
+  function groupAgeRangeValidation(group = {}) {
+    const min = asText(group.ageMin) !== "" ? asNumber(group.ageMin) : null;
+    const max = asText(group.ageMax) !== "" ? asNumber(group.ageMax) : null;
+    const invalidRange = min !== null && max !== null && min > max;
+    return {
+      valid: !invalidRange,
+      invalidRange,
+      ageMin: min,
+      ageMax: max,
+      // Message de BLOCAGE (saisie/formulaire) — distinct du message d'AFFICHAGE sur une donnée
+      // déjà enregistrée (groupAgeRangeConfigWarningHtml), qui s'adresse à un contexte différent.
+      message: invalidRange ? "L'âge minimum ne peut pas être supérieur à l'âge maximum." : "",
+    };
+  }
+
+  // Alias booléen pratique (mêmes garanties que groupAgeRangeValidation, jamais une seconde
+  // comparaison) — conservé pour la lisibilité des appelants qui n'ont besoin que du booléen.
+  function groupAgeRangeIsInvalid(group = {}) {
+    return groupAgeRangeValidation(group).invalidRange;
+  }
+
+  // Phrase autonome réutilisable (fiche groupe, aide) : "" si aucune borne n'est configurée OU si
+  // la tranche est invalide (jamais de phrase inversée trompeuse — voir groupAgeRangeConfigWarningHtml
+  // pour le texte à afficher dans ce cas).
+  function groupAgeRangeSentence(group = {}) {
+    const validation = groupAgeRangeValidation(group);
+    if (validation.invalidRange) return "";
+    if (validation.ageMin === null && validation.ageMax === null) return "";
+    return `Normalement prévu ${groupAgeRangeFragment(validation.ageMin, validation.ageMax)}.`;
+  }
+
+  // Verdict CENTRAL âge/tranche d'un membre (candidat ou déjà affecté) pour un groupe donné.
+  // Fonction PURE, aucune écriture, aucun DOM. Toute comparaison `age < ageMin` / `age > ageMax`
+  // doit passer par ici — aucune autre fonction ne doit la refaire.
+  // `referenceDate` optionnel : réservé aux tests déterministes, comportement normal inchangé si omis.
+  function groupMemberAgeStatus(member = {}, group = {}, referenceDate) {
+    const validation = groupAgeRangeValidation(group);
+    const { ageMin: min, ageMax: max, invalidRange } = validation;
+    const hasRange = min !== null || max !== null;
+    const age = getMemberAge(member, referenceDate);
+    const status = {
+      hasRange, age, ageMin: min, ageMax: max,
+      tooYoung: false, tooOld: false, outOfRange: false, invalidRange: false,
+      shortLabel: "", detailText: "",
+    };
+    if (!hasRange || age === null) return status;
+    // Tranche inversée : la configuration elle-même est en cause, pas le membre. On ne produit
+    // JAMAIS un verdict individuel (ni « trop jeune », ni « trop âgé », encore moins les deux à la
+    // fois) tant que le groupe n'a pas été corrigé — voir groupAgeRangeConfigWarningHtml.
+    if (invalidRange) { status.invalidRange = true; return status; }
+    status.tooYoung = min !== null && age < min;
+    status.tooOld = max !== null && age > max;
+    status.outOfRange = status.tooYoung || status.tooOld;
+    if (!status.outOfRange) return status;
+    status.shortLabel = "Hors tranche d'âge";
+    const name = personLabel(member) || "Ce membre";
+    const groupName = asText(group.name) || "ce groupe";
+    status.detailText = `Attention : ${name} a ${age} an${age > 1 ? "s" : ""}. Le groupe « ${groupName} » est normalement prévu ${groupAgeRangeFragment(min, max)}. Cette affectation reste autorisée.`;
+    return status;
+  }
+
+  // Avertissement de CONFIGURATION du groupe (pas d'éligibilité d'un membre) : la tranche
+  // elle-même est incohérente. Distinct de groupAgeWarningBoxHtml (jamais les deux en même temps
+  // pour un même groupe, puisque groupMemberAgeStatus ne produit plus de verdict individuel ici).
+  // Seule formulation autorisée pour ce cas — n'introduis pas de variante ailleurs.
+  function groupAgeRangeConfigWarningHtml(group = {}) {
+    const validation = groupAgeRangeValidation(group);
+    if (!validation.invalidRange) return "";
+    return `<div class="age-warning-box" role="note">
+      <span class="age-warning-box-icon" aria-hidden="true">⚠</span>
+      <span class="age-warning-box-text">${esc(groupAgeRangeIncoherentSentence(validation))}</span>
+    </div>`;
+  }
+
+  // Phrase d'incohérence SANS l'appel à l'action ("Modifiez le groupe") : réutilisée partout où le
+  // contexte n'est pas un formulaire éditable (export PDF, carte, filtre de dialogue) — jamais une
+  // seconde formulation divergente, seulement l'omission de la phrase d'action quand elle n'a pas
+  // de sens (ex. un document imprimé). `validation` doit venir de groupAgeRangeValidation.
+  function groupAgeRangeIncoherentSentence(validation, withCallToAction = true) {
+    const base = `Tranche d'âge incohérente : minimum ${validation.ageMin} ans, maximum ${validation.ageMax} ans.`;
+    return withCallToAction ? `${base} Modifiez le groupe.` : base;
+  }
+
+  // Étiquette compacte "10–15 ans" (tiret, sans verbe), FORMAT HISTORIQUE inchangé pour une tranche
+  // valide (borne absente affichée "?"). Réutilisée par la carte, le filtre du dialogue Membres et
+  // l'export PDF — aucun de ces appelants ne doit reconstruire ce texte séparément.
+  // "" si aucune borne n'est configurée OU si la tranche est invalide (jamais une tranche inversée
+  // présentée comme normale, ex. « 15–10 ans ») : à l'appelant de choisir la formulation de repli
+  // adaptée à son contexte (voir groupAgeRangeIncoherentSentence pour le cas invalide).
+  function groupAgeRangeDashLabel(group = {}) {
+    const validation = groupAgeRangeValidation(group);
+    if (validation.invalidRange) return "";
+    if (validation.ageMin === null && validation.ageMax === null) return "";
+    const minText = validation.ageMin !== null ? validation.ageMin : "?";
+    const maxText = validation.ageMax !== null ? validation.ageMax : "?";
+    return `${minText}–${maxText} ans`;
+  }
+
+  // Encadré rouge non bloquant, mêmes classes partout (candidats, membres affectés, fiche contact).
+  // "" si le statut est dans la tranche (ou neutre) : rien à afficher, jamais un encadré vide.
+  function groupAgeWarningBoxHtml(ageStatus) {
+    if (!ageStatus || !ageStatus.outOfRange) return "";
+    return `<div class="age-warning-box" role="note">
+      <span class="age-warning-box-icon" aria-hidden="true">⚠</span>
+      <span class="age-warning-box-text">${esc(ageStatus.detailText)}</span>
+    </div>`;
+  }
+
+  // Nombre de membres RÉELLEMENT affectés (jamais les candidats) hors tranche — pour le compteur
+  // de la carte du groupe. Une date de naissance absente n'est jamais comptée (statut neutre).
+  function groupAgeOutOfRangeCount(groupId) {
+    const group = getGroupById(groupId);
+    if (!group) return 0;
+    return getMembersByGroup(groupId).filter((m) => groupMemberAgeStatus(m, group).outOfRange).length;
   }
 
   function getGroupById(groupId) {
@@ -32512,8 +32678,12 @@ ${esc(bodyText)}</pre>
   function groupCardHtml(group) {
     const cap = getGroupCapacityStatus(group.id);
     const capText = cap.max > 0 ? `${cap.count} / ${cap.max} membres` : `${cap.count} membre${cap.count > 1 ? "s" : ""}`;
-    const ageText = asText(group.ageMin) !== "" || asText(group.ageMax) !== ""
-      ? `${asText(group.ageMin) !== "" ? group.ageMin : "?"}–${asText(group.ageMax) !== "" ? group.ageMax : "?"} ans` : "Tous âges";
+    // Jamais « 15–10 ans » présentée comme normale : sur une tranche invalide, un court repère
+    // renvoie à l'encadré détaillé rendu juste plus bas (groupAgeRangeConfigWarningHtml), sans
+    // dupliquer la comparaison ni inventer une seconde formulation longue à cet endroit.
+    const ageText = groupAgeRangeValidation(group).invalidRange
+      ? "Tranche incohérente"
+      : (groupAgeRangeDashLabel(group) || "Tous âges");
     // Lot 3B-2C — la catégorie affectée doit être lisible sur la CARTE, pas seulement dans le
     // dialogue d'édition. Le libellé est recalculé à chaque rendu : renommer une catégorie met donc
     // l'affichage à jour partout, sans toucher à la moindre référence.
@@ -32522,6 +32692,9 @@ ${esc(bodyText)}</pre>
     // quatre classifications indistinctes, dont la première ressemblait à une catégorie d'âge alors
     // qu'elle n'est qu'un repère libre. Il descend donc sur une seconde ligne, explicitement nommée.
     const categoryLabel = sportCategoryAssignmentLabel(group.sportCategoryId, group.disciplineId, state, activeClubId());
+    // Compteur non bloquant : signale sans ouvrir le groupe qu'au moins un membre RÉELLEMENT
+    // affecté est hors de la tranche d'âge indicative. Jamais les candidats non encore ajoutés.
+    const ageOutOfRangeCount = groupAgeOutOfRangeCount(group.id);
     return `<div class="group-card paper ${group.archived ? "group-archived" : ""}" ${group.color ? `style="border-left:6px solid ${esc(group.color)}"` : ""}>
       <div class="group-card-head">
         <h3>${group.color ? `<span class="group-color-dot" style="background:${esc(group.color)}"></span>` : ""}${esc(group.name)}</h3>
@@ -32534,6 +32707,8 @@ ${esc(bodyText)}</pre>
         <span>· ${esc(ageText)}</span>
       </div>
       ${asText(group.type) ? `<div class="group-card-meta group-card-marker"><span>Repère : ${esc(group.type)}</span></div>` : ""}
+      ${ageOutOfRangeCount > 0 ? `<p class="group-card-age-warn">${ageOutOfRangeCount} membre${ageOutOfRangeCount > 1 ? "s" : ""} hors tranche d'âge</p>` : ""}
+      ${groupAgeRangeConfigWarningHtml(group)}
       ${group.notes ? `<p class="muted group-card-notes">${esc(group.notes)}</p>` : ""}
       <div class="group-card-actions">
         <button type="button" data-action="view-group-members" data-id="${esc(group.id)}">Membres +/−</button>
@@ -32565,13 +32740,29 @@ ${esc(bodyText)}</pre>
         ${field("ageMax", "Âge max", group.ageMax ?? "", "number", 'step="1" min="0"')}
         ${field("maxMembers", "Capacité max", group.maxMembers ?? "", "number", 'step="1" min="0"')}
       </div>`,
+      `<div class="form-error" hidden data-group-age-error></div>`,
       `<label>Couleur<input name="color" type="color" value="${esc(group.color || "#4d5966")}" /></label>`,
       textareaField("notes", "Notes", group.notes || ""),
     ].join("");
     setNextWindowKey(group.id ? `group:${group.id}` : null);
-    showDialog(group.id ? "Modifier le groupe" : "Nouveau groupe", body, (data) => {
+    showDialog(group.id ? "Modifier le groupe" : "Nouveau groupe", body, (data, form) => {
       const name = asText(data.get("name"));
       if (!name) { alert("Le nom du groupe est obligatoire."); return false; }
+      // La règle de non-blocage concerne l'AFFECTATION des membres, jamais la sauvegarde d'une
+      // tranche impossible : une tranche inversée n'a pas de sens à enregistrer, quelle que soit
+      // la tolérance appliquée ensuite aux membres. On bloque ici, avant toute mutation du groupe.
+      const ageMinValue = asText(data.get("ageMin")) === "" ? "" : asNumber(data.get("ageMin"));
+      const ageMaxValue = asText(data.get("ageMax")) === "" ? "" : asNumber(data.get("ageMax"));
+      const ageRangeCheck = groupAgeRangeValidation({ ageMin: ageMinValue, ageMax: ageMaxValue });
+      if (ageRangeCheck.invalidRange) {
+        const errorBox = form?.querySelector("[data-group-age-error]");
+        if (errorBox) {
+          errorBox.hidden = false;
+          errorBox.textContent = ageRangeCheck.message;
+        }
+        focusDialogControl(form, "[name='ageMin']");
+        return false;
+      }
       const groupCoachId = asText(data.get("coachId"));
       // Lot 3A (clôture) — sélection CANONIQUE : la valeur du select est un identifiant (ou "__legacy__"
       // / ""). On dérive { disciplineId, discipline } directement de l'id, sans jamais repasser par le nom.
@@ -32749,15 +32940,11 @@ ${esc(bodyText)}</pre>
 
   function groupCandidateTags(group, m) {
     const tags = [];
-    // La cohérence prime dans l'ordre d'affichage : discipline, puis catégorie, puis âge.
+    // La cohérence prime dans l'ordre d'affichage : discipline, puis catégorie. L'âge n'est plus
+    // un petit tag ici : il porte désormais son propre encadré rouge, bien plus visible
+    // (groupAgeWarningBoxHtml), rendu séparément sous la ligne du candidat.
     const consistency = groupConsistencyTagHtml(group, m);
     if (consistency) tags.push(consistency);
-    const age = getMemberAge(m);
-    const min = asText(group.ageMin) !== "" ? asNumber(group.ageMin) : null;
-    const max = asText(group.ageMax) !== "" ? asNumber(group.ageMax) : null;
-    if (age !== null && ((min !== null && age < min) || (max !== null && age > max))) {
-      tags.push(`<span class="group-add-tag warn">Hors tranche d'âge (${age} ans)</span>`);
-    }
     if (asText(m.groupId)) {
       const other = getGroupById(m.groupId);
       if (other) tags.push(`<span class="group-add-tag move">Déjà dans : ${esc(other.name)}</span>`);
@@ -32774,8 +32961,11 @@ ${esc(bodyText)}</pre>
     const wantDiscipline = asText(group.discipline);
 
     const hasAgeReq = asText(group.ageMin) !== "" || asText(group.ageMax) !== "";
-    const ageReq = hasAgeReq
-      ? ` (${asText(group.ageMin) !== "" ? group.ageMin : "?"}–${asText(group.ageMax) !== "" ? group.ageMax : "?"} ans)` : "";
+    // Jamais « (15–10 ans) » présentée comme normale au fil de cette phrase : sur une tranche
+    // invalide, on omet ce fragment (l'encadré de configuration, rendu en tête de ce même dialogue
+    // par groupAgeRangeConfigWarningHtml, porte déjà l'explication complète — pas de second texte).
+    const ageRangeLabel = groupAgeRangeDashLabel(group);
+    const ageReq = ageRangeLabel ? ` (${ageRangeLabel})` : "";
     // Lot 3B-2D — la phrase décrit la nouvelle réalité : les adhérents de la discipline d'abord,
     // les autres ensuite et signalés. Aucun n'est masqué.
     const filterDesc = wantDiscipline
@@ -32794,13 +32984,16 @@ ${esc(bodyText)}</pre>
 
     const membersHtml = members.length
       ? `<div class="group-member-list">${members.map((m) => `
-          <div class="group-member-row">
-            <div class="group-member-id">
-              <strong>${esc(personLabel(m))}</strong>
-              <span class="muted">${groupMemberMetaLine(m)}</span>
-              ${groupConsistencyTagHtml(group, m) ? `<span class="group-add-tags group-member-tags">${groupConsistencyTagHtml(group, m)}</span>` : ""}
+          <div class="group-member-entry">
+            <div class="group-member-row">
+              <div class="group-member-id">
+                <strong>${esc(personLabel(m))}</strong>
+                <span class="muted">${groupMemberMetaLine(m)}</span>
+                ${groupConsistencyTagHtml(group, m) ? `<span class="group-add-tags group-member-tags">${groupConsistencyTagHtml(group, m)}</span>` : ""}
+              </div>
+              <button type="button" class="danger small" data-action="remove-member-from-group" data-membership-id="${esc(m.id)}">Retirer du groupe</button>
             </div>
-            <button type="button" class="danger small" data-action="remove-member-from-group" data-membership-id="${esc(m.id)}">Retirer du groupe</button>
+            ${groupAgeWarningBoxHtml(groupMemberAgeStatus(m, group))}
           </div>`).join("")}</div>`
       : `<p class="muted">Aucun membre dans ce groupe pour l'instant. Ajoute-en depuis la liste ci-dessous.</p>`;
 
@@ -32809,11 +33002,14 @@ ${esc(bodyText)}</pre>
 
     const candidatesHtml = candidates.length
       ? `<div class="group-add-list">${candidates.map((m) => `
-          <label class="group-add-row" data-search="${esc(memberSearchHaystack(m, group.name))}">
-            <input type="checkbox" data-group-candidate value="${esc(m.id)}" />
-            <span class="group-add-name"><strong>${esc(personLabel(m))}</strong> <span class="muted">${esc(m.discipline || "")}</span></span>
-            <span class="group-add-tags">${groupCandidateTags(group, m)}</span>
-          </label>`).join("")}</div>
+          <div class="group-add-item" data-search="${esc(memberSearchHaystack(m, group.name))}">
+            <label class="group-add-row">
+              <input type="checkbox" data-group-candidate value="${esc(m.id)}" />
+              <span class="group-add-name"><strong>${esc(personLabel(m))}</strong> <span class="muted">${esc(m.discipline || "")}</span></span>
+              <span class="group-add-tags">${groupCandidateTags(group, m)}</span>
+            </label>
+            ${groupAgeWarningBoxHtml(groupMemberAgeStatus(m, group))}
+          </div>`).join("")}</div>
         <div class="group-add-empty-search muted" data-list-search-empty hidden>Aucun résultat.</div>
         <div class="inline-actions"><button type="button" class="primary" data-action="add-selected-to-group" data-group-id="${esc(groupId)}">Ajouter au groupe</button></div>`
       : `<p class="muted">${wantDiscipline
@@ -32821,6 +33017,7 @@ ${esc(bodyText)}</pre>
           : `Aucun adhérent disponible. Les membres rejoignent un groupe via leur inscription (fiche adhérent).`}</p>`;
 
     return `<div data-group-members-dialog data-group-id="${esc(groupId)}">
+      ${groupAgeRangeConfigWarningHtml(group)}
       <div class="dialog-section group-members-current">
         <div class="group-members-head">
           <h3>Membres du groupe (${members.length})</h3>
@@ -42297,11 +42494,36 @@ ${esc(bodyText)}</pre>
     const ageMinRaw = asText(form.querySelector('[name="groupAgeMin"]').value);
     const ageMaxRaw = asText(form.querySelector('[name="groupAgeMax"]').value);
     const capRaw = asText(form.querySelector('[name="groupCapacity"]').value);
+    const ageMinValue = ageMinRaw === "" ? "" : asNumber(ageMinRaw);
+    const ageMaxValue = ageMaxRaw === "" ? "" : asNumber(ageMaxRaw);
+    // Même source de vérité que openGroupDialog (groupAgeRangeValidation) : aucune tranche
+    // impossible n'entre jamais dans le brouillon, quel que soit le parcours de création.
+    const ageRangeCheck = groupAgeRangeValidation({ ageMin: ageMinValue, ageMax: ageMaxValue });
+    if (ageRangeCheck.invalidRange) {
+      // Le patron d'erreur intégré du wizard (renderClubWizard(message) -> .wizard-error) refait
+      // un rendu complet de l'étape, qui vide ce sous-formulaire (aucun champ n'y est lié à l'état :
+      // seule la LISTE des groupes déjà ajoutés persiste). On restitue donc explicitement la saisie
+      // en cours après le nouveau rendu, pour que l'utilisateur n'ait rien à ressaisir.
+      const discipline = form.querySelector('[name="groupDiscipline"]').value || "";
+      const color = form.querySelector('[name="groupColor"]').value || "";
+      renderClubWizard(ageRangeCheck.message);
+      const freshForm = app.querySelector("#wizardGroupForm");
+      if (freshForm) {
+        freshForm.querySelector('[name="groupName"]').value = name;
+        freshForm.querySelector('[name="groupDiscipline"]').value = discipline;
+        freshForm.querySelector('[name="groupAgeMin"]').value = ageMinRaw;
+        freshForm.querySelector('[name="groupAgeMax"]').value = ageMaxRaw;
+        freshForm.querySelector('[name="groupCapacity"]').value = capRaw;
+        freshForm.querySelector('[name="groupColor"]').value = color;
+        freshForm.querySelector('[name="groupAgeMin"]').focus();
+      }
+      return;
+    }
     d.groups.push({
       name,
       discipline: form.querySelector('[name="groupDiscipline"]').value || "",
-      ageMin: ageMinRaw === "" ? "" : asNumber(ageMinRaw),
-      ageMax: ageMaxRaw === "" ? "" : asNumber(ageMaxRaw),
+      ageMin: ageMinValue,
+      ageMax: ageMaxValue,
       capacity: capRaw === "" ? "" : asNumber(capRaw),
       color: form.querySelector('[name="groupColor"]').value || "",
     });

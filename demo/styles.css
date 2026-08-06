@@ -5285,6 +5285,7 @@ input.locked-price {
   border: 1px solid color-mix(in srgb, var(--accent) 28%, transparent);
 }
 .group-member-list { display: flex; flex-direction: column; gap: 6px; }
+.group-member-entry { display: flex; flex-direction: column; gap: 6px; }
 .group-member-row {
   display: flex; align-items: center; justify-content: space-between; gap: 10px;
   padding: 8px 10px;
@@ -5333,6 +5334,7 @@ input.locked-price {
   max-height: 320px; overflow-y: auto;
   border: 1px solid var(--line); border-radius: var(--radius); padding: 6px;
 }
+.group-add-item { display: flex; flex-direction: column; gap: 4px; }
 .group-add-row {
   display: flex; align-items: center; gap: 10px;
   padding: 7px 8px; border-radius: var(--radius); cursor: pointer;
@@ -5360,6 +5362,35 @@ input.locked-price {
   border-color: color-mix(in srgb, var(--accent) 30%, transparent);
 }
 .group-add-empty-search { padding: 8px 4px; }
+
+/* Avertissement persistant de tranche d'âge (groupe) — non bloquant. Même encadré partout
+   (candidats, membres déjà affectés, fiche contact) : une seule identité visuelle. Couleur ET
+   texte explicite (pas seulement une pastille colorée), lisible en thème clair comme sombre via
+   var(--danger), déjà ajusté par thème (cf. .group-add-tag.warn pour le même besoin sur l'orange). */
+.age-warning-box {
+  display: flex; align-items: flex-start; gap: 8px;
+  margin-top: 2px;
+  padding: 8px 10px;
+  border-radius: var(--radius);
+  border: 1px solid color-mix(in srgb, var(--danger) 45%, transparent);
+  border-left: 4px solid var(--danger);
+  background: color-mix(in srgb, var(--danger) 14%, var(--surface));
+  font-size: 0.82rem;
+  line-height: 1.35;
+}
+.age-warning-box-icon { flex: 0 0 auto; }
+.age-warning-box-text { flex: 1 1 auto; min-width: 0; white-space: normal; }
+
+.group-card-age-warn {
+  margin: 8px 0 0;
+  padding: 6px 10px;
+  font-size: 0.82rem;
+  font-weight: 600;
+  border-radius: var(--radius);
+  border: 1px solid color-mix(in srgb, var(--danger) 40%, transparent);
+  border-left: 4px solid var(--danger);
+  background: color-mix(in srgb, var(--danger) 14%, var(--surface));
+}
 
 /* ===== Documents sportifs ===== */
 .doc-summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin: 10px 16px 14px; }
