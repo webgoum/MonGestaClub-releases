@@ -17215,7 +17215,70 @@ ${esc(bodyText)}</pre>
     const disciplineId = root.dataset.disciplineId;
     const host = root.closest(".dialog-body") || root.parentElement;
     if (host) host.innerHTML = disciplineCategoriesDialogBody(disciplineId);
+    // Lot cycle de vie catégorie/discipline — le TITRE du dialogue (« Discipline « Nom » ») doit
+    // suivre un vrai remplacement AUSSI immédiatement que le corps : sans ce correctif, il resterait
+    // figé sur l'ancien nom jusqu'à fermeture/réouverture manuelle (showInfoDialog, générique et
+    // partagée par de nombreux dialogues, n'est jamais modifiée pour ce seul besoin).
+    const discipline = disciplineByIdStrict(disciplineId);
+    const titleEl = host && host.closest(".dialog")?.querySelector(".dialog-header h2");
+    if (titleEl && discipline) titleEl.textContent = `Discipline « ${discipline.name || "Discipline"} »`;
     setupDisciplineCategoriesDialog();
+  }
+
+  // Lot cycle de vie catégorie/discipline — dialogue EMPILÉ (au-dessus de « Discipline « Nom » »,
+  // jamais à sa place) pour choisir la nouvelle discipline. Catalogue = disciplineCreationChoices()
+  // (04-settings-normalize.js), EXACTEMENT la même source que le dialogue « Nouvelle discipline » et
+  // l'assistant de premier lancement : 29 profils affichables + 29 disciplines nommées, jamais une
+  // liste statique dupliquée. Le bouton déclencheur est déjà désactivé si blockers.total > 0
+  // (disciplineIdentitySectionHtml) ; ce contrôle est répété ici en défense en profondeur.
+  function openDisciplineReplacementDialog(disciplineId) {
+    const discipline = disciplineByIdStrict(disciplineId);
+    if (!discipline) return;
+    const blockers = disciplineReferenceCounts(discipline, activeClubId());
+    if (blockers.total > 0) {
+      alert(disciplineReplacementBlockedMessage(asText(discipline.name), blockers));
+      return;
+    }
+    const choices = disciplineCreationChoices().filter((c) => !c.custom);
+    const targetDialog = dialogForNewWindow();
+    targetDialog.classList.remove("has-identity-photo");
+    targetDialog.innerHTML = `<form class="discipline-creation-form">
+      <div class="dialog-header"><h2>Changer la discipline « ${esc(discipline.name)} »</h2><button class="icon" type="button" data-dialog-close title="Fermer" aria-label="Fermer">×</button></div>
+      <div class="dialog-body">
+        <div class="dialog-section">
+          <p class="muted">Choisissez la nouvelle discipline. Son nom et son profil de fonctionnement remplaceront ceux de « ${esc(discipline.name)} ». Aucune catégorie ni donnée n'existe encore sur cette discipline : rien n'est converti.</p>
+          <label>Nouvelle discipline
+            <select data-discipline-replacement-choice required>
+              <option value="" selected>Choisir un sport ou une activité…</option>
+              ${choices.map((c) => `<option value="${esc(c.value)}">${esc(c.label)}</option>`).join("")}
+            </select>
+          </label>
+        </div>
+      </div>
+      <div class="dialog-footer">
+        <span></span>
+        <div class="dialog-footer-actions">
+          <button type="button" data-dialog-close>Annuler</button>
+          <button class="primary" type="submit" data-discipline-replacement-submit>Remplacer</button>
+        </div>
+      </div>
+    </form>`;
+    const form = targetDialog.querySelector("form");
+    form.querySelectorAll("[data-dialog-close]").forEach((b) => b.addEventListener("click", () => targetDialog.close()));
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const select = form.querySelector("[data-discipline-replacement-choice]");
+      const value = select.value;
+      if (!value) return;
+      const submit = form.querySelector("[data-discipline-replacement-submit]");
+      if (submit) submit.disabled = true;
+      const ok = await requestDisciplineReplacement(discipline, value);
+      if (!ok) { if (submit) submit.disabled = false; return; }
+      targetDialog.close();
+      afterSportCategoryMutation();
+    });
+    focusDialogControl(form, "[data-discipline-replacement-choice]");
+    showFloatingDialog(targetDialog, "[data-discipline-replacement-choice]", targetDialog);
   }
 
   // Le sélecteur de profil est un <select> : son changement est une action EXPLICITE de
@@ -17236,6 +17299,7 @@ ${esc(bodyText)}</pre>
     const archived = disciplineSportCategories(discipline.id, state, { includeArchived: true, clubId: activeClubId() }).filter((c) => c.archived === true);
     const deletionBlockers = disciplineReferenceCounts(discipline, activeClubId());
     return `<div data-discipline-categories-dialog data-discipline-id="${esc(discipline.id)}">
+      ${disciplineIdentitySectionHtml(discipline, resolved, deletionBlockers)}
       ${disciplineProfileSectionHtml(discipline, resolved, capabilities)}
       ${disciplineActiveCategoriesHtml(discipline, active)}
       ${disciplineSuggestionsHtml(discipline)}
@@ -17291,18 +17355,55 @@ ${esc(bodyText)}</pre>
     const capsHtml = trueCaps.length
       ? trueCaps.map((key) => `<span class="cap-badge">${esc(disciplineCapabilityLabel(key))}</span>`).join("")
       : `<span class="cap-badge cap-off">aucun repère particulier</span>`;
+    // Lot cycle de vie catégorie/discipline — ce sélecteur ne change QUE le comportement
+    // (vocabulaire, capacités), jamais l'identité de la discipline : il ne doit plus jamais être
+    // confondu avec un vrai changement de discipline (cf. disciplineIdentitySectionHtml, section
+    // « Discipline » ci-dessus dans le dialogue, prioritaire). Renommé « Profil sportif » →
+    // « Profil de fonctionnement » et présenté comme un réglage secondaire, avec un avertissement
+    // explicite : passer du profil Boxe au profil Rugby sur une discipline nommée Savate ne renomme
+    // JAMAIS Savate en Rugby.
     return `<section class="dialog-section sport-profile-section">
-      <h3>Profil sportif</h3>
-      <label>Profil sportif de cette discipline
+      <h3>Profil de fonctionnement <span class="muted">(réglage avancé)</span></h3>
+      <p class="muted"><strong>Ce réglage ne change pas le nom de la discipline et ne modifie pas ses catégories. Il adapte uniquement son fonctionnement dans MonGestaClub.</strong></p>
+      <label>Profil de fonctionnement de cette discipline
         <select data-sport-profile-select>${options}</select>
       </label>
       <p class="muted">
         ${esc(disciplineProfileSourceLabel(resolved))} · Famille : ${esc(disciplineFamilyLabel(disciplineFamily(discipline)))}
       </p>
       <div class="sport-capability-list"><span class="sport-capability-title">Prévu par le profil :</span>${capsHtml}</div>
-      <p class="muted">Indicatif : ces repères viennent du profil sportif et n'activent ni ne limitent aucune fonction.</p>
-      <p class="muted">Le changement de profil ne modifie pas les catégories existantes.</p>
+      <p class="muted">Indicatif : ces repères viennent du profil de fonctionnement et n'activent ni ne limitent aucune fonction.</p>
+      <p class="muted">Le changement de profil de fonctionnement ne modifie pas les catégories existantes.</p>
     </section>`;
+  }
+
+  // Lot cycle de vie catégorie/discipline — section PRIORITAIRE (affichée en premier dans le
+  // dialogue), distincte du profil de fonctionnement ci-dessus. Réutilise EXACTEMENT la même règle
+  // de blocage que la suppression de discipline (disciplineReferenceCounts, déjà calculée une seule
+  // fois par disciplineCategoriesDialogBody et transmise ici — pas de second calcul).
+  function disciplineIdentitySectionHtml(discipline, resolved, blockers) {
+    const blocked = blockers.total > 0;
+    const title = blocked
+      ? disciplineReplacementBlockedMessage(asText(discipline.name), blockers)
+      : "Remplacer cette discipline par une autre du catalogue (profils et disciplines nommées)";
+    return `<section class="dialog-section">
+      <h3>Discipline</h3>
+      <p><strong>${esc(discipline.name || "(sans nom)")}</strong> · profil de fonctionnement : ${esc(disciplineProfileLabel(resolved))}</p>
+      <button type="button" data-action="open-discipline-replacement" data-id="${esc(discipline.id)}"${blocked ? " disabled" : ""} title="${esc(title)}">Changer la discipline</button>
+      ${blocked ? `<p class="muted">${esc(disciplineReplacementBlockedMessage(asText(discipline.name), blockers))}</p>` : ""}
+    </section>`;
+  }
+
+  // Lot suppression sûre (catégories) — les dépendances sont recalculées PAR CATÉGORIE à chaque
+  // rendu (pas de mise en cache) : le bouton reflète toujours l'état réel, y compris juste après la
+  // suppression d'une autre catégorie ou d'une inscription/d'un groupe qui la référençait.
+  function sportCategoryDeleteButtonHtml(category) {
+    const blockers = categoryReferenceCounts(category, activeClubId());
+    const blocked = blockers.total > 0;
+    const title = blocked
+      ? `Utilisée par ${categoryDeletionImpactSummary(blockers)} — retirez-la d'abord de ces éléments, ou archivez-la si elle est encore active.`
+      : "Supprimer définitivement cette catégorie";
+    return `<button type="button" class="danger" data-action="delete-sport-category" data-id="${esc(category.id)}"${blocked ? " disabled" : ""} title="${esc(title)}">Supprimer</button>`;
   }
 
   function disciplineActiveCategoriesHtml(discipline, active) {
@@ -17313,6 +17414,7 @@ ${esc(bodyText)}</pre>
         <button type="button" class="icon" data-action="move-sport-category" data-id="${esc(category.id)}" data-direction="down" ${index === active.length - 1 ? "disabled" : ""} title="Descendre" aria-label="Descendre « ${esc(category.label)} »">↓</button>
         <button type="button" data-action="rename-sport-category" data-id="${esc(category.id)}">Renommer</button>
         <button type="button" data-action="archive-sport-category" data-id="${esc(category.id)}">Archiver</button>
+        ${sportCategoryDeleteButtonHtml(category)}
       </span>
     </li>`).join("");
     return `<section class="dialog-section">
@@ -17351,6 +17453,7 @@ ${esc(bodyText)}</pre>
       <span class="sport-category-label muted">${esc(category.label || "(sans nom)")}</span>
       <span class="sport-category-actions">
         <button type="button" data-action="restore-sport-category" data-id="${esc(category.id)}">Restaurer</button>
+        ${sportCategoryDeleteButtonHtml(category)}
       </span>
     </li>`).join("");
     return `<details class="sport-archived-block">
@@ -29303,6 +29406,14 @@ ${esc(bodyText)}</pre>
       openDisciplineCategoriesDialog(button.dataset.id);
       return;
     }
+    if (action === "open-discipline-replacement") {
+      // Lot cycle de vie catégorie/discipline — section « Discipline » du dialogue « Discipline
+      // « Nom » », bouton « Changer la discipline ». Distinct du sélecteur de profil de
+      // fonctionnement (data-sport-profile-select, géré ailleurs) : celui-ci ouvre un VRAI
+      // changement d'identité (name ET sportId).
+      openDisciplineReplacementDialog(button.dataset.id);
+      return;
+    }
     if (action === "add-sport-category") {
       await addSportCategory(button.dataset.id);
       return;
@@ -29330,6 +29441,15 @@ ${esc(bodyText)}</pre>
     }
     if (action === "restore-sport-category") {
       restoreSportCategory(button.dataset.id);
+      return;
+    }
+    if (action === "delete-sport-category") {
+      // Lot suppression sûre (catégories) — bouton « Supprimer » du dialogue « Discipline « Nom » »,
+      // sur chaque catégorie active et archivée (disciplineActiveCategoriesHtml/disciplineArchivedCategoriesHtml,
+      // 16-settings-themes.js). Même orchestrateur que la discipline : aucune règle dupliquée.
+      const category = sportCategoryById2(button.dataset.id);
+      if (!await requestSportCategoryDeletion(category)) return;
+      afterSportCategoryMutation();
       return;
     }
     if (action === "save-smtp-settings") {
@@ -31577,6 +31697,173 @@ ${esc(bodyText)}</pre>
     }
     if (!await requestConfirm({ title: "Supprimer la discipline", message: `Supprimer définitivement la discipline « ${name || "sans nom"} » ?`, confirmLabel: "Supprimer", danger: true })) return false;
     performDisciplineDeletion(discipline);
+    return true;
+  }
+
+  // =====================================================================================================
+  // Lot suppression sûre (catégories) — même doctrine que la suppression de discipline ci-dessus :
+  // une seule logique centralisée (categoryReferenceCounts → blocage/confirmation → suppression →
+  // persistance → journal), partagée par le seul point d'entrée existant (le dialogue « Discipline
+  // « Nom » »). Aucune autre surface ne permettait déjà de supprimer physiquement une catégorie
+  // (vérifié : les seules mutations existantes de state.sportCategories sont des créations et des
+  // réordonnancements, jamais une suppression) — rien d'autre à sécuriser.
+  //
+  // Deux collections référencent une catégorie par IDENTIFIANT (jamais par nom, contrairement aux
+  // disciplines) : memberships[].sportCategoryId et groups[].sportCategoryId (vérifié dans
+  // 06-normalize-state.js — aucune autre collection ne porte de champ sportCategoryId). Les
+  // adhésions ne sont jamais archivées (toujours actives) ; les groupes le sont.
+  // =====================================================================================================
+
+  // clubId : même doctrine défensive que le sous-comptage sportCategories de disciplineReferenceCounts
+  // ci-dessus — belongsToClubScope, jamais une filtration ad hoc. state est déjà scopé à un seul club
+  // en fonctionnement normal (double scopeStateToClub, sauvegarde ET chargement), donc ce filtre ne
+  // change rien en pratique ; il évite qu'une ligne d'un autre club ne bloque jamais une suppression.
+  function categoryReferenceCounts(category, clubId) {
+    const cid = asText(category?.id);
+    const c = { memberships: 0, groupsActive: 0, groupsArchived: 0, active: 0, archived: 0, total: 0 };
+    if (!cid) return c;
+    c.memberships = (state.memberships || []).filter((m) => asText(m.sportCategoryId) === cid && belongsToClubScope(m, clubId)).length;
+    (state.groups || []).forEach((g) => {
+      if (asText(g.sportCategoryId) !== cid || !belongsToClubScope(g, clubId)) return;
+      (g.archived ? c.groupsArchived++ : c.groupsActive++);
+    });
+    c.active = c.memberships + c.groupsActive;
+    c.archived = c.groupsArchived;
+    c.total = c.active + c.archived;
+    return c;
+  }
+
+  // Fragment de phrase partagé (même patron que disciplineDeletionImpactSummary) : "3 inscription(s),
+  // 1 groupe(s) (dont 1 archivé)" — utilisé par le message de blocage ET par le résumé affiché à côté
+  // de chaque catégorie dans le dialogue de gestion.
+  function categoryDeletionImpactSummary(blockers) {
+    const groups = blockers.groupsActive + blockers.groupsArchived;
+    const impacts = [
+      blockers.memberships ? `${blockers.memberships} inscription(s)` : "",
+      groups ? `${groups} groupe(s)` : "",
+    ].filter(Boolean).join(", ");
+    const archivedNote = blockers.archived > 0
+      ? ` (dont ${blockers.archived} archivé${blockers.archived > 1 ? "s" : ""})`
+      : "";
+    return `${impacts}${archivedNote}`;
+  }
+
+  function categoryDeletionBlockedMessage(categoryLabel, disciplineLabel, blockers) {
+    return `Impossible de supprimer la catégorie « ${categoryLabel || "sans nom"} » de la discipline « ${disciplineLabel || "sans nom"} » : elle est encore utilisée par ${categoryDeletionImpactSummary(blockers)}. Retirez-la d'abord des inscriptions ou groupes concernés (y compris archivés), ou archivez-la si elle est encore active.`;
+  }
+
+  // PURE — suppose déjà vérifié blockers.total === 0. Supprime UNIQUEMENT la catégorie ciblée,
+  // jamais en cascade : aucune adhésion, groupe, discipline ou autre catégorie n'est touchée.
+  function performSportCategoryDeletion(category, discipline) {
+    recordHistory();
+    removeById(state.sportCategories, category.id);
+    persist(`Catégorie supprimée : ${category.label}`);
+    audit.sportCategoryDeleted(category, discipline);
+  }
+
+  // Orchestrateur, seul point d'entrée prévu (dialogue « Discipline « Nom » », action
+  // delete-sport-category) : calcule les dépendances, bloque avec message détaillé ou demande
+  // confirmation (nommant catégorie ET discipline), puis supprime. Retourne true si la catégorie a
+  // réellement été supprimée.
+  async function requestSportCategoryDeletion(category) {
+    if (!category) return false;
+    const discipline = disciplineByIdStrict(category.disciplineId);
+    const label = asText(category.label);
+    const disciplineLabel = asText(discipline && discipline.name);
+    const blockers = categoryReferenceCounts(category, activeClubId());
+    if (blockers.total > 0) {
+      alert(categoryDeletionBlockedMessage(label, disciplineLabel, blockers));
+      return false;
+    }
+    if (!await requestConfirm({
+      title: "Supprimer la catégorie",
+      message: `Supprimer définitivement la catégorie « ${label || "sans nom"} » de la discipline « ${disciplineLabel || "sans nom"} » ?`,
+      confirmLabel: "Supprimer",
+      danger: true,
+    })) return false;
+    performSportCategoryDeletion(category, discipline);
+    return true;
+  }
+
+  // =====================================================================================================
+  // Lot cycle de vie catégorie/discipline — VRAI changement de discipline (name ET sportId), distinct
+  // du sélecteur « Profil de fonctionnement » (applyDisciplineProfileChange, ci-dessus dans ce fichier
+  // n'existe pas — elle vit dans 16-settings-themes.js — qui ne touche JAMAIS name).
+  //
+  // Le remplacement RÉUTILISE disciplineReferenceCounts SANS EN DUPLIQUER LA RÈGLE (même garde que
+  // la suppression de discipline) : autorisé uniquement si blockers.total === 0, donc jamais sur une
+  // discipline portant catégories, adhésions, groupes, créneaux, coachs ou salles — aucune conversion
+  // ni suppression en cascade n'est donc jamais nécessaire ni tentée.
+  //
+  // Le catalogue proposé est EXACTEMENT celui de la création (disciplineCreationChoices, source
+  // partagée avec le dialogue « Nouvelle discipline » et l'assistant — 04-settings-normalize.js) :
+  // aucune liste statique dupliquée.
+  // =====================================================================================================
+
+  function disciplineReplacementBlockedMessage(currentName, blockers) {
+    const categories = blockers.sportCategoriesActive + blockers.sportCategoriesArchived;
+    const onlyCategories = blockers.total > 0 && blockers.total === categories;
+    const howTo = onlyCategories
+      ? `Supprimez d'abord ${categories > 1 ? "ses catégories inutilisées" : "sa catégorie inutilisée"} (${categories} catégorie${categories > 1 ? "s" : ""} sportive${categories > 1 ? "s" : ""}), puis réessayez.`
+      : `Des données réelles existent pour cette discipline (inscriptions, groupes, créneaux, coachs ou salles) : elles ne peuvent pas être converties automatiquement. Créez plutôt une nouvelle discipline pour la nouvelle activité.`;
+    return `Impossible de remplacer la discipline « ${currentName || "sans nom"} » : elle est encore utilisée par ${disciplineDeletionImpactSummary(blockers)}. ${howTo}`;
+  }
+
+  // Doublon métier : même règle que la validation de création (disciplineNameKey, insensible à la
+  // casse/espaces/forme Unicode, SENSIBLE aux accents), mais en BLOCAGE STRICT — pas un avertissement
+  // contournable. Comparaison par NOM UNIQUEMENT (jamais par sportId seul) : Football et Futsal, deux
+  // disciplines de noms différents partageant sportId="football", doivent pouvoir coexister.
+  function disciplineNameConflict(name, clubId, excludeId) {
+    const key = disciplineNameKey(name);
+    if (!key) return null;
+    const skip = asText(excludeId);
+    return disciplinesList().find((d) => asText(d.id) !== skip && belongsToClubScope(d, clubId) && disciplineNameKey(d.name) === key) || null;
+  }
+
+  // PURE — suppose déjà vérifié blockers.total === 0 et l'absence de doublon. Conserve l'id interne
+  // de l'objet (même enregistrement, jamais recréé) ; ne touche QUE name et sportId — prix, licence,
+  // TVA restent en l'état, comme pour un changement de profil de fonctionnement seul.
+  function performDisciplineReplacement(discipline, choice) {
+    recordHistory();
+    const previousName = asText(discipline.name);
+    const previousSportId = asText(discipline.sportId);
+    discipline.name = asText(choice.label);
+    discipline.sportId = asText(choice.sportId);
+    persist(`Discipline remplacée : ${previousName || "sans nom"} → ${discipline.name}`);
+    audit.sportDisciplineChanged(discipline, {
+      previousName, previousSportId, newName: discipline.name, newSportId: discipline.sportId,
+    });
+  }
+
+  // Orchestrateur, seul point d'entrée prévu (dialogue « Discipline « Nom » », section « Discipline »,
+  // action open-discipline-replacement → ce sélecteur). `choiceValue` est l'id catalogue choisi
+  // (profil OU discipline nommée) — converti via disciplineCreationChoice (même fonction que la
+  // création), jamais persisté tel quel. Retourne true si le remplacement a réellement eu lieu.
+  async function requestDisciplineReplacement(discipline, choiceValue) {
+    if (!discipline) return false;
+    const choice = disciplineCreationChoice(choiceValue);
+    if (!choice || choice.custom || !asText(choice.label)) {
+      alert("Choisissez une discipline dans le catalogue.");
+      return false;
+    }
+    const currentName = asText(discipline.name);
+    const blockers = disciplineReferenceCounts(discipline, activeClubId());
+    if (blockers.total > 0) {
+      alert(disciplineReplacementBlockedMessage(currentName, blockers));
+      return false;
+    }
+    const conflict = disciplineNameConflict(choice.label, activeClubId(), discipline.id);
+    if (conflict) {
+      alert(`Impossible de remplacer par « ${choice.label} » : une discipline « ${asText(conflict.name)} » existe déjà dans ce club.`);
+      return false;
+    }
+    if (!await requestConfirm({
+      title: "Changer la discipline",
+      message: `Remplacer définitivement la discipline « ${currentName || "sans nom"} » par « ${choice.label} » ?`,
+      confirmLabel: "Remplacer",
+      danger: true,
+    })) return false;
+    performDisciplineReplacement(discipline, choice);
     return true;
   }
 
@@ -38803,6 +39090,10 @@ ${esc(bodyText)}</pre>
     // ne trace aujourd'hui aucune modification d'inscription ni de groupe — n'en tracer qu'un champ
     // mineur produirait une journalisation partielle incohérente.
     "sport.category.created", "sport.category.updated", "sport.category.archived", "sport.category.restored",
+    // Lot suppression sûre (catégories) — suppression physique d'une catégorie SANS aucune
+    // référence (le blocage lui-même n'écrit rien : seule une suppression réellement effectuée
+    // est journalisée, même doctrine que sport.discipline.deleted).
+    "sport.category.deleted",
     "sport.discipline.profile.updated",
     // Lot 3B-4A — création d'une discipline. C'était la seule action structurante du domaine
     // sportif qui n'était pas tracée : l'ancien bouton poussait une ligne et persistait sans rien
@@ -38812,6 +39103,11 @@ ${esc(bodyText)}</pre>
     // blocage lui-même, cf. Lot 3A, n'écrit rien : seule une suppression réellement effectuée est
     // journalisée).
     "sport.discipline.deleted",
+    // Lot cycle de vie catégorie/discipline — remplacement RÉEL d'une discipline (name ET sportId)
+    // par une autre du catalogue, distinct de sport.discipline.profile.updated (qui ne change QUE le
+    // profil comportemental, jamais le nom). Autorisé uniquement sur une discipline totalement vide
+    // (disciplineReferenceCounts().total === 0), donc jamais de conversion de données à journaliser.
+    "sport.discipline.changed",
     // Lot 3B-2C — AFFECTATION d'une catégorie à une inscription ou à un groupe. Le Lot 3B-2B ne les
     // avait volontairement pas déclarées : les surfaces n'existaient pas encore. Ces deux actions
     // décrivent un rattachement sportif, jamais une modification financière.
@@ -39617,6 +39913,25 @@ ${esc(bodyText)}</pre>
         },
       });
     },
+    // Lot cycle de vie catégorie/discipline — n'est appelé qu'APRÈS un remplacement RÉEL (name ET
+    // sportId déjà mutés par l'appelant, disciplineReferenceCounts().total === 0 déjà vérifié) :
+    // jamais pour un blocage, une annulation, ou l'ouverture du sélecteur. L'id interne est
+    // CONSERVÉ (même objet) — seul entityId le rappelle, entityLabel porte le NOUVEAU nom.
+    sportDisciplineChanged(discipline, { previousName, previousSportId, newName, newSportId } = {}) {
+      return recordAuditEvent({
+        action: "sport.discipline.changed",
+        entityType: "discipline",
+        entityId: asText(discipline && discipline.id),
+        entityLabel: asText(newName),
+        clubId: asText(discipline && discipline.clubId),
+        metadata: {
+          previousName: asText(previousName),
+          previousSportId: asText(previousSportId),
+          newName: asText(newName),
+          newSportId: asText(newSportId),
+        },
+      });
+    },
     sportCategoryRenamed(category, discipline, previousLabel) {
       return recordAuditEvent({
         action: "sport.category.updated",
@@ -39649,6 +39964,19 @@ ${esc(bodyText)}</pre>
         entityId: category.id,
         entityLabel: category.label,
         clubId: category.clubId,
+        metadata: { disciplineId: asText(discipline && discipline.id), disciplineLabel: asText(discipline && discipline.name) },
+      });
+    },
+    // Lot suppression sûre (catégories) — n'est appelé qu'APRÈS une suppression physique
+    // réellement effectuée (categoryReferenceCounts().total === 0 déjà vérifié par l'appelant,
+    // requestSportCategoryDeletion dans 21-handlers.js) : jamais pour un blocage.
+    sportCategoryDeleted(category, discipline) {
+      return recordAuditEvent({
+        action: "sport.category.deleted",
+        entityType: "sportCategory",
+        entityId: asText(category && category.id),
+        entityLabel: asText(category && category.label),
+        clubId: asText(category && category.clubId),
         metadata: { disciplineId: asText(discipline && discipline.id), disciplineLabel: asText(discipline && discipline.name) },
       });
     },
@@ -40039,6 +40367,14 @@ ${esc(bodyText)}</pre>
     // Lot suppression sûre — toujours une suppression physique réelle (jamais un blocage, jamais
     // un retrait/désactivation, qui n'existent pas encore).
     "sport.discipline.deleted": (actor, label) => `${actor} a supprimé la discipline « ${label || "?"} »`,
+    // Lot cycle de vie catégorie/discipline — REMPLACEMENT réel (nom ET profil), distinct de
+    // sport.discipline.profile.updated (profil seul, nom inchangé).
+    "sport.discipline.changed": (actor, label, metadata) => {
+      const previous = asText(metadata.previousName);
+      return previous
+        ? `${actor} a remplacé la discipline « ${previous} » par « ${label || "?"} »`
+        : `${actor} a changé la discipline en « ${label || "?"} »`;
+    },
     "sport.category.updated": (actor, label, metadata) => {
       const discipline = asText(metadata.disciplineLabel);
       const before = asText(metadata.previousLabel);
@@ -40058,6 +40394,14 @@ ${esc(bodyText)}</pre>
       return discipline
         ? `${actor} a restauré la catégorie « ${label || "?"} » pour ${discipline}`
         : `${actor} a restauré la catégorie « ${label || "?"} »`;
+    },
+    // Lot suppression sûre (catégories) — toujours une suppression physique réelle (jamais un
+    // blocage), même patron que sport.category.archived/restored.
+    "sport.category.deleted": (actor, label, metadata) => {
+      const discipline = asText(metadata.disciplineLabel);
+      return discipline
+        ? `${actor} a supprimé la catégorie « ${label || "?"} » de ${discipline}`
+        : `${actor} a supprimé la catégorie « ${label || "?"} »`;
     },
     // Ancrage du profil sportif sur une discipline. Aucun événement générique existant ne convenait :
     // club.settings.updated porte sur le club, et un tarif n'est pas modifié ici. L'ancienne et la
