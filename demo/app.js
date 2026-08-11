@@ -5883,13 +5883,42 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
     });
   }
 
-  function recordHistory() {
-    const snapshot = snapshotState();
-    if (history.undo[history.undo.length - 1] !== snapshot) {
-      history.undo.push(snapshot);
+  // ===== Checkpoint Undo/Redo transactionnel (Lot correctif MS-AUDIT-001) =====
+  // `recordHistory()` (ci-dessous) reste le raccourci pour les mutations SYNCHRONES qui ne peuvent
+  // plus être refusées une fois qu'on a décidé de les exécuter (handleAction direct, toggles,
+  // suppressions déjà validées en amont…) : snapshot puis engagement dans le même geste, comme
+  // avant ce lot. Pour un appelant qui ne sait PAS ENCORE si l'opération va réussir (un `onSave`
+  // asynchrone qui peut retourner `false`/`{cancel:true}` ou lever une exception), les deux étapes
+  // doivent être séparées : capturer le snapshot AVANT l'opération (`beginHistoryCheckpoint`), puis
+  // ne l'engager dans `history.undo` / ne purger `history.redo` qu'APRÈS un succès confirmé
+  // (`commitHistoryCheckpoint`). Un refus ou une exception qui interrompt l'appelant avant l'appel à
+  // `commitHistoryCheckpoint` ne touche donc jamais aux piles — c'est tout l'objet de ce lot.
+  // Une seule logique de déduplication/limite/purge, ici, jamais dupliquée ailleurs.
+  function beginHistoryCheckpoint() {
+    return snapshotState();
+  }
+
+  function commitHistoryCheckpoint(beforeSnapshot) {
+    if (history.undo[history.undo.length - 1] !== beforeSnapshot) {
+      history.undo.push(beforeSnapshot);
       if (history.undo.length > 80) history.undo.shift();
     }
     history.redo = [];
+  }
+
+  function recordHistory() {
+    commitHistoryCheckpoint(snapshotState());
+  }
+
+  // Variante défensive pour le `catch` d'un onSave transactionnel (Lot correctif régressions) : une
+  // exception peut survenir APRÈS que l'opération a déjà écrit dans state/settings/ui, alors que
+  // l'appelant n'a jamais pu confirmer de succès pour appeler commitHistoryCheckpoint lui-même.
+  // On n'engage le snapshot pré-opération dans Undo QUE si l'état a réellement changé depuis — une
+  // exception levée AVANT toute mutation ne doit toucher ni Undo ni Redo.
+  function commitHistoryCheckpointIfChanged(beforeSnapshot) {
+    if (snapshotState() === beforeSnapshot) return false;
+    commitHistoryCheckpoint(beforeSnapshot);
+    return true;
   }
 
   const undoCheckpointElements = new WeakSet();
@@ -12789,6 +12818,12 @@ ${esc(bodyText)}</pre>
       // Boutique a été désactivée pendant que ce dialogue restait ouvert (ou après un changement de
       // club). return false -> aucune mutation, aucun persist, message affiché.
       if (!ensureFeatureEnabledForMutation("shop")) return false;
+      // VALIDER avant MUTER (Lot Undo/Redo transactionnel) : la validation des tailles doit se
+      // terminer AVANT toute écriture sur l'objet article réel, pour qu'un return false ci-dessous
+      // laisse l'article strictement inchangé (sinon aucun checkpoint Undo ne capture la mutation).
+      const parsed = readSizeStockForm(form);
+      const sizeMsg = validateSizeStockForm(form, parsed, hasSizes);
+      if (sizeMsg) { alert(sizeMsg); return false; }
       const nextName = data.get("name") || "Article";
       article.name = nextName;
       article.reference = data.get("reference") || makeArticleReference(nextName, index);
@@ -12800,9 +12835,6 @@ ${esc(bodyText)}</pre>
       if (asText(data.get("taxRate"))) article.taxRate = Math.max(0, asNumber(data.get("taxRate")));
       else delete article.taxRate;
       article.stockAlert = asNumber(data.get("stockAlert"));
-      const parsed = readSizeStockForm(form);
-      const sizeMsg = validateSizeStockForm(form, parsed, hasSizes);
-      if (sizeMsg) { alert(sizeMsg); return false; }
       if (parsed.sizes.length) {
         saveArticleSizeStock(article, parsed);
       } else {
@@ -20364,14 +20396,31 @@ ${esc(bodyText)}</pre>
         delete form.dataset.followUpAction; delete form.dataset.followUpData; delete form.dataset.followUpModule;
         return;
       }
-      recordHistory();
-      const result = await onSave(new FormData(event.currentTarget), event.currentTarget);
+      // Lot correctif MS-AUDIT-001 : le snapshot pré-opération est capturé ICI, mais n'est engagé
+      // dans l'historique (commitHistoryCheckpoint) qu'après un succès confirmé ci-dessous. Un refus
+      // (result === false / {cancel:true}) ou une exception levée par onSave ne doit JAMAIS pousser
+      // d'entrée dans Undo ni purger Redo — voir src/07-history-nav.js pour la doctrine complète.
+      const beforeSnapshot = beginHistoryCheckpoint();
+      let result;
+      try {
+        result = await onSave(new FormData(event.currentTarget), event.currentTarget);
+      } catch (error) {
+        // Lot correctif régressions : une exception d'onSave APRÈS une mutation réelle (ex. journal
+        // d'activité qui lève) ne doit pas faire perdre le seul moyen de revenir en arrière. On
+        // n'engage le checkpoint que si l'état a effectivement changé depuis beforeSnapshot — une
+        // exception levée avant toute mutation ne touche ni Undo ni Redo. L'erreur remonte ensuite
+        // sans jamais être transformée en succès (comportement déjà existant avant ce lot).
+        commitHistoryCheckpointIfChanged(beforeSnapshot);
+        throw error;
+      }
       // Validation échouée (champ requis manquant, etc.) : on reste dans la popup et on annule toute
-      // action secondaire en attente -> aucune navigation, aucun contact ouvert.
+      // action secondaire en attente -> aucune navigation, aucun contact ouvert. Aucun impact sur
+      // l'historique : beforeSnapshot n'a jamais été engagé.
       if (result === false || result?.cancel === true) {
         delete form.dataset.followUpAction; delete form.dataset.followUpData; delete form.dataset.followUpModule;
         return;
       }
+      commitHistoryCheckpoint(beforeSnapshot);
       saved = true;
       const message = typeof result === "string" ? result : result?.message;
       const notice = typeof result === "object" ? result?.notice : "";
@@ -22372,10 +22421,21 @@ ${esc(bodyText)}</pre>
     if (form?.querySelector("[data-invoice-editor]")) {
       const previousAction = form.dataset.submitAction || "";
       form.dataset.submitAction = "issue";
-      recordHistory();
-      result = await saveInvoiceFromForm(invoice, new FormData(form), form);
+      // Lot correctif MS-AUDIT-001 : même doctrine que showDialog — snapshot pré-opération capturé
+      // ici, engagé dans Undo/purge de Redo uniquement après un succès confirmé ci-dessous.
+      const beforeSnapshot = beginHistoryCheckpoint();
+      try {
+        result = await saveInvoiceFromForm(invoice, new FormData(form), form);
+      } catch (error) {
+        // Lot correctif régressions : voir la doctrine dans showDialog (même fichier, wrapper
+        // générique) — une exception après mutation garde son checkpoint de récupération.
+        form.dataset.submitAction = previousAction;
+        commitHistoryCheckpointIfChanged(beforeSnapshot);
+        throw error;
+      }
       form.dataset.submitAction = previousAction;
       if (result === false || result?.cancel === true) return null;
+      commitHistoryCheckpoint(beforeSnapshot);
       const emitted = state.invoices.find((item) => item.id === result?.reopenInvoiceId) || state.invoices.find((item) => item.id === invoice.id);
       persist(result?.message || `Facture ${emitted?.number || ""} émise`);
       const targetDialog = dialogForContainer(form);
@@ -22384,9 +22444,16 @@ ${esc(bodyText)}</pre>
       if (emitted) setTimeout(() => openInvoiceEditor(emitted), 0);
       return emitted || null;
     }
-    recordHistory();
-    const emitted = await issueDraftInvoice(invoice);
+    const beforeSnapshot = beginHistoryCheckpoint();
+    let emitted;
+    try {
+      emitted = await issueDraftInvoice(invoice);
+    } catch (error) {
+      commitHistoryCheckpointIfChanged(beforeSnapshot);
+      throw error;
+    }
     if (!emitted) return null;
+    commitHistoryCheckpoint(beforeSnapshot);
     persist(`Facture ${emitted.number || ""} émise`);
     render();
     return emitted;
@@ -34956,7 +35023,10 @@ ${esc(bodyText)}</pre>
     showDialog("Coach à remplacer", body, (data) => {
       const choice = data.get("decision") || (candidates.length ? "replace" : "cancel");
       const originalId = original ? original.id : course.coachId;
-      recordHistory();
+      // Lot correctif MS-AUDIT-001 : plus de recordHistory() ici — showDialog capture déjà le
+      // snapshot pré-opération et ne l'engage dans Undo/Redo qu'après un succès confirmé. Un appel
+      // ici serait redondant et, pire, réintroduirait le défaut pour ce dialogue précis : le choix
+      // "replace" peut encore refuser juste en dessous (aucun remplaçant choisi).
       if (choice === "reset") {
         if (decision) removeById(state.coachReplacements, decision.id);
         return `Coach initial rétabli pour « ${course.name} »`;
@@ -35500,7 +35570,10 @@ ${esc(bodyText)}</pre>
     showDialog("Salle à remplacer", body, (data) => {
       const choice = data.get("decision") || (candidates.length ? "replace" : "cancel");
       const originalId = original ? original.id : course.roomId;
-      recordHistory();
+      // Lot correctif MS-AUDIT-001 : plus de recordHistory() ici — showDialog capture déjà le
+      // snapshot pré-opération et ne l'engage dans Undo/Redo qu'après un succès confirmé. Un appel
+      // ici serait redondant et, pire, réintroduirait le défaut pour ce dialogue précis : le choix
+      // "replace" peut encore refuser juste en dessous (aucune salle choisie).
       if (choice === "reset") {
         if (decision) removeById(state.roomReplacements, decision.id);
         return `Salle initiale rétablie pour « ${course.name} »`;
