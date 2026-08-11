@@ -218,6 +218,9 @@
     // volontairement distinct de la VUE « disciplines » (menu principal) : ce sont deux surfaces
     // différentes, et un identifiant partagé rendrait la recherche globale ambiguë.
     "sport-categories",
+    // Lot politique de blocage des tranches d'âge — même raisonnement : identifiant dédié, propre
+    // à cette bande de Paramètres, pour que la recherche globale y conduise correctement.
+    "group-age-policy",
   ];
   const isSettingsPanelId = (value) => SETTINGS_PANEL_IDS.includes(value);
 
@@ -1915,12 +1918,31 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
       // réassemblage (settingsForClub, saveClub, import, duplication…) reproduit la même structure
       // déterministe. Aucun club n'est reclassé automatiquement ; aucune interface ne le consulte.
       clubProfile: normalizeClubProfile(source.clubProfile),
+      // Politique de blocage des tranches d'âge (par club). Placée APRÈS `...source`, même règle
+      // que `features`/`clubProfile` : la valeur normalisée écrase toujours la brute.
+      groupAgePolicy: normalizeGroupAgePolicy(source.groupAgePolicy),
     };
   }
 
   function normalizeProtectedViews(value) {
     if (!Array.isArray(value)) return [];
     return [...new Set(value.filter((key) => typeof key === "string" && key))];
+  }
+
+  // ===================================================================================
+  // POLITIQUE DE BLOCAGE DES TRANCHES D'ÂGE DES GROUPES — réglage PAR CLUB (settings.groupAgePolicy).
+  // ===================================================================================
+  // Deux sous-politiques indépendantes ("min"/"max"), valeurs valides "warn" (avertir seulement,
+  // comportement historique) ou "block" (refuser les NOUVELLES affectations hors tranche). Toute
+  // valeur absente/inconnue/héritée d'une ancienne version se normalise vers "warn" — le comportement
+  // par défaut reste donc strictement inchangé pour tous les clubs existants, importés ou créés.
+  function normalizeGroupAgePolicy(source) {
+    const src = source && typeof source === "object" ? source : {};
+    const validModes = ["warn", "block"];
+    return {
+      min: validModes.includes(src.min) ? src.min : "warn",
+      max: validModes.includes(src.max) ? src.max : "warn",
+    };
   }
 
   // ===================================================================================
@@ -3524,6 +3546,13 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
   function smtpSettings() {
     settings.smtp = normalizeSmtpSettings(settings.smtp);
     return settings.smtp;
+  }
+
+  // Accesseur unique de la politique de blocage des tranches d'âge — jamais de lecture directe de
+  // `settings.groupAgePolicy` ailleurs dans le code (rendu, décision, formulaires).
+  function groupAgePolicySettings() {
+    settings.groupAgePolicy = normalizeGroupAgePolicy(settings.groupAgePolicy);
+    return settings.groupAgePolicy;
   }
 
   // SMTP prêt à l'emploi : activé, hôte, expéditeur renseignés. Ne préjuge pas de la présence
@@ -15241,6 +15270,7 @@ ${esc(bodyText)}</pre>
       ${settingsCollapsibleBand("postits", "Post-it À faire", "Couleurs et modèles", postitSettingsHtml())}
       ${settingsCollapsibleBand("features", "Fonctionnalités du club", featuresClubBandSummary(), featuresClubBandBody())}
       ${settingsCollapsibleBand("sport-categories", "Disciplines et catégories sportives", sportCategoriesBandSummary(), sportCategoriesBandBody())}
+      ${settingsCollapsibleBand("group-age-policy", "Gestion des tranches d'âge", groupAgePolicyBandSummary(), groupAgePolicyBandBody())}
       ${settingsCollapsibleBand("display", "Affichage", displayModeSummary(), `<div class="settings-panel display-settings-panel">
           <label class="layout-mode-select">
             <span><strong>Disposition de l'interface</strong><small>Choisissez entre l'affichage moderne actuel et une interface classique avec menus en haut.</small></span>
@@ -17122,6 +17152,52 @@ ${esc(bodyText)}</pre>
     const key = asText(disciplineId);
     if (!key) return null;
     return disciplinesList().find((d) => asText(d.id) === key) || null;
+  }
+
+  // ===== Politique de blocage des tranches d'âge (par club) =====
+  // Réglage propre au club actif (settings.groupAgePolicy, normalisé par groupAgePolicySettings()).
+  // Deux sous-politiques indépendantes ("min"/"max"), jamais de troisième état, jamais de surcharge
+  // par groupe dans ce lot (doctrine §1/§10).
+  function groupAgePolicySummaryFragment(mode) {
+    return mode === "block" ? "refuser" : "avertir";
+  }
+
+  function groupAgePolicyBandSummary() {
+    const policy = currentGroupAgePolicy();
+    return `Minimum : ${groupAgePolicySummaryFragment(policy.min)} · Maximum : ${groupAgePolicySummaryFragment(policy.max)}`;
+  }
+
+  // `aria-pressed` explicite (audit accessibilité) : l'état actif ne repose plus seulement sur la
+  // classe visuelle `primary`, un lecteur d'écran l'annonce. Mis à jour immédiatement après chaque
+  // changement de politique puisque toute la bande est reconstruite par le rendu (render()).
+  function groupAgePolicyButton(field, mode, label, detail) {
+    const active = currentGroupAgePolicy()[field] === mode;
+    return `<button type="button" class="${active ? "primary" : ""}" aria-pressed="${active ? "true" : "false"}" data-action="set-group-age-policy" data-policy-field="${esc(field)}" data-policy-mode="${esc(mode)}" style="flex:1 1 220px;text-align:left;padding:10px 12px">
+      <strong style="display:block">${esc(label)}</strong>
+      <small style="display:block;font-weight:400;opacity:.85;margin-top:2px">${esc(detail)}</small>
+    </button>`;
+  }
+
+  function groupAgePolicyBandBody() {
+    return `<div class="settings-panel group-age-policy-panel">
+      <p class="muted">Choisissez si MonGestaClub doit seulement signaler ou réellement refuser les nouvelles affectations hors tranche d'âge.</p>
+      <div class="settings-subsection">
+        <h4 id="group-age-policy-min-label">Membre plus jeune que l'âge minimum du groupe</h4>
+        <div class="group-age-policy-row" role="group" aria-labelledby="group-age-policy-min-label" style="display:flex;gap:8px;flex-wrap:wrap;margin:6px 0 2px">
+          ${groupAgePolicyButton("min", "warn", "Autoriser avec avertissement", "Le membre peut être ajouté ; un encadré rappelle qu'il est sous l'âge minimum du groupe.")}
+          ${groupAgePolicyButton("min", "block", "Refuser la nouvelle affectation", "Le membre reste visible dans la liste des candidats, mais ne peut pas être ajouté à ce groupe.")}
+        </div>
+        <p class="muted">Les membres déjà présents ne seront jamais retirés automatiquement.</p>
+      </div>
+      <div class="settings-subsection">
+        <h4 id="group-age-policy-max-label">Membre plus âgé que l'âge maximum du groupe</h4>
+        <div class="group-age-policy-row" role="group" aria-labelledby="group-age-policy-max-label" style="display:flex;gap:8px;flex-wrap:wrap;margin:6px 0 2px">
+          ${groupAgePolicyButton("max", "warn", "Autoriser avec avertissement", "Le membre peut être ajouté ; un encadré rappelle qu'il dépasse l'âge maximum du groupe.")}
+          ${groupAgePolicyButton("max", "block", "Refuser la nouvelle affectation", "Le membre reste visible dans la liste des candidats, mais ne peut pas être ajouté à ce groupe.")}
+        </div>
+        <p class="muted">Les membres déjà présents ne seront jamais retirés automatiquement.</p>
+      </div>
+    </div>`;
   }
 
   function sportCategoriesBandSummary() {
@@ -23454,6 +23530,7 @@ ${esc(bodyText)}</pre>
       // marquées en clair. Aucun n'est masqué ni bloqué (§7.1/§7.2), et un groupe historique d'une
       // autre discipline reste sélectionné avec son marquage (§7.3).
       groupSelectField("groupId", row),
+      `<div class="form-error" hidden data-membership-group-block-error></div>`,
       // Lot V1 Niveaux — note libre assumée (pas de select, pas d'automatisme, cf. audit
       // Niveaux/Groupes/Disciplines) : libellé et placeholder rendent explicite qu'il s'agit
       // d'une indication saisie librement, affichée ensuite dans le récap de cette inscription.
@@ -23619,16 +23696,50 @@ ${esc(bodyText)}</pre>
           }
           : `${personLabel(next)} est enregistré en non-adhérent`;
       }
-      next.contactId = syncMemberContact(next, row);
+      // Doctrine transactionnelle (audit correction) — TOUTES les validations bloquantes doivent
+      // s'exécuter AVANT toute mutation, y compris la synchronisation du contact. `syncMemberContact`
+      // crée ou modifie un contact directement dans state.contacts.members : l'appeler ici, avant la
+      // politique d'âge et le conflit d'horaire, laissait un contact créé/modifié même quand la
+      // sauvegarde était ensuite refusée. `resolveContactForMembership` reproduit la même recherche
+      // SANS écrire, pour que les deux validations ci-dessous disposent du contactId qu'aurait produit
+      // syncMemberContact, sans jamais créer ni modifier de contact avant qu'elles n'aient tranché.
+      const resolvedContact = resolveContactForMembership(next, row);
+      const pendingContactId = resolvedContact ? resolvedContact.id : (next.contactId || row.contactId || "");
+      // Politique de blocage des tranches d'âge (§8) : seule une NOUVELLE relation membre -> groupe
+      // peut être refusée. Une inscription existante dont le groupe ne change pas reste TOUJOURS
+      // sauvegardable (doctrine §5), même si elle est devenue incompatible entre-temps (tranche ou
+      // politique modifiée depuis) — d'où la comparaison explicite row.groupId vs next.groupId,
+      // transmise au helper central plutôt que de laisser sa détection automatique s'appliquer
+      // (qui vaudrait toujours vrai ici puisque next.groupId cible déjà le groupe évalué).
+      // Ne dépend pas du contact (l'âge vient de next.birthDate, saisi directement dans ce
+      // formulaire) : peut donc s'évaluer avant toute résolution/synchronisation de contact.
+      if (next.groupId) {
+        const targetGroup = getGroupById(next.groupId);
+        if (targetGroup) {
+          const isExistingAssignment = asText(row.groupId) === asText(next.groupId);
+          const decision = groupMemberAgeDecision(next, targetGroup, { isExistingAssignment });
+          if (decision.blocked) {
+            const errorBox = formElement?.querySelector("[data-membership-group-block-error]");
+            if (errorBox) { errorBox.hidden = false; errorBox.textContent = decision.detailText; }
+            focusDialogControl(formElement, "[name='groupId']");
+            return false;
+          }
+        }
+      }
       // Un même adhérent ne doit pas cumuler deux inscriptions dont les cours hebdomadaires se
       // chevauchent le même jour (ex. Judo enfants + Self-défense au même horaire) : blocage à
       // l'enregistrement, avant toute écriture dans state.memberships. row.id exclut l'inscription
-      // en cours d'édition (ne jamais se bloquer elle-même).
-      const scheduleConflictMessage = memberScheduleConflictMessage(next.contactId, next.groupId, row.id);
+      // en cours d'édition (ne jamais se bloquer elle-même). Utilise pendingContactId (résolu, non
+      // écrit) : un contact qui n'existe pas encore ne peut par construction être en conflit avec
+      // aucune inscription existante.
+      const scheduleConflictMessage = memberScheduleConflictMessage(pendingContactId, next.groupId, row.id);
       if (scheduleConflictMessage) {
         alert(scheduleConflictMessage);
         return false;
       }
+      // Toutes les validations bloquantes ont tranché : seule la phase d'application effective
+      // (synchronisation contact puis upsert de l'inscription) suit à partir d'ici.
+      next.contactId = syncMemberContact(next, row);
       const promoted = contactLink.kind === "prospect" && promoteProspectContactToMember(contactLink.contactId, next.contactId);
       upsert(state.memberships, next);
       // Journalisation UNIQUEMENT si l'inscription existait déjà avant l'ouverture (jamais pour une
@@ -24526,17 +24637,30 @@ ${esc(bodyText)}</pre>
     else list.push(row);
   }
 
+  // Résolution PURE (aucune écriture) du contact que syncMemberContact utiliserait pour cette
+  // inscription — EXACTEMENT la même recherche (par contactId, puis par nom+prénom de l'inscription
+  // précédente, puis par nom+prénom de l'inscription soumise), sans jamais créer ni modifier de
+  // contact. `null` si aucun contact existant ne correspond (syncMemberContact en créerait un
+  // nouveau lors de l'application effective). Permet aux validations bloquantes (politique d'âge,
+  // conflit d'horaire) de connaître le contact concerné AVANT toute mutation — voir openMembershipDialog.
+  function resolveContactForMembership(membership = {}, previous = {}) {
+    if (!asText(membership.lastName) && !asText(membership.firstName)) return null;
+    const contacts = state.contacts.members;
+    const previousKey = personKey(previous);
+    const currentKey = personKey(membership);
+    let contact = contacts.find((item) => item.id && item.id === (membership.contactId || previous.contactId));
+    if (!contact && previousKey !== "|") contact = contacts.find((item) => personKey(item) === previousKey);
+    if (!contact && currentKey !== "|") contact = contacts.find((item) => personKey(item) === currentKey);
+    return contact || null;
+  }
+
   function syncMemberContact(membership, previous = {}) {
     const contacts = state.contacts.members;
     if (!asText(membership.lastName) && !asText(membership.firstName)) {
       return membership.contactId || previous.contactId || "";
     }
 
-    const previousKey = personKey(previous);
-    const currentKey = personKey(membership);
-    let contact = contacts.find((item) => item.id && item.id === (membership.contactId || previous.contactId));
-    if (!contact && previousKey !== "|") contact = contacts.find((item) => personKey(item) === previousKey);
-    if (!contact && currentKey !== "|") contact = contacts.find((item) => personKey(item) === currentKey);
+    let contact = resolveContactForMembership(membership, previous);
 
     if (!contact) {
       contact = {
@@ -29263,6 +29387,22 @@ ${esc(bodyText)}</pre>
       render();
       return;
     }
+    if (action === "set-group-age-policy") {
+      // Réglage PAR CLUB (settings.groupAgePolicy) : ne modifie ni ne retire aucun membre, aucun
+      // groupe, aucune inscription — seuls les FUTURS parcours d'affectation sont concernés
+      // (doctrine §11). Effet immédiat, sans rechargement : la prochaine ouverture de « Membres +/− »
+      // ou d'une inscription relit settings.groupAgePolicy via groupAgePolicySettings().
+      const field = button.dataset.policyField === "max" ? "max" : "min";
+      const mode = button.dataset.policyMode === "block" ? "block" : "warn";
+      const policy = groupAgePolicySettings();
+      if (policy[field] === mode) { return; }
+      const previous = { min: policy.min, max: policy.max };
+      policy[field] = mode;
+      persistSettings();
+      audit.groupAgePolicyUpdated(activeClub(), previous, { min: policy.min, max: policy.max });
+      render();
+      return;
+    }
     if (action === "set-display-mode") {
       const mode = button.dataset.mode;
       if (!["simple", "advanced", "custom"].includes(mode)) return;
@@ -29637,7 +29777,17 @@ ${esc(bodyText)}</pre>
       const group = getGroupById(groupId);
       if (!group) return;
       const root = button.closest("[data-group-members-dialog]");
-      const ids = Array.from(root ? root.querySelectorAll("[data-group-candidate]:checked") : []).map((cb) => cb.value);
+      const checked = Array.from(root ? root.querySelectorAll("[data-group-candidate]:checked") : []);
+      // Défense en profondeur : une case bloquée est déjà `disabled` (donc jamais cochable), mais on
+      // revalide ici via le helper central — un candidat bloqué n'entre jamais dans la sélection,
+      // sans jamais empêcher les autres candidats sélectionnés d'être ajoutés (§7 « ajout en lot »).
+      const ids = checked
+        .filter((cb) => !cb.hasAttribute("data-blocked-candidate"))
+        .map((cb) => cb.value)
+        .filter((mid) => {
+          const membership = (state.memberships || []).find((m) => m.id === mid);
+          return membership && groupMemberAgeDecision(membership, group).allowed;
+        });
       if (!ids.length) { alert("Sélectionne au moins un adhérent à ajouter."); return; }
       recordHistory();
       let added = 0;
@@ -32126,6 +32276,129 @@ ${esc(bodyText)}</pre>
     return status;
   }
 
+  // ===== Politique de blocage des tranches d'âge (par club) =====
+  // Lecture PURE de la politique de blocage — jamais d'écriture, contrairement à
+  // groupAgePolicySettings() (src/04-settings-normalize.js) qui réassigne settings.groupAgePolicy à
+  // chaque appel (patron « normaliser au passage » volontaire pour les accesseurs de settings
+  // existants, mais inadapté à un helper qui doit rester sans effet de bord — audit correction).
+  // settings.groupAgePolicy est de toute façon déjà normalisé au chargement (normalizeSettings) :
+  // cette seconde normalisation ne fait donc que garantir la forme, jamais réécrire l'original.
+  function currentGroupAgePolicy() {
+    return normalizeGroupAgePolicy(settings.groupAgePolicy);
+  }
+
+  // Doctrine : `groupMemberAgeStatus` reste la SEULE source du CONSTAT d'âge (trop jeune/trop
+  // âgé/tranche invalide/date absente) — ce helper ne refait jamais `age < ageMin` ni `age > ageMax`,
+  // il combine uniquement ce constat avec la politique du club actif et le contexte de l'affectation
+  // (nouvelle relation membre -> groupe, ou affectation déjà enregistrée). Fonction PURE (aucune
+  // écriture, y compris sur `settings` — voir currentGroupAgePolicy ci-dessus).
+  //
+  // `options.isExistingAssignment` (booléen explicite, optionnel) permet aux appelants qui MUTENT déjà
+  // `member.groupId` vers le groupe cible AVANT d'appeler ce helper (ex. formulaire d'inscription) de
+  // préciser s'il s'agit d'une affectation inchangée ou d'une nouvelle affectation — sans quoi la
+  // détection automatique (member.groupId === group.id) serait toujours vraie et ne bloquerait jamais
+  // rien. Quand ce booléen n'est pas fourni, la détection automatique s'applique (correcte pour les
+  // rendus qui n'ont pas encore muté la relation : liste des membres déjà affectés = toujours
+  // existante ; liste des candidats = toujours nouvelle, puisque groupMemberCandidates exclut déjà
+  // les membres du groupe).
+  function groupMemberAgeDecision(member = {}, group = {}, options = {}) {
+    const status = groupMemberAgeStatus(member, group, options.referenceDate);
+    const explicitExisting = options.isExistingAssignment;
+    const isExistingAssignment = typeof explicitExisting === "boolean"
+      ? explicitExisting
+      : Boolean(asText(group.id)) && asText(member.groupId) === asText(group.id);
+    const decision = {
+      ...status,
+      isExistingAssignment,
+      policyMin: null,
+      policyMax: null,
+      policyField: "",
+      warnOnly: false,
+      blocked: false,
+      allowed: true,
+      reason: "",
+    };
+    // Tranche invalide ou statut neutre (pas de tranche, date absente, dans la tranche) : jamais de
+    // blocage — groupMemberAgeStatus.outOfRange est déjà false dans tous ces cas (§9 doctrine).
+    if (!status.outOfRange) return decision;
+    const policy = currentGroupAgePolicy();
+    decision.policyMin = policy.min;
+    decision.policyMax = policy.max;
+    decision.policyField = status.tooYoung ? "min" : "max";
+    const relevantPolicy = status.tooYoung ? policy.min : policy.max;
+    // Une affectation déjà enregistrée n'est jamais remise en cause rétroactivement — seule une
+    // NOUVELLE relation membre -> groupe peut être refusée (doctrine §4/§5).
+    if (isExistingAssignment || relevantPolicy !== "block") {
+      decision.warnOnly = true;
+      return decision;
+    }
+    decision.blocked = true;
+    decision.allowed = false;
+    decision.reason = status.tooYoung ? "too-young-blocked" : "too-old-blocked";
+    const name = personLabel(member) || "Ce membre";
+    const groupName = asText(group.name) || "ce groupe";
+    const boundaryText = status.tooYoung
+      ? `est prévu à partir de ${status.ageMin} ans`
+      : `est prévu jusqu'à ${status.ageMax} ans`;
+    const policyText = status.tooYoung
+      ? "Le club refuse les nouvelles affectations sous l'âge minimum."
+      : "Le club refuse les nouvelles affectations au-dessus de l'âge maximum.";
+    decision.detailText = `Affectation impossible : ${name} a ${status.age} an${status.age > 1 ? "s" : ""} et le groupe « ${groupName} » ${boundaryText}. ${policyText}`;
+    return decision;
+  }
+
+  // Aide dynamique de politique d'âge pour un groupe (dialogue « Membres +/− »). Fonction PURE : ne
+  // refait ni la comparaison d'âge (groupAgeRangeValidation) ni la lecture de settings
+  // (currentGroupAgePolicy), ne fait que composer un texte cohérent avec les deux — corrige le
+  // défaut où le texte d'aide affirmait toujours qu'une exception restait possible, y compris en
+  // politique `block` où l'ajout est réellement refusé (case disabled, aucune exception possible).
+  // "" si aucune borne n'est configurée ou si la tranche est invalide : dans ce dernier cas,
+  // groupAgeRangeConfigWarningHtml reste la SEULE source affichée, jamais une phrase supplémentaire
+  // qui présupposerait une tranche exploitable.
+  function groupAgePolicyGuidance(group = {}) {
+    const validation = groupAgeRangeValidation(group);
+    if (validation.invalidRange) return "";
+    const hasMin = validation.ageMin !== null;
+    const hasMax = validation.ageMax !== null;
+    if (!hasMin && !hasMax) return "";
+    const policy = currentGroupAgePolicy();
+    if (hasMin && !hasMax) {
+      return policy.min === "block"
+        ? "Les nouvelles affectations sous l'âge minimum sont refusées."
+        : "Les membres sous l'âge minimum peuvent être ajoutés avec avertissement.";
+    }
+    if (hasMax && !hasMin) {
+      return policy.max === "block"
+        ? "Les nouvelles affectations au-dessus de l'âge maximum sont refusées."
+        : "Les membres au-dessus de l'âge maximum peuvent être ajoutés avec avertissement.";
+    }
+    if (policy.min === "warn" && policy.max === "warn") {
+      return "La tranche d'âge est indicative : une affectation hors tranche reste autorisée avec avertissement.";
+    }
+    if (policy.min === "block" && policy.max === "block") {
+      return "Les nouvelles affectations hors tranche d'âge sont refusées.";
+    }
+    const minFragment = policy.min === "block"
+      ? "Sous l'âge minimum : nouvelle affectation refusée."
+      : "Sous l'âge minimum : affectation autorisée avec avertissement.";
+    const maxFragment = policy.max === "block"
+      ? "Au-dessus de l'âge maximum : nouvelle affectation refusée."
+      : "Au-dessus de l'âge maximum : affectation autorisée avec avertissement.";
+    return `${minFragment} ${maxFragment}`;
+  }
+
+  // Encadré rouge BLOQUANT (variante de groupAgeWarningBoxHtml) : affiché quand une décision refuse
+  // l'affectation. Mêmes conventions d'icône/texte, classes CSS dédiées (`.age-warning-box.is-blocked`)
+  // pour un contraste visuel renforcé — jamais affiché en même temps que l'encadré toléré du même
+  // membre/groupe (une décision est soit `blocked`, soit `warnOnly`, jamais les deux).
+  function groupAgeBlockedBoxHtml(decision) {
+    if (!decision || !decision.blocked) return "";
+    return `<div class="age-warning-box is-blocked" role="note">
+      <span class="age-warning-box-icon" aria-hidden="true">⛔</span>
+      <span class="age-warning-box-text">${esc(decision.detailText)}</span>
+    </div>`;
+  }
+
   // Avertissement de CONFIGURATION du groupe (pas d'éligibilité d'un membre) : la tranche
   // elle-même est incohérente. Distinct de groupAgeWarningBoxHtml (jamais les deux en même temps
   // pour un même groupe, puisque groupMemberAgeStatus ne produit plus de verdict individuel ici).
@@ -32960,7 +33233,6 @@ ${esc(bodyText)}</pre>
     const candidates = groupMemberCandidates(group);
     const wantDiscipline = asText(group.discipline);
 
-    const hasAgeReq = asText(group.ageMin) !== "" || asText(group.ageMax) !== "";
     // Jamais « (15–10 ans) » présentée comme normale au fil de cette phrase : sur une tranche
     // invalide, on omet ce fragment (l'encadré de configuration, rendu en tête de ce même dialogue
     // par groupAgeRangeConfigWarningHtml, porte déjà l'explication complète — pas de second texte).
@@ -32971,9 +33243,13 @@ ${esc(bodyText)}</pre>
     const filterDesc = wantDiscipline
       ? `Adhérents inscrits${esc(ageReq)} qui ne sont pas déjà dans ce groupe : ceux de « ${esc(wantDiscipline)} » d'abord, les autres disciplines ensuite et signalées.`
       : `Tous les adhérents inscrits${esc(ageReq)} qui ne sont pas déjà dans ce groupe.`;
-    // Tolérance d'âge : la tranche est indicative, on n'empêche pas l'ajout d'un cas particulier.
-    const ageToleranceNote = hasAgeReq
-      ? `<p class="muted group-age-tolerance">La tranche d'âge est indicative : un adhérent en dehors est signalé « Hors tranche d'âge », mais tu peux quand même l'ajouter si tu veux faire une exception.</p>`
+    // Aide d'âge : texte dynamique selon la politique RÉELLE du club actif (audit correction — le
+    // texte fixe précédent promettait toujours une exception possible, y compris en politique
+    // `block` où l'ajout est réellement refusé). "" si aucune borne ou tranche invalide (le warning
+    // de configuration, rendu séparément, reste alors la seule phrase affichée).
+    const ageGuidance = groupAgePolicyGuidance(group);
+    const ageToleranceNote = ageGuidance
+      ? `<p class="muted group-age-tolerance">${esc(ageGuidance)}</p>`
       : "";
     // Lot 3B-2D — même doctrine que la tolérance d'âge, et affichée aux mêmes conditions : seulement
     // si au moins un badge de cohérence est réellement visible dans ce dialogue. Sans incohérence,
@@ -33001,15 +33277,22 @@ ${esc(bodyText)}</pre>
       ? `<p class="group-cap-warn">Capacité atteinte (${cap.count}/${cap.max}). Tu peux quand même ajouter des membres.</p>` : "";
 
     const candidatesHtml = candidates.length
-      ? `<div class="group-add-list">${candidates.map((m) => `
-          <div class="group-add-item" data-search="${esc(memberSearchHaystack(m, group.name))}">
+      ? `<div class="group-add-list">${candidates.map((m) => {
+          // groupMemberCandidates() exclut déjà les membres présents dans CE groupe : la détection
+          // automatique de groupMemberAgeDecision (member.groupId === group.id) vaut donc toujours
+          // false ici — chaque candidat est bien traité comme une NOUVELLE affectation potentielle.
+          const decision = groupMemberAgeDecision(m, group);
+          const boxHtml = decision.blocked ? groupAgeBlockedBoxHtml(decision) : groupAgeWarningBoxHtml(decision);
+          return `
+          <div class="group-add-item${decision.blocked ? " is-blocked" : ""}" data-search="${esc(memberSearchHaystack(m, group.name))}">
             <label class="group-add-row">
-              <input type="checkbox" data-group-candidate value="${esc(m.id)}" />
+              <input type="checkbox" data-group-candidate value="${esc(m.id)}"${decision.blocked ? " disabled data-blocked-candidate" : ""} />
               <span class="group-add-name"><strong>${esc(personLabel(m))}</strong> <span class="muted">${esc(m.discipline || "")}</span></span>
               <span class="group-add-tags">${groupCandidateTags(group, m)}</span>
             </label>
-            ${groupAgeWarningBoxHtml(groupMemberAgeStatus(m, group))}
-          </div>`).join("")}</div>
+            ${boxHtml}
+          </div>`;
+        }).join("")}</div>
         <div class="group-add-empty-search muted" data-list-search-empty hidden>Aucun résultat.</div>
         <div class="inline-actions"><button type="button" class="primary" data-action="add-selected-to-group" data-group-id="${esc(groupId)}">Ajouter au groupe</button></div>`
       : `<p class="muted">${wantDiscipline
@@ -39309,6 +39592,10 @@ ${esc(bodyText)}</pre>
     // avait volontairement pas déclarées : les surfaces n'existaient pas encore. Ces deux actions
     // décrivent un rattachement sportif, jamais une modification financière.
     "membership.sportCategory.changed", "group.sportCategory.changed",
+    // Lot politique de blocage des tranches d'âge — changement de CONFIGURATION du club, au même
+    // patron que club.feature.updated. Jamais un événement par avertissement affiché ni par
+    // tentative d'affectation refusée (ces surfaces ne journalisent aucune validation aujourd'hui).
+    "club.groupAgePolicy.updated",
   ];
 
   function rawAuditLogFromStorage() {
@@ -39680,6 +39967,25 @@ ${esc(bodyText)}</pre>
         entityLabel: club.name,
         clubId: club.id,
         metadata: { feature: String(featureLabel || ""), enabled: enabled === true },
+      });
+    },
+    // Lot politique de blocage des tranches d'âge — même patron que clubFeatureUpdated : un seul
+    // événement par changement RÉEL (le handler n'appelle cette fonction que si min ou max a changé).
+    // metadata porte les 4 valeurs (avant/après, min/max) nécessaires pour comprendre le changement
+    // depuis le journal seul, sans avoir à consulter l'état courant du club.
+    groupAgePolicyUpdated(club, previousPolicy, nextPolicy) {
+      return recordAuditEvent({
+        action: "club.groupAgePolicy.updated",
+        entityType: "club",
+        entityId: club.id,
+        entityLabel: club.name,
+        clubId: club.id,
+        metadata: {
+          previousMin: String((previousPolicy && previousPolicy.min) || "warn"),
+          nextMin: String((nextPolicy && nextPolicy.min) || "warn"),
+          previousMax: String((previousPolicy && previousPolicy.max) || "warn"),
+          nextMax: String((nextPolicy && nextPolicy.max) || "warn"),
+        },
       });
     },
     // Lot 3A — cycle de vie facture. `contact` est optionnel (facture sans contact résolu) :
@@ -40412,6 +40718,20 @@ ${esc(bodyText)}</pre>
       const feature = asText(metadata.feature) || "une fonctionnalité";
       const verb = metadata.enabled === true ? "a activé" : "a désactivé";
       return `${actor} ${verb} « ${feature} » pour le club « ${label || "?"} »`;
+    },
+    // Lot politique de blocage des tranches d'âge — texte humain, jamais l'action technique brute
+    // ni les clés de metadata (previousMin/nextMin/...) telles quelles. Ne mentionne que le(s)
+    // champ(s) réellement changé(s) (l'appelant, src/21-handlers.js, n'écrit déjà l'événement que
+    // si min ou max a changé, mais les deux valeurs voyagent toujours dans metadata).
+    "club.groupAgePolicy.updated": (actor, label, metadata) => {
+      const modeText = (m) => (m === "block" ? "refuser" : "autoriser avec avertissement");
+      const minChanged = asText(metadata.previousMin) !== asText(metadata.nextMin);
+      const maxChanged = asText(metadata.previousMax) !== asText(metadata.nextMax);
+      const parts = [];
+      if (minChanged) parts.push(`minimum : ${modeText(metadata.previousMin)} → ${modeText(metadata.nextMin)}`);
+      if (maxChanged) parts.push(`maximum : ${modeText(metadata.previousMax)} → ${modeText(metadata.nextMax)}`);
+      const detail = parts.length ? ` (${parts.join(", ")})` : "";
+      return `${actor} a modifié la politique des tranches d'âge du club « ${label || "?"} »${detail}`;
     },
     "invoice.created": (actor, label, metadata) => {
       const contactLabel = asText(metadata.contactLabel);

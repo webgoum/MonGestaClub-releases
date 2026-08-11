@@ -5381,6 +5381,24 @@ input.locked-price {
 .age-warning-box-icon { flex: 0 0 auto; }
 .age-warning-box-text { flex: 1 1 auto; min-width: 0; white-space: normal; }
 
+/* Variante BLOQUANTE (politique de blocage des tranches d'âge, par club) — même structure que
+   .age-warning-box (icône + texte, jamais la couleur seule), renforcée pour se distinguer sans
+   ambiguïté de l'avertissement toléré : bordure plus épaisse et plus saturée, fond plus marqué,
+   texte en gras, icône distincte (⛔ au lieu de ⚠). Jamais affichée en même temps que la variante
+   tolérée pour un même membre/groupe (une décision est soit `blocked`, soit `warnOnly`). */
+.age-warning-box.is-blocked {
+  border-color: color-mix(in srgb, var(--danger) 70%, transparent);
+  border-left-width: 6px;
+  background: color-mix(in srgb, var(--danger) 24%, var(--surface));
+}
+.age-warning-box.is-blocked .age-warning-box-text { font-weight: 700; }
+
+/* Candidat bloqué dans « Membres +/− » : case réellement désactivée (attribut disabled, pas
+   seulement visuel), ligne légèrement atténuée pour renforcer la lecture sans dépendre de la
+   seule couleur (le curseur "not-allowed" et l'encadré ⛔ ci-dessus portent déjà l'information). */
+.group-add-item.is-blocked .group-add-row { opacity: 0.85; cursor: not-allowed; }
+.group-add-item.is-blocked .group-add-row input[type="checkbox"] { cursor: not-allowed; }
+
 .group-card-age-warn {
   margin: 8px 0 0;
   padding: 6px 10px;
