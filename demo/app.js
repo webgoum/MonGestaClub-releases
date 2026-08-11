@@ -5921,6 +5921,25 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
     return true;
   }
 
+  // Restauration PUREMENT EN MÉMOIRE d'un snapshot (v2 ou legacy, via parseUndoSnapshot — jamais
+  // normalizeState(JSON.parse(snapshot)) directement sur l'enveloppe, qui produirait un état quasi
+  // vide puisque snapshotState() sérialise {version,state,settings,ui} et non le state brut). Ne
+  // persist PAS, ne render PAS, ne touche NI history.undo NI history.redo : c'est le rollback d'une
+  // opération métier refusée AVANT tout engagement de checkpoint (ex. validate-payment, Lot correctif
+  // PAY-P0-1), quand l'appelant (ex. validatePayment) a pu écrire des champs avant de retourner false.
+  function restoreHistoryCheckpointInMemory(snapshot) {
+    const restored = parseUndoSnapshot(snapshot);
+    if (!restored) return false;
+    state = normalizeState(restored.state);
+    // Même préservation des réglages visuels transitoires que restoreState (voir plus haut).
+    const liveTransient = {};
+    for (const key of historyExcludedSettingsKeys) liveTransient[key] = settings[key];
+    settings = normalizeSettings(restored.settings);
+    for (const key of historyExcludedSettingsKeys) settings[key] = liveTransient[key];
+    applyUiSnapshot(restored.ui);
+    return true;
+  }
+
   const undoCheckpointElements = new WeakSet();
 
   function recordFieldHistoryOnce(target) {
@@ -5930,16 +5949,7 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
   }
 
   function restoreState(snapshot, message) {
-    const restored = parseUndoSnapshot(snapshot);
-    if (!restored) return;
-    state = normalizeState(restored.state);
-    // L'état visuel transitoire de la barre n'est pas parcouru par Annuler/Rétablir : on préserve
-    // sa valeur courante au lieu de celle (absente) du snapshot.
-    const liveTransient = {};
-    for (const key of historyExcludedSettingsKeys) liveTransient[key] = settings[key];
-    settings = normalizeSettings(restored.settings);
-    for (const key of historyExcludedSettingsKeys) settings[key] = liveTransient[key];
-    applyUiSnapshot(restored.ui);
+    if (!restoreHistoryCheckpointInMemory(snapshot)) return;
     persist(message);
     render();
   }
@@ -29755,14 +29765,26 @@ ${esc(bodyText)}</pre>
       // que la garde testait "boutique" alors que le tiroir pose "order" (garde qui ne matchait jamais).
       const HISTORICAL_PAYMENT_MODULES = ["membership", "order", "registration"];
       if (!HISTORICAL_PAYMENT_MODULES.includes(paymentContext.module)) return;
-      const snapshot = snapshotState();
-      recordHistory();
-      const validation = validatePayment(button);
+      // Lot correctif PAY-P0-1/PAY-P1-3 : validatePayment() n'est PAS pure (elle peut écrire
+      // payment.amount/state avant de retourner false — trop-perçu, montant invalide, dernier
+      // chèque incomplet). Le snapshot pré-opération n'est donc engagé dans Undo qu'après un succès
+      // confirmé (commitHistoryCheckpoint) ; un refus restaure l'état EN MÉMOIRE via la logique
+      // versionnée (restoreHistoryCheckpointInMemory -> parseUndoSnapshot), sans jamais toucher
+      // Undo/Redo — l'ancien normalizeState(JSON.parse(snapshot)) décodait à tort l'ENVELOPPE
+      // {version,state,settings,ui} comme un state brut, écrasant tout le club par un état vide.
+      const beforeSnapshot = beginHistoryCheckpoint();
+      let validation;
+      try {
+        validation = validatePayment(button);
+      } catch (error) {
+        restoreHistoryCheckpointInMemory(beforeSnapshot);
+        throw error;
+      }
       if (!validation) {
-        state = normalizeState(JSON.parse(snapshot));
-        if (history.undo[history.undo.length - 1] === snapshot) history.undo.pop();
+        restoreHistoryCheckpointInMemory(beforeSnapshot);
         return;
       }
+      commitHistoryCheckpoint(beforeSnapshot);
       // Journalisé seulement après mutation réussie, jamais avant : validated/cancelled distingués
       // par le résultat réel de validatePayment(), jamais deviné depuis le texte du bouton.
       const auditContext = paymentAuditContext(paymentContext);
