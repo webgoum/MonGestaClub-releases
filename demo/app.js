@@ -22428,9 +22428,10 @@ ${esc(bodyText)}</pre>
     // stopPropagation. Réutilise tel quel l'action delete-membership déjà existante (confirmation,
     // undo, contact jamais supprimé) : aucune nouvelle logique de suppression créée.
     // Avertissement persistant de tranche d'âge (groupe) — même encadré et même verdict que dans le
-    // dialogue Membres du groupe (groupMemberAgeStatus), aucune logique recalculée ici. "" si le
-    // membership n'a pas de groupe ou si l'âge est dans la tranche.
-    const ageWarningHtml = group ? groupAgeWarningBoxHtml(groupMemberAgeStatus(row, group)) : "";
+    // dialogue Membres du groupe (groupMemberAgeDecision, policy-aware : distingue l'affectation
+    // existante conservée d'une politique bloquante — cf. lot grandfathering), aucune logique
+    // recalculée ici. "" si le membership n'a pas de groupe ou si l'âge est dans la tranche.
+    const ageWarningHtml = group ? groupAgeWarningBoxHtml(groupMemberAgeDecision(row, group)) : "";
     return `<article class="contact-recap-row clickable-card" data-action="edit-membership" data-id="${esc(row.id)}" title="Ouvrir cette inscription">
       <div class="contact-recap-main">
         <strong>${esc(titleText)}</strong>
@@ -33400,6 +33401,19 @@ ${esc(bodyText)}</pre>
     // NOUVELLE relation membre -> groupe peut être refusée (doctrine §4/§5).
     if (isExistingAssignment || relevantPolicy !== "block") {
       decision.warnOnly = true;
+      // Grandfathering — une affectation existante conservée sous une politique désormais bloquante
+      // n'est PAS une autorisation permanente : si elle est supprimée, une nouvelle affectation du
+      // même membre dans le même groupe sera refusée (voir la branche `decision.blocked` ci-dessous,
+      // qui s'applique dès que isExistingAssignment redevient false). Le message générique de
+      // status.detailText ("Cette affectation reste autorisée.") serait trompeur ici : il pourrait
+      // laisser croire que la recréer resterait aussi possible. Précisé explicitement dans CE seul
+      // cas (affectation existante + politique bloquante) ; en politique "warn", rien n'est jamais
+      // bloqué et le message générique reste exact tel quel — jamais modifié.
+      if (isExistingAssignment && relevantPolicy === "block") {
+        const name = personLabel(member) || "Ce membre";
+        const groupName = asText(group.name) || "ce groupe";
+        decision.detailText = `Attention : ${name} a ${status.age} an${status.age > 1 ? "s" : ""}. Le groupe « ${groupName} » est normalement prévu ${groupAgeRangeFragment(status.ageMin, status.ageMax)}. Cette affectation existante est conservée, mais une nouvelle affectation serait désormais bloquée par la politique d'âge du club.`;
+      }
       return decision;
     }
     decision.blocked = true;
@@ -34339,7 +34353,7 @@ ${esc(bodyText)}</pre>
               </div>
               <button type="button" class="danger small" data-action="remove-member-from-group" data-membership-id="${esc(m.id)}">Retirer du groupe</button>
             </div>
-            ${groupAgeWarningBoxHtml(groupMemberAgeStatus(m, group))}
+            ${groupAgeWarningBoxHtml(groupMemberAgeDecision(m, group))}
           </div>`).join("")}</div>`
       : `<p class="muted">Aucun membre dans ce groupe pour l'instant. Ajoute-en depuis la liste ci-dessous.</p>`;
 
