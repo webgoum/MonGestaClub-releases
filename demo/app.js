@@ -21049,7 +21049,15 @@ ${esc(bodyText)}</pre>
     const invoice = ensureDraftInvoiceForRegistration(asText(ref.stageId), asText(ref.registrationId));
     if (!invoice) return;
     const printable = await validateDraftInvoiceForOutput(invoice);
-    if (printable) printInvoice(printable);
+    if (!printable) return;
+    // Lot Stage -> Facture (refresh fiche contact) : cette émission se produit après la fermeture du
+    // dialogue d'inscription (submit différé par setTimeout), donc APRÈS le seul refresh synchrone du
+    // flux générique (showDialog, avant que la facture existe). Sans ce second appel, une fiche
+    // contact restée ouverte derrière n'affiche la nouvelle facture qu'à sa prochaine réouverture.
+    // Même mécanisme ciblé par ID que partout ailleurs (refreshOpenContactDialog) : ne touche jamais
+    // les champs éditables du formulaire contact, seulement le récapitulatif factures.
+    refreshOpenContactDialog();
+    printInvoice(printable);
   }
 
   // Réparation unique (idempotente) des factures créées AVANT le correctif boutique : une commande
