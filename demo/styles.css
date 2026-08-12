@@ -5368,18 +5368,29 @@ input.locked-price {
    texte explicite (pas seulement une pastille colorée), lisible en thème clair comme sombre via
    var(--danger), déjà ajusté par thème (cf. .group-add-tag.warn pour le même besoin sur l'orange). */
 .age-warning-box {
-  display: flex; align-items: flex-start; gap: 8px;
-  margin-top: 2px;
-  padding: 8px 10px;
+  display: flex; align-items: flex-start; gap: 10px;
+  width: 100%; max-width: 100%;
+  margin-top: 4px;
+  padding: 10px 14px;
   border-radius: var(--radius);
   border: 1px solid color-mix(in srgb, var(--danger) 45%, transparent);
   border-left: 4px solid var(--danger);
   background: color-mix(in srgb, var(--danger) 14%, var(--surface));
-  font-size: 0.82rem;
-  line-height: 1.35;
+  font-size: 0.85rem;
+  line-height: 1.5;
 }
-.age-warning-box-icon { flex: 0 0 auto; }
-.age-warning-box-text { flex: 1 1 auto; min-width: 0; white-space: normal; }
+.age-warning-box-icon { flex: 0 0 auto; font-size: 1.05em; line-height: 1.5; }
+/* min-width:0 permet à ce flex-item de rétrécir sous son contenu (indispensable pour que le
+   navigateur accepte de faire retourner le texte à la ligne plutôt que d'étirer le parent) ;
+   overflow-wrap:anywhere protège en plus contre un mot isolé plus large que la carte (le message
+   est composé dynamiquement — nom, groupe — et sa longueur n'est jamais garantie à l'avance). */
+.age-warning-box-text { flex: 1 1 auto; min-width: 0; white-space: normal; overflow-wrap: anywhere; padding-top: 1px; }
+
+/* Fiche contact, carte discipline (.contact-recap-row, grid 3 colonnes titre/statut/montants) :
+   l'alerte y est un enfant DIRECT de la grille (plus dans .contact-recap-main), étendue sur les 3
+   colonnes pour former une bannière pleine largeur sous la ligne titre/statut/montants — plutôt que
+   confinée à la largeur de la seule première colonne (effet « petit bloc coincé à gauche »). */
+.contact-recap-row > .age-warning-box { grid-column: 1 / -1; }
 
 /* Variante BLOQUANTE (politique de blocage des tranches d'âge, par club) — même structure que
    .age-warning-box (icône + texte, jamais la couleur seule), renforcée pour se distinguer sans
@@ -9287,8 +9298,13 @@ small.email-variable-chip:hover {
   gap: 2px;
 }
 
-.contact-recap-main strong,
-.contact-recap-main span {
+/* Enfants DIRECTS uniquement (titre/sous-titre de la ligne) : un sélecteur descendant large
+   (`.contact-recap-main span`) attrapait aussi .age-warning-box-text, plus profondément imbriqué
+   (.contact-recap-main > .age-warning-box > .age-warning-box-text) — sa règle white-space:normal
+   perdait alors face à celle-ci (spécificité égale, ordre de cascade), tronquant en une seule ligne
+   un avertissement d'âge trop long pour le bandeau (débordement horizontal, texte invisible). */
+.contact-recap-main > strong,
+.contact-recap-main > span {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

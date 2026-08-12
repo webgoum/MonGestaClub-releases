@@ -22432,15 +22432,18 @@ ${esc(bodyText)}</pre>
     // existante conservée d'une politique bloquante — cf. lot grandfathering), aucune logique
     // recalculée ici. "" si le membership n'a pas de groupe ou si l'âge est dans la tranche.
     const ageWarningHtml = group ? groupAgeWarningBoxHtml(groupMemberAgeDecision(row, group)) : "";
+    // L'alerte d'âge est un enfant DIRECT de .contact-recap-row (pas de .contact-recap-main) : le
+    // CSS l'étend sur toute la largeur de la carte (grid-column: 1 / -1), en bannière intégrée sous
+    // la ligne titre/statut/montants — jamais confinée à la largeur de la seule première colonne.
     return `<article class="contact-recap-row clickable-card" data-action="edit-membership" data-id="${esc(row.id)}" title="Ouvrir cette inscription">
       <div class="contact-recap-main">
         <strong>${esc(titleText)}</strong>
         <span>${esc(subtitle || "Inscription discipline")}</span>
         <button type="button" class="contact-recap-remove-btn" data-action="delete-membership" data-id="${esc(row.id)}" title="Retirer cette discipline de la fiche">Retirer</button>
-        ${ageWarningHtml}
       </div>
       ${contactRecapStatus(entry.calc)}
       ${contactRecapAmounts(entry.calc)}
+      ${ageWarningHtml}
     </article>`;
   }
 
