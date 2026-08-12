@@ -39294,6 +39294,12 @@ ${esc(bodyText)}</pre>
 
   function scheduleAssistantIdleHint() {
     clearAssistantIdleHint();
+    // Seul point d'entrée proactif du Centre d'accompagnement qui ne passait pas par
+    // assistantFeatureEnabled() (celui-ci teste aussi settings.assistant.hiddenUntil, un mode
+    // "silence temporaire" sans rapport avec ce réglage) : sans cette garde, la bulle "Besoin
+    // d'aide ?" et son bouton "Voir la visite" continuaient d'apparaître après 25s d'inactivité
+    // même Centre d'accompagnement désactivé dans Paramètres > Affichage.
+    if (typeof assistantDisplayEnabled === "function" && !assistantDisplayEnabled()) return;
     if (isAssistantQuiet() || ui.tour) return;
     const view = ui.view;
     const hint = ASSISTANT_IDLE_HINTS[view];
