@@ -10705,6 +10705,17 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
   }
 
   // Regroupement AFFICHAGE des alertes Documents par adhérent (ne touche pas taskRows ni les KPIs).
+  // Lot Dossier incomplet (routage direct) — le nom du champ de formulaire du contact à
+  // focus/scroller après ouverture, pour chaque clé d'anomalie « personne ». Source UNIQUE de cette
+  // correspondance clé -> champ : jamais dupliquée ailleurs. "" pour toute clé sans champ dédié
+  // (ex. anomalies d'inscription, qui n'empruntent de toute façon jamais ce chemin).
+  function dossierIssueFocusField(key) {
+    if (key === "parental-missing") return "parentalAuthorization";
+    if (key === "image-missing") return "imageRights";
+    if (key === "rules-missing") return "rulesSigned";
+    return "";
+  }
+
   // Itère les inscriptions (même source que taskRows), dédoublonne les documents « personne » (parental,
   // droit image, règlement) et garde la discipline pour les documents « inscription » (licence, certificat).
   function dossierDocumentGroups() {
@@ -10728,7 +10739,10 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
         const dedupKey = personLevel ? `p:${issue.key}` : `d:${issue.key}|${m.discipline}`;
         if (g.seen.has(dedupKey)) return;
         g.seen.add(dedupKey);
-        g.items.push({ label: issue.label, discipline, membershipId: m.id, tone: issue.level === "soon" ? "wait" : "late" });
+        // Lot Dossier incomplet (routage direct) — personLevel (dérivé de issue.key, jamais du
+        // libellé affiché) porte le routage du bouton "Ouvrir" : une anomalie de contact doit ouvrir
+        // directement Modifier le contact, jamais transiter par Modifier l'inscription.
+        g.items.push({ label: issue.label, discipline, membershipId: m.id, tone: issue.level === "soon" ? "wait" : "late", personLevel, focusField: dossierIssueFocusField(issue.key) });
       });
     });
     return groups;
@@ -10765,7 +10779,14 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
   }
 
   // Popup « Voir le détail » : liste toutes les alertes Documents d'un adhérent, avec discipline et un
-  // bouton « Ouvrir » par document (action edit-membership existante, bon data-id de l'inscription).
+  // bouton « Ouvrir » par document. Routage par PROPRIÉTAIRE métier de la donnée (it.personLevel,
+  // dérivé de issue.key — jamais du libellé affiché) : une anomalie de CONTACT (autorisation
+  // parentale, droit à l'image, règlement) ouvre directement Modifier le contact
+  // (open-linked-contact + group.link, l'IDENTIFIANT stable du contact — jamais son nom), avec le
+  // focus posé sur le bon champ ; une anomalie d'INSCRIPTION (licence, certificat) garde l'ouverture
+  // historique de l'inscription (edit-membership, bon data-id). group.link n'est un lien contact
+  // exploitable que s'il commence par "member:"/"prospect:" (jamais le repli "name:" d'une donnée
+  // legacy sans contactId) : dans ce cas on retombe sur edit-membership plutôt qu'un bouton mort.
   // Contenu (recalculé depuis state) de la liste « Voir le détail » d'un dossier. Réutilisé à
   // l'ouverture ET au rafraîchissement après résolution d'un problème.
   function dossierDetailInnerHtml(contactLink) {
@@ -10775,11 +10796,17 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
       return `<p class="dossier-doc-empty">✓ Tous les documents de ce dossier sont à jour.</p>`;
     }
     const count = items.length;
-    const list = items.map((it, index) => `<li class="dossier-doc-item">
+    const canLinkContact = /^(member|prospect):/.test(group.link);
+    const list = items.map((it, index) => {
+      const openBtn = (it.personLevel && canLinkContact)
+        ? `<button type="button" class="small" data-action="open-linked-contact" data-contact-link="${esc(group.link)}"${it.focusField ? ` data-contact-focus-field="${esc(it.focusField)}"` : ""}>Ouvrir</button>`
+        : `<button type="button" class="small" data-action="edit-membership" data-id="${esc(it.membershipId)}">Ouvrir</button>`;
+      return `<li class="dossier-doc-item">
         <span class="dossier-doc-rank">${index + 1}.</span>
         <span class="dossier-doc-text"><strong>${esc(it.label)}</strong>${it.discipline ? ` <span class="muted">— ${esc(it.discipline)}</span>` : ""}</span>
-        <button type="button" class="small" data-action="edit-membership" data-id="${esc(it.membershipId)}">Ouvrir</button>
-      </li>`).join("");
+        ${openBtn}
+      </li>`;
+    }).join("");
     return `<p class="muted">${count} document${count > 1 ? "s" : ""} à vérifier :</p>
       <ul class="dossier-doc-list">${list}</ul>`;
   }
@@ -20664,7 +20691,10 @@ ${esc(bodyText)}</pre>
       enhanceNumberSteppers(targetDialog);
     }
     applyClickableTooltips(targetDialog);
-    showFloatingDialog(form, "", targetDialog);
+    // options.focusSelector (facultatif) : cible de focus initial explicite, réutilise le mécanisme
+    // existant (focusDialogControl, jeton anti-course, retries) au lieu de la règle générique
+    // (premier champ métier) — cf. lot Dossier incomplet, ouverture directe sur le bon champ.
+    showFloatingDialog(form, options.focusSelector || "", targetDialog);
     return targetDialog;
   }
 
@@ -21092,16 +21122,19 @@ ${esc(bodyText)}</pre>
     </div>`);
   }
 
-  function openContactDialogFromLink(contactLink) {
+  // focusField (facultatif) : nom d'un champ du formulaire contact (ex. "parentalAuthorization") à
+  // scroller/focuser une fois la fiche ouverte — cf. lot Dossier incomplet. "" partout où aucune
+  // cible n'a de sens, comportement strictement inchangé (aucun appelant existant n'en fournit).
+  function openContactDialogFromLink(contactLink, focusField = "") {
     const link = parseContactLink(contactLink);
     if (dialog.open) dialog.close();
     if (link.kind === "member") {
       const contact = state.contacts.members.find((row) => row.id === link.contactId);
-      if (contact) return openContactDialog("members", contact);
+      if (contact) return openContactDialog("members", contact, focusField);
     }
     if (link.kind === "prospect") {
       const contact = state.contacts.prospects.find((row) => row.id === link.contactId);
-      if (contact) return openContactDialog("prospects", contact);
+      if (contact) return openContactDialog("prospects", contact, focusField);
     }
     alert("Fiche contact introuvable.");
   }
@@ -24264,7 +24297,11 @@ ${esc(bodyText)}</pre>
     </div>`;
   }
 
-  function openContactDialog(kind, row = {}) {
+  // focusField (facultatif, ex. "parentalAuthorization"/"imageRights"/"rulesSigned") — lot Dossier
+  // incomplet : une fois la fiche ouverte, scrolle et focus ce champ précis plutôt que de laisser
+  // l'utilisateur chercher le bon bloc dans un long formulaire. "" (défaut) : comportement identique
+  // à avant ce lot pour tous les appelants existants, qui n'en fournissent jamais.
+  function openContactDialog(kind, row = {}, focusField = "") {
     const isMember = kind === "members";
     const body = [
       row.id ? `<div hidden data-contact-dialog-kind="${esc(kind)}" data-contact-dialog-id="${esc(row.id)}"></div>` : "",
@@ -24346,7 +24383,19 @@ ${esc(bodyText)}</pre>
         formElement.dataset.followUpData = `${kind === "members" ? "member" : "prospect"}:${next.id}`;
       }
       return `${row.id ? "Modification" : "Création"} de la fiche contact de ${personLabel(next)}`;
-    }, updateBirthCategoryFields, contactModuleLinks(kind, row));
+    }, (form) => {
+      updateBirthCategoryFields(form);
+      // Lot Dossier incomplet — scroll posé APRÈS updateBirthCategoryFields (qui peut démasquer le
+      // bloc "Responsable légal"/autorisation parentale selon la date de naissance) : le champ ciblé
+      // est donc déjà dans son état d'affichage final au moment du scroll. Le FOCUS clavier lui-même
+      // est délégué à options.focusSelector ci-dessous (mécanisme showFloatingDialog/
+      // focusDialogControl déjà existant, avec son jeton anti-course et ses tentatives différées) :
+      // le poser ici en plus l'aurait fait perdre cette course, showFloatingDialog s'exécutant après
+      // ce rappel et reprenant la main sur le focus initial du dialogue.
+      if (!focusField) return;
+      const target = form.querySelector(`[name="${focusField}"]`);
+      target?.closest(".dialog-section")?.scrollIntoView({ block: "center" });
+    }, contactModuleLinks(kind, row), () => {}, "Enregistrer", { focusSelector: focusField ? `[name="${focusField}"]` : "" });
   }
 
   function contactDocumentsSection(row = {}) {
@@ -29988,7 +30037,7 @@ ${esc(bodyText)}</pre>
         return;
       }
       return action === "open-linked-contact"
-        ? openContactDialogFromLink(button.dataset.contactLink)
+        ? openContactDialogFromLink(button.dataset.contactLink, button.dataset.contactFocusField || "")
         : openContactInvoiceFromLink(button.dataset.contactLink);
     }
     if (action === "open-order-invoice") {
