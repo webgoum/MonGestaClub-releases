@@ -6548,7 +6548,9 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
     const source = invoice && typeof invoice === "object" && !Array.isArray(invoice) ? invoice : {};
     const lines = Array.isArray(source.lines) ? source.lines : [];
     const payments = Array.isArray(source.paymentsSnapshot) ? source.paymentsSnapshot : Array.isArray(source.payments) ? source.payments : [];
-    const totals = source.id || lines.length || payments.length ? invoiceTotalsFromLines(lines, payments) : { total: 0, paid: 0, restDue: 0 };
+    // PAY-P0-2/F2 — un email (rappel/relance) doit refléter le solde COURANT, pas seulement
+    // paymentsSnapshot figé à l'émission : vivant claim-aware pour toute facture réellement identifiée.
+    const totals = source.id ? invoiceLiveTotals(source) : (lines.length || payments.length ? invoiceTotalsFromLines(lines, payments) : { total: 0, paid: 0, restDue: 0 });
     const status = source.id || source.status ? invoiceStatusLabel({ ...source, status: computedInvoiceStatus(source) }) : "";
     return {
       factureNumero: safeTemplateValue(source.number || (source.status === "draft" ? "Brouillon de facture" : "")),
@@ -6962,7 +6964,33 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
     applyNormalizedTaxRate(normalized, payment);
     if (paymentMethodKind(normalized) !== "check") normalized.checkNumber = "";
     if (payment.creditNoteId) normalized.creditNoteId = payment.creditNoteId;
+    // PAY-P0-2/F2 — identité + allocations : PRÉSERVÉES si présentes, jamais FABRIQUÉES ici. Une
+    // ancienne donnée sans id/allocations reste sans id/allocations après normalisation (sinon une
+    // source et sa copie snapshot, toutes deux sans id, se verraient attribuer deux id DIFFÉRENTS au
+    // chargement et sembleraient être deux transactions distinctes — cf. doctrine legacy PAY-P0-2).
+    if (asText(payment.id)) normalized.id = asText(payment.id);
+    const allocations = normalizePaymentAllocations(payment.allocations, normalized.amount);
+    if (allocations.length) normalized.allocations = allocations;
     return normalizeImmediatePayment(normalized);
+  }
+
+  // Normalise strictement les allocations d'un paiement : claimKey texte non vide, amount >= 0, aucune
+  // entrée invalide/NaN, jamais somme(allocations) > payment.amount (tolérance centime). N'invente
+  // jamais d'entrée manquante, ne mute jamais le tableau source.
+  function normalizePaymentAllocations(rawAllocations, paymentAmount = 0) {
+    if (!Array.isArray(rawAllocations)) return [];
+    const budget = Math.max(0, asNumber(paymentAmount)) + 0.005;
+    const result = [];
+    let used = 0;
+    rawAllocations.forEach((entry) => {
+      const claimKey = asText(entry?.claimKey);
+      const amount = asNumber(entry?.amount);
+      if (!claimKey || !Number.isFinite(amount) || amount <= 0) return;
+      if (used + amount > budget) return;
+      result.push({ claimKey, amount: Math.round(amount * 100) / 100 });
+      used += amount;
+    });
+    return result;
   }
 
   function normalizePayments(payments = []) {
@@ -6972,6 +7000,10 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
   function normalizeInvoice(source = {}) {
     const lines = Array.isArray(source.lines) ? source.lines.map((line) => normalizeInvoiceLine(line)).filter((line) => line.label || asNumber(line.total)) : [];
     const paymentsSnapshot = normalizePayments(source.paymentsSnapshot || []);
+    // PAY-P0-2/F2 — transactions créées DEPUIS la facture APRÈS émission (règlement facture, avoir
+    // imputé). Jamais de copie d'un paiement source ; jamais fusionné avec paymentsSnapshot (qui reste
+    // purement documentaire, figé à l'émission). Valeur legacy par défaut : [].
+    const paymentsAfterIssue = normalizePayments(source.paymentsAfterIssue || []);
     const totals = invoiceTotalsFromLines(lines, paymentsSnapshot);
     const status = ["draft", "issued", "paid", "partial", "late", "cancelled"].includes(source.status) ? source.status : "draft";
     return {
@@ -6991,6 +7023,7 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
       contactSnapshot: source.contactSnapshot && typeof source.contactSnapshot === "object" ? clone(source.contactSnapshot) : null,
       lines,
       paymentsSnapshot,
+      paymentsAfterIssue,
       totals: {
         total: totals.total,
         paid: totals.paid,
@@ -7009,6 +7042,11 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
       sourceType: asText(source.sourceType || "custom"),
       sourceId: asText(source.sourceId),
       sourceKey: asText(source.sourceKey || `${source.sourceType || "custom"}:${source.sourceId || id("line")}`),
+      // PAY-P0-2/F2 — créance financière (claim) de cette ligne. PRÉSERVÉ si fourni, jamais fabriqué
+      // ici pour une ancienne ligne (reconstruction en lecture seule via lineClaimKey, jamais persistée
+      // automatiquement — cf. doctrine legacy PAY-P0-2). Les créateurs de NOUVELLES lignes (billable,
+      // ligne custom) doivent le fournir explicitement.
+      claimKey: asText(source.claimKey || ""),
       // Catégorie comptable d'une ligne personnalisée (recette custom). Vide pour les lignes
       // issues de sources déjà comptabilisées (cotisation/stage/boutique…).
       category: asText(source.category || ""),
@@ -7337,6 +7375,7 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
         visible: index < visibleCount,
         suggestedAmount: paymentSuggestion(rows, index, total),
         defaultTaxRate: options.defaultTaxRate,
+        claimKey: options.claimKey || "",
       })).join("")}
       </div>
     </details>`;
@@ -7439,7 +7478,7 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
     </button>`;
   }
 
-  function compactPaymentEditor({ index, payment = {}, attrs = "", mode = "form", prefix = "", active = false, visible = true, suggestedAmount = 0, defaultTaxRate = 0 }) {
+  function compactPaymentEditor({ index, payment = {}, attrs = "", mode = "form", prefix = "", active = false, visible = true, suggestedAmount = 0, defaultTaxRate = 0, claimKey = "" }) {
     const amountValue = payment?.amount || suggestedAmount || "";
     const amountNumber = asNumber(amountValue);
     // Correctif Boutique — un montant affiché qui vient de suggestedAmount (aucun payment.amount
@@ -7513,7 +7552,7 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
       : mode === "live"
       ? `<button class="payment-ok ${paid ? "cancel-payment" : ""}" title="${esc(payButtonTitle)}" data-action="validate-payment" data-index="${index}" ${attrs}>${esc(payButtonLabel)}</button>`
       : mode === "form"
-        ? `<button class="payment-ok ${paid ? "cancel-payment" : ""}" type="button" title="${esc(payButtonTitle)}" data-action="validate-form-payment" data-prefix="${esc(prefix)}" data-index="${index}">${esc(payButtonLabel)}</button>`
+        ? `<button class="payment-ok ${paid ? "cancel-payment" : ""}" type="button" title="${esc(payButtonTitle)}" data-action="validate-form-payment" data-prefix="${esc(prefix)}" data-index="${index}" data-claim-key="${esc(claimKey)}">${esc(payButtonLabel)}</button>`
       : "";
     return `<div class="payment-mini-row ${mode === "live" ? "live" : "form"} ${immediate ? "immediate-payment" : ""} ${paid ? "locked" : ""}" data-payment-row="${index}" data-payment-visible="${visible ? "1" : "0"}"${lockedData} ${!visible || (mode === "live" && !active) ? "hidden" : ""}>
       <span class="payment-label">${esc(paymentMethodLabel(payment, index))}</span>
@@ -8411,9 +8450,17 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
     const license = pricing.license;
     const insurancePrice = membershipInsurancePrice(row);
     const discount = asNumber(row.discount);
-    const paid = paidAmount(row.payments);
-    const total = grossTotal + license + insurancePrice - discount;
-    const restDue = total - paid;
+    const localTotal = grossTotal + license + insurancePrice - discount;
+    // PAY-P0-2/F2 — total/payé/reste dû AUTORITAIRES via le moteur claim (source + règlements créés
+    // depuis une facture après émission ; référence FIGÉE à la facture une fois le claim émis, jamais
+    // recalculée depuis un tarif source modifié ensuite). claimSourceContext ne rappelle JAMAIS
+    // calcMembership pour son propre fallbackTotal (formule pure dédiée, membershipTariffValues) :
+    // aucun risque de récursion. Repli sur le calcul local pur si la ligne n'a pas encore d'id
+    // (cas théorique, jamais rencontré sur une adhésion réellement persistée).
+    const claimState = row.id ? claimFinancialState(`membership:${row.id}`) : null;
+    const total = claimState ? claimState.total : localTotal;
+    const paid = claimState ? claimState.paid : paidAmount(row.payments);
+    const restDue = claimState ? claimState.restDue : total - paid;
     return {
       total,
       grossTotal,
@@ -8432,6 +8479,8 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
       hasLicense: pricing.hasLicense,
       grossTotalSource: pricing.grossTotalSource,
       licenseSource: pricing.licenseSource,
+      claimAmbiguous: Boolean(claimState?.ambiguous),
+      claimReadOnly: Boolean(claimState?.readOnly),
     };
   }
 
@@ -8509,15 +8558,21 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
     const items = order.items || [];
     const gross = items.reduce((sum, item) => sum + asNumber(item.quantity) * asNumber(item.unitPrice), 0);
     const discount = asNumber(order.discount);
-    const total = Math.max(0, gross - discount);
-    const paid = paidAmount(order.payments);
+    const localTotal = Math.max(0, gross - discount);
+    // PAY-P0-2/F2 — cf. calcMembership : total/payé/reste dû via le moteur claim, jamais de récursion
+    // (claimSourceContext utilise une formule pure dédiée pour son fallbackTotal).
+    const claimState = order.id ? claimFinancialState(`order:${order.id}`) : null;
+    const total = claimState ? claimState.total : localTotal;
+    const paid = claimState ? claimState.paid : paidAmount(order.payments);
     return {
       total,
       gross,
       discount,
       paid,
-      restDue: total - paid,
+      restDue: claimState ? claimState.restDue : total - paid,
       alerts: (order.payments || []).map(paymentStatus).filter((status) => status && status !== "OK"),
+      claimAmbiguous: Boolean(claimState?.ambiguous),
+      claimReadOnly: Boolean(claimState?.readOnly),
     };
   }
 
@@ -8543,17 +8598,34 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
     return lodgingTaxRate(stage);
   }
 
-  function calcRegistration(row) {
-    const event = calcStageSegment(row.event || {});
-    const lodging = calcStageSegment(row.lodging || {});
+  // F2-AUDIT-002 — calcStageSegment() reste PUR à dessein (réutilisé avec des segments SYNTHÉTIQUES
+  // dans des contextes non financiers : aperçu de formulaire avant sauvegarde, Journal d'audit — y
+  // ajouter une dépendance au moteur claim y serait risqué et hors sujet). calcRegistration(), lui,
+  // n'est JAMAIS appelé avec une inscription synthétique — uniquement de vraies lignes de
+  // state.stageRegistrations[stageId] — et devient donc claim-aware quand stageId est fourni : total/
+  // payé/reste dû (global ET détaillé event/lodging) reflètent alors les règlements créés depuis une
+  // facture après émission, exactement comme calcMembership/calcOrder. Repli sur le calcul local pur
+  // si stageId est omis (compatibilité des appelants non encore migrés).
+  function calcRegistration(row, stageId = "") {
+    const claimAware = Boolean(stageId && row.id);
+    const event = claimAware
+      ? claimFinancialState(`stage:${stageId}:${row.id}:event`)
+      : (() => { const s = calcStageSegment(row.event || {}); return { total: s.subtotal, paid: s.paid, restDue: s.restDue, ambiguous: false, readOnly: false }; })();
+    const lodging = claimAware
+      ? claimFinancialState(`stage:${stageId}:${row.id}:lodging`)
+      : (() => { const s = calcStageSegment(row.lodging || {}); return { total: s.subtotal, paid: s.paid, restDue: s.restDue, ambiguous: false, readOnly: false }; })();
     const alerts = [...(row.event?.payments || []), ...(row.lodging?.payments || [])]
       .map(paymentStatus)
       .filter((status) => status && status !== "OK");
     return {
-      total: event.subtotal + lodging.subtotal,
+      total: event.total + lodging.total,
       paid: event.paid + lodging.paid,
       restDue: event.restDue + lodging.restDue,
       alerts,
+      event: { total: event.total, paid: event.paid, restDue: event.restDue, ambiguous: Boolean(event.ambiguous), readOnly: Boolean(event.readOnly) },
+      lodging: { total: lodging.total, paid: lodging.paid, restDue: lodging.restDue, ambiguous: Boolean(lodging.ambiguous), readOnly: Boolean(lodging.readOnly) },
+      claimAmbiguous: Boolean(event.ambiguous || lodging.ambiguous),
+      claimReadOnly: Boolean(event.readOnly || lodging.readOnly),
     };
   }
 
@@ -8597,15 +8669,17 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
     for (const stage of state.tariffs.stages) {
       for (const registration of state.stageRegistrations[stage.id] || []) {
         const payments = [...(registration.event?.payments || []), ...(registration.lodging?.payments || [])];
-        const calc = calcRegistration(registration);
+        // F2-AUDIT-002 — calcRegistration claim-aware (stageId fourni) : reflète les règlements créés
+        // depuis une facture après émission, sur le total combiné ET par segment (event/lodging).
+        const calc = calcRegistration(registration, stage.id);
         // Lot 2F — listée si et seulement si au moins un SCOPE (événement OU hébergement) est encore dû
         // au centime, avec le MÊME prédicat isPayableDue que renderDuePayments : toute ligne affichée
         // possède donc toujours au moins un tiroir de paiement (jamais de ligne « 0,00 € » sans contrôle).
         // stageId est CONSERVÉ (registrationPaymentHtml en a besoin pour retrouver l'inscription). En
         // revanche editAction "edit-registration" est retiré : depuis le Lot 2D, cette surface n'expose
         // qu'un tiroir de paiement (jamais une mutation structurelle), et plus aucun consommateur ne le lit.
-        const eventDue = isPayableDue(calcStageSegment(registration.event || {}).restDue);
-        const lodgingDue = isPayableDue(calcStageSegment(registration.lodging || {}).restDue);
+        const eventDue = isPayableDue(calc.event.restDue);
+        const lodgingDue = isPayableDue(calc.lodging.restDue);
         if (eventDue || lodgingDue) rows.push({ type: "registration", id: registration.id, stageId: stage.id, module: stage.name, person: registration, status: alertStatusForPayments(payments), amount: calc.restDue });
       }
     }
@@ -9264,12 +9338,15 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
       const registration = (state.stageRegistrations[item.stageId] || []).find((row) => row.id === item.id);
       if (!registration) return "";
       const stage = stageById(item.stageId);
+      // F2-AUDIT-002 — reste dû claim-aware par scope (calcRegistration, stageId fourni) ; le montant
+      // de référence (segment.subtotal, pour le pré-remplissage du tiroir) reste le tarif du segment.
+      const calc = calcRegistration(registration, item.stageId);
       const scopes = [
-        { part: "event", label: "Stage", segment: calcStageSegment(registration.event || {}), payments: registration.event?.payments || [], taxRate: stageDefaultTaxRate(stage) },
-        { part: "lodging", label: "Hébergement", segment: calcStageSegment(registration.lodging || {}), payments: registration.lodging?.payments || [], taxRate: lodgingDefaultTaxRate(stage) },
-      ].filter((scope) => isPayableDue(scope.segment.restDue));
+        { part: "event", label: "Stage", segment: calcStageSegment(registration.event || {}), restDue: calc.event.restDue, payments: registration.event?.payments || [], taxRate: stageDefaultTaxRate(stage) },
+        { part: "lodging", label: "Hébergement", segment: calcStageSegment(registration.lodging || {}), restDue: calc.lodging.restDue, payments: registration.lodging?.payments || [], taxRate: lodgingDefaultTaxRate(stage) },
+      ].filter((scope) => isPayableDue(scope.restDue));
       return scopes.map((scope) => `<div class="due-item-payment">
-        <span class="due-item-payment-label">${esc(stage.name || "Stage")} · ${esc(scope.label)} · reste dû ${money(scope.segment.restDue)}</span>
+        <span class="due-item-payment-label">${esc(stage.name || "Stage")} · ${esc(scope.label)} · reste dû ${money(scope.restDue)}</span>
         ${paymentControls("registration", registration.id, scope.payments, { stageId: item.stageId, part: scope.part, total: scope.segment.subtotal, defaultTaxRate: scope.taxRate })}
       </div>`).join("");
     };
@@ -9541,7 +9618,7 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
       const stage = stageById(ui.stageId);
       return (state.stageRegistrations[stage.id] || [])
         .filter((row) => includesQuery(row, ui.query))
-        .map((row) => ({ row, calc: calcRegistration(row) }))
+        .map((row) => ({ row, calc: calcRegistration(row, stage.id) }))
         .filter((entry) => entry.calc.restDue > 0)
         .map(({ row, calc }) => ({
           module: stage.name || "Stage",
@@ -10299,7 +10376,7 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
     if (isModuleEnabled("stages") && hasFeature("stages")) {
       for (const stage of state.tariffs.stages) {
         for (const registration of state.stageRegistrations[stage.id] || []) {
-          const calc = calcRegistration(registration);
+          const calc = calcRegistration(registration, stage.id);
           const payments = [...(registration.event?.payments || []), ...(registration.lodging?.payments || [])];
           push(payments, stage.name || "Stage", registration, calc.restDue, "edit-registration", registration.id, stage.id);
         }
@@ -10468,8 +10545,8 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
     (state.invoices || []).forEach((invoice) => {
       if (!invoiceIsLate(invoice)) return;
       if (invoiceIsCoveredBySourcePaymentAlert(invoice, alertingPaymentRows)) return;
-      const totals = invoiceTotalsFromLines(invoice.lines || [], invoice.paymentsSnapshot || []);
-      const earliestLateDate = (invoice.paymentsSnapshot || [])
+      const totals = invoiceLiveTotals(invoice);
+      const earliestLateDate = [...(invoice.paymentsSnapshot || []), ...(invoice.paymentsAfterIssue || [])]
         .filter((payment) => paymentIsLate(payment))
         .map((payment) => paymentDueDate(payment))
         .filter(Boolean)
@@ -10968,7 +11045,7 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
         if (matches([stage.name, stage.lodgingName])) push({ type: "Stage", title: stage.name || "Stage", detail: `${money(stage.unitPrice || 0)} · ${stageParticipantCount(stage.id)} participant(s)`, attrs: `data-action="edit-stage" data-stage-id="${esc(stage.id)}"` });
         (state.stageRegistrations[stage.id] || []).forEach((registration) => {
           if (matches([registration.lastName, registration.firstName, registration.email, stage.name])) {
-            const calc = calcRegistration(registration);
+            const calc = calcRegistration(registration, stage.id);
             push({ type: "Participant stage", title: `${personLabel(registration)} · ${stage.name}`, detail: `Total ${money(calc.total)} · reste ${money(calc.restDue)}`, attrs: `data-action="edit-registration" data-stage-id="${esc(stage.id)}" data-id="${esc(registration.id)}"` });
           }
         });
@@ -12063,7 +12140,7 @@ ${esc(bodyText)}</pre>
       return {
         name: stage.name,
         count: rows.length,
-        total: rows.reduce((sum, row) => sum + calcRegistration(row).total, 0),
+        total: rows.reduce((sum, row) => sum + calcRegistration(row, stage.id).total, 0),
       };
     });
   }
@@ -12192,7 +12269,7 @@ ${esc(bodyText)}</pre>
     const modules = kind === "members" ? ["disciplines", "boutique", "stages"] : ["boutique", "stages"];
     const entries = modules.flatMap((module) => contactModuleEntries(row, module));
     const invoices = contactInvoices(row, kind).filter((invoice) => invoice.status !== "cancelled");
-    const invoiceEntries = invoices.map((invoice) => ({ row: invoice, calc: invoiceTotalsFromLines(invoice.lines || [], invoice.paymentsSnapshot || []), invoice }));
+    const invoiceEntries = invoices.map((invoice) => ({ row: invoice, calc: invoiceLiveTotals(invoice), invoice }));
     const allEntries = [...entries, ...invoiceEntries];
     if (!allEntries.length) return "";
     const dueEntries = allEntries.filter((entry) => asNumber(entry.calc.restDue) > 0);
@@ -13054,11 +13131,11 @@ ${esc(bodyText)}</pre>
     }
     const rows = (state.stageRegistrations[stage.id] || [])
       .filter((row) => includesQuery(row, ui.query))
-      .filter((row) => !ui.stageDueOnly || calcRegistration(row).restDue > 0)
+      .filter((row) => !ui.stageDueOnly || calcRegistration(row, stage.id).restDue > 0)
       .sort((a, b) => personKey(a).localeCompare(personKey(b)));
-    const total = rows.reduce((sum, row) => sum + calcRegistration(row).total, 0);
-    const paid = rows.reduce((sum, row) => sum + calcRegistration(row).paid, 0);
-    const due = rows.reduce((sum, row) => sum + calcRegistration(row).restDue, 0);
+    const total = rows.reduce((sum, row) => sum + calcRegistration(row, stage.id).total, 0);
+    const paid = rows.reduce((sum, row) => sum + calcRegistration(row, stage.id).paid, 0);
+    const due = rows.reduce((sum, row) => sum + calcRegistration(row, stage.id).restDue, 0);
     const stageButtons = `<div class="segmented stage-tabs">${state.tariffs.stages.map((item) => `<button data-stage-id="${item.id}" class="${stage.id === item.id ? "active" : ""} ${stageStatusClass(item)}" title="${esc(`${stageStatusLabel(item)} - ${stageDateRangeLabel(item)}`)}"><span>${esc(item.name)}</span><small>${esc(stageStatusLabel(item))}</small></button>`).join("")}</div>`;
     const registrationsClosed = stageRegistrationClosed(stage);
     const canToggleRegistration = stageNaturallyClosed(stage) || stage.registrationReopened;
@@ -13093,9 +13170,13 @@ ${esc(bodyText)}</pre>
 
   function registrationRow(row, stageId) {
     const stage = stageById(stageId);
+    // F2-AUDIT-002 — calc.event/calc.lodging (calcRegistration claim-aware) plutôt que
+    // calcStageSegment séparé : reste dû/payé par segment reflètent les règlements créés depuis une
+    // facture après émission. Les totaux BRUTS (tarif) affichés dans les colonnes Stage/Hébergement
+    // restent ceux du segment (montant de référence, pas un « payé/reste dû »).
     const event = calcStageSegment(row.event || {});
     const lodging = calcStageSegment(row.lodging || {});
-    const calc = calcRegistration(row);
+    const calc = calcRegistration(row, stageId);
     return `<tr>
       <td>${personCell(row)}</td><td>
         <div class="payment-stack">
@@ -13124,7 +13205,7 @@ ${esc(bodyText)}</pre>
     const stage = stageById(stageId);
     const event = calcStageSegment(row.event || {});
     const lodging = calcStageSegment(row.lodging || {});
-    const calc = calcRegistration(row);
+    const calc = calcRegistration(row, stageId);
     const tone = registrationPaymentTone(row, calc);
     return `<article class="membership-card registration-line payment-${tone}" data-action="edit-registration" data-stage-id="${esc(stageId)}" data-id="${esc(row.id)}">
       <div class="membership-card-head">
@@ -13191,7 +13272,7 @@ ${esc(bodyText)}</pre>
     return state.tariffs.stages.map((stage) => {
       const rows = state.stageRegistrations[stage.id] || [];
       return rows.reduce((acc, registration) => {
-        const calc = calcRegistration(registration);
+        const calc = calcRegistration(registration, stage.id);
         acc.count += 1;
         acc.total += calc.total;
         acc.paid += calc.paid;
@@ -13266,10 +13347,13 @@ ${esc(bodyText)}</pre>
   function statsAccountingKpis() {
     const data = accountingData();
     const expenseTotalAll = expensesTotal(clubExpenses());
-    const customTotal = customIncomeTotal();
+    // F2-REAUDIT-006 — cashPaid (avoirs utilisés exclus) : creditNoteActiveTotal() retranche déjà les
+    // avoirs encore actifs. Utiliser data.totals.paid (avoir-inclusive) ici double-comptait un avoir
+    // utilisé (−50 sur avoirTotal ET +50 sur paid = +100 sur le solde corrigé pour un avoir de 50€).
+    const customTotal = customIncomeCashTotal();
     const avoirTotal = creditNoteActiveTotal();
     const refundTotal = refundExpenseTotal();
-    const correctedBalance = (data.totals.paid - expenseTotalAll) + customTotal - avoirTotal;
+    const correctedBalance = (data.totals.cashPaid - expenseTotalAll) + customTotal - avoirTotal;
     return [
       { label: "Recettes custom", value: money(customTotal) },
       { label: "Dépenses saisies", value: money(expenseTotalAll) },
@@ -13430,11 +13514,22 @@ ${esc(bodyText)}</pre>
     // les inscriptions et l'investissement des stages existants comptent toujours ; settings.display
     // (showBoutique/showStages) et hasFeature n'y ont AUCUNE influence — seuls les totaux/synthèses
     // restent la source unique (aucun 2e moteur).
+    // F2-REAUDIT-005 — paid/tax/refused dérivés des MÊMES slices canoniques (claimCanonicalPaymentSlices) :
+    // un règlement créé depuis une facture après émission (invoice.paymentsAfterIssue) est déjà compté
+    // dans calc.paid (via claimFinancialState) et doit l'être EXACTEMENT autant dans tax/refused — plus
+    // jamais "paid vivant + tax source-only". Repli sur l'ancien calcul pur si la ligne n'a pas encore
+    // d'id (cas théorique, jamais rencontré sur une donnée réellement persistée, même garde que calcMembership).
     const disciplineRows = state.memberships.map((membership) => {
       const calc = calcMembership(membership);
       const license = asNumber(calc.license);
-      const tax = paidTaxAmount(membership.payments);
+      const claim = membership.id ? claimCanonicalPaymentSlices(`membership:${membership.id}`) : null;
+      const tax = claim ? claimSlicesTax(claim.slices) : paidTaxAmount(membership.payments);
       const paidNet = calc.paid - tax;
+      // F2-REAUDIT-006 — cashPaid/cashTax/cashPaidNet : mêmes slices, mais un avoir utilisé (slice.cash
+      // === false) en est exclu. paid/tax/paidNet/due/result restent inchangés (règlement de la créance,
+      // avoir inclus) ; seuls ces trois champs dérivés alimentent les affichages "encaissé"/bancaires.
+      const cashPaid = claim ? claimSlicesCash(claim.slices) : calc.paid;
+      const cashTax = claim ? claimSlicesTax(claim.slices.filter((s) => s.cash !== false)) : tax;
       return {
         module: "Disciplines",
         name: [membership.lastName, membership.firstName].filter(Boolean).join(" ") || "Adhérent",
@@ -13443,20 +13538,38 @@ ${esc(bodyText)}</pre>
         paid: calc.paid,
         tax,
         paidNet,
+        cashPaid,
+        cashTax,
+        cashPaidNet: cashPaid - cashTax,
         due: calc.restDue,
         costs: license,
         result: paidNet - license,
-        refused: refusedAmount(membership.payments),
+        refused: claim ? claim.refused : refusedAmount(membership.payments),
       };
     });
     // Lot 2D — point bloquant : la comptabilité est un CALCUL HISTORIQUE inconditionnel. Les inscriptions
     // et l'investissement des stages existants comptent TOUJOURS (comme orderRows Boutique), quel que
     // soit showStages ou hasFeature. Masquer/désactiver ne retire jamais l'historique des totaux.
     const stageRows = state.tariffs.stages.flatMap((stage) => (state.stageRegistrations[stage.id] || []).map((registration) => {
-      const calc = calcRegistration(registration);
+      const calc = calcRegistration(registration, stage.id);
       const payments = [...(registration.event?.payments || []), ...(registration.lodging?.payments || [])];
-      const tax = paidTaxAmount(payments);
+      // event/lodging restent deux claims INDÉPENDANTS (même doctrine que calcRegistration) : leurs
+      // slices/tax/refused s'additionnent, jamais fusionnés en un seul claim.
+      const eventClaim = registration.id ? claimCanonicalPaymentSlices(`stage:${stage.id}:${registration.id}:event`) : null;
+      const lodgingClaim = registration.id ? claimCanonicalPaymentSlices(`stage:${stage.id}:${registration.id}:lodging`) : null;
+      const tax = (eventClaim || lodgingClaim)
+        ? claimSlicesTax(eventClaim?.slices || []) + claimSlicesTax(lodgingClaim?.slices || [])
+        : paidTaxAmount(payments);
       const paidNet = calc.paid - tax;
+      const refused = (eventClaim || lodgingClaim)
+        ? asNumber(eventClaim?.refused) + asNumber(lodgingClaim?.refused)
+        : refusedAmount(payments);
+      const cashPaid = (eventClaim || lodgingClaim)
+        ? claimSlicesCash(eventClaim?.slices || []) + claimSlicesCash(lodgingClaim?.slices || [])
+        : calc.paid;
+      const cashTax = (eventClaim || lodgingClaim)
+        ? claimSlicesTax((eventClaim?.slices || []).filter((s) => s.cash !== false)) + claimSlicesTax((lodgingClaim?.slices || []).filter((s) => s.cash !== false))
+        : tax;
       return {
         module: "Stages",
         name: [registration.lastName, registration.firstName].filter(Boolean).join(" ") || "Participant",
@@ -13465,10 +13578,13 @@ ${esc(bodyText)}</pre>
         paid: calc.paid,
         tax,
         paidNet,
+        cashPaid,
+        cashTax,
+        cashPaidNet: cashPaid - cashTax,
         due: calc.restDue,
         costs: 0,
         result: paidNet,
-        refused: refusedAmount(payments),
+        refused,
       };
     }));
     const stageInvestmentRows = state.tariffs.stages
@@ -13481,6 +13597,9 @@ ${esc(bodyText)}</pre>
         paid: 0,
         tax: 0,
         paidNet: 0,
+        cashPaid: 0,
+        cashTax: 0,
+        cashPaidNet: 0,
         due: 0,
         costs: asNumber(stage.investment),
         result: -asNumber(stage.investment),
@@ -13492,8 +13611,11 @@ ${esc(bodyText)}</pre>
         const article = articleById(item.articleId);
         return sum + item.quantity * asNumber(article.priceOptions?.[1]);
       }, 0);
-      const tax = paidTaxAmount(order.payments);
+      const claim = order.id ? claimCanonicalPaymentSlices(`order:${order.id}`) : null;
+      const tax = claim ? claimSlicesTax(claim.slices) : paidTaxAmount(order.payments);
       const paidNet = calc.paid - tax;
+      const cashPaid = claim ? claimSlicesCash(claim.slices) : calc.paid;
+      const cashTax = claim ? claimSlicesTax(claim.slices.filter((s) => s.cash !== false)) : tax;
       return {
         module: "Boutique",
         name: [order.lastName, order.firstName].filter(Boolean).join(" ") || "Client",
@@ -13502,10 +13624,13 @@ ${esc(bodyText)}</pre>
         paid: calc.paid,
         tax,
         paidNet,
+        cashPaid,
+        cashTax,
+        cashPaidNet: cashPaid - cashTax,
         due: calc.restDue,
         costs,
         result: paidNet - costs,
-        refused: refusedAmount(order.payments),
+        refused: claim ? claim.refused : refusedAmount(order.payments),
       };
     });
     const rows = [...disciplineRows, ...stageRows, ...stageInvestmentRows, ...orderRows];
@@ -13522,11 +13647,14 @@ ${esc(bodyText)}</pre>
       paid: acc.paid + row.paid,
       tax: acc.tax + row.tax,
       paidNet: acc.paidNet + row.paidNet,
+      cashPaid: acc.cashPaid + asNumber(row.cashPaid),
+      cashTax: acc.cashTax + asNumber(row.cashTax),
+      cashPaidNet: acc.cashPaidNet + asNumber(row.cashPaidNet),
       due: acc.due + row.due,
       costs: acc.costs + row.costs,
       result: acc.result + row.result,
       refused: acc.refused + row.refused,
-    }), { total: 0, paid: 0, tax: 0, paidNet: 0, due: 0, costs: 0, result: 0, refused: 0 });
+    }), { total: 0, paid: 0, tax: 0, paidNet: 0, cashPaid: 0, cashTax: 0, cashPaidNet: 0, due: 0, costs: 0, result: 0, refused: 0 });
     const moduleRows = accountingModuleNames().map((module) => {
       const moduleItems = rows.filter((row) => row.module === module);
       return moduleItems.reduce((acc, row) => ({
@@ -13536,11 +13664,14 @@ ${esc(bodyText)}</pre>
         paid: acc.paid + row.paid,
         tax: acc.tax + row.tax,
         paidNet: acc.paidNet + row.paidNet,
+        cashPaid: acc.cashPaid + asNumber(row.cashPaid),
+        cashTax: acc.cashTax + asNumber(row.cashTax),
+        cashPaidNet: acc.cashPaidNet + asNumber(row.cashPaidNet),
         due: acc.due + row.due,
         costs: acc.costs + row.costs,
         result: acc.result + row.result,
         refused: acc.refused + row.refused,
-      }), { module, count: 0, total: 0, paid: 0, tax: 0, paidNet: 0, due: 0, costs: 0, result: 0, refused: 0 });
+      }), { module, count: 0, total: 0, paid: 0, tax: 0, paidNet: 0, cashPaid: 0, cashTax: 0, cashPaidNet: 0, due: 0, costs: 0, result: 0, refused: 0 });
     });
     return { rows, moduleRows, totals, stockInvestment, totalInvestment, soldPurchaseCost, negativeStockValue, disciplineInvestment, stageInvestment, knownInvestment };
   }
@@ -13555,15 +13686,19 @@ ${esc(bodyText)}</pre>
 
   function accountingModuleCard(row = {}) {
     const title = row.module || "Activité";
+    // F2-REAUDIT-006 — Recettes TTC/TVA/Recettes HT reflètent l'encaissement bancaire réel (cashPaid/
+    // cashTax/cashPaidNet, avoirs utilisés exclus). Reste dû/Résultat restent sur le règlement complet
+    // de la créance (avoir inclus, inchangé) : un avoir utilisé peut donc faire apparaître un écart
+    // entre "Recettes HT" et "Résultat + investissement" pour ce module — c'est attendu, la note le dit.
     return `<section class="band accounting-module-card">
       <div class="band-title"><h2>${esc(title)}</h2><strong>${money(row.result || 0)}</strong></div>
       <div class="accounting-module-grid">
-        ${accountingMetric("Recettes TTC", money(row.paid || 0), "Encaissé", "is-paid")}
-        ${accountingMetric("TVA", money(row.tax || 0), "TVA incluse")}
-        ${accountingMetric("Recettes HT", money(row.paidNet || 0), "TTC - TVA")}
+        ${accountingMetric("Recettes TTC", money(row.cashPaid || 0), "Encaissé en banque (hors avoirs utilisés)", "is-paid")}
+        ${accountingMetric("TVA", money(row.cashTax || 0), "TVA incluse")}
+        ${accountingMetric("Recettes HT", money(row.cashPaidNet || 0), "TTC - TVA, hors avoirs utilisés")}
         ${accountingMetric("Investissement", money(row.costs || 0), title === "Stages" ? "Frais stage saisis" : title === "Disciplines" ? "Licences" : "Coût d'achat vendu")}
         ${accountingMetric("Reste dû", money(row.due || 0), "Argent dehors", row.due > 0 ? "is-due" : "")}
-        ${accountingMetric("Résultat", money(row.result || 0), "HT - investissement", row.result >= 0 ? "is-paid" : "is-danger")}
+        ${accountingMetric("Résultat", money(row.result || 0), "HT - investissement (avoirs utilisés inclus)", row.result >= 0 ? "is-paid" : "is-danger")}
       </div>
     </section>`;
   }
@@ -13584,24 +13719,44 @@ ${esc(bodyText)}</pre>
         costs: 0,
         result: 0,
         modules: Object.fromEntries(accountingModuleNames().map((module) => [module, 0])),
+        // F2-REAUDIT-005 — dédup du nombre de "Paiements" (transactions bancaires) PAR ANNÉE : un
+        // règlement facture multi-claims (ex. 200€ = 150 Disciplines + 50 Boutique) produit une slice
+        // par module mais reste UNE seule transaction bancaire — comptée une seule fois globalement,
+        // jamais une fois par module qu'elle traverse. Sans id (legacy sans identité), toujours compté
+        // (chaque entrée reste sa propre transaction, aucune dédup possible ni souhaitable).
+        countedPaymentIds: new Set(),
       });
     }
     return map.get(year);
   }
 
-  function addTaxPayment(map, module, payment = {}, costShare = 0) {
-    if (paymentStatus(payment) !== "OK") return;
-    const gross = asNumber(payment.amount);
-    if (gross <= 0) return;
-    const tax = paymentTaxAmount(payment);
-    const net = gross - tax;
-    const row = ensureTaxYear(map, paymentTaxYear(payment));
-    row.count += 1;
-    row.gross += gross;
-    row.tax += tax;
-    row.net += net;
+  // F2-REAUDIT-005 — consomme une SLICE canonique (claimCanonicalPaymentSlices), pas un payment brut :
+  // amount/taxRate sont déjà ceux de l'allocation réelle de ce claim (jamais la transaction entière
+  // pour un règlement multi-claims), le taux suit les lignes figées de la facture quand elle existe
+  // (cf. claimCanonicalPaymentSlices). Les slices sont déjà filtrées OK par construction (Refusé/
+  // Annulé/pending n'y apparaissent jamais) : aucun filtre paymentStatus ici.
+  // F2-REAUDIT-006 — un avoir utilisé (slice.cash === false) ne crée jamais de TTC encaissé / TVA
+  // collectée / transaction "Paiements" dans la déclaration fiscale (règle minimale : utilisation d'un
+  // avoir != nouvel encaissement positif). Sa part de coût (licence proportionnelle) reste en revanche
+  // imputée normalement : c'est une charge réelle du club, indépendante du mode de règlement du client.
+  function addTaxPaymentSlice(map, module, slice = {}, costShare = 0) {
+    const gross = asNumber(slice.amount);
+    if (gross <= 0.005 && Math.abs(asNumber(costShare)) <= 0.005) return;
+    const row = ensureTaxYear(map, slice.year || "Sans date");
+    if (slice.cash !== false) {
+      const tax = taxAmountFromGross(gross, slice.taxRate);
+      const net = gross - tax;
+      const pid = asText(slice.paymentId);
+      if (!pid || !row.countedPaymentIds.has(pid)) {
+        if (pid) row.countedPaymentIds.add(pid);
+        row.count += 1;
+      }
+      row.gross += gross;
+      row.tax += tax;
+      row.net += net;
+      row.modules[module] = asNumber(row.modules[module]) + net;
+    }
     row.costs += asNumber(costShare);
-    row.modules[module] = asNumber(row.modules[module]) + net;
   }
 
   function addDatedInvestment(map, year, amount) {
@@ -13610,57 +13765,65 @@ ${esc(bodyText)}</pre>
     ensureTaxYear(map, year).costs += value;
   }
 
-  function firstPaidPaymentYear(payments = []) {
-    const paid = (payments || [])
-      .filter((payment) => paymentStatus(payment) === "OK")
-      .map((payment) => ({ payment, date: parseDate(payment.date) || parseDate(payment.state) }))
-      .sort((a, b) => {
-        if (!a.date && !b.date) return 0;
-        if (!a.date) return 1;
-        if (!b.date) return -1;
-        return a.date - b.date;
-      });
-    return paid.length ? paymentTaxYear(paid[0].payment) : "Sans date";
+  // Année du PLUS ANCIEN encaissement d'un ensemble de slices (pour dater l'investissement d'un
+  // stage) : comparaison sur slice.year (déjà résolu par paymentTaxYear à la création de la slice,
+  // même fallback date/state que l'historique), jamais sur issuedAt.
+  function firstSliceYear(slices = []) {
+    const years = (slices || []).map((slice) => slice.year).filter((year) => year && year !== "Sans date");
+    return years.length ? years.slice().sort()[0] : "Sans date";
   }
 
   function taxDeclarationRows() {
     const map = new Map();
+    // F2-REAUDIT-005 — les slices canoniques (source + allocations paymentsAfterIssue) remplacent la
+    // simple lecture de membership.payments : un règlement créé depuis une facture émise après coup ne
+    // disparaît plus de la déclaration fiscale. paid (pour la répartition du coût licence) redevient la
+    // somme des MÊMES slices, jamais paidAmount(membership.payments) seul (même risque de divergence
+    // "paid vivant + tax source-only" que celui corrigé pour accountingData).
     state.memberships.forEach((membership) => {
-      const paid = paidAmount(membership.payments);
       const license = asNumber(calcMembership(membership).license);
-      (membership.payments || []).forEach((payment) => {
-        const share = paid > 0 ? license * (asNumber(payment.amount) / paid) : 0;
-        addTaxPayment(map, "Disciplines", payment, share);
+      const claim = membership.id ? claimCanonicalPaymentSlices(`membership:${membership.id}`) : null;
+      const slices = claim ? claim.slices : (membership.payments || []).filter((p) => paymentStatus(p) === "OK").map((p) => ({ amount: asNumber(p.amount), taxRate: paymentTaxRate(p), year: paymentTaxYear(p), paymentId: asText(p.id) }));
+      const paid = claim ? claim.paid : slices.reduce((sum, s) => sum + s.amount, 0);
+      slices.forEach((slice) => {
+        const share = paid > 0.005 ? license * (slice.amount / paid) : 0;
+        addTaxPaymentSlice(map, "Disciplines", slice, share);
       });
     });
     // Lot 2D — point bloquant : la TVA encaissée sur les inscriptions existantes fait partie de la
     // déclaration fiscale HISTORIQUE ; elle est comptée inconditionnellement (indépendant de
     // settings.display.showStages et de hasFeature), exactement comme la TVA Boutique ci-dessous.
     state.tariffs.stages.forEach((stage) => {
-      const allPayments = [];
+      const allSlices = [];
       (state.stageRegistrations[stage.id] || []).forEach((registration) => {
-        const payments = [...(registration.event?.payments || []), ...(registration.lodging?.payments || [])];
-        allPayments.push(...payments);
-        payments.forEach((payment) => addTaxPayment(map, "Stages", payment));
+        const eventClaim = registration.id ? claimCanonicalPaymentSlices(`stage:${stage.id}:${registration.id}:event`) : null;
+        const lodgingClaim = registration.id ? claimCanonicalPaymentSlices(`stage:${stage.id}:${registration.id}:lodging`) : null;
+        const slices = eventClaim || lodgingClaim
+          ? [...(eventClaim?.slices || []), ...(lodgingClaim?.slices || [])]
+          : [...(registration.event?.payments || []), ...(registration.lodging?.payments || [])].filter((p) => paymentStatus(p) === "OK").map((p) => ({ amount: asNumber(p.amount), taxRate: paymentTaxRate(p), year: paymentTaxYear(p), paymentId: asText(p.id) }));
+        allSlices.push(...slices);
+        slices.forEach((slice) => addTaxPaymentSlice(map, "Stages", slice));
       });
-      addDatedInvestment(map, firstPaidPaymentYear(allPayments), asNumber(stage.investment));
+      addDatedInvestment(map, firstSliceYear(allSlices), asNumber(stage.investment));
     });
     // Lot 2B — point bloquant 1 : la TVA encaissée sur les commandes existantes fait partie de la
     // déclaration fiscale HISTORIQUE ; elle est comptée inconditionnellement (indépendant de
     // settings.display.showBoutique et de hasFeature).
     state.shopOrders.forEach((order) => {
-      const paid = paidAmount(order.payments);
       const costs = orderItemDetails(order).reduce((sum, item) => {
         const article = articleById(item.articleId);
         return sum + item.quantity * asNumber(article.priceOptions?.[1]);
       }, 0);
-      (order.payments || []).forEach((payment) => {
-        const share = paid > 0 ? costs * (asNumber(payment.amount) / paid) : 0;
-        addTaxPayment(map, "Boutique", payment, share);
+      const claim = order.id ? claimCanonicalPaymentSlices(`order:${order.id}`) : null;
+      const slices = claim ? claim.slices : (order.payments || []).filter((p) => paymentStatus(p) === "OK").map((p) => ({ amount: asNumber(p.amount), taxRate: paymentTaxRate(p), year: paymentTaxYear(p), paymentId: asText(p.id) }));
+      const paid = claim ? claim.paid : slices.reduce((sum, s) => sum + s.amount, 0);
+      slices.forEach((slice) => {
+        const share = paid > 0.005 ? costs * (slice.amount / paid) : 0;
+        addTaxPaymentSlice(map, "Boutique", slice, share);
       });
     });
     return [...map.values()]
-      .map((row) => ({ ...row, result: row.net - row.costs }))
+      .map(({ countedPaymentIds, ...row }) => ({ ...row, result: row.net - row.costs }))
       .sort((a, b) => {
         if (a.year === "Sans date") return 1;
         if (b.year === "Sans date") return -1;
@@ -13824,15 +13987,27 @@ ${esc(bodyText)}</pre>
       .filter((invoice) => ["issued", "paid", "partial", "late"].includes(invoice.status))
       .filter(isPureCustomInvoice)
       .map((invoice) => {
-        const totals = invoice.totals || invoiceTotalsFromLines(invoice.lines || [], invoice.paymentsSnapshot || []);
+        const totals = invoiceLiveTotals(invoice);
         const catLine = (invoice.lines || []).find((line) => asText(line.category));
         const category = asText(catLine && catLine.category) || "Autre recette";
+        // F2-REAUDIT-006 — une facture custom réglée (en tout ou partie) via un avoir suit la même règle
+        // que les autres modules : paid reste le règlement complet (avoir inclus, inchangé) ; cashPaid
+        // exclut les slices d'avoir, clampé sur le même total que paid.
+        const claims = new Set();
+        (invoice.lines || []).forEach((line) => {
+          const claimKey = lineClaimKey(invoice, line);
+          if (claimKey) claims.add(claimKey);
+        });
+        let cashPaid = 0;
+        claims.forEach((claimKey) => { cashPaid += claimSlicesCash(claimCanonicalPaymentSlices(claimKey).slices); });
+        cashPaid = Math.min(Math.max(0, asNumber(totals.total)), Math.max(0, cashPaid));
         return {
           invoice,
           category,
           contact: invoiceContactDisplay(invoice),
           total: asNumber(totals.total),
           paid: asNumber(totals.paid),
+          cashPaid,
           due: Math.max(0, asNumber(totals.restDue)),
         };
       })
@@ -13840,6 +14015,9 @@ ${esc(bodyText)}</pre>
   }
   function customIncomeTotal() {
     return customInvoiceIncomes().reduce((sum, row) => sum + row.paid, 0);
+  }
+  function customIncomeCashTotal() {
+    return customInvoiceIncomes().reduce((sum, row) => sum + row.cashPaid, 0);
   }
   function clubCreditNotes() {
     return (state.creditNotes || []).slice().sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")));
@@ -14028,20 +14206,23 @@ ${esc(bodyText)}</pre>
   // Section d'affichage : recettes custom + remboursements + avoirs, sans surcharger l'UI.
   function correctionsBandHtml(data, expenseTotalAll) {
     const customIncomes = customInvoiceIncomes();
-    const customTotal = customIncomes.reduce((sum, row) => sum + row.paid, 0);
+    // F2-REAUDIT-006 — cashPaid (avoirs utilisés exclus) partout où « encaissé » désigne un encaissement
+    // bancaire réel : ce bandeau calcule sa propre version du solde corrigé (même formule que
+    // statsAccountingKpis, dupliquée ici pour l'affichage détaillé) — même correctif requis ici.
+    const customTotal = customIncomes.reduce((sum, row) => sum + row.cashPaid, 0);
     const creditNotes = clubCreditNotes();
     const avoirTotal = creditNoteActiveTotal();
     const refundTotal = refundExpenseTotal();
-    const cashBalance = data.totals.paid - expenseTotalAll;
+    const cashBalance = data.totals.cashPaid - expenseTotalAll;
     const correctedBalance = cashBalance + customTotal - avoirTotal;
-    const totalEncaisse = data.totals.paid + customTotal;
+    const totalEncaisse = data.totals.cashPaid + customTotal;
     const typeLabels = { "réduction": "Avoir / crédit", "crédit": "Crédit à valoir", "annulation": "Annulation" };
     const statusLabels = { "actif": "Actif", "utilisé": "Utilisé", "annulé": "Annulé" };
     return `<section class="band accounting-corrections">
       <div class="band-title"><h2>Autres recettes / corrections</h2><strong>${money(correctedBalance)}</strong></div>
       <div class="accounting-metrics">
-        ${accountingMetric("Recettes sources encaissées", money(data.totals.paid), "Cotisations, stages, boutique…", "is-paid")}
-        ${accountingMetric("Recettes custom encaissées", money(customTotal), "Factures dons / frais / prestations", customTotal ? "is-paid" : "")}
+        ${accountingMetric("Recettes sources encaissées", money(data.totals.cashPaid), "Cotisations, stages, boutique… (hors avoirs utilisés)", "is-paid")}
+        ${accountingMetric("Recettes custom encaissées", money(customTotal), "Factures dons / frais / prestations (hors avoirs utilisés)", customTotal ? "is-paid" : "")}
         ${accountingMetric("Total encaissé", money(totalEncaisse), "Sources + recettes custom")}
         ${accountingMetric("Remboursements", money(refundTotal), "Déjà inclus dans les dépenses", refundTotal ? "is-due" : "")}
         ${accountingMetric("Avoirs actifs", money(avoirTotal), "Crédits / avoirs accordés", avoirTotal ? "is-due" : "")}
@@ -14059,7 +14240,7 @@ ${esc(bodyText)}</pre>
         <td>${esc(row.invoice.number || "Brouillon")}</td>
         <td>${esc(row.contact)}</td>
         <td>${esc(row.category)}</td>
-        <td class="money">${money(row.paid)}</td>
+        <td class="money">${money(row.cashPaid)}</td>
         <td class="money">${row.due ? money(row.due) : `<span class="muted">—</span>`}</td>
       </tr>`), "Aucune facture personnalisée comptabilisée. Les factures issues des cotisations / stages / boutique ne sont pas recomptées ici.",
         `<tr><td colspan="4">Total recettes custom</td><td class="money">${money(customTotal)}</td><td></td></tr>`)}
@@ -14102,11 +14283,13 @@ ${esc(bodyText)}</pre>
     const boutiqueEnabled = isModuleEnabled("boutique");
     const data = accountingData();
     const expenseTotalAll = expensesTotal(clubExpenses());
-    const cashBalance = data.totals.paid - expenseTotalAll;
+    // F2-REAUDIT-006 — cashPaid (avoirs utilisés exclus) : "Solde caisse"/"Encaissé" désignent de
+    // l'argent réellement en banque, jamais un avoir utilisé pour solder une créance.
+    const cashBalance = data.totals.cashPaid - expenseTotalAll;
     // ----- Vue simple (P4) : 4 cartes, calculs réutilisés (aucun calcul parallèle) -----
     const accountingView = resolveAccountingView();
     if (accountingView === "simple") {
-      const encaisse = data.totals.paid + customIncomeTotal(); // Total encaissé = sources + recettes custom
+      const encaisse = data.totals.cashPaid + customIncomeCashTotal(); // Total encaissé = sources + recettes custom (hors avoirs utilisés)
       const result = encaisse - expenseTotalAll;                // Résultat = Encaissé − Dépensé
       return `
         ${accountingViewToggle("simple")}
@@ -14179,11 +14362,11 @@ ${esc(bodyText)}</pre>
         <section class="band accounting-group accounting-profit">
           <div class="band-title"><h2>Bénéfices / résultat</h2><strong>${money(data.totals.result)}</strong></div>
           <div class="accounting-metrics">
-            ${accountingMetric("Encaissé TTC", money(data.totals.paid), "Argent réellement rentré", "is-paid")}
-            ${accountingMetric("TVA encaissée", money(data.totals.tax), "À isoler de la recette")}
-            ${accountingMetric("Encaissé HT", money(data.totals.paidNet), "TTC - TVA")}
+            ${accountingMetric("Encaissé TTC", money(data.totals.cashPaid), "Argent réellement rentré en banque (hors avoirs utilisés)", "is-paid")}
+            ${accountingMetric("TVA encaissée", money(data.totals.cashTax), "À isoler de la recette")}
+            ${accountingMetric("Encaissé HT", money(data.totals.cashPaidNet), "TTC - TVA, hors avoirs utilisés")}
             ${accountingMetric("Achats imputés", money(data.totals.costs), boutiqueEnabled ? "Licences + achats boutique" : "Licences et modules actifs")}
-            ${accountingMetric("Résultat estimé", money(data.totals.result), "Encaissé HT - achats imputés", data.totals.result >= 0 ? "is-paid" : "is-danger")}
+            ${accountingMetric("Résultat estimé", money(data.totals.result), "Encaissé HT - achats imputés (avoirs utilisés inclus)", data.totals.result >= 0 ? "is-paid" : "is-danger")}
             ${accountingMetric("Dépenses saisies", money(expenseTotalAll), "Sorties manuelles (hors investissements)", expenseTotalAll ? "is-due" : "")}
             ${accountingMetric("Solde caisse", money(cashBalance), "Encaissé TTC - dépenses saisies", cashBalance >= 0 ? "is-paid" : "is-danger")}
           </div>
@@ -14206,8 +14389,8 @@ ${esc(bodyText)}</pre>
             { label: "Dehors", className: "money" },
             { label: "Achats", className: "money" },
             { label: "Résultat", className: "money" },
-          ], data.moduleRows.map((row) => `<tr><td>${esc(row.module)}</td><td class="money">${intValue(row.count)}</td><td class="money">${money(row.total)}</td><td class="money">${money(row.paid)}</td><td class="money">${money(row.tax)}</td><td class="money">${money(row.paidNet)}</td><td class="money">${money(row.due)}</td><td class="money">${money(row.costs)}</td><td class="money">${money(row.result)}</td></tr>`), "Aucune écriture",
-            `<tr><td>Total</td><td class="money">${intValue(data.rows.length)}</td><td class="money">${money(data.totals.total)}</td><td class="money">${money(data.totals.paid)}</td><td class="money">${money(data.totals.tax)}</td><td class="money">${money(data.totals.paidNet)}</td><td class="money">${money(data.totals.due)}</td><td class="money">${money(data.totals.costs)}</td><td class="money">${money(data.totals.result)}</td></tr>`)}
+          ], data.moduleRows.map((row) => `<tr><td>${esc(row.module)}</td><td class="money">${intValue(row.count)}</td><td class="money">${money(row.total)}</td><td class="money">${money(row.cashPaid)}</td><td class="money">${money(row.cashTax)}</td><td class="money">${money(row.cashPaidNet)}</td><td class="money">${money(row.due)}</td><td class="money">${money(row.costs)}</td><td class="money">${money(row.result)}</td></tr>`), "Aucune écriture",
+            `<tr><td>Total</td><td class="money">${intValue(data.rows.length)}</td><td class="money">${money(data.totals.total)}</td><td class="money">${money(data.totals.cashPaid)}</td><td class="money">${money(data.totals.cashTax)}</td><td class="money">${money(data.totals.cashPaidNet)}</td><td class="money">${money(data.totals.due)}</td><td class="money">${money(data.totals.costs)}</td><td class="money">${money(data.totals.result)}</td></tr>`)}
         </div>`,
         `<div class="band">
           <div class="band-title"><h2>Argent dehors</h2><strong>${money(data.totals.due)}</strong></div>
@@ -14222,7 +14405,7 @@ ${esc(bodyText)}</pre>
       ${gridItems([
         chartBand("Reste dû par activité", data.moduleRows.map((row) => [row.module, row.due])),
         chartBand("Résultat par activité", data.moduleRows.map((row) => [row.module, row.result])),
-        chartBand("Encaissements", data.moduleRows.map((row) => [row.module, row.paid])),
+        chartBand("Encaissements", data.moduleRows.map((row) => [row.module, row.cashPaid])),
       ], 3)}
       ${gridItems([
         boutiqueEnabled ? `<div class="band">
@@ -19349,7 +19532,12 @@ ${esc(bodyText)}</pre>
     return `<label>${esc(label)}<input name="${esc(name)}" type="date" value="${esc(dateInputValue(payment.date || (parseDate(payment.state) ? payment.state : "")))}" /></label>`;
   }
 
-  function paymentFields(prefix, payments = [], total = 0, defaultTaxRate = effectiveDefaultVatRate()) {
+  // F2-AUDIT-001 — claimKey (optionnel) : identité de la créance éditée (membership:<id> /
+  // order:<id> / stage:<stageId>:<registrationId>:event|lodging), vide pour une fiche pas encore
+  // créée (aucun claim n'existe tant que la ligne n'a pas d'id). Posé sur chaque bouton « Payer » du
+  // tiroir pour que validateFormPayment (21-handlers.js) puisse consulter le même moteur claim-aware
+  // que le tiroir live, sans dupliquer la logique anti-surpaiement.
+  function paymentFields(prefix, payments = [], total = 0, defaultTaxRate = effectiveDefaultVatRate(), claimKey = "") {
     const count = effectivePaymentCount(payments, total);
     const paymentRows = paymentIndexes(count).map((index) => (payments || [])[index] || {});
     return `<div class="dialog-section payment-form-compact" data-payment-prefix="${esc(prefix)}" data-payment-total="${esc(asNumber(total))}" data-payment-count="${esc(count)}">
@@ -19362,6 +19550,7 @@ ${esc(bodyText)}</pre>
         defaultTaxRate,
         maxChecks: count,
         title: "Paiements",
+        claimKey,
       })}
     </div>`;
   }
@@ -20761,9 +20950,10 @@ ${esc(bodyText)}</pre>
       status: "draft",
     });
     const existingKeys = new Set((invoice.lines || []).map((line) => line.sourceKey).filter(Boolean));
+    const existingIds = existingInvoiceLineIdsBySourceKey(invoice);
     const nextLines = [
       ...(invoice.lines || []),
-      ...orderBillables.filter((item) => !existingKeys.has(item.sourceKey)).map(invoiceLineFromBillable),
+      ...orderBillables.filter((item) => !existingKeys.has(item.sourceKey)).map((item) => invoiceLineFromBillable(item, existingIds.get(item.sourceKey))),
     ];
     const nextPayments = selectedInvoicePayments(nextLines, billables);
     const next = normalizeInvoice({
@@ -20805,9 +20995,10 @@ ${esc(bodyText)}</pre>
     if (!registrationBillables.length) { alert("Aucune ligne facturable n'a été trouvée pour cette inscription."); return null; }
     const invoice = existing || draftInvoiceForContact(contact, kind) || normalizeInvoice({ contactId: contact.id, contactKind: kind, status: "draft" });
     const existingKeys = new Set((invoice.lines || []).map((line) => line.sourceKey).filter(Boolean));
+    const existingIds = existingInvoiceLineIdsBySourceKey(invoice);
     const nextLines = [
       ...(invoice.lines || []),
-      ...registrationBillables.filter((item) => !existingKeys.has(item.sourceKey)).map(invoiceLineFromBillable),
+      ...registrationBillables.filter((item) => !existingKeys.has(item.sourceKey)).map((item) => invoiceLineFromBillable(item, existingIds.get(item.sourceKey))),
     ];
     const nextPayments = selectedInvoicePayments(nextLines, billables);
     return normalizeInvoice({
@@ -20972,7 +21163,7 @@ ${esc(bodyText)}</pre>
     if (module === "stages") {
       return state.tariffs.stages.flatMap((stage) => (state.stageRegistrations[stage.id] || [])
         .filter((row) => contactRecordMatches(contact, row))
-        .map((row) => ({ row, stageId: stage.id, calc: calcRegistration(row) })));
+        .map((row) => ({ row, stageId: stage.id, calc: calcRegistration(row, stage.id) })));
     }
     return [];
   }
@@ -20997,7 +21188,8 @@ ${esc(bodyText)}</pre>
 
   function computedInvoiceStatus(invoice = {}) {
     if (invoice.status === "draft" || invoice.status === "cancelled") return invoice.status;
-    const totals = invoiceTotalsFromLines(invoice.lines || [], invoice.paymentsSnapshot || []);
+    // PAY-P0-2/F2 — vivant claim-aware (source + paymentsAfterIssue), plus paymentsSnapshot seul.
+    const totals = invoiceLiveTotals(invoice);
     if (asNumber(totals.total) > 0 && asNumber(totals.restDue) <= 0.005) return "paid";
     if (asNumber(totals.paid) > 0) return "partial";
     return "issued";
@@ -21017,9 +21209,17 @@ ${esc(bodyText)}</pre>
   function invoiceIsLate(invoice = {}) {
     const status = computedInvoiceStatus(invoice);
     if (status === "draft" || status === "cancelled" || status === "paid") return false;
-    const totals = invoiceTotalsFromLines(invoice.lines || [], invoice.paymentsSnapshot || []);
+    const totals = invoiceLiveTotals(invoice);
     if (asNumber(totals.restDue) <= 0.005) return false;
-    return (invoice.paymentsSnapshot || []).some((payment) => paymentIsLate(payment));
+    // F2-AUDIT-007 — échéances VIVANTES (source des claims référencés + paymentsAfterIssue), pas
+    // seulement paymentsSnapshot figé à l'émission : une échéance créée/déplacée côté source après
+    // émission (ex. chèque à encaisser reporté) doit pouvoir déclencher « En retard » sur la facture.
+    // F2-REAUDIT-003 — mais une facture ancienne peut aussi porter une échéance légitime UNIQUEMENT
+    // dans paymentsSnapshot (aucun équivalent canonique récupérable) : invoicePaymentsForDisplay
+    // fournit déjà l'union dédupliquée (multiset, jamais de doublon) canonique + snapshot historique
+    // sans équivalent — ne change PAS le calcul de "paid" (restDue vient toujours de invoiceLiveTotals
+    // ci-dessus), influence uniquement la détection de retard.
+    return invoicePaymentsForDisplay(invoice).payments.some((payment) => paymentIsLate(payment));
   }
 
   // Lot 3a — Source unique de vérité des actions autorisées selon l'état de la facture.
@@ -21029,12 +21229,15 @@ ${esc(bodyText)}</pre>
     const status = computedInvoiceStatus(invoice);
     const isDraft = status === "draft";
     const isCancelled = status === "cancelled";
-    const totals = invoiceTotalsFromLines(invoice.lines || [], invoice.paymentsSnapshot || []);
+    const totals = invoiceLiveTotals(invoice);
     const hasDue = asNumber(totals.restDue) > 0.005;
     return {
       editLines: isDraft,                              // ajouter / modifier / supprimer des lignes
       emit: isDraft,                                   // émettre / valider
-      addPayment: !isDraft && !isCancelled && hasDue,  // règlement seulement si reste dû
+      // PAY-P0-2/F2 — un claim en attente de vérification (readOnly) bloque le bouton de règlement
+      // même s'il reste, arithmétiquement, un solde affiché : jamais de nouvel encaissement tant que
+      // la situation n'a pas été vérifiée manuellement.
+      addPayment: !isDraft && !isCancelled && hasDue && !totals.readOnly,  // règlement seulement si reste dû
       settled: !isDraft && !isCancelled && !hasDue,    // soldée -> mention « Facture soldée »
       print: !isDraft,                                 // imprimer
       pdf: !isDraft,                                   // PDF
@@ -21069,11 +21272,17 @@ ${esc(bodyText)}</pre>
     };
   }
 
-  function invoiceLineFromBillable(item) {
+  // existingId : id de ligne à PRÉSERVER si ce billable correspond à une ligne déjà présente dans le
+  // brouillon (retrouvée par sourceKey par l'appelant) — jamais un nouvel id à chaque reconstruction
+  // (sinon le claimKey d'une créance ancrée sur cet id, cf. lignes custom, changerait à chaque
+  // sauvegarde). item.paymentGroupKey devient le claimKey persisté de la ligne (P2/F2).
+  function invoiceLineFromBillable(item, existingId = "") {
     return normalizeInvoiceLine({
+      id: existingId || undefined,
       sourceType: item.sourceType,
       sourceId: item.sourceId,
       sourceKey: item.sourceKey,
+      claimKey: item.paymentGroupKey,
       label: item.label,
       description: item.description,
       quantity: item.quantity,
@@ -21081,6 +21290,16 @@ ${esc(bodyText)}</pre>
       vatRate: item.vatRate,
       total: item.total,
     });
+  }
+
+  // Map sourceKey -> id de ligne déjà présent dans un brouillon, pour préserver l'id (et donc le
+  // claimKey) d'une ligne re-sélectionnée plutôt que d'en fabriquer un nouveau à chaque sauvegarde.
+  function existingInvoiceLineIdsBySourceKey(invoice = {}) {
+    const map = new Map();
+    (invoice.lines || []).forEach((line) => {
+      if (line.sourceKey) map.set(line.sourceKey, line.id);
+    });
+    return map;
   }
 
   function invoiceSourceTypeLabel(type) {
@@ -21107,6 +21326,550 @@ ${esc(bodyText)}</pre>
     });
     return keys;
   }
+
+  // ===================== PAY-P0-2 / F2 — moteur financier par créance (claim) =====================
+  // Doctrine (audits PAY-P0-2 validés) : deux registres canoniques de transactions — les tableaux
+  // source (membership.payments / order.payments / registration.event|lodging.payments) et
+  // invoice.paymentsAfterIssue (transactions créées DEPUIS une facture après émission). invoice.
+  // paymentsSnapshot reste purement documentaire (photographie à l'émission) et n'est JAMAIS lu par
+  // ce moteur. P2 (claim atomique) : un claim n'appartient qu'à au plus UNE facture émise active.
+
+  // Dérive le claimKey d'une ligne à partir de sourceType/sourceId/sourceKey — lecture seule, jamais
+  // persisté ici. sourceType "frais" est ambigu (remise adhésion / remise boutique / hébergement
+  // stage) : sourceKey est donc examiné EN PREMIER, jamais sourceType seul.
+  function claimKeyFromSource(sourceType, sourceId, sourceKey) {
+    const key = asText(sourceKey);
+    const stageMatch = key.match(/^stage:([^:]+):([^:]+):(event|lodging)$/);
+    if (stageMatch) return `stage:${stageMatch[1]}:${stageMatch[2]}:${stageMatch[3]}`;
+    if (key.startsWith("boutique:") || key.startsWith("boutique-discount:")) return `order:${asText(sourceId)}`;
+    if (["cotisation", "licence", "assurance"].includes(asText(sourceType)) || key.startsWith("discount:")) {
+      return `membership:${asText(sourceId)}`;
+    }
+    return "";
+  }
+
+  // Claim d'une ligne de facture : claimKey persisté en priorité, sinon reconstruction en lecture
+  // seule. Une ligne custom est ancrée sur son PROPRE id de ligne stable (jamais un index/label/
+  // montant/hash de contenu) : invoice:<invoiceId>:custom:<lineId>.
+  function lineClaimKey(invoice, line = {}) {
+    if (asText(line.claimKey)) return asText(line.claimKey);
+    if (asText(line.sourceType) === "custom") return `invoice:${asText(invoice.id)}:custom:${asText(line.id)}`;
+    return claimKeyFromSource(line.sourceType, line.sourceId, line.sourceKey);
+  }
+
+  // Localise la ligne source canonique d'un claim (adhésion / commande / stage) : tableau de paiements
+  // vivant + montant de référence COURANT (utilisé seulement si le claim n'est encore sur aucune
+  // facture émise). sourceFound:false si la source a disparu — jamais de résurrection silencieuse.
+  // F2-AUDIT-009 — club EXPLICITE : state.memberships/shopOrders/stageRegistrations sont, par
+  // construction de l'application (switchActiveClub charge un state ENTIER par club, jamais fusionné,
+  // cf. src/16-settings-themes.js), déjà exclusivement ceux du club actif — aucun filtre supplémentaire
+  // n'y est donc nécessaire ni sûr (un id de ligne peut être présent sans clubId synchronisé dans des
+  // constructions ad hoc). Le risque réel de collision inter-club concerne UNIQUEMENT la recherche
+  // dans state.invoices (une collection dont le code préexistant filtrait déjà explicitement par
+  // invoiceBelongsToActiveClub) : c'est là, et seulement là, qu'un clubId explicite est exigé.
+  function claimSourceContext(claimKey, clubId = activeClubId()) {
+    const key = asText(claimKey);
+    // NOTE — fallbackTotal est calculé ICI par une formule PURE (jamais calcMembership/calcOrder), pour
+    // ne jamais rappeler une fonction qui, elle-même, appelle claimFinancialState -> boucle infinie.
+    let match = key.match(/^membership:(.+)$/);
+    if (match) {
+      const row = state.memberships.find((item) => item.id === match[1]);
+      if (!row) return { sourceFound: false, payments: [], fallbackTotal: 0 };
+      return { sourceFound: true, payments: row.payments || [], fallbackTotal: asNumber(membershipTariffValues(row).total) };
+    }
+    match = key.match(/^order:(.+)$/);
+    if (match) {
+      const row = state.shopOrders.find((item) => item.id === match[1]);
+      if (!row) return { sourceFound: false, payments: [], fallbackTotal: 0 };
+      const gross = (row.items || []).reduce((sum, item) => sum + asNumber(item.quantity) * asNumber(item.unitPrice), 0);
+      return { sourceFound: true, payments: row.payments || [], fallbackTotal: Math.max(0, gross - asNumber(row.discount)) };
+    }
+    match = key.match(/^stage:([^:]+):([^:]+):(event|lodging)$/);
+    if (match) {
+      const [, stageId, registrationId, part] = match;
+      const row = (state.stageRegistrations[stageId] || []).find((item) => item.id === registrationId);
+      if (!row) return { sourceFound: false, payments: [], fallbackTotal: 0 };
+      const segment = part === "lodging" ? row.lodging : row.event;
+      return { sourceFound: true, payments: segment?.payments || [], fallbackTotal: asNumber(calcStageSegment(segment || {}).subtotal) };
+    }
+    // Claim custom (invoice:<id>:custom:<lineId>) : pas de source, tout vit sur la facture elle-même.
+    return { sourceFound: true, payments: [], fallbackTotal: 0, custom: true };
+  }
+
+  // Toutes les factures (club EXPLICITE — clubId, jamais un simple id supposé unique tous clubs
+  // confondus — non brouillon, non annulée) référençant ce claim.
+  function invoicesForClaimKey(claimKey, excludeInvoiceId = "", clubId = activeClubId()) {
+    return (state.invoices || []).filter((invoice) => {
+      if (clubId && asText(invoice.clubId) && invoice.clubId !== clubId) return false;
+      if (invoice.id === excludeInvoiceId) return false;
+      if (invoice.status === "draft" || invoice.status === "cancelled") return false;
+      return (invoice.lines || []).some((line) => lineClaimKey(invoice, line) === claimKey);
+    });
+  }
+
+  // Remplace billedSourceKeys au niveau du claim (P2) : dès qu'UNE ligne d'un claim est facturée,
+  // TOUTES ses lignes sœurs sont indisponibles pour toute autre facture — pas seulement le sourceKey
+  // effectivement choisi. Les anciennes factures sans claimKey stocké sont couvertes via lineClaimKey
+  // (reconstruction en lecture seule, jamais réécrite).
+  function billedClaimKeys(excludeInvoiceId = "") {
+    const keys = new Set();
+    (state.invoices || []).forEach((invoice) => {
+      if (!invoiceBelongsToActiveClub(invoice)) return;
+      if (invoice.id === excludeInvoiceId || invoice.status === "draft" || invoice.status === "cancelled") return;
+      (invoice.lines || []).forEach((line) => {
+        const claimKey = lineClaimKey(invoice, line);
+        if (claimKey) keys.add(claimKey);
+      });
+    });
+    return keys;
+  }
+
+  // F2-AUDIT-004 — P2 comme INVARIANT MÉTIER, pas seulement une cascade UI cliente : billables sont
+  // TOUJOURS recalculés à chaud (jamais une valeur devinée/mise en cache), donc l'ensemble « lignes
+  // sœurs actuellement facturables du même claim » est sans ambiguïté à tout instant. Protège la
+  // sauvegarde/l'émission quelle que soit leur origine (formulaire réel, DOM manipulé, appel
+  // programmatique, brouillon construit par un helper, vieux brouillon ouvert avant F2).
+  // F2-REAUDIT-001 — invoice-aware : une VRAIE vieille ligne de brouillon pré-F2 peut légitimement
+  // n'avoir aucun line.claimKey (normalizeInvoiceLine le préserve s'il existe mais ne l'invente jamais
+  // pour du legacy). Se fier à line.claimKey seul manquait donc ces lignes. lineClaimKey(invoice, line)
+  // retombe sur la dérivation en lecture seule (claimKeyFromSource) quand le champ est absent — sans
+  // jamais réécrire la ligne elle-même : la dérivation reste recalculée à chaque appel, jamais persistée
+  // simplement parce qu'elle a été lue une fois.
+  function missingClaimSiblingBillables(invoice, lines = [], billables = []) {
+    const selectedKeys = new Set(lines.map((line) => line.sourceKey).filter(Boolean));
+    const selectedClaims = new Set(lines.map((line) => lineClaimKey(invoice, line)).filter(Boolean));
+    return billables.filter((item) => selectedClaims.has(item.paymentGroupKey) && !selectedKeys.has(item.sourceKey));
+  }
+
+  // Sauvegarde de brouillon : complète AUTOMATIQUEMENT et SANS AMBIGUÏTÉ les lignes sœurs manquantes
+  // du même claim (jamais une réparation devinée : billables recalculés, jamais une supposition sur
+  // des données absentes). N'ajoute rien si aucun claim n'est représenté par les lignes sélectionnées.
+  function completeClaimLines(invoice, lines, billables) {
+    const missing = missingClaimSiblingBillables(invoice, lines, billables);
+    if (!missing.length) return lines;
+    const existingIds = new Map(lines.map((line) => [line.sourceKey, line.id]));
+    return [...lines, ...missing.map((item) => invoiceLineFromBillable(item, existingIds.get(item.sourceKey)))];
+  }
+
+  // Émission : garde FINALE ABSOLUE, indépendante de la sauvegarde de brouillon (qui a pu être
+  // contournée : vieux brouillon jamais réouvert depuis F2, construction programmatique, DOM
+  // manipulé). Ne répare RIEN — bloque avec un message clair. Retourne "" si conforme.
+  function incompleteClaimMessage(invoice, lines, billables) {
+    const missing = missingClaimSiblingBillables(invoice, lines, billables);
+    if (!missing.length) return "";
+    const labels = [...new Set(missing.map((item) => item.label).filter(Boolean))].join(", ");
+    return `Cette facture ne peut pas être émise : une créance qu'elle référence n'est pas complète (ligne${missing.length > 1 ? "s" : ""} manquante${missing.length > 1 ? "s" : ""} : ${labels || "voir le détail de la créance"}). Complète la sélection avant d'émettre.`;
+  }
+
+  // Clé de contenu d'un paiement pour comparaison multiset legacy (montant/moyen/n°chèque/date/état/
+  // avoir). Deux paiements identiques légitimes restent deux occurrences distinctes (comptage, pas Set).
+  function paymentContentKey(payment = {}) {
+    return [asNumber(payment.amount).toFixed(2), asText(payment.check), asText(payment.checkNumber), asText(payment.date), paymentStateValue(payment), asText(payment.creditNoteId)].join("|");
+  }
+
+  // a est-il un sous-multiset de b (chaque occurrence de a trouve une occurrence disponible dans b) ?
+  function isPaymentMultisetSubset(a = [], b = []) {
+    const available = new Map();
+    b.forEach((payment) => {
+      const key = paymentContentKey(payment);
+      available.set(key, (available.get(key) || 0) + 1);
+    });
+    for (const payment of a) {
+      const key = paymentContentKey(payment);
+      const left = available.get(key) || 0;
+      if (left <= 0) return false;
+      available.set(key, left - 1);
+    }
+    return true;
+  }
+
+  // Détecte la dérive legacy entre le tableau source courant et le paymentsSnapshot figé d'une
+  // facture. safePaid n'est renvoyé QUE si la dérive est certainement unidirectionnelle (l'un est un
+  // sous-multiset exact de l'autre) — sinon ambiguous:true, aucune répartition n'est inventée (doctrine
+  // « sécurité > automatisme » — cf. audits PAY-P0-2 §12/§31/§32).
+  function legacyClaimDrift(sourcePayments = [], snapshotPayments = []) {
+    const sourceOk = (sourcePayments || []).filter((p) => paymentStatus(p) === "OK");
+    const snapshotOk = (snapshotPayments || []).filter((p) => paymentStatus(p) === "OK");
+    if (!snapshotOk.length) return { ambiguous: false, safePaid: paidAmount(sourceOk) };
+    if (isPaymentMultisetSubset(snapshotOk, sourceOk)) return { ambiguous: false, safePaid: paidAmount(sourceOk) };
+    if (isPaymentMultisetSubset(sourceOk, snapshotOk)) return { ambiguous: false, safePaid: paidAmount(snapshotOk) };
+    return { ambiguous: true, safePaid: Math.max(paidAmount(sourceOk), paidAmount(snapshotOk)) };
+  }
+
+  // F2-REAUDIT-005 — moteur CANONIQUE UNIQUE des encaissements d'un claim, décomposés en "slices"
+  // (portions de transaction réellement affectées à CE claim, avec leur propre montant/taux de TVA/
+  // date/identité de transaction). Source UNIQUE pour claimFinancialState (paid/total/restDue) ET pour
+  // la couche comptable (tax/TVA/année fiscale/répartition par module, cf. accountingData/
+  // taxDeclarationRows) : les deux dérivent des MÊMES slices, jamais recalculés séparément — élimine
+  // structurellement le risque « paid vivant + tax source-only » découvert par l'audit Pix.
+  // - Un paiement facture (invoice.paymentsAfterIssue) multi-claims (200€ = 150 Disciplines +
+  //   50 Boutique) produit UNE slice par claim, chacune à hauteur de SA SEULE allocation — jamais
+  //   200€ dans chaque module (la couche comptable travaille sur les allocations, pas la transaction).
+  // - Taux de TVA d'une slice : si le claim est référencé par une facture ÉMISE, le taux suit les
+  //   lignes FIGÉES de cette facture — calculé ligne à ligne (Σtax/Σnet, PAS blendedTaxRate qui
+  //   ignorerait les lignes à montant négatif comme une remise), jamais recalculé depuis un tarif
+  //   source modifié ensuite (même doctrine que le total F2) — appliqué UNIFORMÉMENT aux slices source
+  //   ET paymentsAfterIssue de ce claim (peu importe le "côté" par lequel l'argent est entré). Sinon
+  //   (créance encore purement source, aucune facture émise), taux par paiement (payment.taxRate /
+  //   taux club) : comportement PRÉEXISTANT strictement inchangé.
+  // - Refusé/Annulé/pending : exclus des slices "paid" (comme aujourd'hui) ; refused agrège séparément
+  //   les montants Refusé (source + allocations facture) pour les indicateurs comptables (§8).
+  // - Chaque slice porte paymentId (dédup du nombre de transactions en déclaration fiscale) et sa
+  //   PROPRE date (année fiscale = date réelle du règlement, jamais issuedAt).
+  function claimSlicesTax(slices = []) {
+    return (slices || []).reduce((sum, slice) => sum + taxAmountFromGross(slice.amount, slice.taxRate), 0);
+  }
+  // F2-REAUDIT-006 — un avoir (crédit note) réglant une créance n'est PAS un nouvel encaissement
+  // bancaire : il compte dans claim.paid (couverture de la créance, restDue, statut Payée — inchangé),
+  // mais la couche comptable (TTC encaissé / TVA collectée / compteur Paiements) doit pouvoir l'exclure.
+  // "avoir" n'est produit QUE par use-credit-note-payment (check:"avoir" + creditNoteId toujours les
+  // deux) : la disjonction ne coûte rien et survit à un futur point d'entrée qui n'en poserait qu'un.
+  function isAvoirPayment(payment = {}) {
+    return asText(payment.check) === "avoir" || Boolean(asText(payment.creditNoteId));
+  }
+  function claimSlicesCash(slices = []) {
+    return (slices || []).reduce((sum, slice) => sum + (slice.cash !== false ? asNumber(slice.amount) : 0), 0);
+  }
+  // F2-REAUDIT-007 — un même payment.id peut légitimement apparaître dans PLUSIEURS claims distincts
+  // (règlement multi-claims, chacun avec sa propre allocation : normal, jamais touché ici). Ce qui ne
+  // doit jamais se produire SANS contrôle, c'est le même payment.id compté deux fois DANS LE MÊME
+  // claim (ex. donnée corrompue faisant apparaître un id à la fois côté source et côté
+  // paymentsAfterIssue). Doublon identique (montant/taux/nature cash égaux) -> compté une seule fois,
+  // silencieusement. Conflit (mêmes id, données incompatibles) -> jamais additionné, jamais résolu au
+  // hasard : on retient le montant le plus élevé (même doctrine "sécurité > automatisme" que
+  // legacyClaimDrift), on verrouille le claim (ambiguous/readOnly) et on l'explique dans warnings.
+  function dedupClaimSlices(slices = []) {
+    const byId = new Map();
+    const result = [];
+    let ambiguous = false;
+    const warnings = [];
+    (slices || []).forEach((slice) => {
+      const pid = asText(slice.paymentId);
+      if (!pid) { result.push(slice); return; }
+      const existing = byId.get(pid);
+      if (!existing) { byId.set(pid, slice); result.push(slice); return; }
+      // F2-REAUDIT-008 — year fait partie de l'identité du doublon : deux occurrences du même
+      // payment.id avec montant/taux/cash identiques mais une année fiscale différente (ou l'une
+      // "Sans date" et l'autre datée) ne sont PAS le même règlement documentaire — les additionner
+      // ou en écarter une silencieusement déclarerait l'encaissement dans la mauvaise année.
+      const sameAmount = Math.abs(asNumber(existing.amount) - asNumber(slice.amount)) <= 0.005;
+      const sameTax = asNumber(existing.taxRate) === asNumber(slice.taxRate);
+      const sameCash = existing.cash === slice.cash;
+      const sameYear = asText(existing.year) === asText(slice.year);
+      if (sameAmount && sameTax && sameCash && sameYear) return;
+      // F2-REAUDIT-009 — conflit PUREMENT d'année (montant/taux/cash identiques, seule l'année
+      // diverge) : compté une seule fois (jamais 2×, jamais de créance rouverte), mais son année ne
+      // peut être arbitrairement fixée à celle rencontrée en premier (2026 vs 2027 ne doit jamais
+      // finir silencieusement dans 2026 juste parce que la slice source arrive avant celle de la
+      // facture) — l'année devient "Sans date" tant que le conflit n'est pas vérifié manuellement.
+      // Ne s'applique qu'à ce cas précis : un conflit portant sur amount/taxRate/cash garde la
+      // stratégie déjà validée (montant le plus élevé retenu), inchangée.
+      if (sameAmount && sameTax && sameCash && !sameYear) {
+        const idx = result.indexOf(existing);
+        const neutralized = { ...existing, year: "Sans date" };
+        if (idx !== -1) result[idx] = neutralized;
+        byId.set(pid, neutralized);
+        ambiguous = true;
+        warnings.push(`Le paiement ${pid} apparaît deux fois avec des années fiscales différentes pour ce claim : compté une seule fois, année neutralisée en « Sans date » jusqu'à vérification manuelle.`);
+        return;
+      }
+      if (asNumber(slice.amount) > asNumber(existing.amount)) {
+        const idx = result.indexOf(existing);
+        if (idx !== -1) result[idx] = slice;
+        byId.set(pid, slice);
+      }
+      ambiguous = true;
+      warnings.push(`Le paiement ${pid} apparaît deux fois avec des données incompatibles pour ce claim : compté une seule fois (montant le plus élevé retenu), à vérifier manuellement.`);
+    });
+    return { slices: result, ambiguous, warnings };
+  }
+  function claimCanonicalPaymentSlices(claimKey, clubId = activeClubId()) {
+    const key = asText(claimKey);
+    const context = claimSourceContext(key, clubId);
+    if (!context.sourceFound) {
+      return {
+        claimKey: key, slices: [], paid: 0, total: 0, restDue: 0, refused: 0,
+        sourceFound: false, ambiguous: false, readOnly: true, legacy: false,
+        warnings: ["La source de ce claim est introuvable (supprimée) : aucun nouveau règlement n'est accepté."],
+      };
+    }
+    const sourceOk = (context.payments || []).filter((p) => paymentStatus(p) === "OK");
+    // year résolue via paymentTaxYear (même fallback date/state que l'historique comptable existant,
+    // jamais issuedAt) au moment de la slice : la déclaration fiscale n'a plus qu'à lire slice.year.
+    // cash : false uniquement pour un avoir utilisé (isAvoirPayment) — ce qui règle la créance (paid)
+    // ne change jamais, seule la lecture "encaissement bancaire" de la couche comptable filtre dessus.
+    const sliceOf = (payment, taxRate) => ({ amount: asNumber(payment.amount), taxRate, year: paymentTaxYear(payment), paymentId: asText(payment.id), cash: !isAvoirPayment(payment) });
+    // Regroupe dédup (payment.id, §F2-REAUDIT-007) + recalcul de paid comme Σ(slices.amount) : par
+    // construction, jamais de divergence possible entre "paid" et la somme des slices retournées
+    // (verrouillé par le test F2-ACCOUNTING-11). Sans collision, strictement identique à l'ancienne
+    // formule paidAmount(...)+afterIssuePaid — le dédup ne change quoi que ce soit qu'en cas de conflit.
+    const finalizeSlices = (rawSlices) => {
+      const merged = dedupClaimSlices(rawSlices);
+      return { slices: merged.slices, paid: merged.slices.reduce((sum, s) => sum + asNumber(s.amount), 0), ambiguous: merged.ambiguous, warnings: merged.warnings };
+    };
+    const invoices = invoicesForClaimKey(key, "", clubId);
+    if (invoices.length > 1) {
+      const f = finalizeSlices(sourceOk.map((p) => sliceOf(p, paymentTaxRate(p))));
+      return {
+        claimKey: key, slices: f.slices, paid: f.paid, total: context.fallbackTotal, restDue: context.fallbackTotal - f.paid, refused: refusedAmount(context.payments),
+        sourceFound: true, ambiguous: true, readOnly: true, legacy: true,
+        warnings: ["Ce claim est fractionné sur plusieurs factures anciennes : aucune répartition n'est déduite automatiquement, aucun nouveau règlement n'est accepté.", ...f.warnings],
+      };
+    }
+    if (!invoices.length) {
+      const f = finalizeSlices(sourceOk.map((p) => sliceOf(p, paymentTaxRate(p))));
+      const total = context.fallbackTotal;
+      return {
+        claimKey: key, slices: f.slices, paid: f.paid, total, restDue: total - f.paid, refused: refusedAmount(context.payments),
+        sourceFound: true, ambiguous: f.ambiguous, readOnly: f.ambiguous, legacy: false, warnings: f.warnings,
+      };
+    }
+    const invoice = invoices[0];
+    const claimLines = (invoice.lines || []).filter((line) => lineClaimKey(invoice, line) === key);
+    const total = claimLines.reduce((sum, line) => sum + asNumber(line.total), 0);
+    // F2-REAUDIT-005 — taux composite calculé ligne à ligne (tax/net), PAS via blendedTaxRate : ce
+    // helper partagé ignore délibérément les lignes à montant négatif (filter amount>0, utilisé
+    // ailleurs pour blender des prix d'articles, jamais des remises) — une ligne "Remise" (montant
+    // négatif, ex. billableItemsForContact) y disparaîtrait purement et simplement, faussant le taux
+    // composite du claim. Ici, TOUTES les lignes du claim (y compris les remises) contribuent à la
+    // fois au numérateur (TVA) et au dénominateur (HT) : reproduit exactement la TVA réelle des lignes
+    // figées, y compris quand le claim comporte une remise à un taux différent.
+    const claimLineTax = claimLines.reduce((sum, line) => sum + taxAmountFromGross(asNumber(line.total), asNumber(line.vatRate)), 0);
+    const claimLineNet = total - claimLineTax;
+    const invoiceTaxRate = isClubVatExempt() ? 0 : (claimLineNet > 0.005 ? (claimLineTax / claimLineNet) * 100 : effectiveDefaultVatRate());
+    const afterIssueOk = (invoice.paymentsAfterIssue || []).filter((p) => paymentStatus(p) === "OK");
+    const afterIssueSlices = [];
+    afterIssueOk.forEach((payment) => {
+      const allocations = Array.isArray(payment.allocations) ? payment.allocations : [];
+      const amount = allocations.filter((a) => asText(a.claimKey) === key).reduce((sum, a) => sum + asNumber(a.amount), 0);
+      if (amount > 0.005) {
+        afterIssueSlices.push({ amount, taxRate: invoiceTaxRate, year: paymentTaxYear(payment), paymentId: asText(payment.id), cash: !isAvoirPayment(payment) });
+      }
+    });
+    const afterIssueRefused = (invoice.paymentsAfterIssue || []).filter((p) => paymentStatus(p) === "Refusé").reduce((sum, payment) => {
+      const allocations = Array.isArray(payment.allocations) ? payment.allocations : [];
+      return sum + allocations.filter((a) => asText(a.claimKey) === key).reduce((s, a) => s + asNumber(a.amount), 0);
+    }, 0);
+    const refused = refusedAmount(context.payments) + afterIssueRefused;
+    // La récupération multiset (legacyClaimDrift) ne s'applique QUE si le snapshot est réellement
+    // ancien (aucune de ses entrées OK ne porte d'id F2) : une facture "F2-native" a un snapshot
+    // dont les entrées, copiées depuis des paiements source déjà identifiés, portent un id — dans ce
+    // cas paidAmount(source) est la vérité courante, sans repli, même si une annulation POST-émission
+    // fait apparaître un écart apparent avec le snapshot figé (fait réel, pas une dérive à récupérer).
+    const snapshotOk = (invoice.paymentsSnapshot || []).filter((p) => paymentStatus(p) === "OK");
+    const snapshotIsLegacy = snapshotOk.length > 0 && !snapshotOk.some((p) => asText(p.id));
+    if (!snapshotIsLegacy) {
+      // Snapshot vide (rien à récupérer) OU snapshot F2-natif (entrées identifiées) : la vérité
+      // courante est source + paymentsAfterIssue, sans repli multiset.
+      const sourceSlices = sourceOk.map((p) => sliceOf(p, invoiceTaxRate));
+      const f = finalizeSlices([...sourceSlices, ...afterIssueSlices]);
+      return { claimKey: key, slices: f.slices, paid: f.paid, total, restDue: total - f.paid, refused, sourceFound: true, ambiguous: f.ambiguous, readOnly: f.ambiguous, legacy: false, warnings: f.warnings };
+    }
+    // La comparaison multiset ne peut être fiable QUE pour une facture MONO-claim : paymentsSnapshot
+    // ne porte aucun marqueur d'origine par claim (concaténation brute des groupes source au moment de
+    // l'émission), donc comparer le tableau source d'UN SEUL claim au snapshot ENTIER d'une facture
+    // multi-claims attribuerait à tort l'argent des AUTRES claims à celui-ci. Trouvé sur données
+    // réelles (facture combinant une adhésion et une commande boutique) : sans cette garde, un
+    // claim se voit crédité d'un règlement appartenant en réalité à l'autre claim de la même facture.
+    const invoiceClaimCount = new Set((invoice.lines || []).map((line) => lineClaimKey(invoice, line)).filter(Boolean)).size;
+    if (invoiceClaimCount > 1) {
+      const sourceSlices = sourceOk.map((p) => sliceOf(p, invoiceTaxRate));
+      const f = finalizeSlices([...sourceSlices, ...afterIssueSlices]);
+      return {
+        claimKey: key, slices: f.slices, paid: f.paid, total, restDue: total - f.paid, refused,
+        sourceFound: true, ambiguous: true, readOnly: true, legacy: true,
+        warnings: ["Facture ancienne regroupant plusieurs créances : la répartition historique des règlements ne peut pas être vérifiée automatiquement par claim, aucun nouveau règlement n'est accepté tant que la situation n'a pas été vérifiée manuellement.", ...f.warnings],
+      };
+    }
+    const drift = legacyClaimDrift(context.payments, invoice.paymentsSnapshot || []);
+    if (drift.ambiguous) {
+      // Double dérive : aucune répartition fiable. Pour les slices comptables on retient, côté
+      // source/snapshot, celui dont la somme égale drift.safePaid (le max des deux) — cohérence
+      // garantie PAR CONSTRUCTION avec "paid", sans jamais inventer une répartition plus précise que
+      // ce que le moteur juge sûr (même doctrine « sécurité > automatisme » que legacyClaimDrift).
+      const chosen = paidAmount(sourceOk) >= paidAmount(snapshotOk) ? sourceOk : snapshotOk;
+      const sourceSlices = chosen.map((p) => sliceOf(p, invoiceTaxRate));
+      const f = finalizeSlices([...sourceSlices, ...afterIssueSlices]);
+      return {
+        claimKey: key, slices: f.slices, paid: f.paid, total, restDue: total - f.paid, refused,
+        sourceFound: true, ambiguous: true, readOnly: true, legacy: true,
+        warnings: ["Écart non résolu entre le réglé source et le réglé facture pour ce claim (dérive antérieure au correctif) : aucun nouveau règlement n'est accepté tant que la situation n'a pas été vérifiée manuellement.", ...f.warnings],
+      };
+    }
+    // Dérive sûre (unidirectionnelle) : slices sur le côté réellement retenu par legacyClaimDrift
+    // (celui dont la somme égale drift.safePaid), JAMAIS toujours "source" par défaut — sinon un avoir
+    // legacy recouvré UNIQUEMENT via le snapshot (ex. CORVIN Lou) disparaîtrait des slices comptables/
+    // TVA alors qu'il compte bien dans "paid" (même incohérence que celle corrigée en §6/§11).
+    const chosen = Math.abs(drift.safePaid - paidAmount(sourceOk)) <= 0.005 ? sourceOk : snapshotOk;
+    const sourceSlices = chosen.map((p) => sliceOf(p, invoiceTaxRate));
+    const f = finalizeSlices([...sourceSlices, ...afterIssueSlices]);
+    return {
+      claimKey: key, slices: f.slices, paid: f.paid, total, restDue: total - f.paid, refused,
+      sourceFound: true, ambiguous: f.ambiguous, readOnly: f.ambiguous, legacy: Math.abs(drift.safePaid - paidAmount(sourceOk)) > 0.005,
+      warnings: f.warnings,
+    };
+  }
+
+  // Projection FINE de claimCanonicalPaymentSlices pour les besoins financiers "vivants" existants
+  // (paid/total/restDue) : ne recalcule RIEN séparément, se contente d'omettre slices/tax/refused.
+  function claimFinancialState(claimKey, clubId = activeClubId()) {
+    const state = claimCanonicalPaymentSlices(claimKey, clubId);
+    return {
+      claimKey: state.claimKey, total: state.total, paid: state.paid, restDue: state.restDue,
+      sourceFound: state.sourceFound, ambiguous: state.ambiguous, readOnly: state.readOnly,
+      legacy: state.legacy, warnings: state.warnings,
+    };
+  }
+
+  // Totaux vivants d'une facture : brouillon -> comportement inchangé (invoiceTotalsFromLines, le
+  // paymentsSnapshot d'un brouillon est recalculé à chaque sauvegarde, donc déjà « vivant »). Facture
+  // émise -> agrège claimFinancialState() de chaque claim distinct référencé par ses lignes. Les lignes
+  // dont le claim ne se résout pas (donnée corrompue) contribuent quand même leur propre montant au
+  // total, jamais silencieusement omises.
+  function invoiceLiveTotals(invoice = {}) {
+    if (!invoice || invoice.status === "draft") {
+      return invoiceTotalsFromLines(invoice.lines || [], invoice.paymentsSnapshot || []);
+    }
+    const claims = new Set();
+    let unclaimedTotal = 0;
+    (invoice.lines || []).forEach((line) => {
+      const claimKey = lineClaimKey(invoice, line);
+      if (!claimKey) { unclaimedTotal += asNumber(line.total); return; }
+      claims.add(claimKey);
+    });
+    let total = unclaimedTotal;
+    let paid = 0;
+    let ambiguous = false;
+    let readOnly = false;
+    claims.forEach((claimKey) => {
+      const claimState = claimFinancialState(claimKey);
+      total += asNumber(claimState.total);
+      paid += Math.min(asNumber(claimState.total), Math.max(0, asNumber(claimState.paid)));
+      if (claimState.ambiguous) ambiguous = true;
+      if (claimState.readOnly) readOnly = true;
+    });
+    const clampedPaid = Math.min(Math.max(0, total), paid);
+    return { total, paid: clampedPaid, restDue: total - clampedPaid, ambiguous, readOnly };
+  }
+
+  // Répartition déterministe d'un règlement multi-claims créé DEPUIS une facture : ordre de première
+  // apparition de chaque claim distinct dans invoice.lines, puis min(montant restant, reste réel du
+  // claim). Calculée UNE SEULE FOIS à la création de la transaction, jamais recalculée rétroactivement.
+  function waterfallAllocateInvoicePayment(invoice, amount) {
+    const orderedClaims = [];
+    const seen = new Set();
+    (invoice.lines || []).forEach((line) => {
+      const claimKey = lineClaimKey(invoice, line);
+      if (claimKey && !seen.has(claimKey)) { seen.add(claimKey); orderedClaims.push(claimKey); }
+    });
+    let remaining = Math.max(0, asNumber(amount));
+    const allocations = [];
+    orderedClaims.forEach((claimKey) => {
+      if (remaining <= 0.005) return;
+      const claimState = claimFinancialState(claimKey);
+      const due = Math.max(0, asNumber(claimState.restDue));
+      const alloc = Math.min(remaining, due);
+      if (alloc > 0.005) {
+        allocations.push({ claimKey, amount: Math.round(alloc * 100) / 100 });
+        remaining -= alloc;
+      }
+    });
+    return allocations;
+  }
+
+  // Claim ciblé par un bouton de paiement source live (paymentContextFrom(button) -> {module, id,
+  // stageId, part}). Utilisé par validate-payment (21-handlers.js) pour le garde-fou anti-surpaiement
+  // claim-aware (source + règlements déjà alloués depuis une facture).
+  function claimKeyForPaymentContext(context = {}) {
+    if (context.module === "membership") return `membership:${asText(context.id)}`;
+    if (context.module === "order") return `order:${asText(context.id)}`;
+    if (context.module === "registration") return `stage:${asText(context.stageId)}:${asText(context.id)}:${context.part === "lodging" ? "lodging" : "event"}`;
+    return "";
+  }
+
+  // Liste des transactions CANONIQUES pertinentes pour l'affichage « Paiements et échéances » d'une
+  // facture émise : union des paiements source des claims référencés + paymentsAfterIssue de la
+  // facture elle-même — jamais paymentsSnapshot (qui resterait un doublon documentaire figé).
+  function invoiceCanonicalPayments(invoice = {}) {
+    const claims = new Set();
+    (invoice.lines || []).forEach((line) => {
+      const claimKey = lineClaimKey(invoice, line);
+      if (claimKey) claims.add(claimKey);
+    });
+    const payments = [];
+    claims.forEach((claimKey) => {
+      const context = claimSourceContext(claimKey);
+      if (context.sourceFound) payments.push(...(context.payments || []));
+    });
+    payments.push(...(invoice.paymentsAfterIssue || []));
+    return payments;
+  }
+
+  // F2-AUDIT-006 — affichage documentaire distinct du moteur arithmétique : pour une facture émise,
+  // liste les transactions CANONIQUES (invoiceCanonicalPayments, la vérité vivante — jamais dupliquée)
+  // PLUS les entrées de paymentsSnapshot qui n'ont AUCUN équivalent canonique retrouvable (paiement
+  // legacy invisible du côté source, ex. un avoir historique enregistré uniquement dans le snapshot
+  // avant F2). Ces entrées historiques restent VISIBLES (pour comprendre pourquoi une facture est
+  // reconnue soldée) mais ne sont jamais recomptées : elles ne participent à aucun total, seulement à
+  // l'affichage.
+  // F2-REAUDIT-004 — marquage PAR OCCURRENCE (index de position dans le tableau `payments` renvoyé),
+  // jamais par clé de contenu (Set<string>) : deux paiements strictement identiques et légitimes (même
+  // montant/moyen/date/état — ex. deux espèces de 20€ le même jour) ont la MÊME paymentContentKey ; un
+  // Set de clés marquerait alors les DEUX occurrences comme historiques au lieu d'une seule. Les
+  // entrées canoniques sont filtrées ici à amount > 0.005 (comme historicalOnly l'est déjà) pour que la
+  // position dans ce tableau reste stable jusqu'à invoicePaymentsHtml (invoiceVisiblePayments n'y
+  // filtre alors plus rien, l'ordre est préservé bout en bout).
+  function invoicePaymentsForDisplay(invoice = {}) {
+    if (!invoice || invoice.status === "draft") return { payments: invoice.paymentsSnapshot || [], historicalIndexes: new Set() };
+    const canonical = invoiceCanonicalPayments(invoice).filter((payment) => asNumber(payment.amount) > 0.005);
+    const available = new Map();
+    canonical.forEach((payment) => {
+      const key = paymentContentKey(payment);
+      available.set(key, (available.get(key) || 0) + 1);
+    });
+    const historicalOnly = [];
+    (invoice.paymentsSnapshot || []).forEach((payment) => {
+      if (asNumber(payment.amount) <= 0.005) return;
+      const key = paymentContentKey(payment);
+      const left = available.get(key) || 0;
+      if (left > 0) { available.set(key, left - 1); return; }
+      historicalOnly.push(payment);
+    });
+    const payments = [...canonical, ...historicalOnly];
+    const historicalIndexes = new Set();
+    for (let i = canonical.length; i < payments.length; i++) historicalIndexes.add(i);
+    return { payments, historicalIndexes };
+  }
+
+  // Message de garde anti-surpaiement claim-aware : réutilisé par les 3 points de mutation F2
+  // (validate-payment source, openInvoicePaymentDialog, use-credit-note-payment).
+  function claimOverpayMessage(claimState, candidateAmount) {
+    if (!claimState) return "";
+    if (claimState.readOnly) {
+      return claimState.warnings?.[0] || "Ce claim est en attente de vérification : aucun nouveau règlement n'est accepté pour le moment.";
+    }
+    const due = Math.max(0, asNumber(claimState.restDue));
+    if (asNumber(candidateAmount) <= 0.005) return "";
+    if (due <= 0.005) return "Le montant est déjà entièrement réglé.";
+    if (asNumber(candidateAmount) > due + 0.005) {
+      return `Ce paiement est trop élevé.\nIl reste seulement ${money(due)} à régler.`;
+    }
+    return "";
+  }
+
+  // F2-AUDIT-001 — identité + allocation posées EXPLICITEMENT au moment où un paiement issu d'un
+  // FORMULAIRE source (adhésion/commande/stage) devient réellement comptabilisé (jamais au
+  // chargement, même doctrine que validate-payment) : chaque paiement OK sans id encore attribué
+  // reçoit un id stable et une allocation intégrale vers son propre claim. Idempotent (une ligne déjà
+  // identifiée n'est jamais retouchée).
+  function stampClaimIdentity(payments, claimKey) {
+    return (payments || []).map((payment) => {
+      if (paymentStatus(payment) !== "OK") return payment;
+      if (asText(payment.id) && Array.isArray(payment.allocations) && payment.allocations.length) return payment;
+      return { ...payment, id: payment.id || id("payment"), allocations: [{ claimKey, amount: asNumber(payment.amount) }] };
+    });
+  }
+  // =================== fin moteur financier par créance (claim) ===================
 
   function billableItemsForContact(contact = {}, kind = "members") {
     const rows = [];
@@ -21333,6 +22096,20 @@ ${esc(bodyText)}</pre>
       alert("Ajoute au moins une ligne à la facture avant de la valider.");
       return null;
     }
+    // F2-AUDIT-004 — garde finale ABSOLUE, y compris pour un VIEUX BROUILLON jamais rouvert depuis
+    // F2 (ce chemin d'émission n'appelle jamais selectedInvoiceLinesFromForm/completeClaimLines) :
+    // aucune réparation automatique ici, blocage explicite avec message clair. L'utilisateur doit
+    // rouvrir/ré-enregistrer le brouillon (ce qui complète alors automatiquement le claim) avant de
+    // pouvoir émettre.
+    const issueContact = invoiceContact(invoice.contactKind, invoice.contactId);
+    if (issueContact) {
+      const issueBillables = billableItemsForContact(issueContact, invoice.contactKind);
+      const incompleteMessage = incompleteClaimMessage(invoice, invoice.lines || [], issueBillables);
+      if (incompleteMessage) {
+        alert(incompleteMessage);
+        return null;
+      }
+    }
     if (!options.skipIssueConfirmation && !(await confirmInvoiceIssue())) return null;
     const now = new Date().toISOString();
     const next = normalizeInvoice({
@@ -21357,7 +22134,7 @@ ${esc(bodyText)}</pre>
   }
 
   function invoiceIsUnpaid(invoice = {}) {
-    const totals = invoiceTotalsFromLines(invoice.lines || [], invoice.paymentsSnapshot || []);
+    const totals = invoiceLiveTotals(invoice);
     return invoice.status !== "draft" && invoice.status !== "cancelled" && asNumber(totals.restDue) > 0.005;
   }
 
@@ -21485,7 +22262,10 @@ ${esc(bodyText)}</pre>
     const summaryWrap = host.querySelector("[data-invoice-editor-summary]");
     if (summaryWrap) summaryWrap.innerHTML = invoiceEditorSummary(invoice, invoice.lines, invoice.paymentsSnapshot);
     const payWrap = host.querySelector("[data-invoice-editor-payments]");
-    if (payWrap) payWrap.innerHTML = `<h3>Paiements et échéances</h3>${invoicePaymentsHtml(invoice.paymentsSnapshot)}${invoice.status !== "draft" ? invoicePaymentActionHtml(invoice) : ""}`;
+    // F2-AUDIT-006 — même affichage documentaire que le rendu initial (canonique + historique legacy
+    // visible), jamais le seul paymentsSnapshot figé, pour une facture émise.
+    const displayPayments = invoicePaymentsForDisplay(invoice);
+    if (payWrap) payWrap.innerHTML = `<h3>Paiements et échéances</h3>${invoicePaymentsHtml(displayPayments.payments, displayPayments.historicalIndexes)}${invoice.status !== "draft" ? invoicePaymentActionHtml(invoice) : ""}`;
     // Lot 5d-1 : rafraîchir le bloc « Avoirs liés » en place (avoir créé visible immédiatement).
     const cnWrap = host.querySelector("[data-invoice-credit-notes]");
     if (cnWrap) cnWrap.outerHTML = invoiceLinkedCreditNotesHtml(invoice);
@@ -21524,7 +22304,7 @@ ${esc(bodyText)}</pre>
     }, { total: 0, paid: 0, due: 0 });
     const invoiceRows = contactInvoices(contact, kind);
     const invoiceTotals = invoiceRows.reduce((acc, invoice) => {
-      const totalsValue = invoiceTotalsFromLines(invoice.lines || [], invoice.paymentsSnapshot || []);
+      const totalsValue = invoiceLiveTotals(invoice);
       acc.total += asNumber(totalsValue.total);
       acc.paid += asNumber(totalsValue.paid);
       acc.due += Math.max(0, asNumber(totalsValue.restDue));
@@ -21697,7 +22477,7 @@ ${esc(bodyText)}</pre>
   }
 
   function contactRecapInvoice(invoice) {
-    const totals = invoiceTotalsFromLines(invoice.lines || [], invoice.paymentsSnapshot || []);
+    const totals = invoiceLiveTotals(invoice);
     return `<article class="contact-recap-row clickable-card" data-action="open-invoice" data-id="${esc(invoice.id)}">
       <div class="contact-recap-main">
         <strong>${esc(invoice.number || "Brouillon de facture")}</strong>
@@ -21709,8 +22489,16 @@ ${esc(bodyText)}</pre>
   }
 
   function invoiceBelongsToActiveClub(invoice = {}) {
+    return recordBelongsToActiveClub(invoice);
+  }
+
+  // PAY-P0-2/F2-AUDIT-009 — isolation club EXPLICITE, réutilisée par le moteur claim (claimSourceContext)
+  // pour ne jamais supposer qu'un id (membership/order/inscription) est unique tous clubs confondus.
+  // Même tolérance que l'existant : un enregistrement sans clubId (donnée ancienne non estampillée)
+  // n'est jamais exclu.
+  function recordBelongsToActiveClub(row = {}) {
     const clubId = activeClubId();
-    return !clubId || !asText(invoice.clubId) || invoice.clubId === clubId;
+    return !clubId || !asText(row.clubId) || row.clubId === clubId;
   }
 
   function invoiceDisplayContact(invoice = {}) {
@@ -21718,7 +22506,10 @@ ${esc(bodyText)}</pre>
   }
 
   function invoiceDisplayTotals(invoice = {}) {
-    return invoice.totals || invoiceTotalsFromLines(invoice.lines || [], invoice.paymentsSnapshot || []);
+    // PAY-P0-2/F2 — invoice.totals n'est plus considéré comme la vérité courante d'une facture émise
+    // (cache documentaire hérité, recalculé depuis paymentsSnapshot seul par normalizeInvoice). Toute
+    // lecture d'affichage passe désormais par le moteur vivant claim-aware.
+    return invoiceLiveTotals(invoice);
   }
 
   function invoiceMatchesFilter(invoice = {}) {
@@ -21879,22 +22670,29 @@ ${esc(bodyText)}</pre>
     </tr>`;
   }
 
-  function invoiceEditorSourceRow(item, selectedKeys, alreadyBilledKeys, locked) {
+  // F2-AUDIT-005 — claimBlockedKeys (optionnel) distingue un sourceKey LITTÉRALEMENT déjà facturé
+  // (alreadyBilledKeys — mention « déjà facturé », exacte) d'un sourceKey bloqué par la garde P2 alors
+  // qu'il n'a lui-même JAMAIS été facturé (son claim l'est partiellement, ailleurs, souvent une
+  // facture ancienne pré-P2) — mention distincte, sans jamais prétendre à tort « déjà facturé ».
+  function invoiceEditorSourceRow(item, selectedKeys, alreadyBilledKeys, locked, claimBlockedKeys = null) {
     const selected = selectedKeys.has(item.sourceKey);
     const alreadyBilled = alreadyBilledKeys.has(item.sourceKey);
-    const disabled = locked || alreadyBilled;
-    return `<label class="invoice-source-row ${alreadyBilled ? "already-billed" : ""}">
-      <input type="checkbox" name="billableKeys" value="${esc(item.sourceKey)}" ${selected && !alreadyBilled ? "checked" : ""} ${disabled ? "disabled" : ""} />
+    const claimBlocked = !alreadyBilled && Boolean(claimBlockedKeys && claimBlockedKeys.has(item.sourceKey));
+    const disabled = locked || alreadyBilled || claimBlocked;
+    const rowClass = alreadyBilled ? "already-billed" : claimBlocked ? "claim-blocked" : "";
+    return `<label class="invoice-source-row ${rowClass}">
+      <input type="checkbox" name="billableKeys" value="${esc(item.sourceKey)}" data-claim-key="${esc(item.paymentGroupKey)}" ${selected && !disabled ? "checked" : ""} ${disabled ? "disabled" : ""} />
       <span class="invoice-source-type">${esc(invoiceSourceTypeLabel(item.sourceType))}</span>
       <span><strong>${esc(item.label)}</strong><small>${esc(item.description || "")}</small></span>
       <span class="money">${money(item.total)}</span>
-      ${alreadyBilled ? `<em>déjà facturé</em>` : ""}
+      ${alreadyBilled ? `<em>déjà facturé</em>` : claimBlocked ? `<em title="Une facture ancienne référence déjà une partie de cette créance, sans que cette ligne précise ait elle-même été facturée : vérification manuelle nécessaire avant toute nouvelle facturation.">créance historique partiellement facturée — vérification nécessaire</em>` : ""}
     </label>`;
   }
 
   function invoiceEditorLineRow(line, index, locked) {
     const cats = ["", "Don", "Frais divers", "Prestation", "Location ponctuelle", "Autre recette"];
     return `<div class="invoice-custom-row" data-invoice-custom-row>
+      <input type="hidden" name="customId_${index}" value="${esc(line.id || "")}" />
       <input name="customLabel_${index}" placeholder="Ligne personnalisée" value="${esc(line.label || "")}" ${locked ? "readonly" : ""} />
       <input name="customQty_${index}" type="number" min="0" step="0.01" value="${esc(line.quantity || 1)}" ${locked ? "readonly" : ""} />
       <input name="customUnit_${index}" type="number" step="0.01" value="${esc(line.unitPrice || "")}" ${locked ? "readonly" : ""} />
@@ -21905,7 +22703,10 @@ ${esc(bodyText)}</pre>
   }
 
   function invoiceEditorSummary(invoice, lines, payments) {
-    const totals = invoiceTotalsFromLines(lines, payments);
+    // PAY-P0-2/F2 — brouillon : aperçu vivant inchangé (lines/payments recalculés à la volée par
+    // l'appelant). Facture émise : totaux claim-aware directement depuis invoice, quels que soient
+    // les lines/payments transmis (couvre aussi bien openInvoiceEditor que refreshOpenInvoiceEditor).
+    const totals = (invoice && invoice.status && invoice.status !== "draft") ? invoiceLiveTotals(invoice) : invoiceTotalsFromLines(lines, payments);
     return `<div class="invoice-summary">
       <div><span>Total</span><strong>${money(totals.total)}</strong></div>
       <div><span>Déjà payé</span><strong>${money(totals.paid)}</strong></div>
@@ -21924,15 +22725,22 @@ ${esc(bodyText)}</pre>
     return esc(paymentStatus(payment) || "À suivre");
   }
 
-  function invoicePaymentsHtml(payments = []) {
+  // F2-AUDIT-006/F2-REAUDIT-004 — historicalIndexes (optionnel) : index de POSITION (dans le tableau
+  // `payments` fourni par invoicePaymentsForDisplay, jamais une clé de contenu) des paiements
+  // HISTORIQUES-SEULS — affichage seul, jamais recompté ; jamais posé sur l'objet payment lui-même
+  // (invoiceVisiblePayments renormalise, ce qui stripperait un marqueur ad hoc).
+  function invoicePaymentsHtml(payments = [], historicalIndexes = null) {
     const rows = invoiceVisiblePayments(payments);
     if (!rows.length) return `<div class="empty compact">Aucun paiement enregistré.</div>`;
-    return `<div class="invoice-payment-list">${rows.map((payment, index) => `<div>
+    return `<div class="invoice-payment-list">${rows.map((payment, index) => {
+      const isHistorical = Boolean(historicalIndexes && historicalIndexes.has(index));
+      return `<div${isHistorical ? ` class="invoice-payment-historical" title="Paiement historique antérieur au correctif : conservé pour information, jamais recompté."` : ""}>
       <strong>${esc(invoicePaymentModeLabel(payment, index))}</strong>
       <span>${money(payment.amount)}</span>
       <span>${esc(invoiceDateLabel(payment.date))}</span>
-      <span>${invoicePaymentStatusLabel(payment)}</span>
-    </div>`).join("")}</div>`;
+      <span>${invoicePaymentStatusLabel(payment)}${isHistorical ? ` <em>(historique)</em>` : ""}</span>
+    </div>`;
+    }).join("")}</div>`;
   }
 
   function invoicePaymentActionHtml(invoice = {}) {
@@ -21941,8 +22749,12 @@ ${esc(bodyText)}</pre>
     if (allowed.settled) {
       return `<div class="inline-actions invoice-payment-actions"><span class="invoice-status paid" title="Aucun reste à payer">Facture soldée</span></div>`;
     }
+    if (invoice.status !== "draft" && invoice.status !== "cancelled" && invoiceLiveTotals(invoice).readOnly) {
+      // PAY-P0-2/F2 — claim en attente de vérification : message clair, jamais un simple silence.
+      return `<div class="inline-actions invoice-payment-actions"><span class="invoice-status late" title="Créance en attente de vérification manuelle">En attente de vérification — aucun règlement possible</span></div>`;
+    }
     if (!allowed.addPayment) return ""; // brouillon / annulée : rien
-    const totals = invoiceTotalsFromLines(invoice.lines || [], invoice.paymentsSnapshot || []);
+    const totals = invoiceLiveTotals(invoice);
     return `<div class="inline-actions invoice-payment-actions">
       <button type="button" class="primary" data-action="add-invoice-payment" data-id="${esc(invoice.id)}">Ajouter un règlement</button>
       <span>Reste à payer : <strong>${money(totals.restDue)}</strong></span>
@@ -21990,12 +22802,15 @@ ${esc(bodyText)}</pre>
     // Lot UX avoirs — reste dû de la facture, pour proposer directement le règlement par avoir.
     // Réutilise use-credit-note-payment (mêmes conditions que le bloc du dialogue de paiement) :
     // aucune logique de calcul dupliquée, juste un raccourci d'affichage.
-    const restDue = asNumber(invoiceTotalsFromLines(invoice.lines || [], invoice.paymentsSnapshot || []).restDue);
+    const liveTotals = invoiceLiveTotals(invoice);
+    const restDue = asNumber(liveTotals.restDue);
     const rows = notes.map((cn) => {
       const amt = asNumber(cn.amount);
       // Lot B3b — un avoir supérieur au reste dû n'est plus bloqué : il est utilisable jusqu'à
       // concurrence du reste dû, le solde restant activement disponible (voir use-credit-note-payment).
-      const eligible = !cancelled && cn.status === "actif" && asText(cn.contactId) === asText(invoice.contactId) && restDue > 0.005;
+      // PAY-P0-2/F2 — un claim en attente de vérification (readOnly) n'accepte aucun nouveau règlement,
+      // avoir compris.
+      const eligible = !cancelled && !liveTotals.readOnly && cn.status === "actif" && asText(cn.contactId) === asText(invoice.contactId) && restDue > 0.005;
       const usedAmount = eligible ? Math.min(amt, restDue) : 0;
       const usable = eligible && usedAmount > 0.005;
       const remainder = usable ? amt - usedAmount : 0;
@@ -22102,7 +22917,9 @@ ${esc(bodyText)}</pre>
 
   function invoiceDocumentPayload(invoice = {}, options = {}) {
     invoice = normalizeInvoice(invoice);
-    const totals = invoiceTotalsFromLines(invoice.lines || [], invoice.paymentsSnapshot || []);
+    // PAY-P0-2/F2 — réimpression « comptable » (comportement préservé) : reflète l'état de règlement
+    // COURANT, pas seulement paymentsSnapshot figé à l'émission.
+    const totals = invoiceLiveTotals(invoice);
     const club = invoice.clubSnapshot || activeClub() || {};
     const contact = invoice.contactSnapshot || invoiceContact(invoice.contactKind, invoice.contactId) || {};
     const draft = invoice.status === "draft";
@@ -22112,8 +22929,14 @@ ${esc(bodyText)}</pre>
     const cancelled = computedStatus === "cancelled";
     const fullyPaid = !draft && !cancelled && asNumber(totals.total) > 0.005 && asNumber(totals.restDue) <= 0.005;
     const duplicata = Boolean(options.duplicata) && !draft;
+    // F2-AUDIT-008 — la date de règlement affichée doit refléter le règlement COURANT, quelle que
+    // soit sa surface d'origine (source, paymentsAfterIssue, ou historique legacy visible sans
+    // équivalent canonique) : jamais dérivée du seul paymentsSnapshot figé à l'émission.
+    // F2-REAUDIT-002 — seuls les paiements EFFECTIVEMENT réglés (paymentStatus === "OK") peuvent
+    // dater le règlement : une échéance future (À encaisser/En cours), un Refusé ou un Annulé n'a
+    // jamais soldé la facture et ne doit jamais apparaître comme la date de paiement affichée.
     const paidDate = fullyPaid
-      ? invoiceVisiblePayments(invoice.paymentsSnapshot || []).map((p) => asText(p.date)).filter(Boolean).sort().pop()
+      ? invoicePaymentsForDisplay(invoice).payments.filter((p) => paymentStatus(p) === "OK").map((p) => asText(p.date)).filter(Boolean).sort().pop()
       : "";
     const paidDateLabel = paidDate ? invoiceDateLabel(paidDate) : "";
     const primaryColor = "#1f2937";
@@ -22636,14 +23459,32 @@ ${esc(bodyText)}</pre>
     const locked = !allowed.editLines;
     const billables = billableItemsForContact(contact, invoice.contactKind);
     const undefinedTariffMemberships = locked ? [] : contactMembershipsWithUndefinedTariff(contact);
-    const alreadyBilled = billedSourceKeys(invoice.id);
+    // PAY-P0-2/F2 — P2 : garde de SÉCURITÉ au niveau claimKey (une ligne d'un claim déjà facturé rend
+    // TOUTES ses lignes sœurs indisponibles), pas seulement le sourceKey exact déjà choisi ailleurs.
+    // F2-AUDIT-005 — mais l'AFFICHAGE distingue : alreadyBilled = sourceKey LITTÉRALEMENT déjà présent
+    // sur une facture émise (mention exacte « déjà facturé ») ; claimBlocked = sourceKey jamais lui-
+    // même facturé mais dont le claim est bloqué ailleurs (souvent une facture ancienne pré-P2 ne
+    // couvrant qu'une partie du claim) — mention distincte, jamais un « déjà facturé » erroné.
+    const literallyBilled = billedSourceKeys(invoice.id);
+    const billedClaims = billedClaimKeys(invoice.id);
+    const alreadyBilled = new Set();
+    const claimBlocked = new Set();
+    billables.forEach((item) => {
+      if (literallyBilled.has(item.sourceKey)) { alreadyBilled.add(item.sourceKey); return; }
+      if (billedClaims.has(item.paymentGroupKey)) claimBlocked.add(item.sourceKey);
+    });
     const selectedKeys = new Set((invoice.lines || []).map((line) => line.sourceKey).filter(Boolean));
+    const existingIds = existingInvoiceLineIdsBySourceKey(invoice);
     const proposedLines = (invoice.lines || []).filter((line) => line.sourceType !== "custom");
     const selectedBillables = billables.filter((item) => selectedKeys.has(item.sourceKey));
     const customLines = (invoice.lines || []).filter((line) => line.sourceType === "custom");
     if (!customLines.length && !locked) customLines.push(normalizeInvoiceLine({ sourceType: "custom", label: "", quantity: 1, unitPrice: 0, vatRate: effectiveDefaultVatRate() }));
-    const previewLines = locked ? invoice.lines : [...selectedBillables.map(invoiceLineFromBillable), ...customLines.filter((line) => line.label || asNumber(line.unitPrice))];
-    const previewPayments = locked ? invoice.paymentsSnapshot : selectedInvoicePayments(previewLines, billables);
+    const previewLines = locked ? invoice.lines : [...selectedBillables.map((item) => invoiceLineFromBillable(item, existingIds.get(item.sourceKey))), ...customLines.filter((line) => line.label || asNumber(line.unitPrice))];
+    // F2-AUDIT-006 — une facture émise affiche les transactions CANONIQUES vivantes (source +
+    // paymentsAfterIssue) PLUS les entrées historiques legacy sans équivalent canonique (visibles,
+    // jamais recomptées) ; jamais le seul paymentsSnapshot figé à l'émission.
+    const displayPayments = locked ? invoicePaymentsForDisplay(invoice) : null;
+    const previewPayments = locked ? displayPayments.payments : selectedInvoicePayments(previewLines, billables);
     const title = locked ? `Facture ${invoice.number || ""}` : "Créer / éditer une facture";
     const body = `<div class="dialog-section invoice-editor" data-invoice-editor data-tour="invoice-dialog" data-invoice-editor-id="${esc(invoice.id)}">
         <div class="invoice-editor-head" data-tour="invoice-contact">
@@ -22661,10 +23502,10 @@ ${esc(bodyText)}</pre>
       </div>`
         : `<div class="dialog-section invoice-editor">
         <h3>Lignes proposées</h3>
-        <p class="muted">Choisis les éléments du contact à ajouter à cette facture. Les lignes déjà présentes dans une facture émise sont signalées.</p>
+        <p class="muted">Choisis les éléments du contact à ajouter à cette facture. Les lignes déjà présentes dans une facture émise sont signalées. Les lignes appartenant à la même créance (adhésion, commande…) sont sélectionnées ensemble.</p>
         ${undefinedTariffMemberships.length ? `<div class="form-warning invoice-undefined-tariff">Tarif non défini pour ${undefinedTariffMemberships.length} inscription${undefinedTariffMemberships.length > 1 ? "s" : ""} (${esc(undefinedTariffMemberships.map((row) => `${personLabel(row)} — ${row.discipline || "sans discipline"}`).join(", "))}). Définissez le tarif de la discipline avant de facturer ${undefinedTariffMemberships.length > 1 ? "ces inscriptions" : "cette inscription"} : aucune ligne n'est proposée tant que le tarif reste indéfini.</div>` : ""}
         <div class="invoice-source-list" data-tour="invoice-lines">
-          ${billables.length ? billables.map((item) => invoiceEditorSourceRow(item, selectedKeys, alreadyBilled, locked)).join("") : `<div class="empty compact">Aucun élément facturable trouvé pour ce contact.</div>`}
+          ${billables.length ? billables.map((item) => invoiceEditorSourceRow(item, selectedKeys, alreadyBilled, locked, claimBlocked)).join("") : `<div class="empty compact">Aucun élément facturable trouvé pour ce contact.</div>`}
           ${proposedLines.filter((line) => !billables.some((item) => item.sourceKey === line.sourceKey)).map((line) => `<div class="invoice-source-row already-billed"><span class="invoice-source-type">${esc(invoiceSourceTypeLabel(line.sourceType))}</span><span><strong>${esc(line.label)}</strong><small>Source ancienne ou supprimée</small></span><span class="money">${money(line.total)}</span></div>`).join("")}
         </div>
       </div>
@@ -22675,7 +23516,7 @@ ${esc(bodyText)}</pre>
       </div>`}
       <div class="dialog-section invoice-editor" data-invoice-editor-payments data-tour="invoice-payments">
         <h3>Paiements et échéances</h3>
-        ${invoicePaymentsHtml(previewPayments)}
+        ${invoicePaymentsHtml(previewPayments, locked ? displayPayments.historicalIndexes : null)}
         ${locked ? invoicePaymentActionHtml(invoice) : ""}
       </div>
       ${invoiceLinkedCreditNotesHtml(invoice)}
@@ -22692,7 +23533,19 @@ ${esc(bodyText)}</pre>
     setNextWindowKey(invoice.id ? `invoice:${invoice.id}` : null);
     const invoiceDialog = showDialog(title, body, (data, form) => saveInvoiceFromForm(invoice, data, form), (form) => {
       form.addEventListener("change", (event) => {
-        if (event.target.matches("input[name='billableKeys']")) updateInvoiceEditorPreview(form, invoice, billables);
+        if (event.target.matches("input[name='billableKeys']")) {
+          // PAY-P0-2/F2 — P2 (claim atomique) : cocher/décocher UNE ligne d'un claim entraîne
+          // automatiquement le même état sur ses lignes sœurs (même data-claim-key), sans refonte
+          // visuelle (mêmes cases à cocher existantes).
+          const claimKey = event.target.dataset.claimKey;
+          if (claimKey) {
+            const checked = event.target.checked;
+            form.querySelectorAll(`input[name='billableKeys'][data-claim-key="${CSS.escape(claimKey)}"]`).forEach((box) => {
+              if (!box.disabled) box.checked = checked;
+            });
+          }
+          updateInvoiceEditorPreview(form, invoice, billables);
+        }
         if (event.target.matches("[data-invoice-switch]")) {
           const id = event.target.value;
           if (id && id !== invoice.id) openInvoiceWithSwap(state.invoices.find((inv) => inv.id === id), event.target);
@@ -22715,18 +23568,26 @@ ${esc(bodyText)}</pre>
 
   function selectedInvoiceLinesFromForm(form, invoice, billables) {
     const billableByKey = new Map(billables.map((item) => [item.sourceKey, item]));
+    const existingIds = existingInvoiceLineIdsBySourceKey(invoice);
     const lines = [...form.querySelectorAll("input[name='billableKeys']:checked")]
       .map((input) => billableByKey.get(input.value))
       .filter(Boolean)
-      .map(invoiceLineFromBillable);
+      .map((item) => invoiceLineFromBillable(item, existingIds.get(item.sourceKey)));
     form.querySelectorAll("[data-invoice-custom-row]").forEach((row, index) => {
       const label = form.elements[`customLabel_${index}`]?.value || "";
       const quantity = asNumber(form.elements[`customQty_${index}`]?.value || 1);
       const unitPrice = asNumber(form.elements[`customUnit_${index}`]?.value);
       if (!asText(label) && !unitPrice) return;
+      // PAY-P0-2/F2 — id de ligne STABLE porté par le formulaire (input caché customId_<index>, posé
+      // par invoiceEditorLineRow) : jamais régénéré à chaque sauvegarde de brouillon, sinon le claimKey
+      // d'une ligne custom (ancré sur cet id) changerait à chaque save. Fraîchement créé une seule fois
+      // si absent (ligne tout juste ajoutée côté client).
+      const lineId = asText(form.elements[`customId_${index}`]?.value) || id("invoice-line");
       lines.push(normalizeInvoiceLine({
+        id: lineId,
         sourceType: "custom",
-        sourceKey: `custom:${invoice.id}:${index}:${asText(label)}`,
+        sourceKey: `custom:${lineId}`,
+        claimKey: `invoice:${invoice.id}:custom:${lineId}`,
         category: form.elements[`customCat_${index}`]?.value || "",
         label,
         quantity,
@@ -22734,7 +23595,10 @@ ${esc(bodyText)}</pre>
         vatRate: asNumber(form.elements[`customVat_${index}`]?.value ?? effectiveDefaultVatRate()),
       }));
     });
-    return lines;
+    // F2-AUDIT-004 — P2 : complète automatiquement les lignes sœurs du même claim, sans ambiguïté
+    // (billables recalculés à cet instant), quelle que soit l'origine de l'appel (formulaire réel,
+    // DOM manipulé, appel programmatique).
+    return completeClaimLines(invoice, lines, billables);
   }
 
   async function saveInvoiceFromForm(sourceInvoice, data, form) {
@@ -22751,6 +23615,16 @@ ${esc(bodyText)}</pre>
       return false;
     }
     const issue = form.dataset.submitAction === "issue";
+    // F2-AUDIT-004 — garde finale ABSOLUE avant émission : jamais de facture F2 partielle, même si la
+    // sauvegarde a déjà complété automatiquement (défense en profondeur, redondant en pratique sur ce
+    // chemin précis mais indépendant de toute autre voie de mutation).
+    if (issue) {
+      const incompleteMessage = incompleteClaimMessage(sourceInvoice, lines, billables);
+      if (incompleteMessage) {
+        alert(incompleteMessage);
+        return false;
+      }
+    }
     if (issue && !(await confirmInvoiceIssue())) return { cancel: true };
     // Note : sourceInvoice.id est TOUJOURS renseigné ici (openInvoiceEditor passe la facture par
     // normalizeInvoice(), qui attribue un id même à un brouillon jamais persisté). Le seul signal
@@ -22796,8 +23670,11 @@ ${esc(bodyText)}</pre>
   function openInvoicePaymentDialog(invoice = {}) {
     invoice = normalizeInvoice(invoice);
     if (invoice.status === "draft" || invoice.status === "cancelled") return;
-    const totals = invoiceTotalsFromLines(invoice.lines || [], invoice.paymentsSnapshot || []);
-    const nextIndex = (invoice.paymentsSnapshot || []).length + 1;
+    // PAY-P0-2/F2 — calcul vivant claim-aware (source ET factures confondues), plus paymentsSnapshot
+    // seul. readOnly = au moins un claim de cette facture est en attente de vérification (source
+    // introuvable, fractionnement legacy ou dérive non résolue) : aucun nouveau règlement accepté.
+    const totals = invoiceLiveTotals(invoice);
+    const nextIndex = (invoice.paymentsSnapshot || []).length + (invoice.paymentsAfterIssue || []).length + 1;
     const defaultMethod = acceptedPaymentModes().includes("cash") ? "cash" : defaultPaymentMethod(nextIndex - 1);
     const payableLines = (invoice.lines || []).filter((line) => Math.abs(asNumber(line.total)) > 0.005);
     // Reste dû PAR LIGNE : on répartit le déjà-payé sur les lignes (séquentiel, lignes positives).
@@ -22839,7 +23716,7 @@ ${esc(bodyText)}</pre>
       }).join("")}
     </div>` : "";
     const availableAvoirs = creditNotesAvailableForContact(invoice.contactId);
-    const avoirSection = availableAvoirs.length ? `<div class="dialog-section invoice-credit-note-section">
+    const avoirSection = (!totals.readOnly && availableAvoirs.length) ? `<div class="dialog-section invoice-credit-note-section">
       <h4>Utiliser un avoir</h4>
       <p class="muted">Un avoir réduit le reste à payer, sans créer d'encaissement bancaire.</p>
       ${availableAvoirs.map((cn) => {
@@ -22867,6 +23744,7 @@ ${esc(bodyText)}</pre>
         </div>`;
       }).join("")}
     </div>` : "";
+    const readOnlyNotice = totals.readOnly ? `<div class="dialog-section"><div class="form-warning">${esc((totals.ambiguous && invoice.paymentsAfterIssue) ? "Cette facture concerne une créance en attente de vérification (situation ancienne ambiguë ou source introuvable) : aucun nouveau règlement ne peut être enregistré tant qu'elle n'a pas été contrôlée manuellement." : "Aucun nouveau règlement ne peut être enregistré pour le moment.")}</div></div>` : "";
     const body = `<div class="dialog-section">
       <h3>${esc(invoice.number || "Facture")}</h3>
       <div class="invoice-summary">
@@ -22875,39 +23753,67 @@ ${esc(bodyText)}</pre>
         <div><span>Reste à payer</span><strong class="${totals.restDue > 0 ? "due" : ""}">${money(totals.restDue)}</strong></div>
       </div>
     </div>
+    ${readOnlyNotice}
     ${avoirSection}
-    ${lineSelector}
-    <div class="dialog-section invoice-payment-form">
+    ${totals.readOnly ? "" : lineSelector}
+    ${totals.readOnly ? "" : `<div class="dialog-section invoice-payment-form">
       <div class="invoice-payment-form-head"><h4>Nouveau règlement</h4></div>
       <label>Montant à enregistrer<input name="amount" type="number" step="0.01" min="0" max="${esc(Math.max(0, totals.restDue).toFixed(2))}" value="${esc(Math.max(0, totals.restDue).toFixed(2))}" required /></label>
       <label>Mode de règlement<select name="check">${paymentMethodOptions(nextIndex - 1, defaultMethod)}</select></label>
       <label class="payment-check-number-field" data-invoice-check-number-field hidden>N° chèque<input name="checkNumber" /></label>
       <label>Date du règlement<input name="date" type="date" value="${esc(dateInputValue(new Date()))}" required /></label>
       <label class="invoice-cheque-later" data-invoice-cheque-later hidden><input type="checkbox" name="chequeLater" /> <span>Chèque à encaisser plus tard (sinon encaissé maintenant)</span></label>
-    </div>`;
+    </div>`}`;
     showDialog("Ajouter un règlement", body, (data) => {
-      // Le règlement ne dépasse jamais le reste dû (garde de sécurité, en plus du max de l'input).
-      const amount = Math.min(asNumber(data.get("amount")), Math.max(0, asNumber(totals.restDue)));
-      if (amount <= 0) {
+      // PAY-P0-2/F2 — flux transactionnel : 1) facture émise/non annulée (déjà garanti par le early-
+      // return en tête de fonction, revérifié via target.status) ; 2) reste réel par claim recalculé
+      // À CHAUD (jamais la valeur figée à l'ouverture du dialogue) ; 3) claim dégradé/legacy ambigu
+      // bloqué ; 4) montant validé ; 5) refus si dépassement ; 6) transaction créée avec id +
+      // allocations waterfall ; 7) écrite UNE SEULE FOIS dans paymentsAfterIssue (jamais
+      // paymentsSnapshot). beginHistoryCheckpoint/commitHistoryCheckpoint sont gérés par showDialog
+      // lui-même (un seul checkpoint Undo/Redo, purgé seulement en cas de succès confirmé).
+      const target = state.invoices.find((item) => item.id === invoice.id);
+      if (!target || target.status === "draft" || target.status === "cancelled") return false;
+      const freshTotals = invoiceLiveTotals(target);
+      if (freshTotals.readOnly) {
+        alert("Cette facture concerne une créance en attente de vérification : aucun nouveau règlement n'est accepté pour le moment.");
+        return false;
+      }
+      // F2-AUDIT-003 — jamais de plafonnement silencieux : un montant saisi supérieur au reste dû est
+      // REFUSÉ explicitement (même doctrine que le paiement source, normalizeSubmittedPaymentAmount +
+      // claimOverpayMessage), jamais transformé en un paiement du montant réellement dû.
+      const submittedAmount = normalizeSubmittedPaymentAmount(data.get("amount"));
+      if (submittedAmount === null) {
         alert("Indique un montant de règlement supérieur à zéro.");
         return false;
       }
-      const target = state.invoices.find((item) => item.id === invoice.id);
-      if (!target) return false;
+      const restDue = Math.max(0, asNumber(freshTotals.restDue));
+      if (submittedAmount > restDue + 0.005) {
+        alert(restDue <= 0.005
+          ? "Le montant est déjà entièrement réglé."
+          : `Ce paiement est trop élevé.\nIl reste seulement ${money(restDue)} à régler.`);
+        return false;
+      }
+      const amount = submittedAmount;
       // Statut calculé (plus de menu technique) : un règlement est « Payé » par défaut ; seul un
       // chèque coché « à encaisser plus tard » reste non encaissé (state vide) -> ne réduit pas le reste dû.
       const mode = data.get("check") || defaultMethod;
       const isCheck = paymentMethodKind({ check: mode }) === "check";
+      const allocations = waterfallAllocateInvoicePayment(target, amount);
       const payment = normalizePayment({
+        id: id("payment"),
         check: mode,
         checkNumber: isCheck ? data.get("checkNumber") || "" : "",
         amount,
         date: data.get("date") || "",
         state: (isCheck && data.get("chequeLater")) ? "" : "Payé",
         taxRate: effectiveDefaultVatRate(),
+        allocations,
       });
-      target.paymentsSnapshot = normalizePayments([...(target.paymentsSnapshot || []), payment]);
-      target.totals = invoiceTotalsFromLines(target.lines || [], target.paymentsSnapshot);
+      target.paymentsAfterIssue = normalizePayments([...(target.paymentsAfterIssue || []), payment]);
+      // target.totals reste le cache documentaire hérité (recalculé par normalizeInvoice depuis
+      // lines+paymentsSnapshot uniquement, jamais depuis paymentsAfterIssue) : ce n'est plus la vérité
+      // courante d'une facture émise, cf. invoiceLiveTotals/invoiceDisplayTotals.
       target.status = computedInvoiceStatus(target);
       target.updatedAt = new Date().toISOString();
       upsertInvoice(target);
@@ -23645,7 +24551,7 @@ ${esc(bodyText)}</pre>
       field("discount", "Remise", row.discount || "", "number", 'step="0.01"'),
       `<div class="dialog-alert-list" data-membership-alerts></div>`,
       membershipTariffSummary(row),
-      paymentFields("payment", row.payments || [], membershipTariffValues(row).total, membershipDefaultTaxRate(row)),
+      paymentFields("payment", row.payments || [], membershipTariffValues(row).total, membershipDefaultTaxRate(row), row.id ? `membership:${row.id}` : ""),
     ].join("");
     const footer = contactLinkAction(row);
     setNextWindowKey(row.id ? `membership:${row.id}` : null);
@@ -23692,9 +24598,12 @@ ${esc(bodyText)}</pre>
       // Une définition connue initialise normalement (0 possible = gratuité explicite de la discipline).
       const frozenPrice = hasSnapshot ? asNumber(form.get("frozenDisciplinePrice")) : (disciplineDef ? asNumber(disciplineDef.price) : "");
       const frozenLicense = hasSnapshot ? asNumber(form.get("frozenDisciplineLicense")) : (disciplineDef ? asNumber(disciplineDef.license) : "");
+      // F2-AUDIT-001 — id calculé AVANT le tableau de paiements, pour pouvoir estampiller
+      // immédiatement l'identité + l'allocation de tout paiement fraîchement validé « Payé ».
+      const membershipId = row.id || id("membership");
       const next = {
         ...row,
-        id: row.id || id("membership"),
+        id: membershipId,
         disciplinePrice: frozenPrice,
         disciplineLicense: frozenLicense,
         contactId: contactLink.kind === "member" ? contactLink.contactId : row.contactId || "",
@@ -23724,7 +24633,7 @@ ${esc(bodyText)}</pre>
         insuranceCategory: insuranceChoice?.category || "",
         insuranceLabel: insuranceChoice?.label || "",
         insurancePrice: asNumber(insuranceChoice?.price),
-        payments: readPayments(form, "payment", formElement),
+        payments: stampClaimIdentity(readPayments(form, "payment", formElement), `membership:${membershipId}`),
         // Dossier sportif
         groupId: form.get("groupId") || "",
         level: asText(form.get("level")),
@@ -24106,7 +25015,7 @@ ${esc(bodyText)}</pre>
       `<div class="dialog-section" data-sale-step="payment"><h3>3 · Valider le paiement</h3>
         <div class="form-grid compact">${field("orderDiscount", "Remise commande", row.discount || "", "number", 'step="0.01" min="0" data-order-summary-input')}</div>
       </div>`,
-      paymentFields("payment", row.payments || [], calc.total, orderDefaultTaxRate(row)),
+      paymentFields("payment", row.payments || [], calc.total, orderDefaultTaxRate(row), row.id ? `order:${row.id}` : ""),
     ].join("");
     // En lecture seule : pas d'action secondaire « Fiche contact / facture » (elle enregistrerait
     // puis naviguerait). Clé de fenêtre distincte pour ne pas dédupliquer avec une éventuelle
@@ -24129,9 +25038,12 @@ ${esc(bodyText)}</pre>
         })
         .filter((item) => item.quantity);
       const contactLink = parseContactLink(data.get("contactLink"));
+      // F2-AUDIT-001 — id calculé AVANT le tableau de paiements, pour estampiller immédiatement
+      // l'identité + l'allocation de tout paiement fraîchement validé « Payé ».
+      const orderId = row.id || id("order");
       const next = {
         ...row,
-        id: row.id || id("order"),
+        id: orderId,
         contactId: contactLink.kind === "member" ? contactLink.contactId : "",
         lastName: data.get("lastName"),
         firstName: data.get("firstName"),
@@ -24142,7 +25054,7 @@ ${esc(bodyText)}</pre>
         city: data.get("city"),
         items,
         discount: asNumber(data.get("orderDiscount")),
-        payments: readPayments(data, "payment", form),
+        payments: stampClaimIdentity(readPayments(data, "payment", form), `order:${orderId}`),
       };
       if (contactLink.kind === "prospect") next.prospectContactId = contactLink.contactId;
       else next.prospectContactId = next.contactId ? "" : syncProspectContact(next, row);
@@ -24555,7 +25467,7 @@ ${esc(bodyText)}</pre>
         ${field("eventDiscount", "Remise", event.discount || "", "number", 'step="0.01"')}
         ${paymentDueField("eventPayment", eventTotal, event.payments || [])}
       </div>`,
-      paymentFields("eventPayment", event.payments || [], eventTotal, stageDefaultTaxRate(stage)),
+      paymentFields("eventPayment", event.payments || [], eventTotal, stageDefaultTaxRate(stage), row.id ? `stage:${stageId}:${row.id}:event` : ""),
       `<div class="dialog-section"><h3>${esc(stage.lodgingName || "Hébergement")}</h3></div>`,
       `<div class="form-grid compact stage-price-line">
         ${field("lodgingQty", "Nbr", lodging.quantity || (asNumber(stage.lodgingUnitPrice) ? 1 : ""), "number", 'step="1" min="0"')}
@@ -24563,7 +25475,7 @@ ${esc(bodyText)}</pre>
         ${field("lodgingDiscount", "Remise", lodging.discount || "", "number", 'step="0.01"')}
         ${paymentDueField("lodgingPayment", lodgingTotal, lodging.payments || [])}
       </div>`,
-      paymentFields("lodgingPayment", lodging.payments || [], lodgingTotal, lodgingDefaultTaxRate(stage)),
+      paymentFields("lodgingPayment", lodging.payments || [], lodgingTotal, lodgingDefaultTaxRate(stage), row.id ? `stage:${stageId}:${row.id}:lodging` : ""),
       registrationTotalSummary(eventTotal, lodgingTotal, stage),
     ].join("");
     const footerButtons = [
@@ -24594,9 +25506,12 @@ ${esc(bodyText)}</pre>
         alert("Ce stage est réservé aux non-adhérents.");
         return false;
       }
+      // F2-AUDIT-001 — id calculé AVANT les tableaux de paiements event/lodging, pour estampiller
+      // immédiatement l'identité + l'allocation de tout paiement fraîchement validé « Payé ».
+      const registrationId = row.id || id(`${stageId}-registration`);
       const next = {
         ...row,
-        id: row.id || id(`${stageId}-registration`),
+        id: registrationId,
         contactId: contactLink.kind === "member" ? contactLink.contactId : "",
         lastName: form.get("lastName"),
         firstName: form.get("firstName"),
@@ -24611,13 +25526,13 @@ ${esc(bodyText)}</pre>
           quantity: asNumber(form.get("eventQty")),
           unitPrice: asNumber(form.get("eventUnit")),
           discount: asNumber(form.get("eventDiscount")),
-          payments: readPayments(form, "eventPayment", formElement),
+          payments: stampClaimIdentity(readPayments(form, "eventPayment", formElement), `stage:${stageId}:${registrationId}:event`),
         },
         lodging: {
           quantity: asNumber(form.get("lodgingQty")),
           unitPrice: asNumber(form.get("lodgingUnit")),
           discount: asNumber(form.get("lodgingDiscount")),
-          payments: readPayments(form, "lodgingPayment", formElement),
+          payments: stampClaimIdentity(readPayments(form, "lodgingPayment", formElement), `stage:${stageId}:${registrationId}:lodging`),
         },
       };
       if (contactLink.kind === "prospect") next.prospectContactId = contactLink.contactId;
@@ -26215,7 +27130,11 @@ ${esc(bodyText)}</pre>
     if (ui.view === "disciplines") {
       const rows = state.memberships.map((row) => {
         const calc = calcMembership(row);
-        const tax = paidTaxAmount(row.payments);
+        // F2-REAUDIT-005 — même correctif que accountingData() : tax dérivé des MÊMES slices que
+        // calc.paid (claimCanonicalPaymentSlices), jamais du seul tableau source (row.payments), sinon
+        // un règlement créé depuis une facture disparaît de la TVA de cet export CSV.
+        const claim = row.id ? claimCanonicalPaymentSlices(`membership:${row.id}`) : null;
+        const tax = claim ? claimSlicesTax(claim.slices) : paidTaxAmount(row.payments);
         // Lot 3A (clôture absolue, FIN-ABS-3/§9) — tarif absent : « Non défini » plutôt qu'un 0 trompeur
         // dans les colonnes dérivées du tarif discipline (le réglé reste factuel).
         const totalCell = calc.hasGrossTotal ? calc.total : "Non défini";
@@ -26229,7 +27148,9 @@ ${esc(bodyText)}</pre>
         const calc = calcOrder(row);
         const articles = orderItemDetails(row).map((item) => `${item.article.name || "Article"} ${item.sizesText ? `(${item.sizesText})` : ""} x${intValue(item.quantity)}`).join(" | ");
         const address = [row.address, row.postalCode, row.city].filter(Boolean).join(" ");
-        const tax = paidTaxAmount(row.payments);
+        // F2-REAUDIT-005 — cf. export Disciplines ci-dessus.
+        const claimOrder = row.id ? claimCanonicalPaymentSlices(`order:${row.id}`) : null;
+        const tax = claimOrder ? claimSlicesTax(claimOrder.slices) : paidTaxAmount(row.payments);
         return [row.lastName, row.firstName, row.phone || "", row.email || "", address, articles, shopOrderStatus(row, calc), calc.total, calc.paid, tax, calc.paid - tax, calc.restDue];
       });
       return download("boutique-mongestaclub.csv", toCsv(["Nom", "Prénom", "Téléphone", "E-mail", "Adresse", "Articles", "Statut", "Total TTC", "Réglé TTC", "TVA réglée", "Réglé HT", "Reste dû"], rows), "text/csv;charset=utf-8");
@@ -26251,15 +27172,24 @@ ${esc(bodyText)}</pre>
     if (ui.view === "stages") {
       const stage = stageById(ui.stageId);
       const rows = (state.stageRegistrations[stage.id] || []).map((row) => {
-        const calc = calcRegistration(row);
-        const tax = paidTaxAmount([...(row.event?.payments || []), ...(row.lodging?.payments || [])]);
+        // F2-REAUDIT-005 — calcRegistration(row, stage.id) rend calc.paid claim-aware (comme les
+        // autres surfaces F2-AUDIT-002) ; tax dérivé des MÊMES claims event/lodging (jamais du seul
+        // tableau source), sinon calc.paid et tax divergent à nouveau ici précisément.
+        const calc = calcRegistration(row, stage.id);
+        const eventClaim = row.id ? claimCanonicalPaymentSlices(`stage:${stage.id}:${row.id}:event`) : null;
+        const lodgingClaim = row.id ? claimCanonicalPaymentSlices(`stage:${stage.id}:${row.id}:lodging`) : null;
+        const tax = (eventClaim || lodgingClaim)
+          ? claimSlicesTax(eventClaim?.slices || []) + claimSlicesTax(lodgingClaim?.slices || [])
+          : paidTaxAmount([...(row.event?.payments || []), ...(row.lodging?.payments || [])]);
         return [stage.name, row.lastName, row.firstName, calc.total, calc.paid, tax, calc.paid - tax, calc.restDue];
       });
       return download("stages-mongestaclub.csv", toCsv(["Stage", "Nom", "Prénom", "Total TTC", "Réglé TTC", "TVA réglée", "Réglé HT", "Reste dû"], rows), "text/csv;charset=utf-8");
     }
     if (ui.view === "accounting") {
       const data = accountingData();
-      const rows = data.rows.map((row) => [row.module, row.name, row.detail, row.total, row.paid, row.tax, row.paidNet, row.due, row.costs, row.result, row.refused]);
+      // F2-REAUDIT-006 — "Encaissé TTC/TVA encaissée/Encaissé HT" désignent un encaissement bancaire :
+      // cashPaid/cashTax/cashPaidNet (avoirs utilisés exclus), même correctif que le tableau à l'écran.
+      const rows = data.rows.map((row) => [row.module, row.name, row.detail, row.total, row.cashPaid, row.cashTax, row.cashPaidNet, row.due, row.costs, row.result, row.refused]);
       return download("comptabilite-mongestaclub.csv", toCsv(["Module", "Contact", "Détail", "Attendu TTC", "Encaissé TTC", "TVA encaissée", "Encaissé HT", "Argent dehors", "Achats", "Résultat estimé", "Refusé"], rows), "text/csv;charset=utf-8");
     }
     if (ui.view === "notes") {
@@ -27425,13 +28355,16 @@ ${esc(bodyText)}</pre>
     const expenses = clubExpenses();                         // toutes les dépenses (non filtrées par l'UI)
     const expenseTotalAll = expensesTotal(expenses);
     const customIncomes = customInvoiceIncomes();
-    const customTotal = customIncomes.reduce((sum, row) => sum + row.paid, 0);
+    // F2-REAUDIT-006 — mêmes helpers ET même correctif que renderAccounting/correctionsBandHtml :
+    // cashPaid (avoirs utilisés exclus) partout où "encaissé" désigne un encaissement bancaire réel,
+    // sinon utiliser un avoir de 50€ fait sauter le solde corrigé de +100€ dans ce PDF aussi.
+    const customTotal = customIncomes.reduce((sum, row) => sum + row.cashPaid, 0);
     const creditNotes = clubCreditNotes();
     const avoirTotal = creditNoteActiveTotal();
     const refunds = refundExpenses();
     const refundTotal = refundExpenseTotal();
-    const cashBalance = data.totals.paid - expenseTotalAll;            // Solde caisse
-    const totalEncaisse = data.totals.paid + customTotal;             // Total encaissé
+    const cashBalance = data.totals.cashPaid - expenseTotalAll;            // Solde caisse
+    const totalEncaisse = data.totals.cashPaid + customTotal;             // Total encaissé
     const correctedBalance = cashBalance + customTotal - avoirTotal;  // Solde corrigé
     const taxRows = taxDeclarationRows();
     const moduleNames = accountingModuleNames();
@@ -27443,11 +28376,11 @@ ${esc(bodyText)}</pre>
 
     // --- 2. Synthèse financière (cartes) ---
     const summaryCards = [
-      ["Encaissé TTC", money(data.totals.paid), "Recettes sources réellement rentrées"],
-      ["Encaissé HT", money(data.totals.paidNet), "TTC − TVA"],
-      ["TVA encaissée", money(data.totals.tax), "À isoler de la recette"],
+      ["Encaissé TTC", money(data.totals.cashPaid), "Recettes sources réellement rentrées (hors avoirs utilisés)"],
+      ["Encaissé HT", money(data.totals.cashPaidNet), "TTC − TVA, hors avoirs utilisés"],
+      ["TVA encaissée", money(data.totals.cashTax), "À isoler de la recette"],
       ["Dépenses saisies", money(expenseTotalAll), "Sorties manuelles"],
-      ["Résultat estimé", money(data.totals.result), "Encaissé HT − achats imputés"],
+      ["Résultat estimé", money(data.totals.result), "Encaissé HT − achats imputés (avoirs utilisés inclus)"],
       ["Solde caisse", money(cashBalance), "Encaissé TTC − dépenses"],
       ["Solde corrigé", money(correctedBalance), "Encaissé + custom − dépenses − avoirs"],
       ["Reste dû", money(data.totals.due), "Argent encore dehors"],
@@ -27458,9 +28391,9 @@ ${esc(bodyText)}</pre>
       <td>${esc(row.module)}</td>
       <td class="money">${n(row.count)}</td>
       <td class="money">${m(row.total)}</td>
-      <td class="money">${m(row.paid)}</td>
-      <td class="money">${m(row.tax)}</td>
-      <td class="money">${m(row.paidNet)}</td>
+      <td class="money">${m(row.cashPaid)}</td>
+      <td class="money">${m(row.cashTax)}</td>
+      <td class="money">${m(row.cashPaidNet)}</td>
       <td class="money">${m(row.due)}</td>
       <td class="money">${m(row.costs)}</td>
       <td class="money">${m(row.result)}</td>
@@ -27469,9 +28402,9 @@ ${esc(bodyText)}</pre>
       <td>Total</td>
       <td class="money">${n(data.rows.length)}</td>
       <td class="money">${m(data.totals.total)}</td>
-      <td class="money">${m(data.totals.paid)}</td>
-      <td class="money">${m(data.totals.tax)}</td>
-      <td class="money">${m(data.totals.paidNet)}</td>
+      <td class="money">${m(data.totals.cashPaid)}</td>
+      <td class="money">${m(data.totals.cashTax)}</td>
+      <td class="money">${m(data.totals.cashPaidNet)}</td>
       <td class="money">${m(data.totals.due)}</td>
       <td class="money">${m(data.totals.costs)}</td>
       <td class="money">${m(data.totals.result)}</td>
@@ -27484,7 +28417,7 @@ ${esc(bodyText)}</pre>
           <td>${esc(row.invoice.number || "Brouillon")}</td>
           <td>${esc(row.contact)}</td>
           <td>${esc(row.category)}</td>
-          <td class="money">${m(row.paid)}</td>
+          <td class="money">${m(row.cashPaid)}</td>
           <td class="money">${row.due ? m(row.due) : "—"}</td>
         </tr>`).join("") + `<tr class="total-row"><td colspan="4">Total recettes custom</td><td class="money">${m(customTotal)}</td><td></td></tr>`
       : `<tr><td colspan="6" class="empty">Aucune facture personnalisée comptabilisée. Les factures issues des cotisations / stages / boutique ne sont pas recomptées ici.</td></tr>`;
@@ -27528,7 +28461,7 @@ ${esc(bodyText)}</pre>
       <span class="ledger-op">${esc(op)}</span><span class="ledger-label">${esc(label)}</span><span class="ledger-value">${esc(money(value))}</span>
     </div>`;
     const ledger = `
-      ${ledgerLine("Recettes sources encaissées (TTC)", data.totals.paid)}
+      ${ledgerLine("Recettes sources encaissées (TTC)", data.totals.cashPaid)}
       ${ledgerLine("Recettes custom encaissées", customTotal, "+")}
       ${ledgerLine("Total encaissé", totalEncaisse, "=", true)}
       ${ledgerLine("Dépenses saisies (remboursements inclus)", expenseTotalAll, "−")}
@@ -29104,7 +30037,11 @@ ${esc(bodyText)}</pre>
         if (!inv || !cn || cn.status !== "actif") return null;
         if (asText(cn.contactId) !== asText(inv.contactId)) return null;
         if (inv.status === "draft" || inv.status === "cancelled") return null;
-        const restDue = asNumber(invoiceTotalsFromLines(inv.lines || [], inv.paymentsSnapshot || []).restDue);
+        // PAY-P0-2/F2 — vivant claim-aware ; un claim en attente de vérification (readOnly) n'accepte
+        // aucun nouveau règlement, avoir compris.
+        const liveTotals = invoiceLiveTotals(inv);
+        if (liveTotals.readOnly) return null;
+        const restDue = asNumber(liveTotals.restDue);
         if (!(restDue > 0.005)) return null;
         const usedAmount = Math.min(asNumber(cn.amount), restDue);
         if (!(usedAmount > 0.005)) return null;
@@ -29125,37 +30062,50 @@ ${esc(bodyText)}</pre>
       // ou le reste dû ont pu changer entre-temps (autre onglet, autre action, double-clic).
       const fresh = readUsableCreditNote();
       if (!fresh) return;
-      recordHistory();
+      // F2-AUDIT-010 — doctrine transactionnelle commune (identique à validate-payment/showDialog) :
+      // begin -> mutation complète dans try -> rollback EN MÉMOIRE + throw si exception -> commit une
+      // seule fois après succès confirmé. Toutes les gardes (readUsableCreditNote) ont déjà validé la
+      // faisabilité avant ce point, mais une exception inattendue en cours de mutation (upsert, audit…)
+      // ne doit plus jamais laisser un état partiellement muté sans engagement Undo cohérent.
+      const beforeSnapshot = beginHistoryCheckpoint();
       const now = new Date().toISOString();
       const { invoice: freshTarget, creditNote: freshCn, usedAmount, remainder } = fresh;
-      const payment = normalizePayment({ check: "avoir", amount: usedAmount, state: "Payé", date: dateInputValue(new Date()), creditNoteId: freshCn.id });
-      freshTarget.paymentsSnapshot = normalizePayments([...(freshTarget.paymentsSnapshot || []), payment]);
-      freshTarget.totals = invoiceTotalsFromLines(freshTarget.lines || [], freshTarget.paymentsSnapshot);
-      freshTarget.status = computedInvoiceStatus(freshTarget);
-      freshTarget.updatedAt = now;
-      upsertInvoice(freshTarget);
-      // Avoir initial : passe "utilisé", invoiceId conservé tel quel (jamais réécrit vers la
-      // facture de règlement — il garde son origine, cf. bloc "Avoirs liés à cette facture").
-      const updatedCn = { ...freshCn, status: "utilisé", updatedAt: now };
-      const cnIdx = state.creditNotes.findIndex((c) => c.id === updatedCn.id);
-      if (cnIdx >= 0) state.creditNotes[cnIdx] = updatedCn;
-      if (remainder > 0.005) {
-        const nextCreditNote = {
-          id: id("avoir"),
-          date: dateInputValue(new Date()),
-          amount: remainder,
-          reason: `Reliquat d'avoir après utilisation sur facture ${freshTarget.number || "—"}`,
-          type: freshCn.type,
-          status: "actif",
-          invoiceId: "",
-          contactId: freshCn.contactId,
-          note: `Avoir initial ${freshCn.reason || freshCn.id} de ${money(freshCn.amount)}, utilisé à hauteur de ${money(usedAmount)} sur la facture ${freshTarget.number || "—"}. Reliquat créé automatiquement.`,
-          createdAt: now,
-          updatedAt: now,
-        };
-        state.creditNotes = state.creditNotes || [];
-        upsert(state.creditNotes, nextCreditNote);
+      try {
+        const allocations = waterfallAllocateInvoicePayment(freshTarget, usedAmount);
+        const payment = normalizePayment({ id: id("payment"), check: "avoir", amount: usedAmount, state: "Payé", date: dateInputValue(new Date()), creditNoteId: freshCn.id, allocations });
+        // Un avoir reste un moyen de règlement particulier : transaction canonique dans
+        // paymentsAfterIssue (jamais paymentsSnapshot, qui reste purement documentaire).
+        freshTarget.paymentsAfterIssue = normalizePayments([...(freshTarget.paymentsAfterIssue || []), payment]);
+        freshTarget.status = computedInvoiceStatus(freshTarget);
+        freshTarget.updatedAt = now;
+        upsertInvoice(freshTarget);
+        // Avoir initial : passe "utilisé", invoiceId conservé tel quel (jamais réécrit vers la
+        // facture de règlement — il garde son origine, cf. bloc "Avoirs liés à cette facture").
+        const updatedCn = { ...freshCn, status: "utilisé", updatedAt: now };
+        const cnIdx = state.creditNotes.findIndex((c) => c.id === updatedCn.id);
+        if (cnIdx >= 0) state.creditNotes[cnIdx] = updatedCn;
+        if (remainder > 0.005) {
+          const nextCreditNote = {
+            id: id("avoir"),
+            date: dateInputValue(new Date()),
+            amount: remainder,
+            reason: `Reliquat d'avoir après utilisation sur facture ${freshTarget.number || "—"}`,
+            type: freshCn.type,
+            status: "actif",
+            invoiceId: "",
+            contactId: freshCn.contactId,
+            note: `Avoir initial ${freshCn.reason || freshCn.id} de ${money(freshCn.amount)}, utilisé à hauteur de ${money(usedAmount)} sur la facture ${freshTarget.number || "—"}. Reliquat créé automatiquement.`,
+            createdAt: now,
+            updatedAt: now,
+          };
+          state.creditNotes = state.creditNotes || [];
+          upsert(state.creditNotes, nextCreditNote);
+        }
+      } catch (error) {
+        restoreHistoryCheckpointInMemory(beforeSnapshot);
+        throw error;
       }
+      commitHistoryCheckpoint(beforeSnapshot);
       // Un seul événement pour l'action utilisateur complète (facture + avoir + reliquat éventuel).
       audit.invoiceCreditApplied(freshTarget, invoiceContact(freshTarget.contactKind, freshTarget.contactId), {
         creditNoteId: freshCn.id,
@@ -31377,10 +32327,16 @@ ${esc(bodyText)}</pre>
     }
     payment.amount = validatedAmount;
     normalizeImmediatePayment(payment);
-    // Garde anti trop-perçu (centralisé) : total dû dérivé des données stockées (robuste si le
-    // dataset est absent/périmé). Bloque toute validation qui dépasserait le montant dû, quel que
-    // soit l'historique du paiement (refusé, réactivé, ancien, ajouté…).
-    const overpayMessage = paymentOverpayMessage(payments, index, payment.amount, paymentDueTotalFor(button));
+    // PAY-P0-2/F2 — garde anti trop-perçu CLAIM-AWARE : tient compte des règlements déjà alloués
+    // depuis une facture émise pour ce même claim (jamais visibles dans le seul tableau local
+    // `payments`), pas seulement des autres lignes du tiroir. Repli sur l'ancienne garde locale
+    // seulement si le claim ne peut pas être résolu (module non reconnu — ne devrait jamais arriver,
+    // HISTORICAL_PAYMENT_MODULES filtre déjà en amont).
+    const claimKey = claimKeyForPaymentContext(paymentContextFrom(button));
+    const claimState = claimKey ? claimFinancialState(claimKey) : null;
+    const overpayMessage = claimState
+      ? claimOverpayMessage(claimState, payment.amount)
+      : paymentOverpayMessage(payments, index, payment.amount, paymentDueTotalFor(button));
     if (overpayMessage) {
       alert(overpayMessage);
       return false;
@@ -31399,6 +32355,12 @@ ${esc(bodyText)}</pre>
     }
     payment.state = "Payé";
     if (state) state.value = "Payé";
+    // PAY-P0-2/F2 — identité + allocation créées EXPLICITEMENT au moment où le paiement devient
+    // réellement comptabilisé (jamais devinées au chargement, cf. normalizePayment/doctrine legacy).
+    if (claimKey) {
+      if (!asText(payment.id)) payment.id = id("payment");
+      payment.allocations = [{ claimKey, amount: payment.amount }];
+    }
     return { ok: true, auditAction: "validated", payment, index };
   }
 
@@ -31462,8 +32424,27 @@ ${esc(bodyText)}</pre>
     }
     const paymentAmount = validatedAmount;
     if (amount) amount.value = String(paymentAmount);
-    // Garde anti trop-perçu (centralisé, même logique que le live) : le total du formulaire fait foi.
-    const overpayMessage = paymentOverpayMessage(formPaymentRows(form, prefix), index, paymentAmount, asNumber(block?.dataset.paymentTotal));
+    // F2-AUDIT-001 — garde anti trop-perçu CLAIM-AWARE : même noyau de décision que le tiroir live
+    // (claimFinancialState/claimOverpayMessage), tient compte des règlements déjà alloués depuis une
+    // facture émise pour ce même claim. Repli sur l'ancienne garde locale seulement si aucun claimKey
+    // n'est connu (fiche pas encore créée : aucun claim n'existe tant qu'un id n'a pas été attribué).
+    //
+    // Correction nécessaire : claimFinancialState lit l'état PERSISTÉ (state), pas le formulaire en
+    // cours d'édition — une ligne déjà validée « Payé » plus tôt DANS CETTE MÊME session de formulaire
+    // (verrouillée en DOM, pas encore enregistrée) doit rester prise en compte. On recompose donc le
+    // reste réel : reste claim-aware courant + ce que l'état persisté comptait pour CETTE fiche - ce
+    // que le formulaire (source de vérité de la session en cours) en montre réellement validé.
+    const claimKey = asText(button.dataset.claimKey);
+    const claimState = claimKey ? claimFinancialState(claimKey) : null;
+    let overpayMessage;
+    if (claimState) {
+      const persistedRowPaid = paidAmount(claimSourceContext(claimKey).payments);
+      const formOtherPaid = otherPaidTotal(formPaymentRows(form, prefix), index);
+      const effectiveRestDue = asNumber(claimState.restDue) + persistedRowPaid - formOtherPaid;
+      overpayMessage = claimOverpayMessage({ ...claimState, restDue: effectiveRestDue }, paymentAmount);
+    } else {
+      overpayMessage = paymentOverpayMessage(formPaymentRows(form, prefix), index, paymentAmount, asNumber(block?.dataset.paymentTotal));
+    }
     if (overpayMessage) {
       alert(overpayMessage);
       updatePaymentSplitDisplay(form, prefix);
