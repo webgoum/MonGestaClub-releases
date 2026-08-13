@@ -3374,9 +3374,21 @@ tfoot td {
 
 /* ===== Carte « Informations du stage » (identité regroupée) ===== */
 .stage-info-band { overflow: visible; }
-/* Renforcement visuel du statut sur la carte principale du stage (badge conservé).
-   Bordure gauche + fond TRÈS léger, teintes alignées sur les pastilles (vert/ambre/rouge),
-   lisibles en clair et sombre. Aucune logique métier modifiée. */
+/* Renforcement visuel du statut sur la carte principale du stage (badge et bordure gauche
+   conservés). Lot "fond teinté" : le fond de TOUTE la carte porte désormais le signal principal
+   (le liseré reste en complément). background-color (longhand, jamais le raccourci `background`)
+   pour ne surtout pas écraser le fond texturé du thème Graphite (dégradés définis via
+   `background-image` dans sa propre règle, `background-color` restant libre à ré-écrire ici sans
+   les affecter). "stage-reopened" (inscriptions réactivées après clôture naturelle) rejoint la
+   famille verte, pas la rouge : stageRegistrationClosed() (src/10-calcs-shell.js) traite déjà ce
+   statut comme inscriptible au même titre qu'un stage ouvert -- seuls le badge et le liseré
+   restent ambrés pour signaler l'exception. Aucune logique métier modifiée : les 4 classes
+   viennent telles quelles de stageStatusClass() (src/13-boutique-stock-stages.js), jamais
+   déduites du texte affiché. */
+.band.stage-info-band.stage-open,
+.band.stage-info-band.stage-reopened { background-color: color-mix(in srgb, var(--surface) 91%, var(--success) 9%); }
+.band.stage-info-band.stage-closed,
+.band.stage-info-band.stage-past { background-color: color-mix(in srgb, var(--surface) 91%, var(--accent-2) 9%); }
 .band.stage-info-band.stage-open { border-left: 5px solid color-mix(in srgb, var(--success) 70%, var(--line-strong)); }
 .band.stage-info-band.stage-reopened { border-left: 5px solid color-mix(in srgb, var(--accent-3) 70%, var(--line-strong)); }
 .band.stage-info-band.stage-closed,
