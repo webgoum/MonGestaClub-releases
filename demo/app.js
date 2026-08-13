@@ -14788,6 +14788,50 @@ ${esc(bodyText)}</pre>
       .join("");
   }
 
+  function quickNoteRow(row) {
+    const editing = ui.quickNoteEditId === row.id;
+    if (editing) {
+      return `<tr class="memo-row editing">
+        <td><input data-quick-note-field="category" data-id="${esc(row.id)}" value="${esc(row.category)}" /></td>
+        <td><input data-quick-note-field="title" data-id="${esc(row.id)}" value="${esc(row.title)}" /></td>
+        <td><textarea data-quick-note-field="note" data-id="${esc(row.id)}">${esc(row.note)}</textarea></td>
+        <td><input data-quick-note-field="amount" data-id="${esc(row.id)}" value="${esc(row.amount)}" /></td>
+        <td><select data-quick-note-field="priority" data-id="${esc(row.id)}">${memoPriorityOptions(row.priority)}</select></td>
+        <td><div class="actions"><button class="icon" title="Terminer la modification" data-action="close-quick-note">✓</button><button class="icon danger" title="Supprimer" data-action="delete-quick-note" data-id="${esc(row.id)}">×</button></div></td>
+      </tr>`;
+    }
+    return `<tr class="memo-row">
+      <td>${esc(row.category) || `<span class="muted">-</span>`}</td>
+      <td><strong>${esc(row.title) || `<span class="muted">-</span>`}</strong></td>
+      <td class="memo-note">${esc(row.note) || `<span class="muted">-</span>`}</td>
+      <td>${esc(row.amount) || `<span class="muted">-</span>`}</td>
+      <td>${statusPill(row.priority || "Normale")}</td>
+      <td><div class="actions"><button class="icon" title="Modifier cette note" data-action="edit-quick-note" data-id="${esc(row.id)}">✎</button><button class="icon danger" title="Supprimer" data-action="delete-quick-note" data-id="${esc(row.id)}">×</button></div></td>
+    </tr>`;
+  }
+
+  function quickNotesSection() {
+    const rows = state.memoRows || [];
+    return `
+      <div class="band quick-notes-band">
+        <div class="band-title">
+          <div>
+            <h2>Notes rapides</h2>
+            <p class="muted">Ajoutez ici de petits repères indépendants. Les disciplines, articles et stages se gèrent dans leurs écrans dédiés.</p>
+          </div>
+          <button data-action="add-quick-note">+ Note rapide</button>
+        </div>
+        <div class="table-wrap">
+          <table class="editable-table memo-table">
+            <thead><tr><th>Catégorie</th><th>Sujet</th><th>Note</th><th>Montant</th><th>Priorité</th><th></th></tr></thead>
+            <tbody>
+              ${rows.length ? rows.map(quickNoteRow).join("") : `<tr><td colspan="6"><div class="empty compact">Aucune note rapide. Utilise + Note rapide pour en ajouter une.</div></td></tr>`}
+            </tbody>
+          </table>
+        </div>
+      </div>`;
+  }
+
   function activeNote() {
     let note = state.notes.find((item) => item.id === ui.noteId) || state.notes[0];
     if (!note) {
@@ -14843,6 +14887,7 @@ ${esc(bodyText)}</pre>
         </div>
         <div class="note-editor" contenteditable="true" data-note-editor>${sanitizeNoteHtml(note.content || "")}</div>
       </div>
+      ${quickNotesSection()}
     </div>`;
   }
 
@@ -18361,7 +18406,7 @@ ${esc(bodyText)}</pre>
       { group: "Outils", scopes: [
         { key: "notes", label: "Notes", detail: "Vide les notes libres." },
         { key: "history", label: "Historique", detail: "Vide le journal d'activité (historique des actions)." },
-        { key: "memos", label: "Mémos / post-its", advanced: true, detail: "Supprime tous les mémos rattachés aux fiches." },
+        { key: "memos", label: "Notes rapides", advanced: true, detail: "Supprime toutes les notes rapides de la page Notes." },
         { key: "season-archives", label: "Archives de saison", advanced: true, detail: "Supprime les archives de saison enregistrées dans ce club." },
       ]},
       { group: "Tout", scopes: [
@@ -29451,6 +29496,11 @@ ${esc(bodyText)}</pre>
       updateMemoRow(target);
       persist();
     }
+    if (target.dataset.quickNoteField && target.tagName !== "SELECT") {
+      recordHistory();
+      updateQuickNote(target);
+      persist();
+    }
   });
 
   app.addEventListener("change", async (event) => {
@@ -29811,6 +29861,12 @@ ${esc(bodyText)}</pre>
     if (target.dataset.memoField && target.tagName === "SELECT") {
       recordHistory();
       updateMemoRow(target);
+      persist();
+      render();
+    }
+    if (target.dataset.quickNoteField && target.tagName === "SELECT") {
+      recordHistory();
+      updateQuickNote(target);
       persist();
       render();
     }
@@ -31826,6 +31882,34 @@ ${esc(bodyText)}</pre>
       render();
       return;
     }
+    if (action === "add-quick-note") {
+      recordHistory();
+      addQuickNote();
+      persist("Note rapide ajoutée");
+      render();
+      return;
+    }
+    if (action === "edit-quick-note") {
+      ui.quickNoteEditId = button.dataset.id || "";
+      render();
+      return;
+    }
+    if (action === "close-quick-note") {
+      ui.quickNoteEditId = "";
+      render();
+      return;
+    }
+    if (action === "delete-quick-note") {
+      const row = quickNoteById(button.dataset.id);
+      if (!row) return;
+      if (!await requestConfirm({ title: "Supprimer", message: "Supprimer cette note rapide ?", confirmLabel: "Supprimer", danger: true })) return;
+      recordHistory();
+      deleteQuickNote(row);
+      if (ui.quickNoteEditId === row.id) ui.quickNoteEditId = "";
+      persist("Note rapide supprimée");
+      render();
+      return;
+    }
     if (action === "edit-tariff-row") {
       ui.tariffEditKey = tariffKey(button.dataset.kind, Number(button.dataset.index));
       render();
@@ -33520,6 +33604,35 @@ ${esc(bodyText)}</pre>
       }
     }
     if (field === "priority") row.priority = input.value;
+  }
+
+  // Chemin dédié "Notes rapides" (page Notes) : limité à state.memoRows, sans dépendre de
+  // l'architecture générique discipline/article/stage de updateMemoRow/deleteMemoRow ci-dessus.
+  function quickNoteById(rowId) {
+    return (state.memoRows || []).find((row) => row.id === rowId) || null;
+  }
+
+  function addQuickNote() {
+    const next = normalizeMemoRow({ category: "Note", title: "Nouvelle note", note: "", amount: "", priority: "Normale" });
+    state.memoRows.push(stampRecordClubId(next));
+    ui.quickNoteEditId = next.id;
+    return next;
+  }
+
+  function updateQuickNote(input) {
+    const row = quickNoteById(input.dataset.id);
+    if (!row) return;
+    const field = input.dataset.quickNoteField;
+    if (field === "category") row.category = input.value;
+    if (field === "title") row.title = input.value;
+    if (field === "note") row.note = input.value;
+    if (field === "amount") row.amount = input.value;
+    if (field === "priority") row.priority = input.value;
+  }
+
+  function deleteQuickNote(row) {
+    removeById(state.memoRows, row.id);
+    return true;
   }
 
 
