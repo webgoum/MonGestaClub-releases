@@ -2620,6 +2620,9 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
       license: src.license === undefined || src.license === null ? "" : src.license,
       family: "",
       capabilities: {},
+      // Lot 1 archivage — même doctrine que buildSportCategory : une discipline neuve n'est jamais
+      // créée archivée.
+      archived: false,
     };
   }
 
@@ -5187,6 +5190,9 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
         const familyOverride = typeof discipline.family === "string" ? asText(discipline.family) : "";
         discipline.family = SPORT_FAMILIES.includes(familyOverride) ? familyOverride : "";
         discipline.capabilities = normalizeDisciplineCapabilities(discipline.capabilities);
+        // Lot 1 archivage — même doctrine que normalizeSportCategory : booléen STRICT (=== true).
+        // Une ancienne sauvegarde sans ce champ, ou toute valeur non booléenne, reste active.
+        discipline.archived = discipline.archived === true;
       }
       applyNormalizedTaxRate(discipline, discipline);
     });
@@ -33011,6 +33017,82 @@ ${esc(bodyText)}</pre>
   }
 
   // =====================================================================================================
+  // Lot 1 — noyau d'ARCHIVAGE / RESTAURATION d'une discipline. Patron directement repris de
+  // archiveSportCategory / restoreSportCategory / validateSportCategoryRestore (16-settings-themes.js +
+  // 04-settings-normalize.js) : ARCHIVER N'EST PAS SUPPRIMER. La discipline garde son id, son nom, son
+  // sportId, son tarif, sa licence, sa famille, ses capacités, sa TVA, ET toutes ses références
+  // existantes (memberships/groups/planningCourses/coaches/rooms/sportCategories) — disciplineReferenceCounts
+  // (garde de SUPPRESSION uniquement) n'est donc jamais consulté ici : une discipline peut être
+  // archivée même si elle est encore utilisée. Aucune cascade.
+  //
+  // Ce lot ne crée AUCUNE surface UX (bouton, section « disciplines archivées », filtre de sélecteur) :
+  // ces fonctions sont un noyau métier pur, destiné à être appelé par un futur lot d'interface (Lot 2)
+  // exactement comme performDisciplineDeletion l'est par requestDisciplineDeletion ci-dessus.
+  // =====================================================================================================
+
+  // Correctif (relecture Pix) — résout la discipline CANONIQUE désignée par `ref` (n'importe quel
+  // objet portant un `id`, y compris un objet détaché) dans state.tariffs.disciplines, à condition
+  // qu'elle appartienne au périmètre du club actif (belongsToClubScope/activeClubId, MÊME doctrine
+  // que disciplineNameConflict/disciplineReferenceCounts ci-dessus, aucun scope nouveau inventé).
+  // `ref` lui-même n'est JAMAIS muté : seule l'entité retrouvée dans le state l'est, par archiveDiscipline
+  // et restoreDiscipline. Un id absent, inconnu du state, ou appartenant à un autre club → null : rien
+  // n'est jamais archivé/restauré à partir d'un objet qui n'est pas une discipline réellement gérée.
+  function resolveManagedDiscipline(ref) {
+    const did = asText(ref && ref.id);
+    if (!did) return null;
+    const discipline = disciplinesList().find((d) => asText(d.id) === did) || null;
+    if (!discipline) return null;
+    return belongsToClubScope(discipline, activeClubId()) ? discipline : null;
+  }
+
+  // Idempotente : archiver une discipline déjà archivée, un argument invalide/sans id, un id inconnu
+  // ou une discipline d'un autre club ne fait rien (aucune écriture, aucun recordHistory, aucun
+  // persist, aucun événement de journal) et retourne false. Retourne true si l'archivage a réellement
+  // eu lieu, sur l'entité CANONIQUE du state (jamais sur l'objet `ref` passé en argument).
+  function archiveDiscipline(ref) {
+    const discipline = resolveManagedDiscipline(ref);
+    if (!discipline || discipline.archived === true) return false;
+    recordHistory();
+    discipline.archived = true;
+    persist(`Discipline archivée : ${discipline.name}`);
+    audit.sportDisciplineArchived(discipline);
+    return true;
+  }
+
+  // Validation d'une RESTAURATION, sur le modèle de validateSportCategoryRestore : la discipline
+  // archivée ne doit pas devenir homonyme d'une autre discipline du même club, active OU elle-même
+  // archivée — disciplineNameConflict couvre déjà les deux cas (même doctrine que la création et le
+  // remplacement de discipline, AUCUNE comparaison nouvelle créée ici). Retourne "" si la restauration
+  // est possible, sinon le message destiné à l'utilisateur, qui précise si l'homonyme bloquant est
+  // actif ou lui-même archivé. Suppose déjà résolue une discipline CANONIQUE (contrat inchangé par le
+  // correctif ci-dessus : la résolution/garde de scope vit dans resolveManagedDiscipline, appelée par
+  // archiveDiscipline/restoreDiscipline AVANT toute validation — pas de double résolution).
+  function validateDisciplineRestore(discipline, clubId) {
+    if (!discipline || typeof discipline !== "object") return "Discipline introuvable.";
+    const conflict = disciplineNameConflict(discipline.name, clubId, discipline.id);
+    if (!conflict) return "";
+    const suite = "\nRenommez l'une des deux disciplines avant de restaurer celle-ci.";
+    return conflict.archived
+      ? `Une autre discipline archivée nommée « ${conflict.name} » existe déjà.${suite}`
+      : `Une discipline active nommée « ${conflict.name} » existe déjà.${suite}`;
+  }
+
+  // Idempotente : restaurer une discipline non archivée, un argument invalide/sans id, un id inconnu,
+  // une discipline d'un autre club, ou une discipline en conflit de nom ne fait rien et retourne
+  // false. Ne recrée, ne fusionne, ne modifie aucune autre discipline ni aucun historique : seul
+  // `archived` repasse à false sur l'entité CANONIQUE ciblée, id inchangé, références intactes.
+  function restoreDiscipline(ref) {
+    const discipline = resolveManagedDiscipline(ref);
+    if (!discipline || discipline.archived !== true) return false;
+    if (validateDisciplineRestore(discipline, activeClubId())) return false;
+    recordHistory();
+    discipline.archived = false;
+    persist(`Discipline restaurée : ${discipline.name}`);
+    audit.sportDisciplineRestored(discipline);
+    return true;
+  }
+
+  // =====================================================================================================
   // Lot suppression sûre (catégories) — même doctrine que la suppression de discipline ci-dessus :
   // une seule logique centralisée (categoryReferenceCounts → blocage/confirmation → suppression →
   // persistance → journal), partagée par le seul point d'entrée existant (le dialogue « Discipline
@@ -40744,6 +40826,11 @@ ${esc(bodyText)}</pre>
     // profil comportemental, jamais le nom). Autorisé uniquement sur une discipline totalement vide
     // (disciplineReferenceCounts().total === 0), donc jamais de conversion de données à journaliser.
     "sport.discipline.changed",
+    // Lot 1 archivage/restauration — cycle ARCHIVER/RESTAURER d'une discipline, même patron que
+    // sport.category.archived/restored (Lot 3B-2B) : la discipline garde son id, son nom et toutes
+    // ses références (archiver n'est pas supprimer). Aucune UX dans ce lot : ces actions ne sont
+    // encore atteignables que par le noyau métier (archiveDiscipline/restoreDiscipline, 21-handlers.js).
+    "sport.discipline.archived", "sport.discipline.restored",
     // Lot 3B-2C — AFFECTATION d'une catégorie à une inscription ou à un groupe. Le Lot 3B-2B ne les
     // avait volontairement pas déclarées : les surfaces n'existaient pas encore. Ces deux actions
     // décrivent un rattachement sportif, jamais une modification financière.
@@ -41591,6 +41678,28 @@ ${esc(bodyText)}</pre>
         },
       });
     },
+    // Lot 1 archivage/restauration — même patron que sportCategoryArchived/Restored : entité =
+    // discipline (jamais une catégorie), sportId rappelé comme pour sportDisciplineDeleted.
+    sportDisciplineArchived(discipline) {
+      return recordAuditEvent({
+        action: "sport.discipline.archived",
+        entityType: "discipline",
+        entityId: asText(discipline && discipline.id),
+        entityLabel: asText(discipline && discipline.name),
+        clubId: asText(discipline && discipline.clubId),
+        metadata: { sportId: asText(discipline && discipline.sportId) },
+      });
+    },
+    sportDisciplineRestored(discipline) {
+      return recordAuditEvent({
+        action: "sport.discipline.restored",
+        entityType: "discipline",
+        entityId: asText(discipline && discipline.id),
+        entityLabel: asText(discipline && discipline.name),
+        clubId: asText(discipline && discipline.clubId),
+        metadata: { sportId: asText(discipline && discipline.sportId) },
+      });
+    },
     sportCategoryRenamed(category, discipline, previousLabel) {
       return recordAuditEvent({
         action: "sport.category.updated",
@@ -42048,6 +42157,10 @@ ${esc(bodyText)}</pre>
         ? `${actor} a remplacé la discipline « ${previous} » par « ${label || "?"} »`
         : `${actor} a changé la discipline en « ${label || "?"} »`;
     },
+    // Lot 1 archivage/restauration — même formulation que sport.category.archived/restored, sans
+    // rappel de discipline (l'entité EST déjà la discipline).
+    "sport.discipline.archived": (actor, label) => `${actor} a archivé la discipline « ${label || "?"} »`,
+    "sport.discipline.restored": (actor, label) => `${actor} a restauré la discipline « ${label || "?"} »`,
     "sport.category.updated": (actor, label, metadata) => {
       const discipline = asText(metadata.disciplineLabel);
       const before = asText(metadata.previousLabel);
