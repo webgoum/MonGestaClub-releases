@@ -4830,15 +4830,27 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
   }
   // Passe centrale de résolution des références de discipline sur un état donné (par club).
   //  - memberships/groups/planningCourses : `disciplineId` rempli UNIQUEMENT s'il est vide ET que le
-  //    nom stocké se résout sans ambiguïté ; un id déjà présent (canonique) n'est jamais écrasé ;
+  //    nom stocké se résout sans ambiguïté ; un id déjà présent (canonique) n'est jamais écrasé. Une
+  //    fois l'id RÉSOLU (préexistant ou tout juste rempli), le libellé `discipline` est ALIGNÉ sur le
+  //    nom courant de la discipline canonique s'il diffère — répare un libellé devenu obsolète après
+  //    un renommage (ex. syncDisciplineName mal invoquée), quelle que soit la collection ou son statut
+  //    archivé/actif (l'archivage ne fige jamais ce libellé). Un id INCONNU (discipline absente) ne
+  //    modifie JAMAIS le libellé existant, ne l'efface ni ne l'invente. Portée strictement limitée à
+  //    ces trois collections : factures, journal d'audit et historique ne portent pas ce couple
+  //    id/nom et restent hors d'atteinte par construction ;
   //  - coachs/salles : listes d'`id` DÉRIVÉES des listes de noms (les noms restent la source éditée) ;
   //    les noms non résolus sont conservés, aucun n'est supprimé.
   // Idempotente : deux passes successives sur les mêmes données produisent le même résultat.
   function resolveDisciplineReferences(base) {
     if (!base || typeof base !== "object") return base;
     const fill = (entity) => {
-      if (entity && typeof entity === "object" && !asText(entity.disciplineId)) {
+      if (!entity || typeof entity !== "object") return;
+      if (!asText(entity.disciplineId)) {
         entity.disciplineId = resolveDisciplineIdByName(entity.discipline, base);
+      }
+      const resolved = disciplineById(entity.disciplineId, base);
+      if (resolved && asText(resolved.name) && entity.discipline !== resolved.name) {
+        entity.discipline = resolved.name;
       }
     };
     (Array.isArray(base.memberships) ? base.memberships : []).forEach(fill);
@@ -27356,7 +27368,7 @@ ${esc(bodyText)}</pre>
     if (ui.view === "tarifs") {
       const rows = [
         ["TVA actuelle", "", isClubVatExempt() ? "—" : settings.defaultVatRate, "", "", ""],
-        ...state.tariffs.disciplines.map((row) => ["Discipline", row.name, row.price, row.licenseFee, tariffTaxRate(row), ""]),
+        ...state.tariffs.disciplines.map((row) => ["Discipline", row.name, row.price, row.license, tariffTaxRate(row), ""]),
         ...state.tariffs.insurance.map((row) => ["Assurance", row.category, row.label, row.amounts?.join(" | "), tariffTaxRate(row), ""]),
         // Lot 2D — export historique des tarifs Stages, inconditionnel (indépendant de showStages / hasFeature).
         ...state.tariffs.stages.map((row) => ["Stage", row.name, row.unitPrice, row.investment, tariffTaxRate(row), `${row.lodgingName || ""} ${row.lodgingUnitPrice || ""}`]),
@@ -33465,7 +33477,7 @@ ${esc(bodyText)}</pre>
       if (source && row.sourceType === "discipline") {
         const oldName = source.name;
         source.name = input.value;
-        syncDisciplineName(oldName, source.name);
+        syncDisciplineName(source.id, oldName, source.name);
       }
       if (source && row.sourceType === "article") source.name = input.value;
       if (source && row.sourceType === "stage") source.name = input.value;
