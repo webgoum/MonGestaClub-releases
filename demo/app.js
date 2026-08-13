@@ -4969,14 +4969,24 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
   // INCONNUS (discipline supprimée/importée), et les noms LIBRES/HISTORIQUES non couverts par un id
   // sélectionné (anciens noms ambigus, valeurs libres). Aucune conversion arbitraire ; aucune
   // duplication entre un nom canonique (dérivé d'un id sélectionné) et une valeur libre.
+  // Lot 2B — `archivedIds` : SOUS-ENSEMBLE de `selectedIds` dont la discipline est `archived === true`.
+  // Contrat historique PRÉSERVÉ : `selectedIds` continue de contenir TOUTE référence connue (active ou
+  // archivée), exactement comme avant ce lot — un appelant qui l'ignore garde le comportement actuel.
+  // `archivedIds` est la seule information NOUVELLE, ajoutée pour permettre à l'UI de distinguer les
+  // deux sans jamais faire tomber une discipline archivée mais connue dans `unknownIds` (réservé aux id
+  // réellement absents du référentiel) ni dans `freeNames` (resolvedKeys inclut toujours son nom).
   function disciplineSelectionView(idList, nameList, src) {
     const seenId = new Set();
     const selectedIds = [];
+    const archivedIds = [];
     const unknownIds = [];
     (Array.isArray(idList) ? idList : []).map((x) => asText(x)).filter(Boolean).forEach((did) => {
       if (seenId.has(did)) return;
       seenId.add(did);
-      (disciplineById(did, src) ? selectedIds : unknownIds).push(did);
+      const discipline = disciplineById(did, src);
+      if (!discipline) { unknownIds.push(did); return; }
+      selectedIds.push(did);
+      if (discipline.archived === true) archivedIds.push(did);
     });
     const resolvedKeys = new Set(selectedIds.map((did) => disciplineNameKey(disciplineById(did, src).name)).filter(Boolean));
     const seenFree = new Set();
@@ -4987,7 +4997,7 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
       seenFree.add(k);
       freeNames.push(n);
     });
-    return { selectedIds, unknownIds, freeNames };
+    return { selectedIds, archivedIds, unknownIds, freeNames };
   }
 
   // Libellé d'option DISTINCTIF pour un formulaire : ajoute « — discipline N » UNIQUEMENT si le nom
@@ -12315,12 +12325,19 @@ ${esc(bodyText)}</pre>
   }
 
   function renderDisciplines() {
+    const activeDisciplines = state.tariffs.disciplines.filter((d) => d.archived !== true);
+    // Lot 2A — une discipline archivée n'est plus proposée comme filtre courant. Si ui.discipline
+    // pointait justement sur une discipline devenue archivée entre-temps, l'affichage ET le filtrage
+    // retombent proprement sur « Toutes » (aucune donnée modifiée, ui.discipline lui-même n'est
+    // jamais réécrit ici — si la discipline est restaurée plus tard, le filtre redevient actif de
+    // lui-même, sans action de l'utilisateur).
+    const disciplineFilter = activeDisciplines.some((d) => d.name === ui.discipline) ? ui.discipline : "";
     const options = [`<option value="">Toutes les disciplines</option>`]
-      .concat(state.tariffs.disciplines.map((discipline) => `<option value="${esc(discipline.name)}" ${ui.discipline === discipline.name ? "selected" : ""}>${esc(discipline.name)}</option>`))
+      .concat(activeDisciplines.map((discipline) => `<option value="${esc(discipline.name)}" ${disciplineFilter === discipline.name ? "selected" : ""}>${esc(discipline.name)}</option>`))
       .join("");
     const rows = state.memberships
       .filter((row) => includesQuery(row, ui.query))
-      .filter((row) => !ui.discipline || row.discipline === ui.discipline)
+      .filter((row) => !disciplineFilter || row.discipline === disciplineFilter)
       .filter((row) => !ui.disciplineDueOnly || calcMembership(row).restDue > 0)
       .sort((a, b) => personKey(a).localeCompare(personKey(b)));
     // Lot 3A (clôture absolue, FIN-ABS-2) — les inscriptions au tarif ABSENT ne sont pas comptées comme
@@ -12356,7 +12373,7 @@ ${esc(bodyText)}</pre>
       </div>
       ${toolbar("add-membership", "Nouvelle inscription", `<select data-filter="discipline">${options}</select><div class="segmented">${dueFilterButton("disciplineDueOnly", ui.disciplineDueOnly)}</div>`)}
       <div class="band discipline-binder">
-        <div class="band-title"><h2>${ui.discipline ? esc(ui.discipline) : "Toutes les disciplines"}</h2><strong>${rows.length} adhérents</strong></div>
+        <div class="band-title"><h2>${disciplineFilter ? esc(disciplineFilter) : "Toutes les disciplines"}</h2><strong>${rows.length} adhérents</strong></div>
         ${(state.memberships || []).length === 0
           // Lot 3B-4A — deux états vides DISTINCTS : sans discipline au catalogue, on ne propose
           // pas de créer une inscription (elle n'aurait rien à quoi se rattacher).
@@ -14513,10 +14530,25 @@ ${esc(bodyText)}</pre>
       ${state.tariffs.articles.map(tariffArticleRow).join("")}</tbody></table></div>`;
   }
 
+  // Lot 2C — liste ACTIVE par défaut, même patron que coachs/salles (ui.showArchivedDisciplines,
+  // partagé avec Paramètres > Disciplines et catégories sportives : même collection). L'INDEX RÉEL
+  // (position dans state.tariffs.disciplines, utilisé par updateTariff/data-index) est calculé AVANT
+  // le filtrage et transmis tel quel à tariffDisciplineRow — jamais recalculé sur la liste filtrée,
+  // sous peine d'éditer/supprimer la mauvaise ligne.
   function editableDisciplines() {
-    return `<div class="table-wrap tariff-table-wrap"><table class="editable-table tariff-table">
+    const showArchived = Boolean(ui.showArchivedDisciplines);
+    const archivedCount = state.tariffs.disciplines.filter((d) => d.archived === true).length;
+    const rows = state.tariffs.disciplines
+      .map((discipline, index) => (showArchived || discipline.archived !== true) ? tariffDisciplineRow(discipline, index) : "")
+      .join("");
+    const archivedToggle = archivedCount
+      ? `<label class="form-check"><input type="checkbox" data-toggle-archived-disciplines ${showArchived ? "checked" : ""}/> Afficher archivées (${intValue(archivedCount)})</label>`
+      : "";
+    return `<div class="table-wrap tariff-table-wrap">
+      ${archivedToggle}
+      <table class="editable-table tariff-table">
       <thead><tr><th>Nom</th><th>Tarif</th><th>Licence</th><th class="tariff-tax-cell">TVA</th><th></th></tr></thead><tbody>
-      ${state.tariffs.disciplines.map(tariffDisciplineRow).join("")}</tbody></table></div>`;
+      ${rows}</tbody></table></div>`;
   }
 
   function editableStages() {
@@ -14619,9 +14651,12 @@ ${esc(bodyText)}</pre>
 
   function tariffDisciplineRow(discipline, index) {
     const editing = isTariffEditing("discipline", index);
+    // Lot 2C — le renommage inline reste possible même archivée (résout une collision au restore,
+    // cf. « Renommez l'une des deux disciplines avant de restaurer celle-ci. »), aucun blocage ajouté.
+    const archivedBadge = discipline.archived === true ? ' <span class="archived-badge">Archivée</span>' : "";
     if (editing) {
       return `<tr class="tariff-row editing">
-        <td><input data-tariff="discipline-name" data-index="${index}" value="${esc(discipline.name)}" /></td>
+        <td><input data-tariff="discipline-name" data-index="${index}" value="${esc(discipline.name)}" />${archivedBadge}</td>
         <td><input type="number" step="0.01" data-tariff="discipline-price" data-index="${index}" value="${esc(discipline.price)}" /></td>
         <td><input type="number" step="0.01" data-tariff="discipline-license" data-index="${index}" value="${esc(discipline.license)}" /></td>
         <td class="tariff-tax-cell"><input type="number" step="0.01" min="0" placeholder="${esc(intValue(effectiveDefaultVatRate()))}" data-tariff="discipline-tax" data-index="${index}" value="${esc(hasSpecificTaxRate(discipline) ? tariffTaxRate(discipline) : "")}" /></td>
@@ -14635,7 +14670,7 @@ ${esc(bodyText)}</pre>
       ? `<span class="tariff-to-define" title="Tarif non encore renseigné — à compléter">À définir</span>`
       : money(value);
     return `<tr class="tariff-row" data-action="edit-tariff-row" data-kind="discipline" data-index="${index}">
-      <td><strong>${esc(discipline.name)}</strong></td>
+      <td><strong>${esc(discipline.name)}</strong>${archivedBadge}</td>
       <td class="money">${tariffAmountCell(discipline.price)}</td>
       <td class="money">${tariffAmountCell(discipline.license)}</td>
       <td class="tariff-tax-cell">${esc(taxRateLabel(discipline))}</td>
@@ -17487,12 +17522,21 @@ ${esc(bodyText)}</pre>
   }
 
   function sportCategoriesBandBody() {
-    const disciplines = disciplinesList();
+    // Lot 2C — liste ACTIVE par défaut, réutilisant le patron déjà en place pour coachs/salles
+    // (ui.showArchivedDisciplines, même case « Afficher archivées »). disciplinesList() elle-même
+    // n'est jamais filtrée (doctrine inchangée) : le filtrage est purement local à cet affichage.
+    const allDisciplines = disciplinesList();
+    const showArchived = Boolean(ui.showArchivedDisciplines);
+    const archivedCount = allDisciplines.filter((d) => d.archived === true).length;
+    const disciplines = showArchived ? allDisciplines : allDisciplines.filter((d) => d.archived !== true);
     // Lot 3B-4A — cette bande est LA surface du domaine « disciplines, profils, catégories », et
     // c'était la seule qui ne permettait pas d'en créer une : elle renvoyait l'utilisateur vers
     // Tarifs. Le bouton ouvre exactement le même dialogue que les autres points d'entrée.
     const addButton = `<button type="button" class="primary" data-action="open-discipline-creation" data-origin="settings">Nouvelle discipline</button>`;
-    if (!disciplines.length) {
+    const archivedToggle = archivedCount
+      ? `<label class="form-check"><input type="checkbox" data-toggle-archived-disciplines ${showArchived ? "checked" : ""}/> Afficher archivées (${intValue(archivedCount)})</label>`
+      : "";
+    if (!allDisciplines.length) {
       return `<div class="settings-panel sport-categories-panel">
         <p class="muted">Aucune discipline n'est encore définie. Créez la première discipline du club : elle recevra ici son profil sportif et ses catégories.</p>
         <div class="group-card-actions">${addButton}</div>
@@ -17501,8 +17545,9 @@ ${esc(bodyText)}</pre>
     return `<div class="settings-panel sport-categories-panel">
       <p class="muted">Le profil sportif adapte le vocabulaire et les fonctions proposées. Les catégories (U11, Cadets, Seniors…) sont propres à chaque discipline : deux disciplines peuvent avoir une catégorie du même nom sans qu'elles soient confondues. Aucun tarif n'est modifié depuis cet écran.</p>
       <div class="group-card-actions">${addButton}</div>
+      ${archivedToggle}
       ${orphanSportCategoriesNoticeHtml()}
-      <div class="sport-discipline-list">${disciplines.map(sportDisciplineRowHtml).join("")}</div>
+      <div class="sport-discipline-list">${disciplines.length ? disciplines.map(sportDisciplineRowHtml).join("") : `<p class="muted">Aucune discipline active pour l'instant.</p>`}</div>
     </div>`;
   }
 
@@ -17516,6 +17561,7 @@ ${esc(bodyText)}</pre>
     return `<article class="band sport-discipline-row">
       <div class="sport-discipline-head">
         <strong>${esc(discipline.name || "Discipline")}</strong>
+        ${discipline.archived === true ? '<span class="archived-badge">Archivée</span>' : ""}
         <span class="cap-badge">${esc(disciplineProfileLabel(resolved))}</span>
       </div>
       <div class="sport-discipline-meta muted">
@@ -17716,15 +17762,27 @@ ${esc(bodyText)}</pre>
   // de blocage que la suppression de discipline (disciplineReferenceCounts, déjà calculée une seule
   // fois par disciplineCategoriesDialogBody et transmise ici — pas de second calcul).
   function disciplineIdentitySectionHtml(discipline, resolved, blockers) {
+    const archived = discipline.archived === true;
     const blocked = blockers.total > 0;
     const title = blocked
       ? disciplineReplacementBlockedMessage(asText(discipline.name), blockers)
       : "Remplacer cette discipline par une autre du catalogue (profils et disciplines nommées)";
+    // Lot 2C — « Changer la discipline » n'a plus de sens tant qu'elle est archivée (mise de côté) :
+    // MASQUÉ (jamais simplement désactivé), pour ne pas laisser croire qu'un déblocage suffirait.
+    const replaceBlock = archived ? "" : `
+      <button type="button" data-action="open-discipline-replacement" data-id="${esc(discipline.id)}"${blocked ? " disabled" : ""} title="${esc(title)}">Changer la discipline</button>
+      ${blocked ? `<p class="muted">${esc(disciplineReplacementBlockedMessage(asText(discipline.name), blockers))}</p>` : ""}`;
+    // Lot 2C — action d'archivage/restauration : NON destructive, jamais dans la Zone de danger.
+    // Appelle exclusivement le noyau du Lot 1 (archiveDiscipline/restoreDiscipline) — aucune mutation
+    // directe de `discipline.archived` depuis l'UI.
+    const archiveAction = archived
+      ? `<button type="button" data-action="restore-discipline" data-id="${esc(discipline.id)}">Restaurer</button>`
+      : `<button type="button" data-action="archive-discipline" data-id="${esc(discipline.id)}">Archiver la discipline</button>`;
     return `<section class="dialog-section">
       <h3>Discipline</h3>
-      <p><strong>${esc(discipline.name || "(sans nom)")}</strong> · profil de fonctionnement : ${esc(disciplineProfileLabel(resolved))}</p>
-      <button type="button" data-action="open-discipline-replacement" data-id="${esc(discipline.id)}"${blocked ? " disabled" : ""} title="${esc(title)}">Changer la discipline</button>
-      ${blocked ? `<p class="muted">${esc(disciplineReplacementBlockedMessage(asText(discipline.name), blockers))}</p>` : ""}
+      <p><strong>${esc(discipline.name || "(sans nom)")}</strong> · profil de fonctionnement : ${esc(disciplineProfileLabel(resolved))}${archived ? ' <span class="archived-badge">Archivée</span>' : ""}</p>
+      ${archiveAction}
+      ${replaceBlock}
     </section>`;
   }
 
@@ -17751,16 +17809,24 @@ ${esc(bodyText)}</pre>
         ${sportCategoryDeleteButtonHtml(category)}
       </span>
     </li>`).join("");
+    // Lot 2C — une discipline archivée est retirée des nouveaux usages : continuer à enrichir son
+    // catalogue de catégories serait incohérent. Les catégories EXISTANTES restent pleinement gérables
+    // (Renommer/Archiver/Supprimer ci-dessus, inchangés) ; seule la CRÉATION d'une nouvelle catégorie
+    // est retirée, jamais désactivée-mais-visible (message explicite à la place).
+    const addBlock = discipline.archived === true
+      ? `<p class="muted">Restaurez la discipline pour ajouter de nouvelles catégories.</p>`
+      : `<div class="group-card-actions"><button type="button" class="primary" data-action="add-sport-category" data-id="${esc(discipline.id)}">Ajouter une catégorie</button></div>`;
     return `<section class="dialog-section">
       <h3>Catégories actives</h3>
       ${active.length ? `<ul class="sport-category-list">${rows}</ul>` : `<p class="muted">Aucune catégorie pour l'instant.</p>`}
-      <div class="group-card-actions">
-        <button type="button" class="primary" data-action="add-sport-category" data-id="${esc(discipline.id)}">Ajouter une catégorie</button>
-      </div>
+      ${addBlock}
     </section>`;
   }
 
   function disciplineSuggestionsHtml(discipline) {
+    // Lot 2C — aucune suggestion (= aucune nouvelle catégorie) sur une discipline archivée ; le message
+    // explicatif vit déjà dans disciplineActiveCategoriesHtml, pas besoin de le répéter ici.
+    if (discipline.archived === true) return "";
     const suggestions = sportCategorySuggestions(discipline, state);
     if (!suggestions.length) {
       return `<section class="dialog-section">
@@ -17850,6 +17916,13 @@ ${esc(bodyText)}</pre>
   }
 
   function createSportCategoryFromLabel(discipline, label) {
+    // Lot 2C — défense en profondeur : l'UI masque déjà « Ajouter une catégorie » et les suggestions
+    // sur une discipline archivée (disciplineActiveCategoriesHtml/disciplineSuggestionsHtml) ; ce
+    // contrôle est répété ici, même doctrine que les autres gardes déjà en place dans ce fichier.
+    if (discipline && discipline.archived === true) {
+      alert("Cette discipline est archivée : restaurez-la pour ajouter de nouvelles catégories.");
+      return;
+    }
     const error = validateSportCategoryLabel(label, discipline.id, state, "", activeClubId());
     if (error) { alert(error); return; }
     recordHistory();
@@ -17932,6 +18005,9 @@ ${esc(bodyText)}</pre>
   function addAllSportCategorySuggestions(disciplineId) {
     const discipline = disciplineByIdStrict(disciplineId);
     if (!discipline) return;
+    // Lot 2C — défense en profondeur : l'UI ne rend plus jamais ce bouton sur une discipline archivée
+    // (disciplineSuggestionsHtml renvoie "" dans ce cas).
+    if (discipline.archived === true) return;
     const pending = sportCategorySuggestions(discipline, state).filter((s) => !s.alreadyExists);
     if (!pending.length) return;
     recordHistory();
@@ -19132,6 +19208,13 @@ ${esc(bodyText)}</pre>
   //  3. aucun id + nom résolu de façon UNIQUE → présélectionner l'id résolu (legacy non ambigu) ;
   //  4. aucun id + nom présent ambigu/absent → option « héritée » (valeur "__legacy__") sans attribution ;
   //  5. ni id ni nom → option vide « — Aucune — ».
+  // Lot 2A — une discipline ARCHIVÉE n'est plus proposée pour une NOUVELLE affectation (exclue de la
+  // boucle des choix actifs ci-dessous), mais reste TOUJOURS distincte d'une référence __unknown__ :
+  // elle existe réellement dans le référentiel (disciplineById continue de la résoudre, doctrine
+  // inchangée), seule son éligibilité à un NOUVEAU choix change. Si elle est déjà la valeur
+  // sélectionnée (id explicite connu, ou résolution par nom historique), elle reçoit une option
+  // dédiée qui préserve son id exact et l'annonce « — archivée », jamais fusionnée avec les options
+  // actives ni convertie en "__unknown__".
   function disciplineSelectField(name, label, entity) {
     const list = (state.tariffs && Array.isArray(state.tariffs.disciplines)) ? state.tariffs.disciplines : [];
     const rawId = asText(entity && entity.disciplineId);
@@ -19142,6 +19225,9 @@ ${esc(bodyText)}</pre>
     const selectedId = knownId || resolvedLegacyId;                            // id d'une option « normale » à cocher
     const hasLegacyPreserved = !rawId && !resolvedLegacyId && !!legacyName;     // (4)
     const noneSelected = !selectedId && !hasUnknownId && !hasLegacyPreserved;   // (5)
+    // Discipline CONNUE (par id explicite ou résolution de nom) déjà sélectionnée : peut être archivée.
+    const selectedDiscipline = selectedId ? (list.find((d) => asText(d.id) === selectedId) || null) : null;
+    const selectedArchived = Boolean(selectedDiscipline && selectedDiscipline.archived === true);
     const options = [];
     options.push(`<option value="" ${noneSelected ? "selected" : ""}>— Aucune —</option>`);
     if (hasUnknownId) {
@@ -19152,7 +19238,11 @@ ${esc(bodyText)}</pre>
     if (hasLegacyPreserved) {
       options.push(`<option value="__legacy__" selected>${esc(legacyName)} (héritée, à préciser)</option>`);
     }
+    if (selectedArchived) {
+      options.push(`<option value="${esc(selectedId)}" selected>${esc(disciplineOptionLabel(selectedDiscipline))} — archivée</option>`);
+    }
     list.forEach((d) => {
+      if (d.archived === true) return; // Lot 2A — jamais proposée pour une nouvelle affectation.
       const idv = asText(d.id);
       options.push(`<option value="${esc(idv)}" ${idv === selectedId ? "selected" : ""}>${esc(disciplineOptionLabel(d))}</option>`);
     });
@@ -29370,6 +29460,13 @@ ${esc(bodyText)}</pre>
       render();
       return;
     }
+    // Lot 2C — même patron que coachs/salles ci-dessus. Un seul état PARTAGÉ (Tarifs et Paramètres >
+    // Disciplines et catégories sportives représentent la même collection state.tariffs.disciplines).
+    if (target.hasAttribute && target.hasAttribute("data-toggle-archived-disciplines")) {
+      ui.showArchivedDisciplines = target.checked;
+      render();
+      return;
+    }
     if (target.dataset.clubSwitch !== undefined) {
       if (switchActiveClub(target.value)) render();
       return;
@@ -30675,6 +30772,36 @@ ${esc(bodyText)}</pre>
       // fonctionnement (data-sport-profile-select, géré ailleurs) : celui-ci ouvre un VRAI
       // changement d'identité (name ET sportId).
       openDisciplineReplacementDialog(button.dataset.id);
+      return;
+    }
+    // Lot 2C — UX archivage/restauration : appelle EXCLUSIVEMENT le noyau du Lot 1
+    // (archiveDiscipline/restoreDiscipline, 21-handlers.js), jamais une mutation directe de
+    // `discipline.archived` depuis l'UI. Même patron de rerendu que les mutations de catégories
+    // (render + rafraîchissement sur place du dialogue si ouvert).
+    if (action === "archive-discipline") {
+      const discipline = disciplineByIdStrict(button.dataset.id);
+      if (!discipline) return;
+      const ok = await requestConfirm({
+        title: "Archiver la discipline",
+        message: `« ${asText(discipline.name)} » sera masquée des nouvelles inscriptions, groupes, créneaux, coachs et salles, mais toutes les données existantes qui l'utilisent seront conservées telles quelles. Vous pourrez la restaurer à tout moment.`,
+        confirmLabel: "Archiver",
+      });
+      if (!ok) return;
+      if (!archiveDiscipline(discipline)) return;
+      render();
+      refreshDisciplineCategoriesDialog();
+      return;
+    }
+    if (action === "restore-discipline") {
+      const discipline = disciplineByIdStrict(button.dataset.id);
+      if (!discipline) return;
+      // Message noyau affiché tel quel en cas de collision (validateDisciplineRestore) : même patron
+      // que restoreSportCategory, aucune fusion, aucune recréation, aucun changement d'id.
+      const error = validateDisciplineRestore(discipline, activeClubId());
+      if (error) { alert(error); return; }
+      if (!restoreDiscipline(discipline)) return;
+      render();
+      refreshDisciplineCategoriesDialog();
       return;
     }
     if (action === "add-sport-category") {
@@ -36351,8 +36478,16 @@ ${esc(bodyText)}</pre>
       `<div class="form-grid compact">${selectField("expenseUnit", "Unité", coach.expenseUnit || "séance", ["séance", "heure", "forfait"])}${selectField("expenseCategory", "Catégorie comptable", coach.expenseCategory || "Coach / intervenant", ["Coach / intervenant", "Rémunération", "Prestation", "Autre dépense"])}</div>`,
       field("expenseNote", "Note comptable", coach.expenseNote || ""),
       `<div class="dialog-section"><h3>Spécialités (disciplines encadrées)</h3></div>`,
-      // Cases CANONIQUES : la valeur est discipline.id (pas le nom) ; libellé distinctif si homonyme.
-      `<div class="form-check-grid">${(state.tariffs.disciplines || []).map((d) => `<label class="form-check"><input type="checkbox" data-coach-spec value="${esc(d.id)}" ${selectedIdSet.has(d.id) ? "checked" : ""}/> ${esc(disciplineOptionLabel(d))}</label>`).join("") || '<span class="muted">Crée d\'abord des disciplines dans Tarifs.</span>'}</div>`,
+      // Cases CANONIQUES actives : la valeur est discipline.id (pas le nom) ; libellé distinctif si
+      // homonyme. Lot 2B — une discipline ARCHIVÉE n'est plus proposée ici pour une NOUVELLE spécialité
+      // (elle a sa propre section dédiée juste après si elle est déjà associée à ce coach).
+      `<div class="form-check-grid">${(state.tariffs.disciplines || []).filter((d) => d.archived !== true).map((d) => `<label class="form-check"><input type="checkbox" data-coach-spec value="${esc(d.id)}" ${selectedIdSet.has(d.id) ? "checked" : ""}/> ${esc(disciplineOptionLabel(d))}</label>`).join("") || '<span class="muted">Crée d\'abord des disciplines dans Tarifs.</span>'}</div>`,
+      // Lot 2B — disciplines ARCHIVÉES déjà associées à CE coach (specView.archivedIds ⊂ selectedIds) :
+      // présentation distincte des choix actifs, mais MÊME attribut data-coach-spec que la grille
+      // ci-dessus, afin d'être collectées par le MÊME mécanisme de submit (checkedIds, plus bas) —
+      // cochée par défaut (référence préservée), décochable (retrait volontaire toujours possible,
+      // jamais un champ caché qui l'empêcherait).
+      specView.archivedIds.length ? `<div class="form-check-grid coach-spec-extra"><p class="muted">Disciplines archivées déjà associées</p>${specView.archivedIds.map((did) => `<label class="form-check"><input type="checkbox" data-coach-spec value="${esc(did)}" checked/> ${esc(disciplineOptionLabel(disciplineById(did)))} — archivée</label>`).join("")}</div>` : "",
       // Références d'id INCONNUES (discipline supprimée/importée) : visibles et retirables (décocher).
       specView.unknownIds.length ? `<div class="form-check-grid coach-spec-extra">${specView.unknownIds.map((uid) => `<label class="form-check"><input type="checkbox" data-coach-unknown-ref value="${esc(uid)}" checked/> Référence de discipline indisponible <small class="muted" title="${esc(uid)}">— décocher pour la retirer</small></label>`).join("")}</div>` : "",
       // Spécialités LIBRES / historiques (non canoniques) : conservées, retirables (décocher).
@@ -36869,8 +37004,17 @@ ${esc(bodyText)}</pre>
       `<div class="form-grid compact">${field("expenseAmount", "Montant comptable (€)", room.expenseAmount ?? "", "number", 'step="0.01" min="0"')}${selectField("expenseUnit", "Unité", room.expenseUnit || "réservation", ["séance", "heure", "réservation", "forfait"])}</div>`,
       `<div class="form-grid compact">${selectField("expenseCategory", "Catégorie comptable", room.expenseCategory || "Location salle", ["Location salle", "Autre dépense"])}${field("expenseNote", "Note comptable", room.expenseNote || "")}</div>`,
       `<div class="dialog-section"><h3>Disciplines / activités compatibles</h3></div>`,
-      // Cases CANONIQUES : la valeur est discipline.id (pas le nom) ; libellé distinctif si homonyme.
-      `<div class="form-check-grid">${(state.tariffs.disciplines || []).map((d) => `<label class="form-check"><input type="checkbox" data-room-spec value="${esc(d.id)}" ${selectedIdSet.has(d.id) ? "checked" : ""}/> ${esc(disciplineOptionLabel(d))}</label>`).join("") || '<span class="muted">Crée d\'abord des disciplines dans Tarifs.</span>'}</div>`,
+      // Cases CANONIQUES actives : la valeur est discipline.id (pas le nom) ; libellé distinctif si
+      // homonyme. Lot 2B — une discipline ARCHIVÉE n'est plus proposée ici pour une NOUVELLE
+      // compatibilité (elle a sa propre section dédiée juste après si elle est déjà associée à cette
+      // salle).
+      `<div class="form-check-grid">${(state.tariffs.disciplines || []).filter((d) => d.archived !== true).map((d) => `<label class="form-check"><input type="checkbox" data-room-spec value="${esc(d.id)}" ${selectedIdSet.has(d.id) ? "checked" : ""}/> ${esc(disciplineOptionLabel(d))}</label>`).join("") || '<span class="muted">Crée d\'abord des disciplines dans Tarifs.</span>'}</div>`,
+      // Lot 2B — disciplines ARCHIVÉES déjà associées à CETTE salle (specView.archivedIds ⊂ selectedIds) :
+      // présentation distincte des choix actifs, mais MÊME attribut data-room-spec que la grille
+      // ci-dessus, afin d'être collectées par le MÊME mécanisme de submit (checkedIds, plus bas) —
+      // cochée par défaut (référence préservée), décochable (retrait volontaire toujours possible,
+      // jamais un champ caché qui l'empêcherait).
+      specView.archivedIds.length ? `<div class="form-check-grid coach-spec-extra"><p class="muted">Disciplines archivées déjà associées</p>${specView.archivedIds.map((did) => `<label class="form-check"><input type="checkbox" data-room-spec value="${esc(did)}" checked/> ${esc(disciplineOptionLabel(disciplineById(did)))} — archivée</label>`).join("")}</div>` : "",
       // Références d'id INCONNUES (discipline supprimée/importée) : visibles et retirables (décocher).
       specView.unknownIds.length ? `<div class="form-check-grid coach-spec-extra">${specView.unknownIds.map((uid) => `<label class="form-check"><input type="checkbox" data-room-unknown-ref value="${esc(uid)}" checked/> Référence de discipline indisponible <small class="muted" title="${esc(uid)}">— décocher pour la retirer</small></label>`).join("")}</div>` : "",
       // Valeurs LIBRES / historiques (non canoniques) : champ éditable pré-rempli (séparées par virgules).
@@ -39544,7 +39688,12 @@ ${esc(bodyText)}</pre>
     // Lot 3A — le filtre discipline est CANONIQUE : ui.availDiscipline porte un disciplineId (valeur
     // des options du sélecteur). `discipline` reste le libellé résolu (affichage / repli). Un ancien
     // état contenant un nom se résout en "" (→ « Toutes »), sans effet de bord.
-    const availDisc = disciplineById(asText(ui.availDiscipline));
+    // Lot 2B — une discipline ARCHIVÉE n'alimente plus une recherche de NOUVEAU créneau : si
+    // ui.availDiscipline pointe justement sur une discipline devenue archivée, le filtre effectif
+    // retombe sur « Toutes » (disciplineById() reste inchangée, ui.availDiscipline lui-même n'est
+    // jamais réécrit ici — le filtre redevient actif de lui-même si la discipline est restaurée).
+    const resolvedAvailDisc = disciplineById(asText(ui.availDiscipline));
+    const availDisc = (resolvedAvailDisc && resolvedAvailDisc.archived !== true) ? resolvedAvailDisc : null;
     return {
       type: "cours",
       disciplineId: availDisc ? asText(availDisc.id) : "",
@@ -39680,9 +39829,13 @@ ${esc(bodyText)}</pre>
   function availSlotActivitySummary(f, day, startMin, endMin) {
     // Cibles CANONIQUES : la discipline filtrée (par id) si une l'est, sinon toutes les disciplines
     // du club (chacune identifiée par son id → deux homonymes restent deux activités distinctes).
+    // Lot 2B — une discipline ARCHIVÉE ne gonfle plus ce dénominateur : elle n'est plus une activité
+    // à laquelle on cherche encore un nouveau créneau (le commentaire ci-dessus l'annonçait déjà,
+    // le code ne le faisait pas encore). Les créneaux EXISTANTS liés à une discipline archivée ne
+    // sont pas concernés ici : ils continuent d'être résolus normalement ailleurs (planning, contraintes).
     const target = (f && (asText(f.disciplineId) || asText(f.discipline)))
       ? [{ disciplineId: asText(f.disciplineId), discipline: asText(f.discipline) }]
-      : (state.tariffs.disciplines || []).map((d) => ({ disciplineId: asText(d.id), discipline: asText(d.name) })).filter((t) => t.disciplineId || t.discipline);
+      : (state.tariffs.disciplines || []).filter((d) => d.archived !== true).map((d) => ({ disciplineId: asText(d.id), discipline: asText(d.name) })).filter((t) => t.disciplineId || t.discipline);
     const total = target.length;
     const possible = [];
     const unavailable = [];
@@ -40091,7 +40244,8 @@ ${esc(bodyText)}</pre>
 
     // Filtres : on n'affiche QUE les dimensions activées pour ce club (Affichage).
     const fields = [
-      availSelect("availDiscipline", "Discipline", [{ value: "", label: "Toutes" }, ...(state.tariffs.disciplines || []).map((d) => ({ value: asText(d.id), label: disciplineOptionLabel(d) }))], f.disciplineId),
+      // Lot 2B — une discipline archivée n'est plus proposée comme filtre de recherche.
+      availSelect("availDiscipline", "Discipline", [{ value: "", label: "Toutes" }, ...(state.tariffs.disciplines || []).filter((d) => d.archived !== true).map((d) => ({ value: asText(d.id), label: disciplineOptionLabel(d) }))], f.disciplineId),
       availShowCoaches() && coaches.length ? availSelect("availCoach", "Coach", [{ value: "", label: "Peu importe" }, ...coaches.map((c) => ({ value: c.id, label: coachFullName(c) }))], f.coachId) : "",
       availShowRooms() && rooms.length ? availSelect("availRoom", "Salle", [{ value: "", label: "Peu importe" }, ...rooms.map((r) => ({ value: r.id, label: roomName(r) }))], f.roomId) : "",
       availShowGroups() && groups.length ? availSelect("availGroup", "Groupe", [{ value: "", label: "Peu importe" }, ...groups.map((g) => ({ value: g.id, label: g.name }))], f.groupId) : "",
