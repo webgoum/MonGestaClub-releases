@@ -5756,47 +5756,6 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
     };
   }
 
-  function defaultMemoRows(base) {
-    const rows = [];
-    for (const discipline of base.tariffs.disciplines) {
-      rows.push(normalizeMemoRow({
-        category: "Discipline",
-        sourceType: "discipline",
-        sourceId: discipline.id || discipline.name,
-        title: discipline.name,
-        note: `Licence : ${money(discipline.license)}`,
-        amount: discipline.price,
-      }));
-    }
-    for (const article of base.tariffs.articles) {
-      rows.push(normalizeMemoRow({
-        category: "Article",
-        sourceType: "article",
-        sourceId: article.id,
-        title: article.name,
-        note: `Prix d'achat : ${money(article.priceOptions?.[1] || 0)} · Stock alerte : ${intValue(article.stockAlert)}`,
-        amount: article.priceOptions?.[0] ?? article.defaultPrice ?? "",
-      }));
-    }
-    for (const stage of base.tariffs.stages) {
-      rows.push(normalizeMemoRow({
-        category: "Stage",
-        sourceType: "stage",
-        sourceId: stage.id,
-        title: stage.name,
-        note: `Hébergement : ${stage.lodgingName || "-"} · ${money(stage.lodgingUnitPrice)}`,
-        amount: stage.unitPrice,
-      }));
-    }
-    rows.push(
-      normalizeMemoRow({ category: "Paiement", title: "Payé", note: "Compte dans le montant réglé.", priority: "Important" }),
-      normalizeMemoRow({ category: "Paiement", title: "À encaisser", note: "Date passée ou encaissement à traiter.", priority: "Urgent" }),
-      normalizeMemoRow({ category: "Paiement", title: "En cours", note: "Date future, à suivre plus tard.", priority: "Normale" }),
-      normalizeMemoRow({ category: "Paiement", title: "Refusé", note: "Passe en alerte.", priority: "Urgent" }),
-    );
-    return rows;
-  }
-
   function isMemoSystemCategory(row = {}) {
     const category = normalizedPersonText(row.category);
     return ["discipline", "disciplines", "article", "articles", "stage", "stages", "paiement", "paiements"].includes(category);
@@ -8344,6 +8303,7 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
     return (state.stageRegistrations[stageId] || []).length;
   }
 
+  // Encore appelée par linkMemoRows() (06-normalize-state.js) — compatibilité memoRows legacy.
   function memoSource(row = {}, sourceState = state) {
     if (row.sourceType === "article") {
       return sourceState.tariffs.articles.find((article) => article.id === row.sourceId) || null;
@@ -8355,68 +8315,6 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
       return sourceState.tariffs.disciplines.find((discipline) => (discipline.id || discipline.name) === row.sourceId || discipline.name === row.sourceId) || null;
     }
     return null;
-  }
-
-  function memoDisplayValues(row = {}) {
-    const source = memoSource(row);
-    if (!source) return row;
-    if (row.sourceType === "discipline") {
-      return {
-        ...row,
-        category: "Discipline",
-        title: source.name,
-        note: `Licence : ${money(source.license)}`,
-        amount: source.price,
-      };
-    }
-    if (row.sourceType === "article") {
-      return {
-        ...row,
-        category: "Article",
-        title: source.name,
-        note: `Prix d'achat : ${money(source.priceOptions?.[1] || 0)} · Stock alerte : ${intValue(source.stockAlert)}`,
-        amount: source.priceOptions?.[0] ?? source.defaultPrice ?? "",
-      };
-    }
-    if (row.sourceType === "stage") {
-      return {
-        ...row,
-        category: "Stage",
-        title: source.name,
-        note: `Hébergement : ${source.lodgingName || "-"} · ${money(source.lodgingUnitPrice)}`,
-        amount: source.unitPrice,
-      };
-    }
-    return row;
-  }
-
-  function dynamicMemoRows() {
-    const disciplineRows = state.tariffs.disciplines.map((discipline) => normalizeMemoRow({
-      id: `memo-src-discipline-${discipline.id || discipline.name}`,
-      category: "Discipline",
-      sourceType: "discipline",
-      sourceId: discipline.id || discipline.name,
-      priority: "Normale",
-    }));
-    const articleRows = state.tariffs.articles.map((article) => normalizeMemoRow({
-      id: `memo-src-article-${article.id}`,
-      category: "Article",
-      sourceType: "article",
-      sourceId: article.id,
-      priority: "Normale",
-    }));
-    const stageRows = state.tariffs.stages.map((stage) => normalizeMemoRow({
-      id: `memo-src-stage-${stage.id}`,
-      category: "Stage",
-      sourceType: "stage",
-      sourceId: stage.id,
-      priority: "Normale",
-    }));
-    return [...disciplineRows, ...articleRows, ...stageRows, ...(state.memoRows || [])];
-  }
-
-  function memoRowById(rowId) {
-    return dynamicMemoRows().find((row) => row.id === rowId) || null;
   }
 
   function membershipHasFrozenPrice(row = {}) {
@@ -14733,52 +14631,6 @@ ${esc(bodyText)}</pre>
       <td>${esc((item.options || []).map(money).join(" / ")) || `<span class="muted">-</span>`}</td>
       <td class="tariff-tax-cell">${esc(taxRateLabel(item))}</td>
       <td>${tariffActions("insurance", index, "delete-tariff-insurance")}</td>
-    </tr>`;
-  }
-
-  function renderMemo() {
-    const rows = dynamicMemoRows();
-    return `
-      <div class="band">
-        <div class="band-title">
-          <div>
-            <h2>Repères</h2>
-            <p class="muted">Les disciplines, articles et stages viennent des vraies données. Les notes libres restent ajoutées ici.</p>
-          </div>
-          <button data-action="refresh-memo">Actualiser</button>
-          <button data-action="add-memo-row">+ Ligne</button>
-        </div>
-        <div class="table-wrap">
-          <table class="editable-table memo-table">
-            <thead><tr><th>Catégorie</th><th>Sujet</th><th>Note</th><th>Montant</th><th>Priorité</th><th></th></tr></thead>
-            <tbody>
-              ${rows.length ? rows.map(memoRow).join("") : `<tr><td colspan="6"><div class="empty compact">Aucune ligne. Utilise + Ligne pour ajouter un repère.</div></td></tr>`}
-            </tbody>
-          </table>
-        </div>
-      </div>`;
-  }
-
-  function memoRow(row, index) {
-    const editing = ui.memoEditId === row.id;
-    const display = memoDisplayValues(row);
-    if (editing) {
-      return `<tr class="memo-row editing">
-        <td><input data-memo-field="category" data-id="${esc(row.id)}" value="${esc(display.category)}" ${row.sourceType ? "readonly" : ""} /></td>
-        <td><input data-memo-field="title" data-id="${esc(row.id)}" value="${esc(display.title)}" /></td>
-        <td><textarea data-memo-field="note" data-id="${esc(row.id)}">${esc(display.note)}</textarea></td>
-        <td><input data-memo-field="amount" data-id="${esc(row.id)}" value="${esc(display.amount)}" /></td>
-        <td><select data-memo-field="priority" data-id="${esc(row.id)}">${memoPriorityOptions(row.priority)}</select></td>
-        <td><div class="actions"><button class="icon" title="Terminer la modification" data-action="close-memo-row">✓</button>${row.sourceType === "discipline" ? "" : `<button class="icon danger" title="Supprimer" data-action="delete-memo-row" data-id="${esc(row.id)}">×</button>`}</div></td>
-      </tr>`;
-    }
-    return `<tr class="memo-row">
-      <td>${esc(display.category) || `<span class="muted">-</span>`}</td>
-      <td><strong>${esc(display.title) || `<span class="muted">-</span>`}</strong></td>
-      <td class="memo-note">${esc(display.note) || `<span class="muted">-</span>`}</td>
-      <td>${esc(display.amount) || `<span class="muted">-</span>`}</td>
-      <td>${statusPill(row.priority || "Normale")}</td>
-      <td><div class="actions"><button class="icon" title="Modifier cette ligne" data-action="edit-memo-row" data-id="${esc(row.id)}">✎</button>${row.sourceType === "discipline" ? "" : `<button class="icon danger" title="Supprimer" data-action="delete-memo-row" data-id="${esc(row.id)}">×</button>`}</div></td>
     </tr>`;
   }
 
@@ -29488,14 +29340,6 @@ ${esc(bodyText)}</pre>
       persist("Note enregistrée");
       return;
     }
-    // data-memo-field : renderMemo() n'est appelé par AUCUN dispatcher de vue (vérifié, voir
-    // rapport) — la page Mémos entière est inaccessible depuis l'interface. Aucune session amorcée
-    // ici ; la mutation existante (updateMemoRow) reste inchangée si cet écran est reconnecté.
-    if (target.dataset.memoField && target.tagName !== "SELECT") {
-      recordHistory();
-      updateMemoRow(target);
-      persist();
-    }
     if (target.dataset.quickNoteField && target.tagName !== "SELECT") {
       recordHistory();
       updateQuickNote(target);
@@ -29857,12 +29701,6 @@ ${esc(bodyText)}</pre>
     if (target.dataset.noteCommand) {
       runNoteCommand(target.dataset.noteCommand, target.value);
       return;
-    }
-    if (target.dataset.memoField && target.tagName === "SELECT") {
-      recordHistory();
-      updateMemoRow(target);
-      persist();
-      render();
     }
     if (target.dataset.quickNoteField && target.tagName === "SELECT") {
       recordHistory();
@@ -31838,50 +31676,6 @@ ${esc(bodyText)}</pre>
       render();
       return;
     }
-    if (action === "refresh-memo") {
-      recordHistory();
-      state.memoRows = cleanMemoRows(state.memoRows || []);
-      ui.memoEditId = "";
-      persist("Repères mis à jour");
-      render();
-      return;
-    }
-    if (action === "add-memo-row") {
-      recordHistory();
-      const next = normalizeMemoRow({
-        category: "Note",
-        title: "Nouvelle ligne",
-        note: "",
-        amount: "",
-        priority: "Normale",
-      });
-      state.memoRows.push(stampRecordClubId(next));
-      ui.memoEditId = next.id;
-      persist("Ligne ajoutée aux repères");
-      render();
-      return;
-    }
-    if (action === "edit-memo-row") {
-      ui.memoEditId = button.dataset.id || "";
-      render();
-      return;
-    }
-    if (action === "close-memo-row") {
-      ui.memoEditId = "";
-      render();
-      return;
-    }
-    if (action === "delete-memo-row") {
-      const row = memoRowById(button.dataset.id);
-      if (!row) return;
-      if (!await requestConfirm({ title: "Supprimer", message: row.sourceType ? "Supprimer cet élément lié du logiciel ?" : "Supprimer cette ligne des repères ?", confirmLabel: "Supprimer", danger: true })) return;
-      recordHistory();
-      if (!deleteMemoRow(row)) return;
-      if (ui.memoEditId === row.id) ui.memoEditId = "";
-      persist(row.sourceType ? "Élément lié supprimé" : "Ligne supprimée des repères");
-      render();
-      return;
-    }
     if (action === "add-quick-note") {
       recordHistory();
       addQuickNote();
@@ -33500,114 +33294,7 @@ ${esc(bodyText)}</pre>
     });
   }
 
-  function firstNumberFromText(value) {
-    const match = asText(value).match(/-?\d+(?:[,.]\d+)?/);
-    return match ? asNumber(match[0]) : null;
-  }
-
-  function numbersFromText(value) {
-    return [...asText(value).matchAll(/-?\d+(?:[,.]\d+)?/g)].map((match) => asNumber(match[0]));
-  }
-
-  function deleteMemoRow(row) {
-    if (!row.sourceType) {
-      removeById(state.memoRows, row.id);
-      return true;
-    }
-    if (row.sourceType === "article") {
-      // Troisième chemin de suppression réel (Mémos > élément lié) : même contexte et même
-      // événement que delete-stock-article/delete-tariff-article, capturés avant la suppression.
-      const article = memoSource(row);
-      if (!article) return false;
-      const referencingOrders = state.shopOrders.filter((order) => (order.items || []).some((item) => item.articleId === article.id));
-      const orderQuantity = referencingOrders.reduce((sum, order) => sum + (order.items || [])
-        .filter((item) => item.articleId === article.id)
-        .reduce((lineSum, item) => lineSum + asNumber(item.quantity), 0), 0);
-      removeById(state.tariffs.articles, row.sourceId);
-      audit.shopItemDeleted(article, { orderCount: referencingOrders.length, orderQuantity });
-      return true;
-    }
-    if (row.sourceType === "discipline") {
-      // Lot suppression sûre — garde DÉFENSIVE : la page Mémos ne doit plus jamais pouvoir
-      // supprimer une discipline directement (le bouton est déjà masqué pour ces lignes,
-      // 15-memo-notes-help.js). Si ce chemin est malgré tout atteint (ancienne interface, appel
-      // programmatique), on REFUSE sans rien muter — aucune suppression ne doit pouvoir contourner
-      // disciplineReferenceCounts. La suppression protégée vit exclusivement dans
-      // requestDisciplineDeletion (Tarifs, dialogue « Discipline « Nom » »), jamais ici.
-      alert("Cette discipline se supprime depuis la page Tarifs ou depuis sa fiche de gestion (Paramètres > Disciplines), où les dépendances sont vérifiées.");
-      return false;
-    }
-    if (row.sourceType === "stage") {
-      if (stageParticipantCount(row.sourceId)) {
-        alert("Ce stage contient des participants. Il faut supprimer les inscriptions avant de supprimer le stage.");
-        return false;
-      }
-      removeById(state.tariffs.stages, row.sourceId);
-      delete state.stageRegistrations[row.sourceId];
-      if (ui.stageId === row.sourceId) ui.stageId = state.tariffs.stages[0]?.id || "";
-      return true;
-    }
-    return false;
-  }
-
-  function updateMemoRow(input) {
-    const row = memoRowById(input.dataset.id);
-    if (!row) return;
-    const field = input.dataset.memoField;
-    const source = memoSource(row);
-    if (field === "category") row.category = input.value;
-    if (field === "title") {
-      row.title = input.value;
-      if (source && row.sourceType === "discipline") {
-        const oldName = source.name;
-        source.name = input.value;
-        syncDisciplineName(source.id, oldName, source.name);
-      }
-      if (source && row.sourceType === "article") source.name = input.value;
-      if (source && row.sourceType === "stage") source.name = input.value;
-    }
-    if (field === "note") {
-      row.note = input.value;
-      if (source && row.sourceType === "discipline") {
-        const license = firstNumberFromText(input.value);
-        if (license !== null) source.license = license;
-      }
-      if (source && row.sourceType === "article") {
-        const values = numbersFromText(input.value);
-        source.priceOptions = source.priceOptions || [];
-        if (values[0] !== undefined) source.priceOptions[1] = values[0];
-        if (values[1] !== undefined) source.stockAlert = values[1];
-      }
-      if (source && row.sourceType === "stage") {
-        const [lodgingText, priceText = ""] = asText(input.value).split("·");
-        const lodgingName = lodgingText.replace(/^H[ée]bergement\s*:\s*/i, "").trim();
-        const lodgingPrice = firstNumberFromText(priceText);
-        if (lodgingName) source.lodgingName = lodgingName === "-" ? "" : lodgingName;
-        if (lodgingPrice !== null) {
-          source.lodgingUnitPrice = lodgingPrice;
-          syncStageTariffToRegistrations(source);
-        }
-      }
-    }
-    if (field === "amount") {
-      row.amount = input.value;
-      if (source && row.sourceType === "discipline") source.price = asNumber(input.value);
-      if (source && row.sourceType === "article") {
-        source.priceOptions = source.priceOptions || [];
-        source.priceOptions[0] = asNumber(input.value);
-        source.defaultPrice = asNumber(input.value);
-        syncArticlePriceToOrders(source);
-      }
-      if (source && row.sourceType === "stage") {
-        source.unitPrice = asNumber(input.value);
-        syncStageTariffToRegistrations(source);
-      }
-    }
-    if (field === "priority") row.priority = input.value;
-  }
-
-  // Chemin dédié "Notes rapides" (page Notes) : limité à state.memoRows, sans dépendre de
-  // l'architecture générique discipline/article/stage de updateMemoRow/deleteMemoRow ci-dessus.
+  // Chemin dédié "Notes rapides" (page Notes) : limité à state.memoRows.
   function quickNoteById(rowId) {
     return (state.memoRows || []).find((row) => row.id === rowId) || null;
   }
