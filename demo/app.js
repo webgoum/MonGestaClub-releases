@@ -7514,7 +7514,7 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
       : "";
     const stateInput = mode === "form"
       ? `<label class="payment-state-field">Statut
-          <select data-form-payment-state data-prefix="${esc(prefix)}" data-index="${index}"${lockS}>
+          <select data-form-payment-state data-prefix="${esc(prefix)}" data-index="${index}" data-claim-key="${esc(claimKey)}"${lockS}>
             ${paymentStateOptions(stateValue === "Refusé" || stateValue === "Annulé" ? stateValue : "", amountNumber)}
           </select>
           <input type="hidden" name="${esc(prefix)}${index}State" value="${esc(stateValue)}" />
@@ -19935,11 +19935,15 @@ ${esc(bodyText)}</pre>
     if (!hidden) return;
     const nextState = paymentStateValue({ state: control.value }) === "Refusé" ? "Refusé" : "";
     // Réactivation CONTRÔLÉE (formulaire) : sortir de « Refusé » est interdit si le montant de ce
-    // paiement dépasse le reste réellement dû. Même règle/message que le live (helper partagé).
+    // paiement dépasse le reste réellement dû. Même règle/message que le live (helper partagé),
+    // désormais claim-aware via le claimKey posé sur le select par compactPaymentEditor — reste
+    // exploitable pour une session de formulaire non encore sauvegardée via effectiveFormClaimState.
     if (paymentStateValue({ state: hidden.value }) === "Refusé" && nextState === "") {
       const block = paymentBlock(form, prefix);
       const amount = asNumber(form.elements[`${prefix}${index}Amount`]?.value);
-      if (!reactivateRefusedAllowed(formPaymentRows(form, prefix), index, { amount }, asNumber(block?.dataset.paymentTotal))) {
+      const claimKey = asText(control.dataset.claimKey);
+      const claimState = claimKey ? effectiveFormClaimState(claimKey, formPaymentRows(form, prefix), index) : null;
+      if (!reactivateRefusedAllowed(formPaymentRows(form, prefix), index, { amount }, asNumber(block?.dataset.paymentTotal), claimState)) {
         control.value = "Refusé";
         hidden.value = "Refusé";
         return;
@@ -32234,25 +32238,71 @@ ${esc(bodyText)}</pre>
   }
 
   // Source UNIQUE de vérité pour la réactivation d'un paiement refusé : reste dû et verdict.
-  // `due <= 0` = total non fiable au moment de l'appel -> on n'empêche pas (le garde « Payer » reste).
-  function refusedReactivationInfo(payments, index, amount, totalDue) {
+  // `claimState` optionnel : état financier CLAIM-AWARE autoritaire (claimFinancialState ou
+  // effectiveFormClaimState), qui reflète invoice.paymentsAfterIssue et les avoirs — invisibles au
+  // calcul local ci-dessous. Quand `claimState` est exploitable (claimKey résolu), il remplace
+  // ENTIÈREMENT le calcul local comme source de vérité, via la MÊME règle que le crédit final
+  // (claimOverpayMessage) : jamais une décision parallèle inventée ici. Le calcul local
+  // (`totalDue`/`otherPaidTotal`) ne reste utilisé QUE si aucun claim n'est résolvable (ex. création
+  // non encore persistée) — `due <= 0` = total local non fiable au moment de l'appel -> on n'empêche
+  // pas (le garde « Payer » reste).
+  function refusedReactivationInfo(payments, index, amount, totalDue, claimState = null) {
+    if (claimState) {
+      const remaining = Math.max(0, asNumber(claimState.restDue));
+      // Créance déjà soldée -> réactivation TOUJOURS bloquée, quel que soit payment.amount (y compris
+      // 0 ou un reliquat de centime) : claimOverpayMessage() a volontairement un early-return sur les
+      // très petits montants (candidateAmount <= 0.005 -> "", pensé pour le CRÉDIT final, où valider un
+      // montant nul n'a pas de sens) — insuffisant ici, où un Refusé à 0 € ne doit jamais contourner un
+      // claim soldé. `readOnly` reste géré par claimOverpayMessage() ci-dessous (son warning ne dépend
+      // jamais du montant), jamais dupliqué ici.
+      const fullyPaid = !claimState.readOnly && remaining <= 0.005;
+      if (fullyPaid) {
+        return {
+          remaining, fullyPaid: true, exceeds: false, allowed: false,
+          message: "Le montant est déjà entièrement réglé. Ce paiement refusé ne peut pas être réactivé.",
+        };
+      }
+      const message = claimOverpayMessage(claimState, amount);
+      return { remaining, fullyPaid: false, exceeds: Boolean(message), allowed: !message, message };
+    }
     const due = asNumber(totalDue);
     const remaining = Math.max(0, due - otherPaidTotal(payments, index));
     const fullyPaid = due > 0 && remaining <= 0.005;
     const exceeds = due > 0 && asNumber(amount) > remaining + 0.005;
-    return { remaining, fullyPaid, exceeds, allowed: !(fullyPaid || exceeds) };
+    const message = fullyPaid
+      ? "Le montant est déjà entièrement réglé. Ce paiement refusé ne peut pas être réactivé."
+      : exceeds
+        ? `Ce paiement est supérieur au reste à régler. Il reste seulement ${money(remaining)}.`
+        : "";
+    return { remaining, fullyPaid, exceeds, allowed: !(fullyPaid || exceeds), message };
   }
 
   // Réactivation CONTRÔLÉE d'un paiement refusé (sortie du statut « Refusé ») : autorisée uniquement
   // si le montant du paiement rentre dans le reste réellement dû. Sinon affiche un message clair et
   // renvoie false (l'appelant conserve « Refusé »). Centralisé : utilisé en live ET en formulaire.
-  function reactivateRefusedAllowed(payments, index, payment, totalDue) {
-    const info = refusedReactivationInfo(payments, index, payment.amount, totalDue);
+  function reactivateRefusedAllowed(payments, index, payment, totalDue, claimState = null) {
+    const info = refusedReactivationInfo(payments, index, payment.amount, totalDue, claimState);
     if (info.allowed) return true;
-    alert(info.fullyPaid
-      ? "Le montant est déjà entièrement réglé. Ce paiement refusé ne peut pas être réactivé."
-      : `Ce paiement est supérieur au reste à régler. Il reste seulement ${money(info.remaining)}.`);
+    alert(info.message);
     return false;
+  }
+
+  // Corrige claimFinancialState() (qui lit l'état PERSISTÉ) pour une SESSION de formulaire en cours :
+  // une ligne déjà validée « Payé » plus tôt DANS CETTE MÊME session (verrouillée en DOM, pas encore
+  // enregistrée) doit rester prise en compte. Reconstruit le reste réel : reste claim-aware persistant
+  // + ce que l'état persisté comptait déjà pour CETTE fiche (toutes ses lignes) - ce que le formulaire
+  // (source de vérité de la session en cours) montre RÉELLEMENT validé pour les AUTRES lignes. Utilisé
+  // à la fois par validateFormPayment (crédit final) et par updateFormPaymentState (réactivation
+  // Refusé) : une seule formule, jamais dupliquée. Retourne null si aucun claim n'est exploitable
+  // (ex. création non encore persistée, aucun claimKey résolu).
+  function effectiveFormClaimState(claimKey, formPayments, index) {
+    const key = asText(claimKey);
+    if (!key) return null;
+    const claimState = claimFinancialState(key);
+    const persistedRowPaid = paidAmount(claimSourceContext(key).payments);
+    const formOtherPaid = otherPaidTotal(formPayments, index);
+    const effectiveRestDue = asNumber(claimState.restDue) + persistedRowPaid - formOtherPaid;
+    return { ...claimState, restDue: effectiveRestDue };
   }
 
   function ensurePaymentAt(payments, index) {
@@ -32346,9 +32396,13 @@ ${esc(bodyText)}</pre>
       // dépasse le reste réellement dû (sinon la ligne « redevient payable » et induit un trop-perçu).
       // Ne s'applique jamais à "Annulé" (aucune règle de réactivation limitée n'est demandée/à inventer
       // pour ce statut : remettre à vide une ligne Annulée est toujours autorisé).
-      if (paymentStateValue(payment) === "Refusé" && nextState === "" && !reactivateRefusedAllowed(payments, index, payment, paymentDueTotalFor(control))) {
-        control.value = "Refusé";
-        return;
+      if (paymentStateValue(payment) === "Refusé" && nextState === "") {
+        const claimKey = claimKeyForPaymentContext(paymentContextFrom(control));
+        const claimState = claimKey ? claimFinancialState(claimKey) : null;
+        if (!reactivateRefusedAllowed(payments, index, payment, paymentDueTotalFor(control), claimState)) {
+          control.value = "Refusé";
+          return;
+        }
       }
       payment.state = nextState;
       if (!payment.state) control.value = "";
@@ -32512,23 +32566,13 @@ ${esc(bodyText)}</pre>
     // (claimFinancialState/claimOverpayMessage), tient compte des règlements déjà alloués depuis une
     // facture émise pour ce même claim. Repli sur l'ancienne garde locale seulement si aucun claimKey
     // n'est connu (fiche pas encore créée : aucun claim n'existe tant qu'un id n'a pas été attribué).
-    //
-    // Correction nécessaire : claimFinancialState lit l'état PERSISTÉ (state), pas le formulaire en
-    // cours d'édition — une ligne déjà validée « Payé » plus tôt DANS CETTE MÊME session de formulaire
-    // (verrouillée en DOM, pas encore enregistrée) doit rester prise en compte. On recompose donc le
-    // reste réel : reste claim-aware courant + ce que l'état persisté comptait pour CETTE fiche - ce
-    // que le formulaire (source de vérité de la session en cours) en montre réellement validé.
+    // La correction "session de formulaire non sauvegardée" est centralisée dans effectiveFormClaimState
+    // (aussi réutilisée par la réactivation Refusé, cf. updateFormPaymentState).
     const claimKey = asText(button.dataset.claimKey);
-    const claimState = claimKey ? claimFinancialState(claimKey) : null;
-    let overpayMessage;
-    if (claimState) {
-      const persistedRowPaid = paidAmount(claimSourceContext(claimKey).payments);
-      const formOtherPaid = otherPaidTotal(formPaymentRows(form, prefix), index);
-      const effectiveRestDue = asNumber(claimState.restDue) + persistedRowPaid - formOtherPaid;
-      overpayMessage = claimOverpayMessage({ ...claimState, restDue: effectiveRestDue }, paymentAmount);
-    } else {
-      overpayMessage = paymentOverpayMessage(formPaymentRows(form, prefix), index, paymentAmount, asNumber(block?.dataset.paymentTotal));
-    }
+    const claimState = claimKey ? effectiveFormClaimState(claimKey, formPaymentRows(form, prefix), index) : null;
+    const overpayMessage = claimState
+      ? claimOverpayMessage(claimState, paymentAmount)
+      : paymentOverpayMessage(formPaymentRows(form, prefix), index, paymentAmount, asNumber(block?.dataset.paymentTotal));
     if (overpayMessage) {
       alert(overpayMessage);
       updatePaymentSplitDisplay(form, prefix);
