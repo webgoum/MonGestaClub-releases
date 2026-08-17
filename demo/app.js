@@ -28929,6 +28929,58 @@ ${esc(bodyText)}</pre>
     });
   });
 
+  // Notes — couleur/surlignage/police/taille perdent silencieusement la sélection quand le contrôle
+  // de toolbar prend le focus (input[type=color] et select ouvrent un widget natif qui peut faire
+  // perdre la Range du contenteditable). On la capture au dernier moment avant que le focus ne
+  // bascule (pointerdown, jamais preventDefault ici : le picker/select natif doit s'ouvrir
+  // normalement) et on ouvre un garde toolbar (beginNoteToolbarSelectionGuard, qui capture déjà —
+  // jamais de second appel à captureNoteEditorSelection() ici) : tant qu'il est actif,
+  // syncNoteEditorSelectionOnChange() n'interprète jamais l'absence/le remous transitoire de
+  // sélection (provoqué par le picker natif) comme une désélection volontaire — sinon le snapshot
+  // capturé ici serait effacé avant même que runNoteCommand() ait pu le restaurer.
+  //
+  // Le garde se referme au premier des TROIS événements suivants :
+  //  - la fin de runNoteCommand() (une commande a bien été exécutée) ;
+  //  - le pointerdown SUIVANT (souris) qui tombe hors de la toolbar ;
+  //  - une sortie CLAVIER de la toolbar (Tab), via le listener focusin ci-dessous.
+  // Sans ce troisième chemin, un picker/select ouvert au clavier puis quitté par Tab (sans jamais
+  // déclencher de pointerdown ni de change) laisserait le garde bloqué à true indéfiniment. Un Tab
+  // d'un contrôle toolbar vers un AUTRE contrôle toolbar ne doit PAS fermer le garde : l'utilisateur
+  // peut vouloir appliquer plusieurs formats à la même sélection.
+  document.addEventListener("pointerdown", (event) => {
+    const command = event.target.closest("[data-note-command]");
+    if (command) {
+      beginNoteToolbarSelectionGuard();
+      return;
+    }
+    endNoteToolbarSelectionGuard();
+  });
+  // Sortie clavier de la toolbar (Tab). focusin est synchrone : quand runNoteCommand() appelle
+  // editor.focus(), un focusin ciblant l'éditeur (jamais [data-note-command]) se déclenche AU MILIEU
+  // de son exécution — fermer le garde ici même casserait aussitôt restoreNoteEditorSelection(), qui
+  // s'exécute juste après dans la même pile synchrone. La vérification est donc DIFFÉRÉE via
+  // queueMicrotask, qui ne s'exécute qu'une fois cette pile entièrement déroulée : par ce moment-là,
+  // soit runNoteCommand() a déjà tout restauré et son finally a déjà fermé le garde lui-même (rien à
+  // refaire), soit le focus est réellement sorti de la toolbar (Tab) et il faut fermer le garde puis
+  // resynchroniser la sélection réelle pour invalider un snapshot devenu périmé.
+  document.addEventListener("focusin", (event) => {
+    if (event.target.closest("[data-note-command]")) return; // reste dans la toolbar : rien à faire
+    queueMicrotask(() => {
+      if (!noteToolbarGuardActive) return; // déjà refermé (runNoteCommand ou pointerdown extérieur)
+      if (document.activeElement?.closest?.("[data-note-command]")) return; // revenu dans la toolbar entre-temps
+      endNoteToolbarSelectionGuard();
+      syncNoteEditorSelectionOnChange();
+    });
+  });
+  // Hors garde toolbar : une vraie sélection dont les containers sortent de l'éditeur Notes, ou une
+  // absence totale de sélection (rangeCount 0 — jamais un simple caret, qui reste rangeCount 1
+  // collapsed), est une désélection VOLONTAIRE et invalide le snapshot pour de bon. Une sélection
+  // interne se capture normalement (couvre aussi Tab/clavier). Doctrine complète et cas de l'éditeur
+  // absent : voir syncNoteEditorSelectionOnChange() (src/21-handlers.js).
+  document.addEventListener("selectionchange", () => {
+    syncNoteEditorSelectionOnChange();
+  });
+
   document.addEventListener("click", async (event) => {
     const numberStep = event.target.closest("[data-number-step]");
     if (numberStep) {
@@ -31646,12 +31698,14 @@ ${esc(bodyText)}</pre>
       const note = { id: id("note"), title: `Note ${state.notes.length + 1}`, content: "", updatedAt: new Date().toISOString() };
       state.notes.push(stampRecordClubId(note));
       ui.noteId = note.id;
+      clearNoteEditorSelection();
       persist("Note créée");
       render();
       return;
     }
     if (action === "select-note") {
       ui.noteId = button.dataset.id || state.notes[0]?.id || "";
+      clearNoteEditorSelection();
       render();
       return;
     }
@@ -31665,6 +31719,7 @@ ${esc(bodyText)}</pre>
         state.notes.push(stampRecordClubId({ id: id("note"), title: "", content: "", updatedAt: new Date().toISOString() }));
       }
       ui.noteId = state.notes[0]?.id || "";
+      clearNoteEditorSelection();
       persist("Note supprimée");
       render();
       return;
@@ -32167,16 +32222,117 @@ ${esc(bodyText)}</pre>
     ui.saveMessage = ok ? "Commande appliquée" : "Commande indisponible ici";
   }
 
+  // Sauvegarde/restauration de la sélection de l'éditeur Notes — voir le commentaire du listener
+  // pointerdown/selectionchange (src/20-demo-export.js) pour le pourquoi. Un seul snapshot vivant
+  // à la fois ; jamais persisté, jamais partagé entre notes.
+  let noteSelectionSnapshot = null;
+
+  // N'accepte une Range que si elle appartient réellement à l'éditeur de la note active — une
+  // sélection prise ailleurs sur la page (ou sur une note qui n'est plus affichée) ne doit jamais
+  // pouvoir être mémorisée.
+  function captureNoteEditorSelection() {
+    const editor = app.querySelector("[data-note-editor]");
+    if (!editor) return null;
+    const selection = window.getSelection();
+    if (!selection || selection.rangeCount === 0) return null;
+    const range = selection.getRangeAt(0);
+    if (!editor.contains(range.startContainer) || !editor.contains(range.endContainer)) return null;
+    const note = state.notes.find((item) => item.id === ui.noteId);
+    if (!note) return null;
+    noteSelectionSnapshot = { noteId: note.id, editor, range: range.cloneRange() };
+    return noteSelectionSnapshot;
+  }
+
+  // Rejette le snapshot au moindre doute : note différente, editor remplacé par un render(),
+  // editor détaché du DOM, ou containers de la Range qui ne sont plus dans l'editor courant. En
+  // cas de rejet, ne touche pas à la sélection courante — le caret natif reste inchangé.
+  function restoreNoteEditorSelection(editor) {
+    const snapshot = noteSelectionSnapshot;
+    if (!snapshot || !editor || snapshot.editor !== editor || !editor.isConnected) return false;
+    const note = state.notes.find((item) => item.id === ui.noteId);
+    if (!note || note.id !== snapshot.noteId) return false;
+    const { range } = snapshot;
+    if (!editor.contains(range.startContainer) || !editor.contains(range.endContainer)) return false;
+    const selection = window.getSelection();
+    selection.removeAllRanges();
+    selection.addRange(range);
+    return true;
+  }
+
+  function clearNoteEditorSelection() {
+    noteSelectionSnapshot = null;
+  }
+
+  // Vrai pendant qu'une interaction toolbar est en cours. ACTIVÉ au pointerdown sur un contrôle
+  // [data-note-command]. DÉSACTIVÉ par l'un OU L'AUTRE de deux chemins, jamais un seul :
+  //  - la fin (normale ou en erreur) de runNoteCommand(), quand une commande a bien été exécutée ;
+  //  - le PROCHAIN pointerdown HORS toolbar (listener src/20-demo-export.js), qui couvre les cas où
+  //    aucune commande n'a finalement eu lieu (picker/select annulé, aucun change exploitable) — sans
+  //    ce filet, le garde resterait bloqué à true et une vraie désélection ultérieure serait ignorée
+  //    à tort. Ne dépend donc jamais uniquement de runNoteCommand() pour se refermer.
+  let noteToolbarGuardActive = false;
+
+  function beginNoteToolbarSelectionGuard() {
+    captureNoteEditorSelection();
+    noteToolbarGuardActive = true;
+  }
+
+  function endNoteToolbarSelectionGuard() {
+    noteToolbarGuardActive = false;
+  }
+
+  // Décide, à chaque selectionchange, si le snapshot Notes doit être capturé, invalidé ou laissé
+  // tel quel. Doctrine (voir aussi le listener pointerdown, src/20-demo-export.js) :
+  //  - éditeur absent : rien d'exploitable, nettoyage cohérent ;
+  //  - rangeCount === 0 (aucune sélection du tout — jamais un caret, qui reste rangeCount 1
+  //    collapsed) : garde actif -> neutre (remous transitoire du picker/select) ; garde inactif ->
+  //    vraie suppression de sélection par l'utilisateur, invalide ;
+  //  - Range interne valide (sélection ou caret) : capture, garde ou pas ;
+  //  - Range externe réelle : garde actif -> neutre (remous transitoire) ; garde inactif ->
+  //    désélection volontaire, invalide.
+  function syncNoteEditorSelectionOnChange() {
+    const editor = app.querySelector("[data-note-editor]");
+    if (!editor) {
+      clearNoteEditorSelection();
+      return;
+    }
+    const selection = window.getSelection();
+    if (!selection || selection.rangeCount === 0) {
+      if (!noteToolbarGuardActive) clearNoteEditorSelection();
+      return;
+    }
+    const range = selection.getRangeAt(0);
+    const insideEditor = editor.contains(range.startContainer) && editor.contains(range.endContainer);
+    if (insideEditor) {
+      captureNoteEditorSelection();
+      return;
+    }
+    if (noteToolbarGuardActive) return;
+    clearNoteEditorSelection();
+  }
+
   function runNoteCommand(command, value = null) {
     const editor = app.querySelector("[data-note-editor]");
-    if (!editor) return;
-    recordHistory();
-    editor.focus();
-    document.execCommand(command, false, value);
-    const note = activeNote();
-    note.content = editor.innerHTML;
-    note.updatedAt = new Date().toISOString();
-    persist("Note enregistrée");
+    if (!editor) {
+      endNoteToolbarSelectionGuard();
+      return;
+    }
+    try {
+      recordHistory();
+      editor.focus();
+      restoreNoteEditorSelection(editor);
+      document.execCommand(command, false, value);
+      captureNoteEditorSelection();
+      const note = activeNote();
+      note.content = editor.innerHTML;
+      note.updatedAt = new Date().toISOString();
+      persist("Note enregistrée");
+    } finally {
+      // Referme le garde dans tous les cas (y compris si une étape ci-dessus lève), pour ne jamais
+      // rester bloqué et laisser syncNoteEditorSelectionOnChange() se comporter normalement dès
+      // l'interaction suivante.
+      endNoteToolbarSelectionGuard();
+    }
   }
 
   function getPaymentList(source) {
