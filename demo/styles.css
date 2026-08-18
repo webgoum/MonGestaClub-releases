@@ -2361,6 +2361,88 @@ tfoot td {
   margin: 4px 0 0;
 }
 
+/* Lot "Notes contextuelles par page" — polish visuel du bloc .contextual-notes-band. Cause du grand
+   vide constaté : son titre est un <h3> (pas de <h2>), donc la règle générale ".band-title h2 {
+   margin: 0; }" ne s'applique jamais et le <h3> gardait sa marge par défaut du navigateur (~1em de
+   chaque côté), ce qui gonflait fortement la hauteur de l'en-tête. .contextual-notes-list et
+   .contextual-note-row n'avaient elles-mêmes aucun style dédié (rendu tassé, aucune marge intérieure).
+   Tout est scopé sous .contextual-notes-band : .band-title et .band-title h2 restent inchangés pour
+   toutes les autres bandes de l'application. */
+.contextual-notes-band .band-title {
+  padding: 8px 16px;
+}
+
+.contextual-notes-band .band-title h3 {
+  margin: 0;
+  font-size: 0.95rem;
+}
+
+.contextual-notes-list {
+  display: flex;
+  flex-direction: column;
+  padding: 8px 16px 10px;
+}
+
+.contextual-note-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  column-gap: 14px;
+  row-gap: 4px;
+  padding: 7px 0;
+}
+
+.contextual-note-row + .contextual-note-row {
+  border-top: 1px solid var(--line);
+}
+
+.contextual-note-row strong {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 220px;
+}
+
+.contextual-note-text {
+  flex: 1 1 200px;
+  min-width: 0;
+  color: var(--muted);
+}
+
+.contextual-note-amount {
+  flex: 0 0 auto;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.contextual-note-row .actions {
+  flex: 0 0 auto;
+  margin-left: auto;
+}
+
+.contextual-note-row.editing {
+  flex-direction: column;
+  align-items: stretch;
+  row-gap: 8px;
+}
+
+.contextual-note-edit-fields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.contextual-note-edit-fields select,
+.contextual-note-edit-fields input,
+.contextual-note-edit-fields textarea {
+  flex: 1 1 140px;
+  min-width: 100px;
+}
+
+.contextual-note-row.editing .actions {
+  align-self: flex-end;
+  margin-left: 0;
+}
+
 .grid {
   display: grid;
   gap: 14px;

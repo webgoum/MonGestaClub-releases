@@ -131,6 +131,17 @@
     ["assistant", "Accompagnement"],
   ];
 
+  // Lot "Notes contextuelles par page" — allowlist EXPLICITE des pages pouvant recevoir une note
+  // (validée par Pix). Dérivée de `views` (jamais une seconde table de libellés) : chaque ID doit
+  // exister dans `views`, seul le libellé y est lu. Volontairement figée à la main plutôt que
+  // "tout `views` sauf quelques exclusions" : un futur nouvel ID ajouté à `views` ne doit JAMAIS
+  // devenir automatiquement une destination de note sans décision explicite.
+  const NOTE_TARGET_VIEW_IDS = [
+    "dashboard", "tasks", "contacts", "invoices", "newsletter", "disciplines", "groups", "coaches",
+    "rooms", "planning", "availability", "attendance", "documents", "stages", "boutique", "stock",
+    "tarifs", "stats", "accounting", "due-payments",
+  ];
+
   const mainViews = [
     ["dashboard", "Accueil"],
     ["tasks", "À faire"],
@@ -5742,6 +5753,13 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
       && !(registrations || []).length;
   }
 
+  // Lot "Notes contextuelles par page" — targetView : page métier où la note doit s'afficher.
+  // "" = "Notes uniquement" (comportement historique, valeur par défaut pour toute note existante ou
+  // nouvelle : aucune migration automatique depuis l'ancien champ libre "category"). Une valeur non
+  // vide est conservée TELLE QUELLE (asText, jamais réinitialisée à "") même si elle ne correspond à
+  // aucun ID connu de la liste éligible — cf. NOTE_TARGET_VIEW_IDS (src/01-constants.js) : c'est le
+  // rendu (page Notes / bloc contextuel) qui décide de l'afficher ou de proposer un libellé de repli,
+  // jamais la normalisation qui ne doit pas être destructive pour une valeur importée inconnue.
   function normalizeMemoRow(row = {}) {
     const priority = ["Normale", "Important", "Urgent", "Archive"].includes(row.priority) ? row.priority : "Normale";
     return {
@@ -5753,6 +5771,7 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
       note: asText(row.note || row.details || row.comment),
       amount: row.amount ?? "",
       priority,
+      targetView: asText(row.targetView),
     };
   }
 
@@ -5765,7 +5784,9 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
     const seen = new Set();
     return rows.filter((row) => {
       if (row.sourceType || isMemoSystemCategory(row)) return false;
-      const signature = `${normalizedPersonText(row.category)}|${normalizedPersonText(row.title)}|${normalizedPersonText(row.note)}|${asText(row.amount)}|${normalizedPersonText(row.priority)}`;
+      // targetView inclus dans la signature : deux notes au texte identique mais affichées dans des
+      // pages différentes sont des notes DISTINCTES, jamais un doublon à fusionner.
+      const signature = `${normalizedPersonText(row.category)}|${normalizedPersonText(row.title)}|${normalizedPersonText(row.note)}|${asText(row.amount)}|${normalizedPersonText(row.priority)}|${asText(row.targetView)}`;
       if (seen.has(signature)) return false;
       seen.add(signature);
       return true;
@@ -8926,7 +8947,12 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
     const activeKey = document.activeElement?.dataset?.focus;
     const cursor = document.activeElement && "selectionStart" in document.activeElement ? document.activeElement.selectionStart : null;
     const titles = Object.fromEntries(views);
-    const body = renderView();
+    // Lot "Notes contextuelles par page" — POINT D'INJECTION UNIQUE : contextualNotesBlockHtml()
+    // renvoie "" si aucune note active ne cible ui.view (aucun DOM ajouté), sinon un bloc compact
+    // préfixé au contenu de la page. Volontairement ici (pas dans shell() ni dans chaque renderXxx()) :
+    // couvre les deux layouts (Moderne/Classique, qui partagent tous les deux cette même variable
+    // body) sans dupliquer de logique ni toucher les vingt renderers individuels.
+    const body = contextualNotesBlockHtml(ui.view) + renderView();
     app.innerHTML = shell(titles[ui.view] || "Accueil", body) + helpPanelHtml();
     document.documentElement.dataset.helpPanel = (ui.helpPanelOpen && ui.view !== "help") ? "open" : "closed";
     const topbar = app.querySelector(".topbar");
@@ -14640,20 +14666,76 @@ ${esc(bodyText)}</pre>
       .join("");
   }
 
+  // Lot "Notes contextuelles par page" — libellé humain d'une destination de note. "" = refuge
+  // "Notes uniquement" (valeur par défaut, jamais migrée automatiquement depuis l'ancien "category").
+  // Une valeur non vide mais absente de l'allowlist (page exclue volontairement, ou identifiant
+  // obsolète/importé) reste affichée avec un repli lisible, JAMAIS silencieusement effacée : c'est
+  // la seule façon pour l'utilisateur de la repérer et de la réaffecter depuis la page Notes.
+  function noteTargetViewLabel(targetView) {
+    const value = asText(targetView);
+    if (!value) return "Notes uniquement";
+    if (NOTE_TARGET_VIEW_IDS.includes(value)) {
+      const label = Object.fromEntries(views)[value];
+      if (label) return label;
+    }
+    return `Page inconnue (${value})`;
+  }
+
+  // Options du <select> "Afficher dans" : dérivées EXCLUSIVEMENT de NOTE_TARGET_VIEW_IDS + views
+  // (jamais une seconde table de libellés). Si la valeur courante ne fait pas partie de l'allowlist
+  // (destination inconnue ou volontairement exclue), une option supplémentaire la garde sélectionnée
+  // et visible avec son libellé de repli, pour permettre une réaffectation explicite sans la perdre.
+  function noteTargetViewOptions(selected) {
+    const value = asText(selected);
+    const labels = Object.fromEntries(views);
+    const knownOptions = NOTE_TARGET_VIEW_IDS
+      .map((key) => `<option value="${esc(key)}" ${value === key ? "selected" : ""}>${esc(labels[key] || key)}</option>`)
+      .join("");
+    const unknownOption = (value && !NOTE_TARGET_VIEW_IDS.includes(value))
+      ? `<option value="${esc(value)}" selected>${esc(noteTargetViewLabel(value))}</option>`
+      : "";
+    return `<option value="" ${!value ? "selected" : ""}>— Notes uniquement —</option>${unknownOption}${knownOptions}`;
+  }
+
+  // Rendu d'UN champ d'édition de note rapide, factorisé pour être réutilisé identiquement par la
+  // ligne de tableau (page Notes) ET par le bloc contextuel (Modifier depuis la page cible) — un seul
+  // moteur d'édition, jamais deux formulaires presque identiques qui pourraient diverger.
+  function quickNoteFieldHtml(field, row) {
+    const rowId = esc(row.id);
+    if (field === "targetView") return `<select data-quick-note-field="targetView" data-id="${rowId}" title="Afficher dans">${noteTargetViewOptions(row.targetView)}</select>`;
+    if (field === "title") return `<input data-quick-note-field="title" data-id="${rowId}" value="${esc(row.title)}" placeholder="Sujet" />`;
+    if (field === "note") return `<textarea data-quick-note-field="note" data-id="${rowId}">${esc(row.note)}</textarea>`;
+    if (field === "amount") return `<input data-quick-note-field="amount" data-id="${rowId}" value="${esc(row.amount)}" placeholder="Montant" />`;
+    if (field === "priority") return `<select data-quick-note-field="priority" data-id="${rowId}" title="Priorité">${memoPriorityOptions(row.priority)}</select>`;
+    return "";
+  }
+
+  // Lot "Notes contextuelles par page" — badge de priorité LOCAL aux notes rapides, réutilisant les
+  // classes .status déjà thémées (clair/sombre) plutôt qu'un nouveau système : statusClass() global
+  // ne reconnaît pas ces valeurs de priorité et reste volontairement inchangé (voir rapport
+  // d'analyse). Urgent = rouge (late), Important = orange (wait), Normale/Archive = discret (muted) :
+  // pas de "sapin de Noël".
+  function quickNotePriorityBadge(priority) {
+    if (priority === "Urgent") return `<span class="status late">Urgent</span>`;
+    if (priority === "Important") return `<span class="status wait">Important</span>`;
+    if (priority === "Archive") return `<span class="muted">Archive</span>`;
+    return `<span class="muted">Normale</span>`;
+  }
+
   function quickNoteRow(row) {
     const editing = ui.quickNoteEditId === row.id;
     if (editing) {
       return `<tr class="memo-row editing">
-        <td><input data-quick-note-field="category" data-id="${esc(row.id)}" value="${esc(row.category)}" /></td>
-        <td><input data-quick-note-field="title" data-id="${esc(row.id)}" value="${esc(row.title)}" /></td>
-        <td><textarea data-quick-note-field="note" data-id="${esc(row.id)}">${esc(row.note)}</textarea></td>
-        <td><input data-quick-note-field="amount" data-id="${esc(row.id)}" value="${esc(row.amount)}" /></td>
-        <td><select data-quick-note-field="priority" data-id="${esc(row.id)}">${memoPriorityOptions(row.priority)}</select></td>
+        <td>${quickNoteFieldHtml("targetView", row)}</td>
+        <td>${quickNoteFieldHtml("title", row)}</td>
+        <td>${quickNoteFieldHtml("note", row)}</td>
+        <td>${quickNoteFieldHtml("amount", row)}</td>
+        <td>${quickNoteFieldHtml("priority", row)}</td>
         <td><div class="actions"><button class="icon" title="Terminer la modification" data-action="close-quick-note">✓</button><button class="icon danger" title="Supprimer" data-action="delete-quick-note" data-id="${esc(row.id)}">×</button></div></td>
       </tr>`;
     }
     return `<tr class="memo-row">
-      <td>${esc(row.category) || `<span class="muted">-</span>`}</td>
+      <td>${esc(noteTargetViewLabel(row.targetView))}</td>
       <td><strong>${esc(row.title) || `<span class="muted">-</span>`}</strong></td>
       <td class="memo-note">${esc(row.note) || `<span class="muted">-</span>`}</td>
       <td>${esc(row.amount) || `<span class="muted">-</span>`}</td>
@@ -14668,20 +14750,77 @@ ${esc(bodyText)}</pre>
       <div class="band quick-notes-band">
         <div class="band-title">
           <div>
-            <h2>Notes rapides</h2>
-            <p class="muted">Ajoutez ici de petits repères indépendants. Les disciplines, articles et stages se gèrent dans leurs écrans dédiés.</p>
+            <h2>Notes personnalisées</h2>
+            <p class="muted">Créez vos notes et choisissez où les afficher dans le logiciel. Elles restent toutes accessibles et modifiables ici.</p>
           </div>
-          <button data-action="add-quick-note">+ Note rapide</button>
+          <button data-action="add-quick-note">+ Nouvelle note</button>
         </div>
         <div class="table-wrap">
           <table class="editable-table memo-table">
-            <thead><tr><th>Catégorie</th><th>Sujet</th><th>Note</th><th>Montant</th><th>Priorité</th><th></th></tr></thead>
+            <thead><tr><th>Afficher dans</th><th>Sujet</th><th>Note</th><th>Montant</th><th>Priorité</th><th></th></tr></thead>
             <tbody>
-              ${rows.length ? rows.map(quickNoteRow).join("") : `<tr><td colspan="6"><div class="empty compact">Aucune note rapide. Utilise + Note rapide pour en ajouter une.</div></td></tr>`}
+              ${rows.length ? rows.map(quickNoteRow).join("") : `<tr><td colspan="6"><div class="empty compact">Aucune note personnalisée. Utilisez + Nouvelle note pour en ajouter une.</div></td></tr>`}
             </tbody>
           </table>
         </div>
       </div>`;
+  }
+
+  // Lot "Notes contextuelles par page" — notes actives (hors Archive) ciblant précisément viewId,
+  // triées Urgent > Important > Normale, ordre stable (index d'origine) à priorité identique.
+  // viewId doit appartenir à NOTE_TARGET_VIEW_IDS : une note stockée avec un targetView hors
+  // allowlist (page volontairement exclue comme "settings", ou valeur inconnue/legacy) reste
+  // intacte en données mais ne doit JAMAIS produire de bloc contextuel — seul le rendu filtre,
+  // la normalisation reste non destructive (cf. normalizeMemoRow, src/06-normalize-state.js).
+  function notesForView(viewId) {
+    const targetView = asText(viewId);
+    if (!NOTE_TARGET_VIEW_IDS.includes(targetView)) return [];
+    const priorityRank = { Urgent: 0, Important: 1, Normale: 2 };
+    return (state.memoRows || [])
+      .map((row, index) => ({ row, index }))
+      .filter(({ row }) => row.targetView === targetView && row.priority !== "Archive")
+      .sort((a, b) => (priorityRank[a.row.priority] ?? 2) - (priorityRank[b.row.priority] ?? 2) || a.index - b.index)
+      .map(({ row }) => row);
+  }
+
+  // Une ligne compacte du bloc contextuel : mêmes actions (edit-quick-note/delete-quick-note) et
+  // mêmes champs (quickNoteFieldHtml) que la page Notes — aucun second moteur d'édition/suppression.
+  function contextualNoteRowHtml(row) {
+    const editing = ui.quickNoteEditId === row.id;
+    if (editing) {
+      return `<div class="contextual-note-row editing" data-id="${esc(row.id)}">
+        <div class="contextual-note-edit-fields">
+          ${quickNoteFieldHtml("targetView", row)}
+          ${quickNoteFieldHtml("title", row)}
+          ${quickNoteFieldHtml("note", row)}
+          ${quickNoteFieldHtml("amount", row)}
+          ${quickNoteFieldHtml("priority", row)}
+        </div>
+        <div class="actions"><button class="icon" title="Terminer la modification" data-action="close-quick-note">✓</button><button class="icon danger" title="Supprimer" data-action="delete-quick-note" data-id="${esc(row.id)}">×</button></div>
+      </div>`;
+    }
+    return `<div class="contextual-note-row" data-id="${esc(row.id)}">
+      <strong>${esc(row.title) || `<span class="muted">-</span>`}</strong>
+      <span class="contextual-note-text">${esc(row.note)}</span>
+      ${quickNotePriorityBadge(row.priority)}
+      ${asText(row.amount) ? `<span class="contextual-note-amount">${esc(row.amount)}</span>` : ""}
+      <div class="actions"><button class="icon" title="Modifier cette note" data-action="edit-quick-note" data-id="${esc(row.id)}">✎</button><button class="icon danger" title="Supprimer" data-action="delete-quick-note" data-id="${esc(row.id)}">×</button></div>
+    </div>`;
+  }
+
+  // Lot "Notes contextuelles par page" — POINT UNIQUE de production du bloc, appelé une seule fois
+  // depuis render() (src/10-calcs-shell.js). "" si aucune note active ne cible viewId : AUCUN DOM
+  // supplémentaire (pas de cadre/titre/placeholder vide) — jamais un renderer de page individuel à
+  // modifier.
+  function contextualNotesBlockHtml(viewId) {
+    const rows = notesForView(viewId);
+    if (!rows.length) return "";
+    return `<div class="band contextual-notes-band">
+      <div class="band-title compact"><h3>📌 Notes</h3></div>
+      <div class="contextual-notes-list">
+        ${rows.map(contextualNoteRowHtml).join("")}
+      </div>
+    </div>`;
   }
 
   function activeNote() {
@@ -18258,7 +18397,7 @@ ${esc(bodyText)}</pre>
       { group: "Outils", scopes: [
         { key: "notes", label: "Notes", detail: "Vide les notes libres." },
         { key: "history", label: "Historique", detail: "Vide le journal d'activité (historique des actions)." },
-        { key: "memos", label: "Notes rapides", advanced: true, detail: "Supprime toutes les notes rapides de la page Notes." },
+        { key: "memos", label: "Notes personnalisées", advanced: true, detail: "Supprime toutes les notes personnalisées de la page Notes." },
         { key: "season-archives", label: "Archives de saison", advanced: true, detail: "Supprime les archives de saison enregistrées dans ce club." },
       ]},
       { group: "Tout", scopes: [
@@ -31782,7 +31921,7 @@ ${esc(bodyText)}</pre>
     if (action === "add-quick-note") {
       recordHistory();
       addQuickNote();
-      persist("Note rapide ajoutée");
+      persist("Note personnalisée ajoutée");
       render();
       return;
     }
@@ -31799,11 +31938,11 @@ ${esc(bodyText)}</pre>
     if (action === "delete-quick-note") {
       const row = quickNoteById(button.dataset.id);
       if (!row) return;
-      if (!await requestConfirm({ title: "Supprimer", message: "Supprimer cette note rapide ?", confirmLabel: "Supprimer", danger: true })) return;
+      if (!await requestConfirm({ title: "Supprimer", message: "Supprimer cette note personnalisée ?", confirmLabel: "Supprimer", danger: true })) return;
       recordHistory();
       deleteQuickNote(row);
       if (ui.quickNoteEditId === row.id) ui.quickNoteEditId = "";
-      persist("Note rapide supprimée");
+      persist("Note personnalisée supprimée");
       render();
       return;
     }
@@ -33554,7 +33693,10 @@ ${esc(bodyText)}</pre>
     const row = quickNoteById(input.dataset.id);
     if (!row) return;
     const field = input.dataset.quickNoteField;
+    // category : champ legacy, conservé en données mais plus édité par aucune UI actuelle (voir
+    // Lot "Notes contextuelles par page" — remplacé visuellement par targetView / "Afficher dans").
     if (field === "category") row.category = input.value;
+    if (field === "targetView") row.targetView = input.value;
     if (field === "title") row.title = input.value;
     if (field === "note") row.note = input.value;
     if (field === "amount") row.amount = input.value;
