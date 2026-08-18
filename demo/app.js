@@ -29776,6 +29776,21 @@ ${esc(bodyText)}</pre>
     if (target?.dataset?.stock) finalizeShopItemInlineEdit(target, target.dataset.stock);
   });
 
+  // Lot Boutique -> Continuité (course de dialogue) : ferme un dialogue et ATTEND que son événement
+  // natif "close" ait réellement été distribué, plutôt qu'une temporisation arbitraire. Nécessaire
+  // car ce close() natif est différé par le navigateur (jamais synchrone, confirmé par isolation) —
+  // sans cette attente, un dialogue réutilisé juste après (ex. la confirmation d'émission, seul
+  // #editorDialog existant) hérite d'un vieil événement "close" qui résout prématurément son propre
+  // listener {once:true} avant même que l'utilisateur ait pu agir. No-op si le dialogue n'est pas
+  // ouvert (cas de la ligne Boutique, où targetDialog est toujours null : comportement inchangé).
+  async function closeDialogAndWait(dlg) {
+    if (!dlg?.open) return;
+    await new Promise((resolve) => {
+      dlg.addEventListener("close", resolve, { once: true });
+      dlg.close();
+    });
+  }
+
   async function handleAction(button) {
     const action = button.dataset.action;
     if (!action) return;
@@ -30122,8 +30137,15 @@ ${esc(bodyText)}</pre>
     }
     if (action === "print-order-invoice") {
       const invoice = ensureDraftInvoiceForShopOrder(button.dataset.id);
+      // Capturé AVANT validateDraftInvoiceForOutput : cette fonction renvoie ensuite une NOUVELLE
+      // référence (issued), donc invoice.status ne serait plus lisible après. Sert uniquement à
+      // savoir si CET appel vient de faire la transition draft -> issued (une facture déjà émise
+      // avant ce clic ne doit pas acquérir la réouverture automatique introduite ci-dessous).
+      const reopenAfterIssue = invoice?.status === "draft";
       const targetDialog = button.closest("dialog");
-      if (targetDialog?.open) targetDialog.close();
+      // Course de dialogue (popup "Commande enregistrée" -> Imprimer) : voir closeDialogAndWait
+      // ci-dessus. targetDialog est null depuis la ligne Boutique (no-op, comportement inchangé).
+      await closeDialogAndWait(targetDialog);
       const printable = await validateDraftInvoiceForOutput(invoice, button);
       // Même mécanisme ciblé par ID que printRegistrationInvoice (src/18-contacts-invoices.js) :
       // sans ce refresh, une fiche contact restée ouverte derrière n'affiche la facture Boutique
@@ -30131,20 +30153,30 @@ ${esc(bodyText)}</pre>
       // abouti (printable truthy), jamais avant validation/confirmation, jamais en cas d'annulation.
       if (printable) {
         refreshOpenContactDialog();
-        printInvoice(printable);
+        await printInvoice(printable);
+        // Continuité après émission (Imprimer) : réouvre la facture ÉMISE dans l'éditeur, comme le
+        // fait déjà nativement l'émission via le bouton "Émettre / valider la facture" de l'éditeur
+        // générique (result.reopenInvoiceId, cf. onSave de showDialog). Uniquement si CET appel a
+        // réellement fait passer la facture de draft à issued — jamais pour une simple réimpression.
+        if (reopenAfterIssue) openInvoiceEditor(printable);
       }
       return;
     }
     if (action === "export-order-invoice-pdf") {
       const invoice = ensureDraftInvoiceForShopOrder(button.dataset.id);
+      // Voir le commentaire équivalent sur print-order-invoice ci-dessus.
+      const reopenAfterIssue = invoice?.status === "draft";
       const targetDialog = button.closest("dialog");
-      if (targetDialog?.open) targetDialog.close();
+      // Voir le commentaire équivalent sur print-order-invoice ci-dessus (course de dialogue).
+      await closeDialogAndWait(targetDialog);
       const printable = await validateDraftInvoiceForOutput(invoice, button);
       // Voir le commentaire équivalent sur print-order-invoice ci-dessus : même correctif, même
       // doctrine (refresh uniquement si l'émission a réellement abouti).
       if (printable) {
         refreshOpenContactDialog();
         await exportInvoicePdf(printable);
+        // Continuité après émission (PDF) : voir le commentaire équivalent sur print-order-invoice.
+        if (reopenAfterIssue) openInvoiceEditor(printable);
       }
       return;
     }
