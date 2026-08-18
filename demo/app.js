@@ -30125,7 +30125,14 @@ ${esc(bodyText)}</pre>
       const targetDialog = button.closest("dialog");
       if (targetDialog?.open) targetDialog.close();
       const printable = await validateDraftInvoiceForOutput(invoice, button);
-      if (printable) printInvoice(printable);
+      // Même mécanisme ciblé par ID que printRegistrationInvoice (src/18-contacts-invoices.js) :
+      // sans ce refresh, une fiche contact restée ouverte derrière n'affiche la facture Boutique
+      // fraîchement émise qu'à sa prochaine réouverture — uniquement si l'émission a réellement
+      // abouti (printable truthy), jamais avant validation/confirmation, jamais en cas d'annulation.
+      if (printable) {
+        refreshOpenContactDialog();
+        printInvoice(printable);
+      }
       return;
     }
     if (action === "export-order-invoice-pdf") {
@@ -30133,7 +30140,12 @@ ${esc(bodyText)}</pre>
       const targetDialog = button.closest("dialog");
       if (targetDialog?.open) targetDialog.close();
       const printable = await validateDraftInvoiceForOutput(invoice, button);
-      if (printable) await exportInvoicePdf(printable);
+      // Voir le commentaire équivalent sur print-order-invoice ci-dessus : même correctif, même
+      // doctrine (refresh uniquement si l'émission a réellement abouti).
+      if (printable) {
+        refreshOpenContactDialog();
+        await exportInvoicePdf(printable);
+      }
       return;
     }
     if (action === "new-invoice") return openNewInvoiceContactChooser();
