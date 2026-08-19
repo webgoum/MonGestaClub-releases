@@ -14698,12 +14698,15 @@ ${esc(bodyText)}</pre>
   // Rendu d'UN champ d'édition de note rapide, factorisé pour être réutilisé identiquement par la
   // ligne de tableau (page Notes) ET par le bloc contextuel (Modifier depuis la page cible) — un seul
   // moteur d'édition, jamais deux formulaires presque identiques qui pourraient diverger.
+  // Lot G3 — le champ Montant n'a plus de rendu (retiré de l'UI) : "amount" est un champ legacy,
+  // conservé en données (normalizeMemoRow, src/06-normalize-state.js) et toujours accepté par
+  // updateQuickNote (src/21-handlers.js), mais plus jamais proposé à l'édition ici. Même doctrine
+  // que "category" au-dessus.
   function quickNoteFieldHtml(field, row) {
     const rowId = esc(row.id);
     if (field === "targetView") return `<select data-quick-note-field="targetView" data-id="${rowId}" title="Afficher dans">${noteTargetViewOptions(row.targetView)}</select>`;
     if (field === "title") return `<input data-quick-note-field="title" data-id="${rowId}" value="${esc(row.title)}" placeholder="Sujet" />`;
     if (field === "note") return `<textarea data-quick-note-field="note" data-id="${rowId}">${esc(row.note)}</textarea>`;
-    if (field === "amount") return `<input data-quick-note-field="amount" data-id="${rowId}" value="${esc(row.amount)}" placeholder="Montant" />`;
     if (field === "priority") return `<select data-quick-note-field="priority" data-id="${rowId}" title="Priorité">${memoPriorityOptions(row.priority)}</select>`;
     return "";
   }
@@ -14727,7 +14730,6 @@ ${esc(bodyText)}</pre>
         <td>${quickNoteFieldHtml("targetView", row)}</td>
         <td>${quickNoteFieldHtml("title", row)}</td>
         <td>${quickNoteFieldHtml("note", row)}</td>
-        <td>${quickNoteFieldHtml("amount", row)}</td>
         <td>${quickNoteFieldHtml("priority", row)}</td>
         <td><div class="actions"><button class="icon" title="Terminer la modification" data-action="close-quick-note">✓</button><button class="icon danger" title="Supprimer" data-action="delete-quick-note" data-id="${esc(row.id)}">×</button></div></td>
       </tr>`;
@@ -14736,7 +14738,6 @@ ${esc(bodyText)}</pre>
       <td>${esc(noteTargetViewLabel(row.targetView))}</td>
       <td><strong>${esc(row.title) || `<span class="muted">-</span>`}</strong></td>
       <td class="memo-note">${esc(row.note) || `<span class="muted">-</span>`}</td>
-      <td>${esc(row.amount) || `<span class="muted">-</span>`}</td>
       <td>${statusPill(row.priority || "Normale")}</td>
       <td><div class="actions"><button class="icon" title="Modifier cette note" data-action="edit-quick-note" data-id="${esc(row.id)}">✎</button><button class="icon danger" title="Supprimer" data-action="delete-quick-note" data-id="${esc(row.id)}">×</button></div></td>
     </tr>`;
@@ -14755,9 +14756,9 @@ ${esc(bodyText)}</pre>
         </div>
         <div class="table-wrap">
           <table class="editable-table memo-table">
-            <thead><tr><th>Afficher dans</th><th>Sujet</th><th>Note</th><th>Montant</th><th>Priorité</th><th></th></tr></thead>
+            <thead><tr><th>Afficher dans</th><th>Sujet</th><th>Note</th><th>Priorité</th><th></th></tr></thead>
             <tbody>
-              ${rows.length ? rows.map(quickNoteRow).join("") : `<tr><td colspan="6"><div class="empty compact">Aucune note personnalisée. Utilisez + Nouvelle note pour en ajouter une.</div></td></tr>`}
+              ${rows.length ? rows.map(quickNoteRow).join("") : `<tr><td colspan="5"><div class="empty compact">Aucune note personnalisée. Utilisez + Nouvelle note pour en ajouter une.</div></td></tr>`}
             </tbody>
           </table>
         </div>
@@ -14791,7 +14792,6 @@ ${esc(bodyText)}</pre>
           ${quickNoteFieldHtml("targetView", row)}
           ${quickNoteFieldHtml("title", row)}
           ${quickNoteFieldHtml("note", row)}
-          ${quickNoteFieldHtml("amount", row)}
           ${quickNoteFieldHtml("priority", row)}
         </div>
         <div class="actions"><button class="icon" title="Terminer la modification" data-action="close-quick-note">✓</button><button class="icon danger" title="Supprimer" data-action="delete-quick-note" data-id="${esc(row.id)}">×</button></div>
@@ -14801,7 +14801,6 @@ ${esc(bodyText)}</pre>
       <strong>${esc(row.title) || `<span class="muted">-</span>`}</strong>
       <span class="contextual-note-text">${esc(row.note)}</span>
       ${quickNotePriorityBadge(row.priority)}
-      ${asText(row.amount) ? `<span class="contextual-note-amount">${esc(row.amount)}</span>` : ""}
       <div class="actions"><button class="icon" title="Modifier cette note" data-action="edit-quick-note" data-id="${esc(row.id)}">✎</button><button class="icon danger" title="Supprimer" data-action="delete-quick-note" data-id="${esc(row.id)}">×</button></div>
     </div>`;
   }
@@ -15389,9 +15388,9 @@ ${esc(bodyText)}</pre>
               "Les polices disponibles dans Notes suivent les mêmes choix que la personnalisation des polices dans Paramètres.",
               "Le bouton + Note crée un nouvel onglet. Supprimer l'onglet retire la note active. Si la dernière note est supprimée, une nouvelle note vide est automatiquement créée pour rester prêt à écrire.",
               "Les Notes sont enregistrées automatiquement, et le bouton Enregistrer confirme la sauvegarde. Exporter PDF depuis Notes crée un PDF propre avec seulement le titre et le contenu de la note active. Exporter CSV exporte les titres et le texte brut de toutes les notes.",
-              "Plus bas sur la même page, le tableau Notes personnalisées sert à de courts pense-bêtes, avec cinq colonnes : Afficher dans, Sujet, Note, Montant et Priorité.",
+              "Plus bas sur la même page, le tableau Notes personnalisées sert à de courts pense-bêtes, avec quatre colonnes : Afficher dans, Sujet, Note et Priorité.",
               "Afficher dans choisit où la note doit aussi apparaître, en plus de la page Notes. Laissé sur Notes uniquement, la note ne vit que dans ce tableau. En choisissant une page (par exemple Stock, Paiements dus ou Planning), la même note reste dans ce tableau ET apparaît en plus sur cette page, dans un petit bloc « 📌 Notes ».",
-              "Ce ne sont pas deux notes différentes : c'est la même Note personnalisée, simplement affichée à un deuxième endroit utile. Depuis ce bloc sur la page cible, on peut directement la modifier (sujet, note, montant, priorité, destination) ou la supprimer, sans repasser par la page Notes.",
+              "Ce ne sont pas deux notes différentes : c'est la même Note personnalisée, simplement affichée à un deuxième endroit utile. Depuis ce bloc sur la page cible, on peut directement la modifier (sujet, note, priorité, destination) ou la supprimer, sans repasser par la page Notes.",
               "La Priorité (Normale, Important, Urgent ou Archive) sert à trier ces notes. Sur une page cible, les notes urgentes s'affichent en premier, puis les importantes, puis les normales.",
               "Mettre une note en priorité Archive ne la supprime pas : elle reste dans le tableau Notes personnalisées, garde sa destination enregistrée, mais n'apparaît plus dans le petit bloc de la page cible. C'est une façon de la ranger sans perdre l'historique.",
             ])}
@@ -17790,13 +17789,23 @@ ${esc(bodyText)}</pre>
   // n'existe (même règle que Tarifs, via requestDisciplineDeletion/disciplineReferenceCounts —
   // aucune logique de blocage n'est recalculée ici, seul le texte de résumé est propre à cet écran).
   function disciplineDangerZoneHtml(discipline, blockers) {
+    const archived = discipline.archived === true;
     const blocked = blockers.total > 0;
     const summary = blocked
       ? `<p class="muted">Cette discipline est encore utilisée par ${esc(disciplineDeletionImpactSummary(blockers))}. Elle ne peut pas être supprimée définitivement tant que ces éléments existent.</p>`
       : `<p class="muted">Aucune inscription, groupe, créneau, coach, salle ou catégorie n'est lié à cette discipline : elle peut être supprimée définitivement.</p>`;
-    return `<section class="dialog-section">
+    // Lot G-correction (hiérarchie des actions sensibles) — l'archivage reste réversible, mais reste
+    // une action sensible : il rejoint la Zone de danger pour une discipline ACTIVE, à côté de la
+    // suppression. Une discipline DÉJÀ archivée ne propose plus « Archiver » ici (Restaurer redevient
+    // une action normale, dans la carte de synthèse — disciplineIdentitySectionHtml). Même bouton,
+    // même data-action/data-id qu'avant : seul l'emplacement change, aucune logique métier touchée.
+    const archiveButton = archived ? "" : `<button type="button" data-action="archive-discipline" data-id="${esc(discipline.id)}">Archiver la discipline</button>`;
+    // Lot G4 — séparée visuellement du reste (bordure + teinte danger sobres), pas un panneau
+    // agressif.
+    return `<section class="dialog-section discipline-danger-zone">
       <h3>Zone de danger</h3>
       ${summary}
+      ${archiveButton}
       <button type="button" class="danger" data-action="delete-discipline" data-id="${esc(discipline.id)}"${blocked ? ` disabled title="Retirez d'abord cette discipline des éléments qui l'utilisent encore"` : ""}>Supprimer la discipline</button>
     </section>`;
   }
@@ -17828,9 +17837,12 @@ ${esc(bodyText)}</pre>
     // Le rendu n'énumère donc plus que les capacités VRAIES, sans oui/non, sous une étiquette qui
     // dit d'où vient l'information. Les clés et les valeurs des capacités sont inchangées.
     const trueCaps = DISCIPLINE_CAPABILITY_KEYS.filter((key) => capabilities[key] === true);
-    const capsHtml = trueCaps.length
-      ? trueCaps.map((key) => `<span class="cap-badge">${esc(disciplineCapabilityLabel(key))}</span>`).join("")
-      : `<span class="cap-badge cap-off">aucun repère particulier</span>`;
+    // Lot G4 — présentation en vrai tableau de lecture « Fonction | Configuration ». Le fond ne
+    // change pas : seules les capacités VRAIES sont énumérées (jamais un « oui/non », doctrine Lot
+    // 3B-3 inchangée), la ligne « Profil sportif » porte le sélecteur existant tel quel.
+    const capRows = trueCaps.length
+      ? trueCaps.map((key) => `<tr><td>${esc(disciplineCapabilityLabel(key))}</td><td><span class="cap-badge">Prévu par le profil</span></td></tr>`).join("")
+      : `<tr><td colspan="2"><span class="cap-badge cap-off">aucun repère particulier</span></td></tr>`;
     // Lot cycle de vie catégorie/discipline — ce sélecteur ne change QUE le comportement
     // (vocabulaire, capacités), jamais l'identité de la discipline : il ne doit plus jamais être
     // confondu avec un vrai changement de discipline (cf. disciplineIdentitySectionHtml, section
@@ -17841,13 +17853,22 @@ ${esc(bodyText)}</pre>
     return `<section class="dialog-section sport-profile-section">
       <h3>Profil de fonctionnement <span class="muted">(réglage avancé)</span></h3>
       <p class="muted"><strong>Ce réglage ne change pas le nom de la discipline et ne modifie pas ses catégories. Il adapte uniquement son fonctionnement dans MonGestaClub.</strong></p>
-      <label>Profil de fonctionnement de cette discipline
-        <select data-sport-profile-select>${options}</select>
-      </label>
-      <p class="muted">
-        ${esc(disciplineProfileSourceLabel(resolved))} · Famille : ${esc(disciplineFamilyLabel(disciplineFamily(discipline)))}
-      </p>
-      <div class="sport-capability-list"><span class="sport-capability-title">Prévu par le profil :</span>${capsHtml}</div>
+      <p class="muted">Prévu par le profil : repères indicatifs, qui n'activent ni ne limitent aucune fonction.</p>
+      <div class="table-wrap">
+        <table class="editable-table profile-function-table">
+          <thead><tr><th>Fonction</th><th>Configuration</th></tr></thead>
+          <tbody>
+            <tr>
+              <td>Profil sportif</td>
+              <td>
+                <select data-sport-profile-select aria-label="Profil de fonctionnement de cette discipline">${options}</select>
+                <p class="muted profile-source-line">${esc(disciplineProfileSourceLabel(resolved))} · Famille : ${esc(disciplineFamilyLabel(disciplineFamily(discipline)))}</p>
+              </td>
+            </tr>
+            ${capRows}
+          </tbody>
+        </table>
+      </div>
       <p class="muted">Indicatif : ces repères viennent du profil de fonctionnement et n'activent ni ne limitent aucune fonction.</p>
       <p class="muted">Le changement de profil de fonctionnement ne modifie pas les catégories existantes.</p>
     </section>`;
@@ -17868,17 +17889,29 @@ ${esc(bodyText)}</pre>
     const replaceBlock = archived ? "" : `
       <button type="button" data-action="open-discipline-replacement" data-id="${esc(discipline.id)}"${blocked ? " disabled" : ""} title="${esc(title)}">Changer la discipline</button>
       ${blocked ? `<p class="muted">${esc(disciplineReplacementBlockedMessage(asText(discipline.name), blockers))}</p>` : ""}`;
-    // Lot 2C — action d'archivage/restauration : NON destructive, jamais dans la Zone de danger.
-    // Appelle exclusivement le noyau du Lot 1 (archiveDiscipline/restoreDiscipline) — aucune mutation
-    // directe de `discipline.archived` depuis l'UI.
-    const archiveAction = archived
+    // Lot G-correction (hiérarchie des actions sensibles) — Restaurer est une action normale de
+    // réactivation, non destructive : elle reste dans la carte de synthèse. Archiver, à l'inverse,
+    // a rejoint la Zone de danger (disciplineDangerZoneHtml, ci-dessus dans le fichier) : plus
+    // affichée ici pour une discipline active. Appelle exclusivement le noyau du Lot 1
+    // (archiveDiscipline/restoreDiscipline) — aucune mutation directe de `discipline.archived`.
+    const restoreAction = archived
       ? `<button type="button" data-action="restore-discipline" data-id="${esc(discipline.id)}">Restaurer</button>`
-      : `<button type="button" data-action="archive-discipline" data-id="${esc(discipline.id)}">Archiver la discipline</button>`;
-    return `<section class="dialog-section">
-      <h3>Discipline</h3>
-      <p><strong>${esc(discipline.name || "(sans nom)")}</strong> · profil de fonctionnement : ${esc(disciplineProfileLabel(resolved))}${archived ? ' <span class="archived-badge">Archivée</span>' : ""}</p>
-      ${archiveAction}
-      ${replaceBlock}
+      : "";
+    // Lot G4 — carte de synthèse en haut du dialogue : le nom domine visuellement, statut/profil en
+    // badges sobres, actions principales regroupées sur une seule ligne. Mêmes informations, mêmes
+    // attributs data-action qu'avant (voir tests discipline-replacement / discipline-archive-ux).
+    return `<section class="dialog-section discipline-summary-card">
+      <div class="discipline-summary-head">
+        <h2 class="discipline-summary-name">${esc(discipline.name || "(sans nom)")}</h2>
+        <div class="discipline-summary-badges">
+          <span class="cap-badge">${esc(disciplineProfileLabel(resolved))}</span>
+          ${archived ? '<span class="archived-badge">Archivée</span>' : ""}
+        </div>
+      </div>
+      <div class="discipline-summary-actions">
+        ${restoreAction}
+        ${replaceBlock}
+      </div>
     </section>`;
   }
 
@@ -17909,13 +17942,21 @@ ${esc(bodyText)}</pre>
     // catalogue de catégories serait incohérent. Les catégories EXISTANTES restent pleinement gérables
     // (Renommer/Archiver/Supprimer ci-dessus, inchangés) ; seule la CRÉATION d'une nouvelle catégorie
     // est retirée, jamais désactivée-mais-visible (message explicite à la place).
-    const addBlock = discipline.archived === true
-      ? `<p class="muted">Restaurez la discipline pour ajouter de nouvelles catégories.</p>`
-      : `<div class="group-card-actions"><button type="button" class="primary" data-action="add-sport-category" data-id="${esc(discipline.id)}">Ajouter une catégorie</button></div>`;
-    return `<section class="dialog-section">
-      <h3>Catégories actives</h3>
+    // Lot G4 — zone visuellement distincte : titre + courte explication + bouton d'ajout groupés en
+    // tête (comme quickNotesSection), catégories existantes scannables sous forme de liste compacte.
+    const archived = discipline.archived === true;
+    const addButton = archived ? "" : `<button type="button" class="primary" data-action="add-sport-category" data-id="${esc(discipline.id)}">+ Ajouter une catégorie</button>`;
+    const archivedNote = archived ? `<p class="muted">Restaurez la discipline pour ajouter de nouvelles catégories.</p>` : "";
+    return `<section class="dialog-section discipline-category-section">
+      <div class="band-title">
+        <div>
+          <h3>Catégories sportives</h3>
+          <p class="muted">Le catalogue propre à cette discipline : niveaux, groupes d'âge ou tout autre découpage utile aux inscriptions.</p>
+        </div>
+        ${addButton}
+      </div>
       ${active.length ? `<ul class="sport-category-list">${rows}</ul>` : `<p class="muted">Aucune catégorie pour l'instant.</p>`}
-      ${addBlock}
+      ${archivedNote}
     </section>`;
   }
 
@@ -17924,9 +17965,11 @@ ${esc(bodyText)}</pre>
     // explicatif vit déjà dans disciplineActiveCategoriesHtml, pas besoin de le répéter ici.
     if (discipline.archived === true) return "";
     const suggestions = sportCategorySuggestions(discipline, state);
+    // Lot G4 — bloc distinct et conditionnel : jamais mélangé aux catégories déjà créées
+    // (disciplineActiveCategoriesHtml ci-dessus), jamais un gros pavé vide quand rien n'est pertinent.
     if (!suggestions.length) {
-      return `<section class="dialog-section">
-        <h3>Suggestions</h3>
+      return `<section class="dialog-section discipline-suggestions-section">
+        <h3>Suggestions <span class="muted">(facultatif)</span></h3>
         <p class="muted">Aucune suggestion disponible pour ce profil.</p>
       </section>`;
     }
@@ -17935,8 +17978,8 @@ ${esc(bodyText)}</pre>
     const chips = suggestions.map((s) => s.alreadyExists
       ? `<span class="cap-badge">${esc(s.label)} — Déjà créée</span>`
       : `<button type="button" data-action="add-sport-category-suggestion" data-id="${esc(discipline.id)}" data-label="${esc(s.label)}">${esc(s.label)} +</button>`).join("");
-    return `<section class="dialog-section">
-      <h3>Suggestions du profil ${esc(resolved.profile ? resolved.profile.label : "")}</h3>
+    return `<section class="dialog-section discipline-suggestions-section">
+      <h3>Suggestions du profil ${esc(resolved.profile ? resolved.profile.label : "")} <span class="muted">(facultatif)</span></h3>
       <p class="muted">Ces catégories ne sont que des propositions : rien n'est créé tant que vous ne le demandez pas.</p>
       <div class="sport-suggestion-list">${chips}</div>
       ${available ? `<div class="group-card-actions"><button type="button" data-action="add-all-sport-category-suggestions" data-id="${esc(discipline.id)}">Ajouter toutes les suggestions disponibles (${intValue(available)})</button></div>` : ""}
@@ -37380,6 +37423,11 @@ ${esc(bodyText)}</pre>
     { id: "configuration", label: "Configuration", icon: "⚙️" },
     { id: "organisation", label: "Organisation sportive", icon: "🏟️" },
     { id: "membres", label: "Membres", icon: "🧑‍🤝‍🧑" },
+    // Lot F — catégorie ajoutée (compatible : aucun id existant renommé). Distincte
+    // d'"organisation" (préparer le club une fois) : ici, les actions du quotidien, une fois le
+    // club en place (faire l'appel, garder une note utile). N'apparaît que si elle contient au
+    // moins une étape visible (assistantProgressByCategory filtre déjà total > 0).
+    { id: "vie-club", label: "Vie du club", icon: "📋" },
     { id: "facturation", label: "Facturation", icon: "🧾" },
     { id: "communication", label: "Communication", icon: "✉️" },
   ];
@@ -37521,6 +37569,23 @@ ${esc(bodyText)}</pre>
       done: () => (state.memberships || []).length > 0,
     },
     {
+      // Lot F — signal fiable : attendanceSessions démarre à [] pour un vrai club (aucune
+      // séance pré-remplie, contrairement à state.notes qui recrée toujours une note vide dès
+      // qu'on ouvre la page — cf. activeNote(), src/15-memo-notes-help.js). Une session n'existe
+      // QUE si un appel a réellement été enregistré (openAttendanceDialog -> upsert).
+      id: "first-attendance",
+      category: "vie-club",
+      label: "Effectuer votre première feuille d'appel",
+      why: "Faire l'appel permet de suivre l'assiduité de vos adhérents, séance après séance.",
+      priority: 52,
+      difficulty: "facile",
+      estimateMinutes: 2,
+      view: "attendance",
+      cta: { action: "add-attendance", label: "Créer une feuille d'appel" },
+      visibleIf: ["module-visible", "step-incomplete"],
+      done: () => (state.attendanceSessions || []).length > 0,
+    },
+    {
       id: "first-invoice",
       category: "facturation",
       label: "Générer votre première facture",
@@ -37532,6 +37597,21 @@ ${esc(bodyText)}</pre>
       cta: { action: "new-invoice", label: "Créer une facture" },
       visibleIf: ["module-visible", "step-incomplete"],
       done: () => (state.invoices || []).length > 0,
+    },
+    {
+      // Lot F — signal fiable : state.memoRows démarre à [] pour un vrai club (aucune ligne
+      // pré-remplie), contrairement à state.notes (cf. commentaire sur "first-attendance").
+      id: "first-memo-note",
+      category: "vie-club",
+      label: "Créer votre première note personnalisée",
+      why: "Une note personnalisée peut apparaître directement sur la page qui vous concerne (Stock, Paiements dus, Planning…) pour ne rien oublier.",
+      priority: 35,
+      difficulty: "facile",
+      estimateMinutes: 1,
+      view: "notes",
+      cta: { action: "add-quick-note", label: "Créer une note" },
+      visibleIf: ["module-visible", "step-incomplete"],
+      done: () => (state.memoRows || []).length > 0,
     },
     {
       id: "email-template",
@@ -37564,6 +37644,11 @@ ${esc(bodyText)}</pre>
     { id: "communication", label: "Communication", icon: "✉️" },
     { id: "boutique", label: "Boutique", icon: "🛍️" },
     { id: "documents", label: "Documents", icon: "📄" },
+    // Lot F — catégorie ajoutée (compatible : aucun id existant renommé) pour les visites qui
+    // aident à COMPRENDRE et SUIVRE le club dans la durée (Notes, Historique, Journal
+    // d'activité, Utilisateurs, Sauvegarde) : ce sont des explications, pas des étapes de
+    // progression (cf. commentaire "Progression ≠ visite guidée" plus bas dans ce fichier).
+    { id: "suivi", label: "Suivi & organisation", icon: "🗂️" },
   ];
 
   // Visites : { id, category, label, summary, estimateMinutes, view?, module?, helpAnchor?, next?[], priority? }.
@@ -37653,7 +37738,7 @@ ${esc(bodyText)}</pre>
     "disciplines-comprendre": {
       id: "disciplines-comprendre", category: "sport", label: "Découvrir les disciplines",
       summary: "À quoi sert la page Disciplines : suivre les inscriptions, les montants et retrouver les adhérents inscrits.", estimateMinutes: 1,
-      view: "disciplines", helpAnchor: "help-disciplines", priority: 69, next: ["inscrire-adherent"],
+      view: "disciplines", helpAnchor: "help-disciplines", priority: 69, next: ["categories-sportives", "inscrire-adherent"],
       segments: [
         { view: "disciplines", anchor: "[data-overview-panel='disciplines']",
           title: "Le suivi des inscriptions", body: "Ici, vous suivez les inscriptions du club et les montants associés. Prenons une minute pour faire le tour. Rien ne sera modifié, et vous pouvez quitter cette visite quand vous voulez." },
@@ -37784,7 +37869,7 @@ ${esc(bodyText)}</pre>
     "presences": {
       id: "presences", category: "sport", label: "Faire l'appel",
       summary: "Préparez une feuille d'appel pas à pas : groupe, date, coach, et présences de chacun.", estimateMinutes: 2,
-      view: "attendance", priority: 55, next: [],
+      view: "attendance", helpAnchor: "help-presences", priority: 55, next: [],
       segments: [
         { view: "attendance", anchor: "[data-action='add-attendance']",
           advanceOn: { selector: "[data-action='add-attendance']", event: "click" },
@@ -37796,11 +37881,13 @@ ${esc(bodyText)}</pre>
         { view: "attendance", anchor: "[data-attendance-rows]", prepare: openAttendanceDialogForTour,
           title: "La liste des adhérents", body: "Tous les membres du groupe apparaissent ici, tout seuls : rien à ressaisir." },
         { view: "attendance", anchor: "[data-attendance-status]", prepare: openAttendanceDialogForTour,
-          title: "Les présences", body: "Pour chaque personne, vous choisissez : Présent, Absent, Excusé… Pendant cette visite, rien n'est modifié." },
+          title: "Les présences", body: "Pour chaque personne, vous choisissez un statut : Présent, Retard, Absent, Excusé, Blessé ou Essai. Pendant cette visite, rien n'est modifié." },
         { view: "attendance", anchor: "[data-attendance-note]", prepare: openAttendanceDialogForTour,
           title: "Une remarque si besoin", body: "Cette note reste attachée à la personne pour cette séance (« parti plus tôt », « blessé »…). Vous la retrouverez plus tard dans son suivi, sans avoir à vous en souvenir de tête." },
+        { view: "attendance", anchor: "[data-attendance-rows]", prepare: openAttendanceDialogForTour,
+          title: "Un raccourci depuis le planning", body: "Vous n'êtes pas obligé de passer par cette page : depuis une séance du Planning, un bouton ouvre directement l'appel avec le groupe, la date et le coach déjà remplis. Pratique le jour même du cours." },
         { view: "attendance", anchor: "[data-attendance-rows]", prepare: openAttendanceDialogForTour, final: true,
-          title: "Vous savez faire l'appel", body: "Chaque appel enregistré alimente tout seul les statistiques d'assiduité : taux de présence par adhérent, par groupe et par discipline, sans aucun calcul de votre part. Très utile en cours de saison pour repérer d'un coup d'œil qui vient régulièrement et qui commence à décrocher, et relancer une famille avant qu'elle n'abandonne. Rien n'est enregistré tant que vous ne validez pas vous-même." },
+          title: "Vous savez faire l'appel", body: "Une fois enregistrée, la feuille reste consultable et imprimable depuis la liste des séances. Chaque appel alimente tout seul les statistiques d'assiduité : taux de présence par adhérent, par groupe et par discipline, sans aucun calcul de votre part. Très utile en cours de saison pour repérer d'un coup d'œil qui vient régulièrement et qui commence à décrocher, et relancer une famille avant qu'elle n'abandonne. Rien n'est enregistré tant que vous ne validez pas vous-même." },
       ] },
     // --- Série factures : visites « page » (sans dialogue, sans modifier de données). ---
     "factures-comprendre": {
@@ -38066,7 +38153,7 @@ ${esc(bodyText)}</pre>
     "documents": {
       id: "documents", category: "documents", label: "Suivre les documents sportifs",
       summary: "Repérez d'un coup d'œil les licences, certificats et autorisations qui manquent ou expirent bientôt.", estimateMinutes: 2,
-      view: "documents", priority: 20, next: [],
+      view: "documents", helpAnchor: "help-documents", priority: 20, next: [],
       segments: [
         { view: "documents", anchor: ".band-title",
           title: "À quoi servent les documents", body: "Licence, certificat médical, assurance, autorisation parentale… cette page vous aide à ne jamais en oublier un seul. Beaucoup de clubs en font le tour juste avant la reprise de septembre, pour démarrer la saison entièrement en règle. Rien ne sera modifié, et vous pouvez quitter cette visite quand vous voulez." },
@@ -38078,6 +38165,109 @@ ${esc(bodyText)}</pre>
           title: "Le détail par adhérent", body: "Ces informations ne sont pas ressaisies ici : MonGestaClub les reprend automatiquement des fiches des adhérents et les rassemble en un seul tableau. Une pastille verte signifie que tout va bien, orange ou rouge qu'un document est à vérifier. Cliquez sur une ligne pour aller directement à la fiche concernée et la compléter." },
         { view: "documents", anchor: ".doc-summary", final: true,
           title: "Vous savez suivre les documents", body: "Vous repérez maintenant d'un coup d'œil les documents à mettre à jour, avant qu'un souci n'arrive. C'est un tableau de suivi : rien n'est modifié ici." },
+      ] },
+    // --- Lot F — Catégories sportives : ce n'est PAS forcément une catégorie d'âge. --------
+    "categories-sportives": {
+      id: "categories-sportives", category: "sport", label: "Comprendre les catégories sportives",
+      summary: "Une catégorie sportive classe les inscrits d'une discipline — par âge, par niveau, ou comme repère interne au club.", estimateMinutes: 2,
+      view: "settings", helpAnchor: "help-disciplines", priority: 62, next: ["inscrire-adherent"],
+      segments: [
+        { view: "settings", anchor: ".sport-categories-panel", prepare: openSportCategoriesPanel,
+          title: "Une catégorie appartient à une discipline", body: "Ici, chaque discipline peut avoir ses propres catégories : Poussins, Benjamins, Seniors pour une discipline, Confirmés ou Tous niveaux pour une autre. Rien ne sera modifié pendant cette visite, et vous pouvez quitter quand vous voulez." },
+        { view: "settings", anchor: ".sport-category-list", prepare: openSportCategoriesDialogForTour,
+          title: "Pas seulement l'âge", body: "Une catégorie peut représenter un âge, mais tout aussi bien un niveau (Débutant, Confirmé), un public (Loisir, Compétition) ou simplement un repère interne à votre club. Vous restez entièrement libre de leurs noms." },
+        { view: "settings", anchor: ".sport-category-list", prepare: openSportCategoriesDialogForTour,
+          title: "Créer, réordonner, archiver", body: "Le bouton « Ajouter une catégorie » en crée une nouvelle. Les flèches ↑ ↓ changent son ordre d'affichage. « Archiver » la retire des nouvelles affectations sans la supprimer : une catégorie archivée reste visible sur les inscriptions qui l'utilisaient déjà, pour garder une référence lisible." },
+        { view: "settings", anchor: ".sport-suggestion-list", prepare: openSportCategoriesDialogForTour,
+          title: "Des suggestions, jamais une liste fermée", body: "Quand une discipline a un profil sportif reconnu (judo, fitness…), MonGestaClub propose des exemples de catégories habituelles pour ce sport. Ce sont uniquement des suggestions : vous pouvez les ignorer et créer les vôtres, y compris pour une discipline qui n'a pas de profil reconnu." },
+        { view: "settings", anchor: ".sport-categories-panel", prepare: openSportCategoriesPanel, final: true,
+          title: "Où elle s'utilise ensuite", body: "Une fois créée, une catégorie se choisit sur l'inscription d'un adhérent, et éventuellement sur un groupe entier. Vous savez maintenant à quoi servent les catégories sportives et comment les gérer." },
+      ] },
+    // --- Lot F — Notes : deux systèmes distincts, jamais confondus. -----------------------
+    "notes-riches": {
+      id: "notes-riches", category: "suivi", label: "Découvrir les Notes",
+      summary: "Un éditeur de texte libre par onglets, pour rédiger et mettre en forme les informations utiles du club.", estimateMinutes: 1,
+      view: "notes", helpAnchor: "help-notes", priority: 34, next: ["notes-personnalisees"],
+      segments: [
+        { view: "notes", anchor: ".note-tabs",
+          title: "Un carnet pour votre club", body: "La page Notes contient deux outils complémentaires. Commençons par les Notes : un éditeur de texte libre, présenté sous forme d'onglets. Rien ne sera modifié pendant cette visite, et vous pouvez quitter quand vous voulez." },
+        { view: "notes", anchor: ".note-toolbar",
+          title: "Une mise en forme complète", body: "Police, taille, couleur, surlignage, gras, italique, souligné, barré, alignement, listes… vous rédigez comme dans un vrai traitement de texte, sans rien apprendre de nouveau." },
+        { view: "notes", anchor: "[data-action='add-note']",
+          title: "Un onglet par sujet", body: "Chaque note a son propre onglet et son propre titre. Le bouton « + Note » en crée une nouvelle ; « Supprimer l'onglet » retire la note active." },
+        { view: "notes", anchor: ".note-tabs", final: true,
+          title: "Enregistrée automatiquement", body: "Vos notes sont sauvegardées automatiquement, et restent exportables en PDF ou en CSV. Dans la visite suivante, découvrons le second outil de cette page : les Notes personnalisées." },
+      ] },
+    "notes-personnalisees": {
+      id: "notes-personnalisees", category: "suivi", label: "Découvrir les Notes personnalisées",
+      summary: "De courts pense-bêtes qui peuvent apparaître directement sur la page qui vous concerne (Stock, Paiements dus…).", estimateMinutes: 2,
+      view: "notes", helpAnchor: "help-notes", priority: 33, next: [],
+      segments: [
+        { view: "notes", anchor: ".quick-notes-band",
+          title: "Un second outil, différent des Notes", body: "Sous les Notes, ce tableau sert à de courts pense-bêtes : Sujet, Note, Priorité — et surtout une colonne « Afficher dans ». Ce n'est pas une troisième sorte de note : c'est le même tableau, vu sous un autre angle." },
+        { view: "notes", anchor: "select[data-quick-note-field='targetView']",
+          title: "« Afficher dans »", body: "Laissée sur « Notes uniquement », la note ne vit que dans ce tableau. En choisissant une page (par exemple Stock, Paiements dus ou Planning), la MÊME note apparaît en plus sur cette page, dans un petit bloc « 📌 Notes »." },
+        { view: "notes", anchor: "select[data-quick-note-field='targetView']",
+          title: "Modifiable des deux côtés", body: "Depuis ce bloc, sur la page cible, vous pouvez directement modifier le sujet, la note, la priorité ou la destination, ou la supprimer — sans revenir sur cette page." },
+        { view: "notes", anchor: "select[data-quick-note-field='priority']",
+          title: "Trois niveaux, et une Archive", body: "Urgent, Important ou Normale trient l'ordre d'affichage sur la page cible (les urgentes en premier). La priorité Archive range la note à part : elle reste dans ce tableau, garde sa destination enregistrée, mais n'apparaît plus dans le petit bloc contextuel." },
+        { view: "notes", anchor: ".quick-notes-band", final: true,
+          title: "Vous savez tout sur les deux systèmes", body: "Les Notes servent à rédiger librement ; les Notes personnalisées servent à ne rien oublier, au bon endroit. Le bouton « + Nouvelle note » en ajoute une directement dans ce tableau, prête à être complétée." },
+      ] },
+    // --- Lot F — Historique et Journal d'activité : deux contenus distincts. --------------
+    "historique": {
+      id: "historique", category: "suivi", label: "Comprendre l'Historique",
+      summary: "Un fil de confort qui liste les dernières actions du club actif, effaçable à tout moment.", estimateMinutes: 1,
+      view: "history", helpAnchor: "help-historique", priority: 24, next: ["journal-activite"],
+      segments: [
+        { view: "history", anchor: ".band-title",
+          title: "Ce qui vient de se passer", body: "L'Historique liste les dernières actions importantes du club actif : une inscription, un paiement, une note, un réglage… Pratique pour se souvenir de ce qui vient de changer. Rien ne sera modifié, et vous pouvez quitter quand vous voulez." },
+        { view: "history", anchor: "[data-action='clear-history']",
+          title: "Un fil de confort, pas une sauvegarde", body: "Le bouton « Effacer l'historique » vide uniquement ce fil : vos contacts, paiements, notes et autres données du club ne sont jamais touchés. Ce n'est pas non plus une sauvegarde de vos données — pour ça, voyez la visite « Sauvegarder vos données »." },
+        { view: "history", anchor: ".band-title", final: true,
+          title: "Propre au club actif", body: "L'Historique ne montre que le club actif, et reste limité aux actions récentes. Pour une trace plus complète et non supprimable depuis l'interface, la visite suivante vous présente le Journal d'activité — un outil différent, à ne pas confondre." },
+      ] },
+    "journal-activite": {
+      id: "journal-activite", category: "suivi", label: "Comprendre le Journal d'activité",
+      summary: "Une trace durable de qui a fait quoi, quand, sur quel club — jamais modifiable ni supprimable depuis l'interface.", estimateMinutes: 1,
+      view: "audit-log", helpAnchor: "help-journal", priority: 23, next: [],
+      segments: [
+        { view: "audit-log", anchor: ".band-title",
+          title: "Le Journal d'activité, ce n'est pas l'Historique", body: "Contrairement à l'Historique (un fil de confort, effaçable, propre au club), le Journal d'activité conserve une trace durable des actions importantes, indépendamment du club actif — et il n'existe aucun bouton pour l'effacer. Rien ne sera modifié pendant cette visite." },
+        { view: "audit-log", anchor: "table",
+          title: "Qui a fait quoi, quand", body: "Chaque ligne montre la date, l'utilisateur, le club concerné, l'action en une phrase claire, et l'élément concerné : création d'un utilisateur, changement de réglage du club, cycle de vie d'une facture, d'un stage, d'une catégorie sportive…" },
+        { view: "audit-log", anchor: "[data-audit-log-filter]",
+          title: "Filtrer par club", body: "Vous pouvez afficher uniquement le club actif, ou tous vos clubs à la fois — utile pour retrouver une action après avoir changé de club." },
+        { view: "audit-log", anchor: ".band-title", final: true,
+          title: "Une trace qui continue en silence", body: "Le Journal continue d'enregistrer même si cette page reste masquée dans votre menu. C'est votre trace de contrôle sur la durée, distincte de l'Historique du quotidien." },
+      ] },
+    // --- Lot F — Utilisateurs, rôles et PIN. -----------------------------------------------
+    "utilisateurs": {
+      id: "utilisateurs", category: "suivi", label: "Comprendre les Utilisateurs",
+      summary: "Un profil utilisateur, ce n'est pas un club : c'est la personne qui utilise le logiciel sur cet ordinateur.", estimateMinutes: 2,
+      view: "settings", helpAnchor: "help-utilisateurs", priority: 22, next: [],
+      segments: [
+        { view: "settings", anchor: ".users-settings", prepare: openUsersPanel,
+          title: "Utilisateur ou club : deux choses différentes", body: "Le club actif (voir Mes clubs), c'est SUR QUOI vous travaillez. L'utilisateur, c'est QUI travaille. Un même utilisateur peut intervenir sur plusieurs clubs, et plusieurs utilisateurs peuvent se relayer sur un même club. Rien ne sera modifié pendant cette visite." },
+        { view: "settings", anchor: "[data-action='new-user']", prepare: openUsersPanel,
+          title: "Créer, renommer, désactiver", body: "« Créer un utilisateur » ajoute un nouveau profil. Chaque profil peut être renommé à tout moment, ou désactivé sans perdre son historique — il suffit de le réactiver plus tard." },
+        { view: "settings", anchor: ".user-membership-row", prepare: openUsersPanel,
+          title: "Un rôle par club, informatif", body: "Pour chaque club, vous attribuez un rôle : Administrateur, Président, Secrétaire, Trésorier, Encadrant ou Lecture seule. Ce rôle est aujourd'hui purement informatif — il ne restreint encore aucune action dans le logiciel." },
+        { view: "settings", anchor: ".users-settings", prepare: openUsersPanel, final: true,
+          title: "Et le PIN, dans tout ça ?", body: "Dans la version installée du logiciel, chaque profil peut être protégé par un PIN à 6 chiffres : dès que deux profils existent, chacun doit en avoir un. Ce PIN protège l'accès à VOTRE PROFIL dans MonGestaClub sur cet ordinateur — pas l'ordinateur lui-même — et aide à garantir que les actions du Journal d'activité sont attribuées à la bonne personne. Chacun gère son propre PIN, et un code de récupération s'affiche une seule fois à sa création, à conserver en lieu sûr. Cette protection n'existe pas dans un navigateur (par exemple la démo en ligne) : avec un seul profil, le logiciel s'ouvre alors directement, sans jamais rien exiger." },
+      ] },
+    // --- Lot F — Sauvegarde des données. ---------------------------------------------------
+    "sauvegarde": {
+      id: "sauvegarde", category: "suivi", label: "Sauvegarder vos données",
+      summary: "Exportez régulièrement une sauvegarde complète de votre club, à conserver en lieu sûr.", estimateMinutes: 1,
+      view: "settings", helpAnchor: "help-donnees", priority: 21, next: [],
+      segments: [
+        { view: "settings", anchor: "[data-action='export-json']",
+          title: "Une sauvegarde, pas un remplacement", body: "L'Historique et le Journal d'activité gardent une trace des actions, mais ce ne sont pas des sauvegardes de vos données. Pour ça, il existe l'export JSON, accessible depuis la barre du haut sur n'importe quelle page. Rien ne sera modifié pendant cette visite." },
+        { view: "settings", anchor: "[data-action='export-json']",
+          title: "Exporter, régulièrement", body: "Exporter JSON crée une sauvegarde complète de votre club : contacts, inscriptions, factures, réglages, logo… Prenez l'habitude de le faire régulièrement, et de conserver le fichier en dehors de l'ordinateur (clé USB, cloud personnel)." },
+        { view: "settings", anchor: "[data-action='import-json']", final: true,
+          title: "En cas de besoin", body: "Importer JSON restaure une sauvegarde précédemment exportée. C'est votre vrai filet de sécurité — bien plus complet qu'un simple historique d'actions." },
       ] },
     "nouveautes": { id: "nouveautes", category: "decouverte", label: "Découvrir les nouveautés", summary: "Un tour rapide des nouveautés de cette version : visites interactives, carte Aujourd'hui et accompagnement enrichi.", estimateMinutes: 2, helpAnchor: "help-demarrer", priority: 5,
       segments: [
@@ -39112,6 +39302,32 @@ ${esc(bodyText)}</pre>
       ui.emailTemplateEditing = true;
       if (typeof resetEmailTemplateDraft === "function") { try { resetEmailTemplateDraft(); } catch (e) {} }
     }
+  }
+  // Lot F — même patron que openEmailTemplatesPanel : ouvre uniquement la bande Paramètres >
+  // Disciplines et catégories sportives (settingsCollapsibleBand("sport-categories", ...),
+  // src/16-settings-themes.js), sans écrire aucune donnée.
+  function openSportCategoriesPanel() {
+    if (!ui.settingsPanels || typeof ui.settingsPanels !== "object") ui.settingsPanels = {};
+    ui.settingsPanels["sport-categories"] = true;
+  }
+  // Ouvre en plus le dialogue « Gérer » d'une discipline réelle du club (la première non
+  // archivée, sinon la première tout court), pour montrer sa liste de catégories, ses
+  // suggestions et son archive. Lecture seule pendant la visite : aucune catégorie n'est
+  // créée/modifiée/archivée tant que l'utilisateur ne clique pas lui-même sur un bouton réel.
+  function openSportCategoriesDialogForTour() {
+    try {
+      openSportCategoriesPanel();
+      if (document.querySelector("dialog[open] [data-discipline-categories-dialog]")) return;
+      const disciplines = (state.tariffs && state.tariffs.disciplines) || [];
+      const discipline = disciplines.find((d) => d.archived !== true) || disciplines[0];
+      if (discipline && typeof openDisciplineCategoriesDialog === "function") openDisciplineCategoriesDialog(discipline.id);
+    } catch (e) {}
+  }
+  // Lot F — même patron : ouvre uniquement la bande Paramètres > Utilisateurs
+  // (settingsCollapsibleBand("users", ...), src/16-settings-themes.js).
+  function openUsersPanel() {
+    if (!ui.settingsPanels || typeof ui.settingsPanels !== "object") ui.settingsPanels = {};
+    ui.settingsPanels.users = true;
   }
 
   // --- Préparations d'étape pour la visite « Créer une facture » (UI uniquement). -----

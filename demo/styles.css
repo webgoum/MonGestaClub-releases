@@ -2408,12 +2408,6 @@ tfoot td {
   color: var(--muted);
 }
 
-.contextual-note-amount {
-  flex: 0 0 auto;
-  font-weight: 700;
-  white-space: nowrap;
-}
-
 .contextual-note-row .actions {
   flex: 0 0 auto;
   margin-left: auto;
@@ -5746,7 +5740,9 @@ td .assistant-empty * { white-space: normal; }
 .feedback-cta:hover { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, var(--surface)); }
 .feedback-cta:active { transform: translateY(1px); }
 .feedback-cta-icon { font-size: 1.05em; line-height: 1; }
-.feedback-form { display: flex; flex-direction: column; gap: 18px; max-width: 560px; }
+/* Lot G1 — le dialogue générique (.dialog) mesure déjà min(940px, 100vw-24px) : la largeur du
+   formulaire ne doit plus être bridée à 560px (source du grand vide à droite dénoncé par Pix). */
+.feedback-form { display: flex; flex-direction: column; gap: 16px; width: 100%; }
 .feedback-intro { margin: 0; color: var(--muted); font-size: 0.92rem; }
 .feedback-group { display: flex; flex-direction: column; gap: 8px; }
 .feedback-group-label { font-weight: 700; font-size: 0.78rem; letter-spacing: .03em; text-transform: uppercase; color: var(--muted); }
@@ -5757,17 +5753,29 @@ td .assistant-empty * { white-space: normal; }
 .feedback-chip input { margin: 0; }
 .feedback-chip:has(input:checked) { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, var(--surface)); font-weight: 600; }
 .feedback-chip-soft { font-size: 0.85rem; padding: 5px 11px; }
-.feedback-questions { display: flex; flex-direction: column; gap: 14px; }
+/* Plusieurs blocs peuvent être révélés simultanément (une catégorie cochée = un bloc affiché) :
+   grille auto-fit pour exploiter la largeur du dialogue sur desktop (2 colonnes environ dès que la
+   place le permet) et retomber naturellement sur 1 colonne en dessous de ~320px de large. */
+.feedback-questions { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); align-items: start; gap: 14px; }
 .feedback-questions:empty { display: none; }
-.feedback-qblock { display: flex; flex-direction: column; gap: 10px; padding: 14px 16px; border: 1px solid var(--line); border-left: 3px solid var(--accent); border-radius: 10px; background: color-mix(in srgb, var(--accent) 4%, var(--surface)); }
+.feedback-qblock { display: flex; flex-direction: column; gap: 8px; padding: 12px 14px; border: 1px solid var(--line); border-left: 3px solid var(--accent); border-radius: 10px; background: color-mix(in srgb, var(--accent) 4%, var(--surface)); }
+/* Bug réel trouvé au smoke test (Lot G1) : `[hidden]` et `.feedback-qblock` ont la même
+   spécificité (0,1,0) ; l'attribut hidden (posé par sync() à chaque catégorie décochée) perdait
+   contre `display: flex` déclaré ici, donc les 5 blocs de questions restaient TOUJOURS visibles,
+   vides — la cause probable du « formulaire interminable » signalé. Règle plus spécifique pour que
+   [hidden] gagne toujours, quel que soit l'ordre des règles dans la feuille de style. */
+.feedback-qblock[hidden] { display: none; }
 .feedback-qblock h4 { margin: 0; font-size: 0.95rem; }
 .feedback-field { display: flex; flex-direction: column; gap: 5px; font-size: 0.9rem; }
 .feedback-field > span { font-weight: 600; }
 .feedback-field textarea, .feedback-field input { width: 100%; }
+.feedback-qblock textarea { min-height: 44px; }
 .feedback-tech-toggle { display: inline-flex; align-items: center; gap: 8px; font-size: 0.9rem; cursor: pointer; }
 .feedback-tech-toggle input { margin: 0; }
 .feedback-tech-list { margin: -8px 0 0; font-size: 0.78rem; line-height: 1.5; }
-.feedback-actions { display: flex; gap: 10px; flex-wrap: wrap; padding-top: 14px; border-top: 1px solid var(--line); }
+/* Actions collantes en bas de la zone scrollable (.dialog-body) : Envoyer/Copier restent
+   accessibles même quand plusieurs blocs de questions allongent le formulaire. */
+.feedback-actions { display: flex; gap: 10px; flex-wrap: wrap; padding: 14px 0 2px; border-top: 1px solid var(--line); position: sticky; bottom: 0; background: var(--surface); }
 .coach-versatile-hint { margin: 0; font-size: 0.8rem; }
 .course-date-time { margin-top: 4px; }
 .pws-date-btn { flex: 0 0 auto; background: none; border: 0; cursor: pointer; padding: 0 2px; font-size: 0.82rem; line-height: 1; opacity: 0.65; }
@@ -9632,10 +9640,6 @@ summary {
   line-height: 1.35;
 }
 
-.memo-table td:nth-child(4) input {
-  min-width: 120px;
-}
-
 .notes-page {
   display: grid;
   gap: 14px;
@@ -9705,8 +9709,12 @@ summary {
   padding: 3px;
 }
 
+/* Lot G2 — 430px poussait systématiquement « Notes personnalisées » sous la ligne de flottaison.
+   Hauteur ramenée à une zone confortable mais compacte ; max-height + overflow (déjà présent)
+   couvrent le cas d'une note longue sans faire grandir la page indéfiniment. */
 .note-editor {
-  min-height: 430px;
+  min-height: 240px;
+  max-height: 420px;
   padding: 18px;
   background: var(--surface);
   color: var(--ink);
@@ -12160,8 +12168,8 @@ td.due,
 /* Nom de la discipline et badge de profil sur une ligne, qui se replie en largeur mobile. */
 .sport-discipline-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .sport-discipline-meta { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; font-size: 0.9em; }
-/* Badges de capacités et pastilles de suggestions : flux souple, jamais de débordement latéral. */
-.sport-capability-list, .sport-suggestion-list { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+/* Pastilles de suggestions : flux souple, jamais de débordement latéral. */
+.sport-suggestion-list { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
 /* Une capacité indisponible doit se distinguer d'une capacité active sans recourir à la couleur seule. */
 .cap-badge.cap-off { opacity: 0.55; text-decoration: line-through; }
 .sport-category-list { list-style: none; margin: 8px 0; padding: 0; display: grid; gap: 6px; }
@@ -12171,3 +12179,36 @@ td.due,
 .sport-category-actions { display: flex; gap: 4px; flex-wrap: wrap; }
 .sport-archived-block { margin-top: 12px; }
 .sport-archived-block summary { cursor: pointer; }
+
+/* --- Lot G4 — refonte visuelle du dialogue « Discipline « Nom » » -----------------------------
+   Présentation uniquement : mêmes fonctions, mêmes data-action, mêmes textes de fond. Réutilise au
+   maximum ce qui existe déjà (band-title, cap-badge, archived-badge, table-wrap, editable-table). */
+
+/* 11A — carte de synthèse : nom dominant, badges de statut/profil, actions groupées. */
+.discipline-summary-card { border-top: 0; padding-top: 0; }
+.discipline-summary-head { display: flex; align-items: baseline; flex-wrap: wrap; gap: 10px 14px; }
+.discipline-summary-name { margin: 0; font-size: 1.35rem; }
+.discipline-summary-badges { display: flex; flex-wrap: wrap; gap: 6px; }
+.discipline-summary-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 12px; }
+.discipline-summary-actions p.muted { flex-basis: 100%; margin: 4px 0 0; }
+
+/* 11B — Profil de fonctionnement : vrai tableau de lecture Fonction / Configuration. */
+.profile-function-table td { vertical-align: top; }
+.profile-function-table td:first-child { font-weight: 600; white-space: nowrap; }
+.profile-function-table select { min-width: 220px; }
+.profile-source-line { margin: 6px 0 0; font-size: 0.85rem; }
+
+/* 11C — Catégories sportives : titre + explication + bouton d'ajout regroupés en tête. */
+.discipline-category-section .band-title { align-items: flex-start; }
+
+/* 11D — Suggestions : bloc discret, jamais confondu avec les catégories déjà créées. */
+.discipline-suggestions-section { opacity: 0.94; }
+
+/* 11E — Zone dangereuse : séparation nette, teinte danger sobre (pas un panneau agressif). */
+.discipline-danger-zone { border-top-color: color-mix(in srgb, var(--danger) 35%, var(--line)); }
+.discipline-danger-zone h3 { color: var(--danger); }
+
+@media (max-width: 560px) {
+  .discipline-summary-name { font-size: 1.15rem; }
+  .profile-function-table select { min-width: 0; width: 100%; }
+}
