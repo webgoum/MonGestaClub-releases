@@ -7411,6 +7411,12 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
     return allOptions.map((option) => `<option value="${esc(option)}" ${safeValue === option ? "selected" : ""}>${option ? esc(option) : "-"}</option>`).join("");
   }
 
+  // Lot I-B — les deux SEULS statuts paymentStatus() correspondant à un paiement pas encore encaissé
+  // (celui que le message « lecture seule » de la consultation commande peut effectivement inviter à
+  // traiter). Constante partagée (payments-core, consultation, handler cancel-pending-payment,
+  // refresh) pour ne jamais faire diverger la liste entre l'affichage et la garde de mutation.
+  const PENDING_PAYMENT_STATUSES = ["A encaisser", "En cours"];
+
   function paymentControls(module, rowId, payments, options = {}) {
     // Lot 3A (clôture absolue, FIN-PAY-1) — tarif ABSENT (billable=false) : aucun paiement ne doit être
     // suggéré ni saisi tant que le tarif n'est pas défini. On remplace le tiroir par une note explicite
@@ -7433,6 +7439,11 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
       defaultTaxRate: options.defaultTaxRate ?? effectiveDefaultVatRate(),
       maxChecks: paymentCheckCount(),
       title: "Paiements",
+      // Lot I-B — restriction OPTIONNELLE et rétrocompatible (absente partout ailleurs, comportement
+      // historique inchangé) : quand fournie, seules les lignes dont paymentStatus() figure dans cette
+      // liste restent actionnables (bouton + champs actifs) ; les autres deviennent consultatives,
+      // quel que soit leur statut (OK, Refusé, Annulé, vide). Voir compactPaymentEditor.
+      actionableStatuses: options.actionableStatuses,
     });
   }
 
@@ -7443,7 +7454,16 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
     const total = asNumber(options.total);
     const visibleCount = visiblePaymentCount(rows, total, maxChecks);
     const firstEmpty = rows.slice(0, visibleCount).findIndex((p) => !hasPaymentContent(p));
-    const activeIndex = firstEmpty >= 0
+    // Lot I-B — quand actionableStatuses est fourni (zone de consultation restreinte), on préfère
+    // ouvrir l'onglet sur la première ligne réellement actionnable (ex. le paiement pending à
+    // traiter) plutôt que sur la première ligne avec du contenu (qui pourrait être un paiement OK
+    // déjà consultatif) : simple préférence d'affichage, ne change ni le calcul ni les données.
+    const actionableIndex = Array.isArray(options.actionableStatuses)
+      ? rows.slice(0, visibleCount).findIndex((p) => options.actionableStatuses.includes(paymentStatus(p)))
+      : -1;
+    const activeIndex = actionableIndex >= 0
+      ? actionableIndex
+      : firstEmpty >= 0
       ? firstEmpty
       : Math.min(Math.max(0, rows.findIndex(hasPaymentContent)), visibleCount - 1);
     return `<details class="payment-drawer ${mode} ${options.className || ""}" ${mode === "form" ? "open" : ""}>
@@ -7463,6 +7483,7 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
         visible: index < visibleCount,
         suggestedAmount: paymentSuggestion(rows, index, total),
         defaultTaxRate: options.defaultTaxRate,
+        actionableStatuses: options.actionableStatuses,
         claimKey: options.claimKey || "",
       })).join("")}
       </div>
@@ -7566,7 +7587,7 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
     </button>`;
   }
 
-  function compactPaymentEditor({ index, payment = {}, attrs = "", mode = "form", prefix = "", active = false, visible = true, suggestedAmount = 0, defaultTaxRate = 0, claimKey = "" }) {
+  function compactPaymentEditor({ index, payment = {}, attrs = "", mode = "form", prefix = "", active = false, visible = true, suggestedAmount = 0, defaultTaxRate = 0, claimKey = "", actionableStatuses = null }) {
     const amountValue = payment?.amount || suggestedAmount || "";
     const amountNumber = asNumber(amountValue);
     // Correctif Boutique — un montant affiché qui vient de suggestedAmount (aucun payment.amount
@@ -7584,8 +7605,16 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
     // Seul « Annuler paiement » reste actif. Empêche de modifier un paiement validé par erreur, ce
     // qui recréait une ligne « à payer » / un reste dû incohérent.
     const paid = status === "OK";
-    const lockI = paid ? ' readonly tabindex="-1"' : "";
-    const lockS = paid ? ' tabindex="-1"' : "";
+    // Lot I-B — restriction optionnelle (zone de consultation commande) : quand actionableStatuses
+    // est fourni, seul le VRAI statut du paiement (paymentStatus, jamais le statut d'AFFICHAGE
+    // paymentDisplayStatus utilisé ci-dessus pour les pastilles) décide si cette ligne reste
+    // manipulable. Absent partout ailleurs -> restricted=false -> actionable toujours vrai ->
+    // comportement historique inchangé au bit près.
+    const restricted = Array.isArray(actionableStatuses);
+    const actionable = !restricted || actionableStatuses.includes(paymentStatus(payment));
+    const lockedForContext = paid || (restricted && !actionable);
+    const lockI = lockedForContext ? ' readonly tabindex="-1"' : "";
+    const lockS = lockedForContext ? ' tabindex="-1"' : "";
     const dateVal = dateInputValue(payment.date || (parseDate(payment.state) ? payment.state : ""));
     const methodInput = mode === "form"
       ? `<label>Mode<select name="${esc(prefix)}${index}Check" data-payment-method-select${lockS}>${paymentMethodOptions(index, payment.check)}</select></label>`
@@ -7613,6 +7642,16 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
     const taxInput = mode === "form"
       ? `<input name="${esc(prefix)}${index}TaxRate" class="payment-tax" type="hidden" value="${esc(taxRateValue)}" data-auto-tax="${hasSpecificTaxRate(payment) ? "" : "true"}" data-tax-significant="${isTaxSignificant ? "true" : ""}" />`
       : "";
+    // Lot I-B2 — le select "Statut" du tiroir LIVE (data-payment-field="state") n'a d'effet RÉEL que
+    // via le listener "change" porté par #app (updatePaymentFromControl, src/20-demo-export.js) :
+    // hors de #app — donc dans TOUT dialogue, y compris cette zone restreinte — ce listener ne peut
+    // JAMAIS se déclencher (#editorDialog/.stacked-dialog sont des FRÈRES de #app dans index.html,
+    // jamais des descendants). Le modifier manuellement ici n'aurait donc aucun effet persistant :
+    // un affichage trompeur. Restriction ciblée sur ce SEUL select (montant/moyen/date/n° chèque
+    // restent modifiables : validatePayment() lit leur valeur DOM directement au clic, sans dépendre
+    // de ce listener) et UNIQUEMENT quand actionableStatuses est fourni (jamais hors de ce contexte —
+    // Boutique/Paiements dus, elles, vivent bien dans #app et ce select y fonctionne normalement).
+    const liveStateDisabled = restricted ? " disabled" : "";
     const stateInput = mode === "form"
       ? `<label class="payment-state-field">Statut
           <select data-form-payment-state data-prefix="${esc(prefix)}" data-index="${index}" data-claim-key="${esc(claimKey)}"${lockS}>
@@ -7620,7 +7659,7 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
           </select>
           <input type="hidden" name="${esc(prefix)}${index}State" value="${esc(stateValue)}" />
         </label>`
-      : `<label class="payment-state-field" title="Statut manuel">Statut<select class="payment-state" data-payment-field="state" data-index="${index}" ${attrs}${lockS}>${paymentStateOptions(payment?.state, amountNumber)}</select></label>`;
+      : `<label class="payment-state-field" title="Statut manuel">Statut<select class="payment-state" data-payment-field="state" data-index="${index}" ${attrs}${lockS}${liveStateDisabled}>${paymentStateOptions(payment?.state, amountNumber)}</select></label>`;
     // Données canoniques d'une ligne verrouillée (form) : la sauvegarde restaure ces valeurs même si
     // un champ a été modifié de force (garde côté sauvegarde), tant que la ligne reste verrouillée.
     const lockedData = (paid && mode === "form")
@@ -7635,14 +7674,26 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
     const payButtonTitle = paid
       ? "Annuler la validation du paiement"
       : amountNumber > 0 ? "Valider le paiement" : "Impossible de marquer payé avec une somme à zéro";
-    const okButton = refused
+    // Lot I-B — dans une zone restreinte, une ligne non actionnable (OK compris) n'affiche AUCUN
+    // bouton de mutation : c'est précisément ce qui empêche « Annuler paiement » d'apparaître pour
+    // un paiement déjà validé dans la consultation de commande. Hors contexte restreint, comportement
+    // historique strictement inchangé (refused reste le seul cas sans bouton).
+    const okButton = refused || (restricted && !actionable)
       ? ""
       : mode === "live"
-      ? `<button class="payment-ok ${paid ? "cancel-payment" : ""}" title="${esc(payButtonTitle)}" data-action="validate-payment" data-index="${index}" ${attrs}>${esc(payButtonLabel)}</button>`
+      ? `<button class="payment-ok ${paid ? "cancel-payment" : ""}" type="button" title="${esc(payButtonTitle)}" data-action="validate-payment" data-index="${index}" ${attrs}>${esc(payButtonLabel)}</button>`
       : mode === "form"
         ? `<button class="payment-ok ${paid ? "cancel-payment" : ""}" type="button" title="${esc(payButtonTitle)}" data-action="validate-form-payment" data-prefix="${esc(prefix)}" data-index="${index}" data-claim-key="${esc(claimKey)}">${esc(payButtonLabel)}</button>`
       : "";
-    return `<div class="payment-mini-row ${mode === "live" ? "live" : "form"} ${immediate ? "immediate-payment" : ""} ${paid ? "locked" : ""}" data-payment-row="${index}" data-payment-visible="${visible ? "1" : "0"}"${lockedData} ${!visible || (mode === "live" && !active) ? "hidden" : ""}>
+    // Lot I-B — nouvelle action, UNIQUEMENT dans le contexte restreint et UNIQUEMENT pour une ligne
+    // réellement actionnable (donc jamais OK/Refusé/Annulé/vide) : permet d'abandonner ce paiement
+    // pas encore encaissé sans passer par « Annuler paiement » (réservé à un paiement déjà validé).
+    // Réutilise exactement les mêmes identifiants que le bouton live (attrs + data-index), aucune
+    // deuxième méthode d'identification du paiement.
+    const cancelPendingButton = (restricted && actionable)
+      ? `<button class="payment-cancel-pending" type="button" title="Annuler ce paiement en attente" data-action="cancel-pending-payment" data-index="${index}" ${attrs}>Annuler ce paiement en attente</button>`
+      : "";
+    return `<div class="payment-mini-row ${mode === "live" ? "live" : "form"} ${immediate ? "immediate-payment" : ""} ${lockedForContext ? "locked" : ""}" data-payment-row="${index}" data-payment-visible="${visible ? "1" : "0"}"${lockedData} ${!visible || (mode === "live" && !active) ? "hidden" : ""}>
       <span class="payment-label">${esc(paymentMethodLabel(payment, index))}</span>
       ${methodInput}
       ${checkNumberInput}
@@ -7652,6 +7703,7 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
       ${stateInput}
       <div class="computed-payment-status"><span>État</span>${computedPaymentStatus(status, mode, attrs)}</div>
       ${okButton}
+      ${cancelPendingButton}
     </div>`;
   }
 
@@ -21035,17 +21087,28 @@ ${esc(bodyText)}</pre>
   // Rend un formulaire de dialogue non modifiable (consultation) : champs texte en lecture seule
   // (restent lisibles et focalisables), listes/cases/fichiers désactivés, boutons d'action métier
   // neutralisés — mais jamais la chrome de la fenêtre (Fermer/Réduire) ni le pied de page.
+  // Lot I-B — [data-readonly-actionable] : exception CIBLÉE et unique, jamais une liste fragile de
+  // noms de boutons. Un élément à l'intérieur d'une zone ainsi marquée n'est pas touché par cette
+  // fonction ; c'est le renderer restreint qui a produit cette zone (paymentControls avec
+  // actionableStatuses, voir 09-payments-core.js) qui décide déjà, ligne par ligne, ce qui reste
+  // manipulable — une ligne non actionnable (OK, Refusé, Annulé, vide) y est DÉJÀ verrouillée par ses
+  // propres attributs readonly/disabled, générés au rendu, pas par cette fonction.
   function applyReadOnlyToForm(form) {
     if (!form) return;
     form.querySelectorAll("input, textarea").forEach((el) => {
       if (el.type === "hidden") return;
+      if (el.closest("[data-readonly-actionable]")) return;
       el.readOnly = true;
       el.setAttribute("aria-readonly", "true");
     });
-    form.querySelectorAll("select, input[type=checkbox], input[type=radio], input[type=file]").forEach((el) => { el.disabled = true; });
+    form.querySelectorAll("select, input[type=checkbox], input[type=radio], input[type=file]").forEach((el) => {
+      if (el.closest("[data-readonly-actionable]")) return;
+      el.disabled = true;
+    });
     form.querySelectorAll("button").forEach((btn) => {
       if (btn.matches("[data-dialog-close], [data-dialog-minimize]")) return;
       if (btn.closest("[data-dialog-close], [data-dialog-minimize], .dialog-footer")) return;
+      if (btn.closest("[data-readonly-actionable]")) return;
       btn.disabled = true;
     });
   }
@@ -21259,20 +21322,60 @@ ${esc(bodyText)}</pre>
   }
 
   // Explication non bloquante affichée en tête d'une commande ouverte en consultation (lecture
-  // seule) : dit pourquoi elle n'est pas modifiable. Priorité au motif « paiement en cours / à
-  // encaisser » (celui du bug d'origine) car il est levable par l'utilisateur.
+  // seule) : dit pourquoi elle n'est pas modifiable.
+  // Lot I-B (correction) — l'ancien message pending ("Terminez ou annulez le paiement pour pouvoir
+  // modifier la commande") était FAUX pour la branche « Terminez » : encaisser un paiement pending le
+  // fait passer à "OK", qui verrouille lui aussi (définitivement) la commande. Seule l'annulation
+  // d'un paiement pas encore encaissé peut éventuellement rouvrir l'édition — jamais sa validation.
+  // Le texte ne promet donc plus jamais qu'un « Payer » débloquera la commande, et les combinaisons
+  // (pending + OK, pending + facture, pending + OK + facture) reçoivent chacune un message qui ne
+  // laisse aucune ambiguïté sur ce que l'annulation du pending peut, ou ne peut pas, changer.
   function shopOrderReadOnlyReason(order = {}) {
     const integrity = shopOrderIntegrityState(order);
-    if (integrity.hasPendingPayment) {
-      return "Cette commande est en lecture seule car un paiement est actuellement en cours ou à encaisser. Terminez ou annulez le paiement pour pouvoir modifier la commande.";
+    const pending = integrity.hasPendingPayment;
+    const paid = integrity.hasPaidPayment;
+    const invoiced = integrity.hasIssuedInvoice;
+    if (pending && paid && invoiced) {
+      return "Cette commande possède déjà un paiement validé et une facture émise : des éléments déjà validés empêchent définitivement de la modifier dans ce parcours, quelle que soit l'issue du paiement encore en attente.";
     }
-    if (integrity.hasPaidPayment) {
+    if (pending && invoiced) {
+      return "Cette commande possède une facture émise. Elle restera en lecture seule quelle que soit l'issue du paiement encore en attente.";
+    }
+    if (pending && paid) {
+      return "Cette commande contient déjà un paiement validé. Elle restera en lecture seule quelle que soit l'issue du paiement encore en attente.";
+    }
+    if (pending) {
+      return "Un paiement de cette commande est en attente. Vous pouvez l'encaisser ci-dessous, ou l'annuler s'il ne doit finalement pas être encaissé. Une fois encaissé, la commande restera en lecture seule afin de préserver l'historique. Si vous annulez le paiement en attente et qu'aucun autre élément ne bloque la commande, elle pourra de nouveau être modifiée.";
+    }
+    if (paid) {
       return "Cette commande est en lecture seule car elle contient un paiement validé.";
     }
-    if (integrity.hasIssuedInvoice) {
+    if (invoiced) {
       return "Cette commande est en lecture seule car elle possède une facture émise.";
     }
     return "Cette commande est en lecture seule.";
+  }
+
+  // Lot I-B2 — zone de paiement de la consultation lecture seule, PARTAGÉE entre le rendu initial
+  // (openOrderDialog, src/19-contact-dialogs.js) et le rafraîchissement en place
+  // (refreshOpenOrderConsultDialog ci-dessous) : ce HTML n'existe qu'à CET endroit, jamais dupliqué.
+  // Le titre "Paiement à traiter" ne s'affiche QUE tant qu'un paiement reste réellement actionnable
+  // (hasPendingPayment) — recalculé à CHAQUE appel depuis l'état frais, jamais mémorisé : sitôt le
+  // dernier pending résolu (payé ou annulé), le titre redevient "Paiements" et le contenu reste
+  // affiché mais purement consultatif (le moteur restreint, actionableStatuses, garantit qu'aucune
+  // ligne OK n'y expose jamais "Annuler paiement", que ce soit au rendu initial ou après refresh).
+  function orderConsultPaymentZoneHtml(order = {}) {
+    const integrity = shopOrderIntegrityState(order);
+    const calc = calcOrder(order);
+    const title = integrity.hasPendingPayment ? "Paiement à traiter" : "Paiements";
+    return `<div class="dialog-section order-pending-payment-zone" data-readonly-actionable data-order-consult-payment-zone>
+      <h3>${esc(title)}</h3>
+      ${paymentControls("order", order.id, order.payments || [], {
+        total: calc.total,
+        defaultTaxRate: orderDefaultTaxRate(order),
+        actionableStatuses: PENDING_PAYMENT_STATUSES,
+      })}
+    </div>`;
   }
 
   function contactAndKindForOrder(order = {}) {
@@ -22619,6 +22722,39 @@ ${esc(bodyText)}</pre>
       const footer = dlg.querySelector(".dialog-footer-left");
       if (footer) footer.innerHTML = contactModuleLinks(kind, contact);
       applyClickableTooltips(dlg);
+    });
+  }
+
+  // Lot I-B (I-B2 : correction du titre périmé) — rafraîchit EN PLACE une consultation de commande
+  // (order-view) déjà ouverte, après une mutation de paiement décidée DEPUIS cette même fenêtre
+  // (Payer un pending, annulation refusée par une garde stale, ou annulation qui ne suffit pas à
+  // lever tous les verrous). Jamais de fermeture/réouverture ici : la commande reste structurellement
+  // en lecture seule dans ce flux — seul le contenu affiché doit refléter l'état à jour. Ne recalcule
+  // rien : calcOrder()/shopOrderIntegrityState() restent l'unique source de vérité. La zone paiement
+  // est intégralement remplacée par orderConsultPaymentZoneHtml() — LE MÊME helper que le rendu
+  // initial (jamais de HTML dupliqué) : son titre ("Paiement à traiter" / "Paiements") et son contenu
+  // (moteur restreint actionableStatuses) sont donc TOUJOURS recalculés ensemble depuis l'état frais,
+  // ce qui corrige le bug du titre resté figé une fois le dernier pending résolu.
+  function refreshOpenOrderConsultDialog(orderId = "") {
+    if (!asText(orderId)) return;
+    const candidates = [dialog, ...document.querySelectorAll(".stacked-dialog")].filter((dlg) => dlg && dlg.open);
+    candidates.forEach((dlg) => {
+      const marker = dlg.querySelector(`[data-order-consult-id="${CSS.escape(orderId)}"]`);
+      if (!marker) return;
+      const order = state.shopOrders.find((row) => row.id === orderId);
+      if (!order) return;
+      const reasonEl = marker.querySelector("p");
+      if (reasonEl) reasonEl.textContent = shopOrderReadOnlyReason(order);
+      const calc = calcOrder(order);
+      const summary = dlg.querySelector("[data-order-dialog-summary]");
+      if (summary) {
+        const paidEl = summary.querySelector('[data-order-summary-value="paid"]');
+        const dueEl = summary.querySelector('[data-order-summary-value="due"]');
+        if (paidEl) paidEl.textContent = money(calc.paid);
+        if (dueEl) dueEl.textContent = money(calc.restDue);
+      }
+      const paymentZone = dlg.querySelector("[data-order-consult-payment-zone]");
+      if (paymentZone) paymentZone.outerHTML = orderConsultPaymentZoneHtml(order);
     });
   }
 
@@ -25381,12 +25517,25 @@ ${esc(bodyText)}</pre>
     </div>`;
     // Avertissement discret (non bloquant) affiché en tête de la consultation lecture seule :
     // explique pourquoi la commande n'est pas modifiable ici. Message adapté à la raison réelle.
+    // data-order-consult-id (Lot I-B) : marqueur stable permettant à refreshOpenOrderConsultDialog
+    // de retrouver CETTE consultation après une mutation de paiement décidée depuis elle-même
+    // (voir 18-contacts-invoices.js), sans reconstruire tout le dialogue.
     const readOnlyNote = readOnly
-      ? `<div class="dialog-section order-readonly-note" role="note">
+      ? `<div class="dialog-section order-readonly-note" role="note" data-order-consult-id="${esc(row.id)}">
           <strong>Lecture seule</strong>
           <p>${esc(shopOrderReadOnlyReason(row))}</p>
         </div>`
       : "";
+    // Lot I-B (I-B2 : helper partagé) — en consultation lecture seule, la zone paiement utilise
+    // TOUJOURS le moteur LIVE restreint (orderConsultPaymentZoneHtml, 18-contacts-invoices.js —
+    // MÊME fonction que refreshOpenOrderConsultDialog, jamais de HTML dupliqué), quelle que soit la
+    // raison du verrou : une ligne OK y reste strictement consultative (aucun bouton « Annuler
+    // paiement », voir compactPaymentEditor/actionableStatuses), et le titre ("Paiement à traiter" /
+    // "Paiements") s'adapte à hasPendingPayment. En édition normale (readOnly=false), comportement
+    // historique inchangé au bit près : paymentFields() ("form").
+    const paymentSectionHtml = readOnly
+      ? orderConsultPaymentZoneHtml(row)
+      : paymentFields("payment", row.payments || [], calc.total, orderDefaultTaxRate(row), row.id ? `order:${row.id}` : "");
     const body = [
       readOnlyNote,
       `<div class="dialog-section shop-sale-steps">
@@ -25420,7 +25569,7 @@ ${esc(bodyText)}</pre>
       `<div class="dialog-section" data-sale-step="payment"><h3>3 · Valider le paiement</h3>
         <div class="form-grid compact">${field("orderDiscount", "Remise commande", row.discount || "", "number", 'step="0.01" min="0" data-order-summary-input')}</div>
       </div>`,
-      paymentFields("payment", row.payments || [], calc.total, orderDefaultTaxRate(row), row.id ? `order:${row.id}` : ""),
+      paymentSectionHtml,
     ].join("");
     // En lecture seule : pas d'action secondaire « Fiche contact / facture » (elle enregistrerait
     // puis naviguerait). Clé de fenêtre distincte pour ne pas dédupliquer avec une éventuelle
@@ -31468,9 +31617,15 @@ ${esc(bodyText)}</pre>
       else if (validation.auditAction === "cancelled") audit.paymentCancelled(auditContext, validation.payment);
       persist("Paiement enregistré");
       render();
+      // Lot I-B — si ce paiement appartient à une commande Boutique et qu'une consultation lecture
+      // seule de CETTE commande est ouverte (zone pending actionnable), la rafraîchir en place : la
+      // commande reste verrouillée dans ce flux (voir shopOrderReadOnlyReason), donc aucune fermeture/
+      // réouverture n'est nécessaire ici. No-op si aucune consultation de cette commande n'est ouverte.
+      if (paymentContext.module === "order") refreshOpenOrderConsultDialog(paymentContext.id);
       reopenPaymentBubble(paymentContext);
       return;
     }
+    if (action === "cancel-pending-payment") return cancelPendingPayment(button);
     if (action === "run-reset-scope") return runResetScope(button.dataset.scope);
     if (action === "add-contact") return openContactDialog(ui.contactKind);
     if (action === "edit-contact") return openContactDialog(button.dataset.kind, state.contacts[button.dataset.kind].find((row) => row.id === button.dataset.id));
@@ -33050,6 +33205,105 @@ ${esc(bodyText)}</pre>
       payment.allocations = [{ claimKey, amount: payment.amount }];
     }
     return { ok: true, auditAction: "validated", payment, index };
+  }
+
+  // Lot I-B — annule un paiement de commande Boutique PAS ENCORE ENCAISSÉ ("A encaisser"/"En cours"),
+  // depuis la zone actionnable de la consultation lecture seule. Distinct de cancelPaidPayment()
+  // (réservée au statut "OK", jamais appelée ici) : ce paiement n'a jamais été réellement encaissé,
+  // donc aucun remboursement, aucun mouvement de caisse, aucune allocation à défaire (un paiement
+  // pending n'a jamais reçu d'id/allocations — ceux-ci ne sont posés qu'au moment de la validation
+  // "Payé", voir validatePayment/validateFormPayment). GARDE ABSOLUE : travaille exclusivement sur
+  // l'objet RÉEL relu dans state.shopOrders (jamais une copie DOM/snapshot), et revalide le statut
+  // courant DEUX FOIS (avant ET après la confirmation utilisateur, l'état ayant pu changer pendant
+  // qu'elle était affichée) — si le paiement n'est plus pending à l'un ou l'autre moment, aucune
+  // mutation, aucun audit, aucun checkpoint.
+  // Lot I-B3 — après une garde stale refusée (aucune mutation), la consultation ouverte doit refléter
+  // l'état RÉEL : si la commande est toujours verrouillée, un simple refresh en place suffit ; mais si
+  // le changement externe qui a rendu ce paiement obsolète a AUSSI fait disparaître le dernier verrou
+  // (paiement devenu Annulé/Refusé/vide sans qu'aucun autre paiement OK/pending ni facture émise ne
+  // subsiste), la consultation n'a plus de raison d'exister et doit rouvrir en édition normale — sinon
+  // l'utilisateur reste coincé dans une "lecture seule" fantôme. Centralisé ici pour ne JAMAIS dupliquer
+  // cette décision entre les deux gardes de cancelPendingPayment, et pour ne jamais recréer un second
+  // moteur d'intégrité : shopOrderIntegrityState() reste l'unique source de vérité.
+  async function reconcileOrderConsultAfterPaymentChange(button, orderId) {
+    // Lot I-B4 — targetDialog est capturé EN PREMIER, avant toute opération susceptible de toucher au
+    // DOM (y compris la branche "toujours verrouillé" ci-dessous) : depuis I-B2, le refresh remplace
+    // l'outerHTML de la zone paiement, qui peut contenir le bouton cliqué lui-même. Si ce bouton
+    // devait un jour appartenir à un sous-arbre détaché au moment de l'appel à .closest("dialog"), la
+    // branche "plus de verrou" perdrait la référence au dialogue réel (targetDialog=null ->
+    // closeDialogAndWait no-op -> ancienne consultation jamais fermée). Capturer la référence avant
+    // toute mutation DOM élimine structurellement ce risque, quel que soit l'ordre des branches.
+    const targetDialog = button.closest("dialog");
+    const freshOrder = state.shopOrders.find((row) => row.id === orderId);
+    if (!freshOrder) return;
+    const integrity = shopOrderIntegrityState(freshOrder);
+    if (integrity.editBlocked) {
+      refreshOpenOrderConsultDialog(orderId);
+      return;
+    }
+    // Plus aucun verrou : fermeture RÉELLEMENT attendue (close() natif différé par le navigateur,
+    // jamais synchrone — voir closeDialogAndWait) avant réouverture, pour ne jamais réutiliser une
+    // entrée keyedWindows périmée ; openOrderForConsult décide seule, sur l'état frais, qu'elle ouvre
+    // ici l'édition normale (order:<id>).
+    await closeDialogAndWait(targetDialog);
+    openOrderForConsult(freshOrder);
+  }
+
+  async function cancelPendingPayment(button) {
+    const context = paymentContextFrom(button);
+    if (context.module !== "order") return;
+    const index = Number(context.index);
+    if (Number.isNaN(index)) return;
+    const beforeOrder = state.shopOrders.find((row) => row.id === context.id);
+    const beforePayment = beforeOrder?.payments?.[index];
+    if (!beforePayment || !PENDING_PAYMENT_STATUSES.includes(paymentStatus(beforePayment))) {
+      alert("Ce paiement a changé entre-temps : il n'est plus en attente. Aucune modification n'a été faite.");
+      // Lot I-B3 — même si aucune mutation n'a lieu, la consultation ouverte peut encore afficher un
+      // état périmé (boutons obsolètes sur une ligne qui n'est plus réellement pending), voire ne plus
+      // avoir aucune raison d'être en lecture seule (voir reconcileOrderConsultAfterPaymentChange).
+      await reconcileOrderConsultAfterPaymentChange(button, context.id);
+      return;
+    }
+    const confirmed = await requestConfirm({
+      title: "Annuler ce paiement en attente",
+      message: "Ce paiement n'a pas encore été encaissé. Son annulation ne remboursera aucune somme : il sera simplement marqué Annulé.\n\nLa commande ne redeviendra modifiable que s'il ne reste ensuite aucun paiement validé, aucun autre paiement en attente et aucune facture émise.\n\nContinuer ?",
+      confirmLabel: "Annuler ce paiement en attente",
+    });
+    if (!confirmed) return; // aucune mutation, aucun checkpoint, aucun historique, aucun audit.
+    // Seconde garde : l'état a pu changer PENDANT que la confirmation était affichée (autre fenêtre,
+    // le paiement validé entre-temps…) — on relit à nouveau l'objet réel avant de muter quoi que ce soit.
+    const order = state.shopOrders.find((row) => row.id === context.id);
+    const payment = order?.payments?.[index];
+    if (!payment || !PENDING_PAYMENT_STATUSES.includes(paymentStatus(payment))) {
+      alert("Ce paiement a changé pendant la confirmation : il n'est plus en attente. Aucune modification n'a été faite.");
+      await reconcileOrderConsultAfterPaymentChange(button, context.id);
+      return;
+    }
+    const beforeSnapshot = beginHistoryCheckpoint();
+    // Lot I-B2 — l'échéance PRÉCÉDANT l'annulation est capturée AVANT mutation, pour ne jamais la
+    // perdre côté journal (metadata.dueDate) : le paiement PERSISTANT, lui, doit toujours finir avec
+    // date="" (même contrat que cancelPaidPayment), donc payment.date lui-même ne peut pas servir de
+    // source à l'audit une fois muté.
+    const pendingDueDate = payment.date;
+    // État canonique persistant "Annulé" (même contrat que cancelPaidPayment) : amount/check/
+    // checkNumber/taxRate CONSERVÉS tels quels, seule la date est vidée. Aucun remboursement, aucun
+    // mouvement de caisse, aucune modification de stock, aucune facture, aucune allocation artificielle.
+    payment.state = "Annulé";
+    payment.date = "";
+    commitHistoryCheckpoint(beforeSnapshot);
+    // Action d'audit DÉDIÉE (jamais payment.cancelled, réservée à l'annulation d'une validation
+    // réellement encaissée) : ce paiement n'a jamais été "Payé".
+    audit.paymentPendingCancelled(paymentAuditContext(context), payment, pendingDueDate);
+    persist("Paiement à encaisser annulé");
+    render();
+    const freshOrder = state.shopOrders.find((row) => row.id === order.id);
+    // Ferme réellement la consultation AVANT de la rouvrir (close() natif différé par le navigateur,
+    // jamais synchrone — voir closeDialogAndWait) : openOrderForConsult décidera seule, sur l'état
+    // frais, si la commande rouvre en édition (plus aucun verrou) ou reste en consultation (autre
+    // verrou restant), sans risque de réutiliser une entrée keyedWindows périmée.
+    const targetDialog = button.closest("dialog");
+    await closeDialogAndWait(targetDialog);
+    if (freshOrder) openOrderForConsult(freshOrder);
   }
 
   // Déverrouille une ligne de paiement (form) après annulation : elle redevient éditable et la garde
@@ -41522,6 +41776,11 @@ ${esc(bodyText)}</pre>
     "invoice.payment.attached", "invoice.credit.applied",
     // Lot 3B — paiements-échéances intégrés (adhésions/commandes/inscriptions).
     "payment.validated", "payment.cancelled",
+    // Lot I-B — annulation d'un paiement de commande PAS ENCORE ENCAISSÉ ("A encaisser"/"En cours"),
+    // depuis la consultation lecture seule d'une commande Boutique. Distincte de payment.cancelled
+    // (réservée à l'annulation d'une validation réellement encaissée) : ce paiement n'a jamais été
+    // "Payé", donc jamais un remboursement.
+    "payment.pendingCancelled",
     // Lot 4A — authentification locale par PIN (voir audit.userPinXxx / userSwitched ci-dessous).
     "user.pin.configured", "user.pin.changed", "user.pin.reset", "user.pin.removed", "user.switched",
     // Lot 5A — cycle de vie des stages et de leurs inscriptions (voir audit.stageXxx ci-dessous).
@@ -42099,6 +42358,34 @@ ${esc(bodyText)}</pre>
           amount: asNumber(payment?.amount),
           method: invoicePaymentModeLabel(payment || {}),
           dueDate: asText(payment?.date),
+          contactId: context.contactId || "",
+          contactLabel: context.contactLabel || "",
+          parentLabel: context.parentLabel || "",
+        },
+      });
+    },
+    // Lot I-B — "pendingCancelled" = abandon d'un paiement PAS ENCORE encaissé ("A encaisser"/"En
+    // cours"), depuis la consultation d'une commande Boutique bloquée. JAMAIS payment.cancelled :
+    // ce paiement n'a jamais été validé, il n'y a donc rien à "annuler la validation de" — voir
+    // auditEventText pour le libellé qui ne laisse jamais croire à un remboursement.
+    // Lot I-B2 — previousDueDate (facultatif) : l'échéance du paiement AVANT l'annulation, transmise
+    // séparément car `payment.date` a déjà été vidé par l'appelant (le paiement persistant doit
+    // toujours finir avec date=""). Sans elle (repli sur payment?.date), la trace resterait exacte
+    // mais perdrait l'échéance d'origine — jamais souhaitable pour la traçabilité du journal.
+    paymentPendingCancelled(context, payment, previousDueDate) {
+      return recordAuditEvent({
+        action: "payment.pendingCancelled",
+        entityType: "payment",
+        entityId: paymentEntityId(context.moduleKind, context.parentId, context.paymentIndex),
+        entityLabel: paymentEntityLabel(context),
+        clubId: payment?.clubId,
+        metadata: {
+          moduleKind: context.moduleKind || "",
+          parentId: context.parentId || "",
+          paymentIndex: Number(context.paymentIndex) || 0,
+          amount: asNumber(payment?.amount),
+          method: invoicePaymentModeLabel(payment || {}),
+          dueDate: asText(previousDueDate !== undefined ? previousDueDate : payment?.date),
           contactId: context.contactId || "",
           contactLabel: context.contactLabel || "",
           parentLabel: context.parentLabel || "",
@@ -42769,6 +43056,13 @@ ${esc(bodyText)}</pre>
     "payment.cancelled": (actor, label, metadata) => {
       const suffix = paymentEventPhraseSuffix(metadata);
       return `${actor} a annulé la validation d'un paiement de ${money(metadata.amount)}${suffix ? ` ${suffix}` : ""}`;
+    },
+    // Lot I-B — "annulé un paiement à encaisser" : jamais "annulé la validation" (ce paiement n'a
+    // jamais été validé) ni "remboursé" (aucun encaissement n'a eu lieu), pour ne jamais laisser
+    // croire à une opération financière réelle.
+    "payment.pendingCancelled": (actor, label, metadata) => {
+      const suffix = paymentEventPhraseSuffix(metadata);
+      return `${actor} a annulé un paiement à encaisser de ${money(metadata.amount)}${suffix ? ` ${suffix}` : ""}`;
     },
     "user.pin.configured": (actor, label, metadata) => {
       const target = asText(metadata.targetUserLabel) || label || "?";
