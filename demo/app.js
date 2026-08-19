@@ -1306,8 +1306,6 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
   let userSwitchInProgress = false;
   const history = { undo: [], redo: [] };
   const navigationHistory = { back: [], forward: [] };
-  let contextTarget = null;
-  let contextSelection = null;
 
   function showStartupScreen() {
     if (!app) return;
@@ -14876,7 +14874,7 @@ ${esc(bodyText)}</pre>
           <button class="icon" data-note-command="insertOrderedList" title="Liste numérotée">1.</button>
           <button data-note-command="removeFormat">Effacer style</button>
         </div>
-        <div class="note-editor" contenteditable="true" data-note-editor>${sanitizeNoteHtml(note.content || "")}</div>
+        <div class="note-editor" contenteditable="true" spellcheck="true" data-note-editor>${sanitizeNoteHtml(note.content || "")}</div>
       </div>
       ${quickNotesSection()}
     </div>`;
@@ -29287,26 +29285,6 @@ ${esc(bodyText)}</pre>
     }
   });
 
-  document.addEventListener("contextmenu", openContextMenu, true);
-
-  document.addEventListener("mousedown", (event) => {
-    if (event.target.closest(".context-menu")) event.preventDefault();
-  });
-
-  document.addEventListener("click", (event) => {
-    const item = event.target.closest("[data-context-action]");
-    if (item) {
-      event.preventDefault();
-      runContextAction(item.dataset.contextAction);
-      return;
-    }
-    if (!event.target.closest(".context-menu")) closeContextMenu();
-  });
-
-  window.addEventListener("blur", closeContextMenu);
-  window.addEventListener("resize", closeContextMenu);
-  window.addEventListener("scroll", closeContextMenu, true);
-
   dialog.addEventListener("click", async (event) => {
     const paymentTab = event.target.closest("[data-payment-tab]");
     if (paymentTab) {
@@ -32169,91 +32147,6 @@ ${esc(bodyText)}</pre>
     if (tab) selectPaymentTab(tab);
   }
 
-  function editableElementFrom(target) {
-    const element = target?.closest?.("input, textarea, [contenteditable='true']");
-    if (!element || element.disabled || element.readOnly) return null;
-    return element;
-  }
-
-  function isTextControl(element) {
-    if (!element) return false;
-    if (element.tagName === "TEXTAREA") return true;
-    if (element.tagName !== "INPUT") return false;
-    return ["text", "search", "email", "tel", "url", "password"].includes(element.type || "text");
-  }
-
-  function saveContextSelection(target) {
-    const editable = editableElementFrom(target);
-    if (isTextControl(editable) && "selectionStart" in editable) {
-      return { type: "control", target: editable, start: editable.selectionStart, end: editable.selectionEnd };
-    }
-    const selection = window.getSelection();
-    if (selection && selection.rangeCount) {
-      return { type: "range", range: selection.getRangeAt(0).cloneRange(), focusTarget: editable };
-    }
-    return { type: "none", focusTarget: editable };
-  }
-
-  function restoreContextSelection() {
-    const selection = contextSelection;
-    if (!selection) return;
-    if (selection.type === "control" && document.contains(selection.target)) {
-      selection.target.focus();
-      selection.target.setSelectionRange(selection.start, selection.end);
-      return;
-    }
-    if (selection.type === "range" && selection.range) {
-      selection.focusTarget?.focus?.();
-      const browserSelection = window.getSelection();
-      browserSelection.removeAllRanges();
-      browserSelection.addRange(selection.range);
-      return;
-    }
-    selection.focusTarget?.focus?.();
-  }
-
-  function openContextMenu(event) {
-    const editable = editableElementFrom(event.target);
-    if (window.monGestaClubShell) {
-      closeContextMenu();
-      if (editable) return;
-      return;
-    }
-    event.preventDefault();
-    contextTarget = event.target;
-    contextSelection = saveContextSelection(event.target);
-    const canEdit = Boolean(editable);
-    const menuParent = event.target.closest("dialog") || document.body;
-    let menu = document.querySelector(".context-menu");
-    if (!menu) {
-      menu = document.createElement("div");
-      menu.className = "context-menu";
-    }
-    if (menu.parentElement !== menuParent) {
-      menuParent.appendChild(menu);
-    }
-    menu.innerHTML = `
-      <button type="button" data-context-action="cut" ${canEdit ? "" : "disabled"}>Couper</button>
-      <button type="button" data-context-action="copy">Copier</button>
-      <button type="button" data-context-action="paste" ${canEdit ? "" : "disabled"}>Coller</button>
-      <span></span>
-      <button type="button" data-context-action="select-all">Tout sélectionner</button>
-      <button type="button" data-context-action="print">Imprimer</button>
-    `;
-    menu.hidden = false;
-    const margin = 8;
-    const rect = menu.getBoundingClientRect();
-    const left = Math.min(event.clientX, window.innerWidth - rect.width - margin);
-    const top = Math.min(event.clientY, window.innerHeight - rect.height - margin);
-    menu.style.left = `${Math.max(margin, left)}px`;
-    menu.style.top = `${Math.max(margin, top)}px`;
-  }
-
-  function closeContextMenu() {
-    const menu = document.querySelector(".context-menu");
-    if (menu) menu.hidden = true;
-  }
-
   // Socle partagé WEB (correctif régression Lot 4A, puis extension "PDF honnête") : le durcissement
   // des fenêtres Electron (setWindowOpenHandler refusant toute création de fenêtre par défaut)
   // bloquait silencieusement window.open("", "_blank"), faisant tomber CHAQUE appelant (page
@@ -32307,97 +32200,6 @@ ${esc(bodyText)}</pre>
     previewWindow.document.open();
     previewWindow.document.write(html);
     previewWindow.document.close();
-  }
-
-  async function runContextAction(action) {
-    closeContextMenu();
-    if (action === "print") {
-      ui.saveMessage = "Aperçu impression ouvert";
-      showPagePrintPreview();
-      render();
-      return;
-    }
-    restoreContextSelection();
-    if (action === "select-all") return selectAllContext();
-    if (action === "paste") return pasteContextText();
-    if (action === "copy") return copyContextText();
-    if (action === "cut") return runEditCommand(action);
-  }
-
-  function selectAllContext() {
-    const editable = editableElementFrom(contextTarget);
-    if (isTextControl(editable)) {
-      editable.focus();
-      editable.select();
-      ui.saveMessage = "Texte sélectionné";
-      return;
-    }
-    if (editable?.tagName === "INPUT") {
-      editable.focus();
-      editable.select?.();
-      ui.saveMessage = "Champ sélectionné";
-      return;
-    }
-    if (editable) {
-      const range = document.createRange();
-      range.selectNodeContents(editable);
-      const selection = window.getSelection();
-      selection.removeAllRanges();
-      selection.addRange(range);
-      ui.saveMessage = "Texte sélectionné";
-      return;
-    }
-    document.execCommand("selectAll");
-    ui.saveMessage = "Page sélectionnée";
-  }
-
-  async function pasteContextText() {
-    const editable = editableElementFrom(contextTarget);
-    if (!editable) {
-      ui.saveMessage = "Collage indisponible ici";
-      return;
-    }
-    try {
-      const text = await navigator.clipboard.readText();
-      if (isTextControl(editable) && "selectionStart" in editable) {
-        const start = editable.selectionStart;
-        const end = editable.selectionEnd;
-        editable.value = `${editable.value.slice(0, start)}${text}${editable.value.slice(end)}`;
-        editable.setSelectionRange(start + text.length, start + text.length);
-        editable.dispatchEvent(new Event("input", { bubbles: true }));
-      } else {
-        document.execCommand("insertText", false, text);
-        editable.dispatchEvent(new Event("input", { bubbles: true }));
-      }
-      ui.saveMessage = "Texte collé";
-    } catch (error) {
-      runEditCommand("paste");
-    }
-  }
-
-  async function copyContextText() {
-    if (contextSelection?.type === "control" && document.contains(contextSelection.target)) {
-      const text = contextSelection.target.value.slice(contextSelection.start, contextSelection.end) || contextSelection.target.value;
-      try {
-        await navigator.clipboard.writeText(text);
-        ui.saveMessage = "Texte copié";
-        return;
-      } catch (error) {
-        return runEditCommand("copy");
-      }
-    }
-    const selectionText = window.getSelection()?.toString();
-    if (selectionText) return runEditCommand("copy");
-    const editable = editableElementFrom(contextTarget);
-    const clickedText = editable?.value || contextTarget?.closest?.("td, th, button, label, p, h1, h2, h3, span, strong")?.textContent || "";
-    const text = clickedText.trim();
-    if (!text) return runEditCommand("copy");
-    try {
-      await navigator.clipboard.writeText(text);
-      ui.saveMessage = "Texte copié";
-    } catch (error) {
-      runEditCommand("copy");
-    }
   }
 
   function runEditCommand(command) {
