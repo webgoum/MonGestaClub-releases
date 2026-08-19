@@ -6428,6 +6428,38 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
     return (typeof defaultLogoDataUrl === "function" && defaultLogoDataUrl()) || "";
   }
 
+  // Lot H-B — variante ASYNC de resolveClubLogoForEmail, réservée à la préparation d'un envoi SMTP
+  // réel (prepareEmailForSmtp ci-dessous) : élimine la fenêtre de course diagnostiquée en Lot H-A où
+  // defaultLogoDataUrl() peut renvoyer "" si le préchargement de démarrage (preloadDefaultLogoDataUrl,
+  // déclenché une seule fois, en tâche de fond, à la fin de initApp()) n'a pas encore résolu.
+  // N'attend QUE si les deux premiers niveaux (logo du club / logo settings) sont absents — jamais de
+  // blocage pour un club qui a déjà un logo configuré, jamais de blocage du reste de l'application
+  // (cette fonction n'est appelée qu'au moment de préparer un envoi SMTP, pas au démarrage).
+  async function resolveClubLogoForEmailReady(club = activeClub()) {
+    const source = club || {};
+    if (typeof isLogoDataUrl === "function" && isLogoDataUrl(source.logoDataUrl)) return source.logoDataUrl;
+    if (typeof isLogoDataUrl === "function" && isLogoDataUrl(settings?.logoDataUrl)) return settings.logoDataUrl;
+    // Lot H-B (correction étroite) — utilise DIRECTEMENT la valeur résolue par la promesse attendue
+    // (le retour réel de preloadDefaultLogoDataUrl), plutôt que de relire ensuite un cache privé
+    // séparé : rend la fonction authentiquement testable (un test peut fournir une promesse
+    // contrôlée et vérifier que sa valeur de résolution est bien celle utilisée), et élimine tout
+    // scénario où l'attente aurait lieu sans que son résultat ne soit réellement exploité.
+    if (typeof preloadDefaultLogoDataUrl === "function") {
+      try {
+        const preloaded = await preloadDefaultLogoDataUrl();
+        if (typeof isLogoDataUrl === "function" && isLogoDataUrl(preloaded)) return preloaded;
+      } catch (e) {}
+    }
+    return (typeof defaultLogoDataUrl === "function" && defaultLogoDataUrl()) || "";
+  }
+
+  // Lot H-B — CID constant du logo dans un e-mail SMTP (voir prepareEmailForSmtp). Doit rester
+  // EXACTEMENT identique à la constante de même nom dans budo-electron/main.js (smtpSend) : c'est ce
+  // même identifiant que Nodemailer associe à la pièce jointe inline pour que <img src="cid:..."> la
+  // retrouve. Les deux fichiers tournent dans des processus Electron séparés (renderer/main), donc
+  // aucun module partagé possible ici — la valeur est dupliquée intentionnellement, pas oubliée.
+  const EMAIL_LOGO_CID = "mongestaclub-club-logo@mongestaclub";
+
   // Lignes de pied de mail (nom du club + coordonnées si renseignées). Une ligne par info
   // disponible ; les champs vides sont simplement omis (pas de coordonnée à moitié affichée).
   function clubEmailFooterLines(club = activeClub()) {
@@ -6461,21 +6493,19 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
     return rows;
   }
 
-  // Rendu HTML "carte e-mail" compatible Gmail/Outlook/Apple Mail/Thunderbird : tableaux HTML
-  // pour la structure, styles inline uniquement, largeur fixe ~600px, aucune image indispensable
-  // au contenu (logo optionnel, fallback nom du club). Utilisé pour l'aperçu en Lot 2 ; le même
-  // HTML sera réutilisable tel quel comme corps d'e-mail réel quand le SMTP sera ajouté (lot
-  // ultérieur) — le logo restera alors à remplacer par une pièce jointe inline CID plutôt qu'une
-  // image base64, mais la structure ne change pas.
-  function renderEmailHtml(subject = "", text = "", options = {}) {
-    const club = options.club || (typeof activeClub === "function" ? activeClub() : {});
-    const clubName = safeTemplateValue(options.clubName || club?.name || settings?.clubName || "MonGestaClub");
-    const logo = options.logoDataUrl !== undefined ? options.logoDataUrl : resolveClubLogoForEmail(club);
+  // Lot H-B — cœur du template "carte e-mail", factorisé pour être PARTAGÉ, à l'octet près, entre
+  // l'aperçu local (logoSrc = data:...) et l'envoi SMTP réel (logoSrc = cid:...) : un seul template
+  // visuel, deux façons de désigner la MÊME image. Ne résout jamais lui-même le logo (ni sa
+  // priorité, ni son préchargement) : reçoit logoSrc déjà décidé par l'appelant — "" => repli texte
+  // (nom du club), jamais d'image cassée. Compatible Gmail/Outlook/Apple Mail/Thunderbird : tableaux
+  // HTML pour la structure, styles inline uniquement, largeur fixe ~600px.
+  function emailCardHtml(subject, text, logoSrc, clubName, options = {}) {
+    const club = options.club;
     const details = options.details || emailDetailRows(options.context || {});
     const footerLines = options.footerLines || clubEmailFooterLines(club);
     const bodyHtml = esc(text).replace(/\n/g, "<br>");
-    const headerHtml = logo
-      ? `<img src="${esc(logo)}" alt="${esc(clubName)}" width="120" style="display:block;max-width:120px;height:auto;margin:0 auto;border:0;outline:none;" />`
+    const headerHtml = logoSrc
+      ? `<img src="${esc(logoSrc)}" alt="${esc(clubName)}" width="120" style="display:block;max-width:120px;height:auto;margin:0 auto;border:0;outline:none;" />`
       : `<strong style="display:block;font-size:20px;color:#ffffff;letter-spacing:.3px;font-family:Arial,Helvetica,sans-serif;">${esc(clubName)}</strong>`;
     const detailsHtml = details.length ? `
         <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:20px;border:1px solid #e2e2e2;border-radius:6px;border-collapse:collapse;">
@@ -6521,6 +6551,47 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
   </table>
 </body>
 </html>`;
+  }
+
+  // Rendu HTML "carte e-mail" pour l'APERÇU LOCAL uniquement (iframe sandboxée dans le dialogue
+  // e-mail / la page Newsletter) : le logo y reste une image data:... — c'est un aperçu affiché
+  // localement dans l'app, jamais transmis à un serveur SMTP, donc aucune limite de client mail ne
+  // s'applique ici. Pour un envoi SMTP réel, utiliser prepareEmailForSmtp() ci-dessous (logo en CID).
+  function renderEmailHtml(subject = "", text = "", options = {}) {
+    const club = options.club || (typeof activeClub === "function" ? activeClub() : {});
+    const clubName = safeTemplateValue(options.clubName || club?.name || settings?.clubName || "MonGestaClub");
+    // Lot H-B — correction du piège diagnostiqué en Lot H-A : une chaîne vide ou une valeur invalide
+    // passée explicitement en options.logoDataUrl ne doit JAMAIS neutraliser silencieusement un vrai
+    // logo disponible par repli. Le paramètre explicite n'est retenu que s'il est un data URL de
+    // logo réellement valide (isLogoDataUrl) ; sinon, on retombe sur la priorité normale.
+    const logo = (typeof isLogoDataUrl === "function" && isLogoDataUrl(options.logoDataUrl)) ? options.logoDataUrl : resolveClubLogoForEmail(club);
+    return emailCardHtml(subject, text, logo, clubName, { ...options, club });
+  }
+
+  // Lot H-B — payload SMTP centralisé : même contenu (sujet/texte/détails/pied/logo choisi) que
+  // l'aperçu (même template emailCardHtml, même priorité de logo via resolveClubLogoForEmailReady),
+  // mais avec <img src="cid:..."> au lieu d'un data: URI directement dans le HTML transmis au
+  // serveur SMTP — le logo réel est transmis SÉPARÉMENT (logoDataUrl) pour être joint en pièce
+  // inline côté main process (voir smtpSend, budo-electron/main.js). Résout le logo de façon ASYNC
+  // pour ne jamais rater le repli MonGestaClub par une pure question de timing de préchargement.
+  // Si, malgré l'attente, aucun logo valide n'est disponible : repli texte existant, aucun cid:
+  // référencé dans le HTML, aucune pièce jointe vide côté main process.
+  // Lot H-B (correction étroite) — le main process applique une validation PLUS STRICTE du logo
+  // (decodeLogoDataUrlForAttachment, budo-electron/main.js) que ce que le renderer peut vérifier
+  // (isLogoDataUrl ne regarde que le préfixe MIME + la forme base64, jamais les octets réels). Si le
+  // main process échoue à construire la pièce jointe (signature réelle incohérente, buffer vide,
+  // taille excessive…), le HTML transmis à Nodemailer NE DOIT JAMAIS référencer un cid: orphelin —
+  // deux variantes du MÊME template (emailCardHtml, jamais dupliqué/recopié) sont donc produites ici :
+  // `html` (logo en cid:) et `htmlWithoutLogo` (repli texte). smtpSend() choisit laquelle envoyer
+  // SEULEMENT une fois la pièce jointe réellement construite avec succès — jamais l'inverse.
+  async function prepareEmailForSmtp(subject = "", text = "", options = {}) {
+    const club = options.club || (typeof activeClub === "function" ? activeClub() : {});
+    const clubName = safeTemplateValue(options.clubName || club?.name || settings?.clubName || "MonGestaClub");
+    const logoDataUrl = await resolveClubLogoForEmailReady(club);
+    const logoSrc = logoDataUrl ? `cid:${EMAIL_LOGO_CID}` : "";
+    const html = emailCardHtml(subject, text, logoSrc, clubName, { ...options, club });
+    const htmlWithoutLogo = logoDataUrl ? emailCardHtml(subject, text, "", clubName, { ...options, club }) : html;
+    return { subject, text, html, htmlWithoutLogo, logoDataUrl };
   }
 
   function emailContextForContact(row = {}) {
@@ -6716,10 +6787,17 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
   // Envoi réel via SMTP (main process). Retourne toujours {ok, message?, accepted?, rejected?} —
   // jamais d'exception qui remonterait jusqu'à l'appelant : un échec réseau/auth doit rester une
   // réponse normale affichable, pas un crash.
-  async function sendEmailIntegrated({ to = [], bcc = [], subject = "", text = "", html = "" } = {}) {
+  // Lot H-B — logoDataUrl transmis SÉPARÉMENT du html (qui référence "cid:..." et non ce data URL) :
+  // c'est le main process (smtpSend, budo-electron/main.js) qui le transforme en pièce jointe inline
+  // Nodemailer. preload.js n'a besoin d'aucun changement : `message` y est déjà transmis tel quel
+  // (smtpSend: (clubId, config, message) => ipcRenderer.invoke(..., { clubId, config, message })).
+  // htmlWithoutLogo (repli sans cid:) transmis en plus de html : le main process choisit lequel des
+  // deux envoyer réellement selon que la pièce jointe logo a pu être construite ou non (voir
+  // smtpSend, budo-electron/main.js) — jamais de cid: orphelin possible.
+  async function sendEmailIntegrated({ to = [], bcc = [], subject = "", text = "", html = "", htmlWithoutLogo = "", logoDataUrl = "" } = {}) {
     if (!smtpShellAvailable()) return { ok: false, message: "Envoi intégré indisponible dans cette version." };
     try {
-      const result = await window.monGestaClubShell.smtpSend(activeClubIdForSmtp(), smtpSettings(), { to, bcc, subject, text, html });
+      const result = await window.monGestaClubShell.smtpSend(activeClubIdForSmtp(), smtpSettings(), { to, bcc, subject, text, html, htmlWithoutLogo: htmlWithoutLogo || html, logoDataUrl });
       return result || { ok: false, message: "Réponse invalide du processus principal." };
     } catch (error) {
       return { ok: false, message: asText(error?.message) || "Erreur d'envoi inconnue." };
@@ -6811,6 +6889,7 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
       textareaField("body", "Message", initial.body),
       `<div class="email-model-help"><strong>Parties automatiques</strong><p>Les informations comme le nom, le prénom, l'e-mail, le téléphone, la date ou l'identifiant ordinateur sont insérées automatiquement depuis la fiche. Tu peux modifier le texte final avant l'envoi.</p></div>`,
       !smtpReady && smtpShellAvailable() ? `<p class="muted smtp-hint">Envoi intégré non configuré. Configurez le SMTP dans Paramètres &gt; E-mails, ou utilisez le bouton « Ouvrir la messagerie externe » ci-dessous.</p>` : "",
+      `<p class="muted mailto-logo-hint">La messagerie externe prépare un message texte : la mise en page et le logo du club ne sont pas inclus.</p>`,
       `<div class="email-html-preview" style="margin-top:12px">
         <strong style="display:block;font-size:.86rem;color:var(--muted);margin-bottom:6px">Aperçu de l'e-mail</strong>
         <iframe title="Aperçu de l'e-mail" sandbox="" style="width:100%;height:360px;border:1px solid var(--line);border-radius:8px;background:#eef0f2" srcdoc="${esc(initialHtml)}"></iframe>
@@ -6836,11 +6915,14 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
         const submitBtn = formElement?.querySelector(".dialog-footer-actions button[type=\"submit\"]");
         const originalLabel = submitBtn?.textContent;
         if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = "Envoi..."; }
+        const smtpPayload = await prepareEmailForSmtp(subject, message, { context });
         const result = await sendEmailIntegrated({
           to: [email],
-          subject,
-          text: message,
-          html: renderEmailHtml(subject, message, { context }),
+          subject: smtpPayload.subject,
+          text: smtpPayload.text,
+          html: smtpPayload.html,
+          htmlWithoutLogo: smtpPayload.htmlWithoutLogo,
+          logoDataUrl: smtpPayload.logoDataUrl,
         });
         if (singleRecipientSendSucceeded(result, email)) return `E-mail envoyé à ${personLabel(contact)}`;
         if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = originalLabel; }
@@ -9394,7 +9476,14 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
         ${email || phone ? `<div class="due-card-contact">
           ${email ? (contactLinkForRow(person)
             ? `<button type="button" class="link-button" data-action="send-contact-email" data-contact-link="${esc(contactLinkForRow(person))}" title="Envoyer un mail à ce contact">${esc(email)}</button>`
-            : `<a href="mailto:${esc(email)}">${esc(email)}</a>`) : ""}
+            // Lot H-B — ligne fusionnée sans contact réellement résolvable (contactLinkForRow
+            // échoue) : ouvre quand même le compositeur MonGestaClub à partir d'un contact minimal
+            // (email + nom/prénom déjà connus ici), au lieu d'un mailto: brut qui ne garantirait
+            // jamais le logo/la mise en page. Réutilise openContactEmailDialog (aucun second
+            // éditeur e-mail) via la nouvelle action send-minimal-email — le contexte de paiement
+            // déjà calculé ici (montant total dû, modules concernés) est transmis avec, pour que le
+            // modèle « Relance » dispose des mêmes variables que sur un contact résolu.
+            : `<button type="button" class="link-button" data-action="send-minimal-email" data-email="${esc(email)}" data-last-name="${esc(person.lastName || "")}" data-first-name="${esc(person.firstName || "")}" data-amount="${esc(money(total))}" data-module="${esc(items.map((item) => sourceLabel[item.type] || item.type).join(", "))}" data-detail="${esc(items.map((item) => `${sourceLabel[item.type] || item.type} — ${item.module}`).join(" · "))}" title="Envoyer un mail à ce contact">${esc(email)}</button>`) : ""}
           ${phone ? `<span>${esc(phone)}</span>` : ""}
         </div>` : ""}
         <div class="due-card-items">${itemRows}</div>
@@ -11744,6 +11833,7 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
             <button type="button" data-action="open-payment-reminders">Relances paiement</button>
           </div>
           ${smtpReadyForSend() ? "" : `<p class="muted smtp-hint">Envoi intégré non configuré. Configurez le SMTP dans Paramètres &gt; E-mails, ou utilisez le bouton « Ouvrir la messagerie externe » ci-dessus.</p>`}
+          <p class="muted mailto-logo-hint">La messagerie externe prépare un message texte : la mise en page et le logo du club ne sont pas inclus.</p>
           <p class="muted">Les adresses sont placées en copie cachée pour préserver la confidentialité. Pour de très grosses listes, il vaut mieux envoyer en plusieurs fois.</p>
         </div>
         <div class="band pad newsletter-recipients-panel">
@@ -12192,10 +12282,15 @@ ${esc(bodyText)}</pre>
 
   function contactRow(row, kind) {
     const tel = row.mobile || row.phone || "";
+    // Lot H-B — même correctif que contactCard() ci-dessous (colonne e-mail de la liste desktop) :
+    // l'adresse cliquable ouvrait directement la messagerie externe (mailto: brut, aucun logo/mise
+    // en page possible) au lieu du compositeur MonGestaClub. Réutilise exactement le même chemin que
+    // le bouton « Envoyer un mail » de la fiche (data-action="send-contact-email").
+    const contactLink = `${kind === "members" ? "member" : "prospect"}:${row.id}`;
     return `<tr class="clickable-row" data-action="edit-contact" data-kind="${esc(kind)}" data-id="${esc(row.id)}">
       <td>${esc(row.lastName)}</td>
       <td>${esc(row.firstName)}</td>
-      <td>${row.email ? `<a href="${esc(contactEmailHref(row))}">${esc(row.email)}</a>` : ""}</td>
+      <td>${row.email ? `<button type="button" class="link-button" data-action="send-contact-email" data-contact-link="${esc(contactLink)}" title="Envoyer un mail à ce contact">${esc(row.email)}</button>` : ""}</td>
       <td>${tel ? `<a href="tel:${esc(tel)}">${esc(tel)}</a>` : ""}</td>
       <td>${esc(row.city)}</td>
       <td>${dateDisplay(row.birthDate) || `<span class="muted">-</span>`}</td>
@@ -30349,10 +30444,10 @@ ${esc(bodyText)}</pre>
       }
       const subject = newsletterSubject();
       const text = newsletterBody();
-      const html = renderEmailHtml(subject, text, { context: newsletterTemplateValues() });
       ui.smtpSending = true;
       render();
-      const result = await sendEmailIntegrated({ bcc: recipients, subject, text, html });
+      const smtpPayload = await prepareEmailForSmtp(subject, text, { context: newsletterTemplateValues() });
+      const result = await sendEmailIntegrated({ bcc: recipients, subject: smtpPayload.subject, text: smtpPayload.text, html: smtpPayload.html, htmlWithoutLogo: smtpPayload.htmlWithoutLogo, logoDataUrl: smtpPayload.logoDataUrl });
       ui.smtpSending = false;
       if (result.ok) {
         const rejectedCount = (result.rejected || []).length;
@@ -30518,6 +30613,28 @@ ${esc(bodyText)}</pre>
     if (action === "send-contact-email") {
       const contact = contactByLink(button.dataset.contactLink);
       if (contact) openContactEmailDialog(contact);
+      return;
+    }
+    // Lot H-B — repli « Paiements dus » quand la ligne (adhésion/commande/inscription fusionnée)
+    // n'a pas de contact réellement résolvable (contactLinkForRow échoue) mais porte quand même une
+    // adresse e-mail : ouvre le MÊME compositeur MonGestaClub (openContactEmailDialog) à partir d'un
+    // contact minimal reconstruit depuis les données déjà affichées, plutôt qu'un mailto: brut qui
+    // ne garantirait jamais le logo/la mise en page. Aucun second éditeur e-mail créé.
+    if (action === "send-minimal-email") {
+      const email = asText(button.dataset.email);
+      if (!email) return;
+      // Lot H-B (correction étroite) — contexte de paiement transmis au compositeur (montant total
+      // dû, modules concernés), pas seulement l'identité minimale : mêmes variables de modèle que
+      // pour un contact résolu (montant/module/detail, déjà les clés lues par openContactEmailDialog
+      // pour tout appelant — voir aussi reminderContext, src/11-dashboard-newsletter.js, pour le
+      // même principe sur les relances "À faire"). Modèle "reminder" par défaut : c'est une relance
+      // de paiement, pas un premier contact.
+      const extraContext = {};
+      if (asText(button.dataset.amount)) extraContext.montant = asText(button.dataset.amount);
+      if (asText(button.dataset.module)) extraContext.module = asText(button.dataset.module);
+      if (asText(button.dataset.detail)) extraContext.detail = asText(button.dataset.detail);
+      if (Object.keys(extraContext).length) extraContext.categorie = "paiement";
+      openContactEmailDialog({ email, lastName: asText(button.dataset.lastName), firstName: asText(button.dataset.firstName) }, "reminder", extraContext);
       return;
     }
     if (action === "open-linked-contact" || action === "open-contact-invoice") {
