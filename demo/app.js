@@ -14901,6 +14901,8 @@ ${esc(bodyText)}</pre>
             <a href="#help-salles">Salles</a>
             <a href="#help-planning">Planning</a>
             <a href="#help-disponibilites">Disponibilités</a>
+            <a href="#help-presences">Présences</a>
+            <a href="#help-documents">Documents sportifs</a>
             <a href="#help-paiements">Paiements</a>
             <a href="#help-couleurs">Codes couleurs</a>
             ${boutiqueEnabled ? `<a href="#help-boutique">Boutique</a>` : ""}
@@ -14908,10 +14910,12 @@ ${esc(bodyText)}</pre>
             ${stagesEnabled ? `<a href="#help-stages">Stages</a>` : ""}
             <a href="#help-tarifs">Tarifs</a>
             <a href="#help-parametres">Paramètres</a>
+            <a href="#help-utilisateurs">Utilisateurs</a>
             <a href="#help-notes">Notes</a>
             <a href="#help-stats">Statistiques</a>
             <a href="#help-compta">Comptabilité</a>
             <a href="#help-historique">Historique</a>
+            <a href="#help-journal">Journal d'activité</a>
             <a href="#help-donnees">Données</a>
           </nav>
 
@@ -15102,6 +15106,10 @@ ${esc(bodyText)}</pre>
               "Si le certificat médical est sur Non, l'inscription reste possible mais une alerte apparaît dans la fiche et dans À faire.",
               "Si l'assurance n'est pas encore renseignée, l'inscription reste possible mais une alerte rappelle de la vérifier.",
               "Le champ Niveau / grade est une note libre sur l'inscription (par exemple Débutant, Confirmé, Ceinture jaune). Elle s'affiche dans le récapitulatif de cette inscription, mais ce n'est ni une entité structurée ni un filtre automatique.",
+              "Dans Paramètres > Disciplines et catégories sportives, chaque discipline peut avoir ses propres catégories sportives : Poussins, Benjamins, Seniors, Confirmés, Tous niveaux, Intermédiaire… Une catégorie sportive appartient toujours à une seule discipline, et sert selon le club à représenter une tranche d'âge, un niveau, un type de public ou un simple repère interne.",
+              "Le catalogue proposé pour certains sports (par exemple Poussins, Benjamins, Seniors pour un profil Judo) reste une suggestion : ce n'est pas une liste fermée. Le club reste libre de créer d'autres catégories, y compris pour une discipline personnalisée qui ne correspond à aucun sport du catalogue.",
+              "Dans le dialogue Gérer d'une discipline, on crée, modifie, réordonne et archive ses catégories. L'ordre choisi ici est celui utilisé partout où la catégorie est proposée dans un menu.",
+              "Une catégorie sportive se choisit ensuite sur une inscription, et éventuellement sur un groupe entier. Une catégorie archivée n'est plus proposée pour une nouvelle affectation, mais reste affichée sur les inscriptions qui l'utilisaient déjà, pour garder une référence historique lisible.",
             ])}
 
             ${helpSection("help-groupes", "Groupes", [
@@ -15156,6 +15164,25 @@ ${esc(bodyText)}</pre>
               "C'est plus sûr qu'une création directe dans le planning : le créneau proposé est déjà vérifié sans conflit, alors qu'une création manuelle peut chevaucher un coach, une salle ou un groupe déjà pris.",
               "Cette page est un outil d'aide à la décision : elle ne modifie rien tant que tu n'as pas créé un cours, et elle n'a pas vocation à être imprimée ou exportée.",
               "Dans la grille, chaque niveau de disponibilité a aussi son propre motif (hachures plus ou moins denses, bordure pointillée), en plus de la couleur : les niveaux restent reconnaissables même si les couleurs sont difficiles à distinguer.",
+            ])}
+
+            ${helpSection("help-presences", "Présences", [
+              "La page Présences sert à faire l'appel : une feuille de présence est toujours liée à un groupe et à une date.",
+              "Le bouton Nouvelle feuille d'appel crée une feuille vide à remplir. Depuis une séance du Planning, un bouton dédié ouvre directement l'appel pour ce groupe, cette date et ce coach déjà préremplis.",
+              "Pour chaque adhérent du groupe, on choisit un statut : Présent, Retard, Absent, Excusé, Blessé ou Essai. Une remarque libre peut être ajoutée par personne.",
+              "Le bouton Imprimer sort la feuille de présence telle qu'elle est affichée à l'écran, y compris les statuts pas encore enregistrés.",
+              "La page garde toutes les feuilles déjà enregistrées dans le tableau Séances : cliquer sur une ligne rouvre cette feuille pour la consulter ou la corriger.",
+              "En haut de la page, Assiduité par groupe indique le taux de présence de chaque groupe. Assiduité par adhérent détaille présences, absences, retards et taux pour chaque personne ayant déjà été appelée au moins une fois.",
+            ])}
+
+            ${helpSection("help-documents", "Documents sportifs", [
+              "La page Documents sportifs est une synthèse en lecture seule : elle rassemble, pour chaque inscription, l'état des documents administratifs et sportifs. Cliquer sur une ligne ouvre la fiche d'inscription pour corriger un document.",
+              "Les documents suivis sont : le numéro et la date de fin de licence fédérale, la date de fin du certificat médical, et l'assurance choisie pour l'inscription.",
+              "L'autorisation parentale, le droit à l'image et le règlement signé sont aussi affichés : ces informations sont enregistrées une seule fois sur la fiche contact de la personne, pas séparément sur chacune de ses inscriptions.",
+              "L'autorisation parentale n'est demandée et affichée que pour les adhérents mineurs, repérés par un badge Mineur à côté de leur nom.",
+              "Chaque document a un badge de statut : OK, Manquant, Expiré ou Expire bientôt selon la date de fin renseignée.",
+              "En haut de la page, des compteurs résument le nombre de dossiers complets, de documents manquants, expirés, qui expirent bientôt, et d'assurances encore à vérifier.",
+              "Les boutons de filtre permettent d'afficher uniquement les dossiers qui correspondent à un cas précis : documents OK, manquants, expirés, expire bientôt, mineurs incomplets, licence manquante, certificat manquant ou assurance à vérifier.",
             ])}
 
             ${helpSection("help-paiements", "Paiements et statuts", [
@@ -15298,7 +15325,7 @@ ${esc(bodyText)}</pre>
               "Changer de thème ne modifie aucune donnée du club. Cela change uniquement les couleurs, les arrondis, les fonds et l'apparence générale.",
               "Le thème Contraste élevé renforce les écarts de couleur pour une meilleure lisibilité. Il fonctionne comme les autres thèmes : Choisir pour l'appliquer, sans modifier aucune donnée du club.",
               "Le bloc Affichage contient des cases à cocher pour ajouter ou retirer le texte sous les icônes de la barre du haut, et pour afficher ou masquer certaines pages comme Accueil, E-mail, Tarifs, Statistiques ou Notes.",
-              "Le bloc Affichage propose aussi trois modes d'interface : Simple (menu allégé pour les petits clubs), Avancé (tous les modules visibles) et Personnalisé (choisir précisément les pages visibles). Changer de mode ne supprime aucune donnée : seules des entrées du menu sont masquées, et les vues masquées restent fonctionnelles. Un nouveau club démarre en mode Simple.",
+              "Le bloc Affichage propose aussi trois modes d'interface : Simple (menu allégé pour les petits clubs), Avancé (tous les modules visibles) et Personnalisé (choisir précisément les pages visibles). Changer de mode ne supprime aucune donnée : seules des entrées du menu sont masquées, et les vues masquées restent fonctionnelles. Un nouveau club démarre en mode Simple ; le club de démonstration démarre en mode Avancé pour montrer tout de suite l'ensemble des fonctions.",
               "Une puce en bas du menu indique le mode courant (Mode simple, Mode avancé ou Mode personnalisé). Cliquer dessus ouvre directement Paramètres > Affichage pour changer de mode.",
               "Le réglage Disposition (dans Affichage) choisit la mise en page générale : Moderne place le menu principal à gauche (l'affichage par défaut, inchangé) ; Classique le transforme en une barre de menus en haut du logiciel, avec sous-menus déroulants, façon logiciel de bureau. Les deux dispositions donnent accès aux mêmes pages ; on bascule de l'une à l'autre à tout moment, sans rien perdre.",
               "On peut replier le menu et la barre d'outils pour gagner de la place. En disposition Moderne : le bouton ⟨ / ☰ masque ou réaffiche le menu de gauche, et le bouton ⌃ replie la barre du haut (le bouton ⌄ la rouvre). En disposition Classique, le menu fin du haut reste toujours visible : le bouton ⌃ replie uniquement la barre d'outils, et le bouton ⌄ Barre d'outils la réaffiche. Ces préférences sont mémorisées d'une session à l'autre.",
@@ -15343,17 +15370,30 @@ ${esc(bodyText)}</pre>
               "Les crédits, licences et ressources tierces sont accessibles depuis le menu Aide > Licences et ressources tierces. La fenêtre À propos reste volontairement courte.",
             ])}
 
+            ${helpSection("help-utilisateurs", "Utilisateurs", [
+              "Dans Paramètres > Utilisateurs, chaque profil permet de distinguer qui utilise le logiciel sur cet ordinateur : ce n'est pas le club, c'est la personne installée devant l'écran. Le club actif (voir Mes clubs) reste un réglage séparé : un même utilisateur peut travailler sur plusieurs clubs, et un même club peut être ouvert par plusieurs utilisateurs.",
+              "Le bouton Créer un utilisateur ajoute un nouveau profil, avec un nom modifiable à tout moment (bouton Renommer).",
+              "Un utilisateur peut être ajouté à un ou plusieurs clubs. Pour chaque club, on lui attribue un rôle (Administrateur, Président, Secrétaire, Trésorier, Encadrant ou Lecture seule) : ce rôle est aujourd'hui uniquement informatif, il prépare un futur système de droits mais ne restreint encore aucune action.",
+              "Le sélecteur d'utilisateur (barre latérale) permet de changer de profil actif sans fermer le logiciel.",
+              "Un utilisateur désactivé n'apparaît plus dans le sélecteur mais reste visible dans Paramètres > Utilisateurs, avec un bouton Réactiver.",
+              "Dans la version installée (Mac/Windows), chaque profil peut être protégé par un PIN à 6 chiffres. Dès qu'il existe au moins deux profils sur le poste, un PIN devient obligatoire pour chacun ; avec un seul profil sans PIN, le logiciel s'ouvre directement.",
+              "Le PIN protège l'accès à votre profil dans MonGestaClub sur cet ordinateur et aide à garantir que les actions du Journal d'activité sont attribuées à la bonne personne. Chacun configure et change son propre PIN depuis son profil actif (boutons Configurer le PIN / Changer le PIN).",
+              "À la création d'un PIN, un code de récupération s'affiche une seule fois : il permet de redéfinir un nouveau PIN en cas d'oubli. Il faut le noter et le conserver en lieu sûr, en dehors de l'application.",
+              "Cette protection par PIN n'existe que dans la version installée : dans un navigateur (par exemple la démo en ligne), les profils fonctionnent sans PIN.",
+            ])}
+
             ${helpSection("help-notes", "Notes", [
-              "La page Notes est un éditeur de texte libre pour conserver les informations utiles du club.",
-              "Chaque note enregistrée apparaît sous forme d'onglet.",
-              "Le titre de l'onglet se modifie dans le champ de titre de la note active.",
-              "La barre d'édition permet de choisir la police, la taille, la couleur, le surlignage, le gras, l'italique, le souligné, l'alignement et les listes.",
+              "MonGestaClub propose deux façons complémentaires de garder une information par écrit : les Notes (texte riche, pour rédiger librement) et les Notes personnalisées (petites fiches courtes, avec une page de destination). Les deux se retrouvent sur la page Notes.",
+              "Les Notes sont un éditeur de texte libre, présenté sous forme d'onglets : une note par onglet, avec son propre titre.",
+              "La barre d'édition d'une note permet de choisir la police, la taille, la couleur, le surlignage, le gras, l'italique, le souligné, le barré, l'alignement et les listes.",
               "Les polices disponibles dans Notes suivent les mêmes choix que la personnalisation des polices dans Paramètres.",
-              "Le bouton + Note crée un nouvel onglet. Supprimer l'onglet retire la note active.",
-              "Si la dernière note est supprimée, une nouvelle note vide est automatiquement créée pour rester prêt à écrire.",
-              "Les notes sont enregistrées automatiquement dans le logiciel, et le bouton Enregistrer confirme la sauvegarde.",
-              "Exporter CSV depuis cette page exporte les titres et le texte brut des notes.",
-              "Exporter PDF depuis Notes crée un PDF propre avec seulement le titre et le contenu de la note active, sans les boutons ni la barre de mise en forme.",
+              "Le bouton + Note crée un nouvel onglet. Supprimer l'onglet retire la note active. Si la dernière note est supprimée, une nouvelle note vide est automatiquement créée pour rester prêt à écrire.",
+              "Les Notes sont enregistrées automatiquement, et le bouton Enregistrer confirme la sauvegarde. Exporter PDF depuis Notes crée un PDF propre avec seulement le titre et le contenu de la note active. Exporter CSV exporte les titres et le texte brut de toutes les notes.",
+              "Plus bas sur la même page, le tableau Notes personnalisées sert à de courts pense-bêtes, avec cinq colonnes : Afficher dans, Sujet, Note, Montant et Priorité.",
+              "Afficher dans choisit où la note doit aussi apparaître, en plus de la page Notes. Laissé sur Notes uniquement, la note ne vit que dans ce tableau. En choisissant une page (par exemple Stock, Paiements dus ou Planning), la même note reste dans ce tableau ET apparaît en plus sur cette page, dans un petit bloc « 📌 Notes ».",
+              "Ce ne sont pas deux notes différentes : c'est la même Note personnalisée, simplement affichée à un deuxième endroit utile. Depuis ce bloc sur la page cible, on peut directement la modifier (sujet, note, montant, priorité, destination) ou la supprimer, sans repasser par la page Notes.",
+              "La Priorité (Normale, Important, Urgent ou Archive) sert à trier ces notes. Sur une page cible, les notes urgentes s'affichent en premier, puis les importantes, puis les normales.",
+              "Mettre une note en priorité Archive ne la supprime pas : elle reste dans le tableau Notes personnalisées, garde sa destination enregistrée, mais n'apparaît plus dans le petit bloc de la page cible. C'est une façon de la ranger sans perdre l'historique.",
             ])}
 
             ${helpSection("help-stats", "Statistiques", [
@@ -15398,13 +15438,23 @@ ${esc(bodyText)}</pre>
             ].filter(Boolean))}
 
             ${helpSection("help-historique", "Historique", [
-              "La page Historique liste les dernières actions importantes enregistrées dans le logiciel.",
+              "La page Historique liste les dernières actions importantes enregistrées dans le logiciel, pour le club actif.",
               "Elle permet de voir rapidement ce qui a été modifié : inscription, paiement, stock, note, paramètre ou sauvegarde.",
               "La colonne Action affiche une phrase plus détaillée. Si le texte est trop long, il est coupé avec des points de suspension et un clic sur la ligne l'agrandit.",
               "L'historique garde les actions récentes pour aider à comprendre ce qui vient de changer.",
               "Le bouton Effacer l'historique vide uniquement ce journal. Il ne supprime pas les contacts, paiements, ventes, notes ou autres données du club.",
               "Il ne remplace pas une sauvegarde JSON : il sert surtout de journal de contrôle rapide.",
               "Exporter CSV depuis Historique sort le journal affiché.",
+              "Historique est un fil de confort, propre au club et effaçable à tout moment. Pour une trace plus complète et durable, qui n'est jamais effacée, voir Journal d'activité.",
+            ])}
+
+            ${helpSection("help-journal", "Journal d'activité", [
+              "Le Journal d'activité conserve une trace des actions importantes réalisées dans l'application : qui a fait quoi, quand, et sur quel club.",
+              "Contrairement à l'Historique, le Journal d'activité conserve une trace des actions réalisées dans l'application indépendamment du club actif, et il n'existe aucun bouton pour l'effacer : c'est la trace durable, pas un simple fil de confort.",
+              "Chaque ligne affiche la date, l'utilisateur, le club concerné, l'action réalisée en une phrase claire, et l'élément concerné (par exemple le nom d'une facture, d'une discipline ou d'un utilisateur).",
+              "Le Journal enregistre notamment : la création et la modification des utilisateurs et de leur PIN, la création, la duplication, l'archivage et la suppression de clubs, les changements de réglages du club, le cycle de vie des factures et des paiements, la création et la suppression des stages et de leurs inscriptions, les articles de boutique, ainsi que la création, la modification, l'archivage et l'affectation des disciplines et des catégories sportives.",
+              "Le sélecteur Affichage bascule entre Club actif (par défaut) et Tous les clubs, pour retrouver une action même après avoir changé de club.",
+              "Si cette page n'apparaît pas dans le menu, active le mode Avancé (ou coche-la spécifiquement en mode Personnalisé) dans Paramètres > Affichage : elle existe toujours et enregistre les actions même quand elle n'est pas affichée.",
             ])}
 
             ${helpSection("help-donnees", "Sauvegardes et données", [
@@ -23861,10 +23911,20 @@ ${esc(bodyText)}</pre>
   function openInvoicePaymentDialog(invoice = {}) {
     invoice = normalizeInvoice(invoice);
     if (invoice.status === "draft" || invoice.status === "cancelled") return;
+    // Défense en profondeur (audit UX « figer visuellement les paiements impossibles ») : le bouton
+    // n'affiche déjà jamais cette action pour une facture soldée (invoicePaymentActionHtml), mais rien
+    // ne revérifiait ici si cette fonction était atteinte autrement (état non encore re-rendu, appel
+    // direct). Même source de vérité que le rendu — jamais un recalcul local de "soldée".
     // PAY-P0-2/F2 — calcul vivant claim-aware (source ET factures confondues), plus paymentsSnapshot
     // seul. readOnly = au moins un claim de cette facture est en attente de vérification (source
     // introuvable, fractionnement legacy ou dérive non résolue) : aucun nouveau règlement accepté.
     const totals = invoiceLiveTotals(invoice);
+    // invoiceAllowedActions(invoice).settled seul ne suffit pas : un claim readOnly à source
+    // introuvable dégénère volontairement à total=0/restDue=0 (claimCanonicalPaymentSlices), ce qui
+    // rend settled vrai alors que la facture n'est PAS soldée — juste illisible. Le cas readOnly doit
+    // continuer à ouvrir le dialogue pour afficher son propre message explicatif (readOnlyNotice
+    // ci-dessous) : on ne bloque donc l'ouverture que si settled ET non readOnly.
+    if (invoiceAllowedActions(invoice).settled && !totals.readOnly) return;
     const nextIndex = (invoice.paymentsSnapshot || []).length + (invoice.paymentsAfterIssue || []).length + 1;
     const defaultMethod = acceptedPaymentModes().includes("cash") ? "cash" : defaultPaymentMethod(nextIndex - 1);
     const payableLines = (invoice.lines || []).filter((line) => Math.abs(asNumber(line.total)) > 0.005);
@@ -26128,6 +26188,44 @@ ${esc(bodyText)}</pre>
     }
   }
 
+  // Lot démo temporelle — point d'ancrage UNIQUE réutilisé par demoClubIdentity() et buildDemoState()
+  // pour tous les calculs de dates relatives (saison, stages, échéances) : jamais un new Date() par
+  // endroit, pour que la saison et les stages générés restent mutuellement cohérents avec
+  // "aujourd'hui", quelle que soit la date réelle d'ouverture de la démo.
+  function demoToday() {
+    return new Date();
+  }
+
+  // Saison sportive du 1er septembre au 31 août : toujours la saison RÉELLEMENT en cours à la
+  // génération (jamais figée), pour que le club démo reste crédible dans le futur sans retouche
+  // manuelle. Septembre à décembre -> la saison a commencé cette année civile ; janvier à août -> la
+  // saison a commencé l'année civile précédente et se termine cette année.
+  function demoSeasonRange(referenceDate = demoToday()) {
+    const startYear = referenceDate.getMonth() >= 8 ? referenceDate.getFullYear() : referenceDate.getFullYear() - 1;
+    return { startDate: `${startYear}-09-01`, endDate: `${startYear + 1}-08-31` };
+  }
+
+  // Lot C (pérennité) — birthDate de démonstration pour un âge CIBLE, exact quel que soit
+  // `referenceDate` (donc quelle que soit l'année réelle de génération de la démo) : utilisé pour
+  // tout contact volontairement affecté à un groupe borné par ageMin/ageMax (Baby judo, Judo
+  // enfants, Self-défense ados), afin que la démo reste cohérente en 2026, 2027, 2030, etc. sans
+  // retouche manuelle des dates de naissance.
+  //
+  // `daysSinceBirthday` place l'anniversaire quelques mois avant `referenceDate` (90 jours par
+  // défaut) plutôt que pile aujourd'hui : évite qu'un simple changement d'heure/fuseau au moment
+  // de la génération fasse basculer l'âge d'un an. setFullYear() est appliqué AVANT setDate() :
+  // l'éventuel débordement de setDate() sur le mois/l'année précédente (proche du 1er janvier) est
+  // alors géré nativement par Date, et reste cohérent avec le calcul indépendant de getMemberAge()
+  // (vérifié empiriquement sur plusieurs dates de référence, y compris ce cas de bascule). Le 29
+  // février est géré nativement par Date (report au 1er mars les années non bissextiles) : aucun
+  // cas particulier nécessaire.
+  function demoBirthDateForAge(age, daysSinceBirthday = 90, referenceDate = demoToday()) {
+    const d = new Date(referenceDate);
+    d.setFullYear(d.getFullYear() - age);
+    d.setDate(d.getDate() - daysSinceBirthday);
+    return d.toISOString().slice(0, 10);
+  }
+
   function demoClubIdentity() {
     return normalizeClubIdentity({
       id: DEMO_CLUB_ID,
@@ -26138,7 +26236,7 @@ ${esc(bodyText)}</pre>
       colors: { primary: "#1f2937", secondary: "#f59e0b", accent: "#22c55e" },
       mainDiscipline: "Judo",
       disciplines: ["Judo", "Self-défense", "Taïso", "Préparation physique", "Baby judo"],
-      season: { startDate: "2026-09-01", endDate: "2027-08-31", autoBackup: false },
+      season: { ...demoSeasonRange(), autoBackup: false },
       admin: {
         legalStatus: "Association loi 1901",
         rna: "W473000000",
@@ -26261,10 +26359,27 @@ ${esc(bodyText)}</pre>
   function buildDemoState(clubId, club) {
     // Déclaré tôt (avant les paiements démo) : les échéances de paiement l'utilisent désormais elles
     // aussi, pour rester "à venir"/"en retard" de façon stable quel que soit le jour de génération.
-    const today = new Date();
+    // Même point d'ancrage que demoClubIdentity() (cf. demoToday()) : un seul moteur de dates.
+    const today = demoToday();
     const plusDays = (d) => { const x = new Date(today); x.setDate(x.getDate() + d); return x.toISOString().slice(0, 10); };
+    // Lot C (pérennité) — âge cible via demoBirthDateForAge(age, 90, today), même ancre `today` que
+    // plusDays()/le reste du générateur : raccourci local pour tous les appels ci-dessous.
+    //
+    // Contacts réellement affectés à un groupe borné (ageMin/ageMax renseigné sur demo-group-*) :
+    // birthDate rendue dynamique (âge cible fixe, quelle que soit l'année de génération). Candidats
+    // HORS groupe (demoUnassignedMembershipIds plus bas) et disciplines sans borne d'âge (Judo
+    // adulte ageMin seul, Taïso, Préparation physique) : birthDate laissée fixe, inchangée (cf.
+    // Pix — un minimum seul ne peut jamais être cassé par le vieillissement).
+    //   Baby judo (ageMax 6) : Yanis 6, Élio 5, Yuna 6, Naël 6 (Yuna/Naël aussi Judo enfants : seul
+    //     6 satisfait SIMULTANÉMENT ageMax Baby judo ET ageMin Judo enfants, cf. plus bas).
+    //   Judo enfants (ageMin 6/ageMax 11) : Noé 8, Tom 7, Jade 9, Noa 10, Lila 8, Ilan 9, Anna 10,
+    //     Nolan 7 (variés 7-10) ; Lino 12 = SEUL cas volontaire hors tranche (+1 an, avertissement
+    //     non bloquant, cf. tests LC7/LC8).
+    //   Self-défense ados (ageMin 12/ageMax 17) : Mila 15, Inès 13, Hugo 14, Léa 16, Théo 13, Maé
+    //     15, Sam 14, Léna 16 (variés 13-16, jamais 12/17 pile) ; Nina reste hors groupe (cf. LC6).
+    const ageBirthDate = (age) => demoBirthDateForAge(age, 90, today);
     const members = [
-      ["member-solane-mila", "SOLANE", "Mila", "2009-04-12", "22 avenue des Platanes", "47300", "Villeneuve-sur-Lot", "06 00 00 00 01", "mila.solane@example.test"],
+      ["member-solane-mila", "SOLANE", "Mila", ageBirthDate(15), "22 avenue des Platanes", "47300", "Villeneuve-sur-Lot", "06 00 00 00 01", "mila.solane@example.test"],
       // "Le Lédat" n'est pas reconnu par l'autocomplétion adresse (API géo officielle, cf.
       // setupAddressAutocomplete) quel que soit le code postal essayé : au chargement du
       // formulaire, elle vide silencieusement le champ Ville dès qu'elle ne retrouve pas la
@@ -26272,21 +26387,26 @@ ${esc(bodyText)}</pre>
       // nouvelle inscription sportive (validation native du formulaire). Remplacé par
       // "Villeneuve-sur-Lot" (déjà utilisée ailleurs dans ce seed, vérifiée fonctionnelle).
       // Donnée démo corrigée ici uniquement ; la logique d'autocomplétion n'est pas touchée.
-      ["member-rivory-noe", "RIVORY", "Noé", "2015-11-03", "4 impasse des Érables", "47300", "Villeneuve-sur-Lot", "06 00 00 00 02", "noe.rivory@example.test"],
+      ["member-rivory-noe", "RIVORY", "Noé", ageBirthDate(8), "4 impasse des Érables", "47300", "Villeneuve-sur-Lot", "06 00 00 00 02", "noe.rivory@example.test"],
       ["member-alden-maelys", "ALDEN", "Maëlys", "1994-07-18", "18 rue des Lilas", "47110", "Sainte-Livrade-sur-Lot", "06 00 00 00 03", "maelys.alden@example.test"],
-      ["member-virel-yanis", "VIREL", "Yanis", "2012-02-25", "7 chemin du Stade", "47440", "Casseneuil", "06 00 00 00 04", "yanis.virel@example.test"],
+      ["member-virel-yanis", "VIREL", "Yanis", ageBirthDate(6), "7 chemin du Stade", "47440", "Casseneuil", "06 00 00 00 04", "yanis.virel@example.test"],
       ["member-corvin-lou", "CORVIN", "Lou", "1988-09-08", "31 boulevard Voltaire", "47300", "Bias", "06 00 00 00 05", "lou.corvin@example.test"],
-      ["member-azurian-elio", "AZURIAN", "Élio", "2017-05-14", "9 rue des Acacias", "47300", "Villeneuve-sur-Lot", "06 00 00 00 06", "elio.azurian@example.test"],
+      ["member-azurian-elio", "AZURIAN", "Élio", ageBirthDate(5), "9 rue des Acacias", "47300", "Villeneuve-sur-Lot", "06 00 00 00 06", "elio.azurian@example.test"],
       ["member-lunel-zoe", "LUNEL", "Zoé", "2001-01-30", "15 allée des Tilleuls", "47260", "Castelmoron-sur-Lot", "06 00 00 00 07", "zoe.lunel@example.test"],
-      ["member-kerval-lino", "KERVAL", "Lino", "2014-06-19", "2 rue du Dojo", "47300", "Pujols", "06 00 00 00 08", "lino.kerval@example.test"],
+      // Seul cas volontaire hors tranche d'âge du groupe Judo enfants (ageMax 11) : Lino reste
+      // perpétuellement +1 an au-dessus, quelle que soit l'année de génération (avertissement non
+      // bloquant, cf. tests LC7/LC8 — src/23-sport-modules.js).
+      ["member-kerval-lino", "KERVAL", "Lino", ageBirthDate(12), "2 rue du Dojo", "47300", "Pujols", "06 00 00 00 08", "lino.kerval@example.test"],
       ["member-soriel-nina", "SORIEL", "Nina", "1999-12-02", "28 rue des Violettes", "47300", "Villeneuve-sur-Lot", "06 00 00 00 09", "nina.soriel@example.test"],
       ["member-talvan-eliott", "TALVAN", "Eliott", "1981-03-27", "5 place des Arts", "47140", "Penne-d'Agenais", "06 00 00 00 10", "eliott.talvan@example.test"],
       // --- Membres ajoutés pour tester la gestion des groupes (non affectés = candidats) ---
       // Judo enfant (groupe 6–11 ans)
-      ["member-bahin-tom", "BAHIN", "Tom", "2018-03-12", "3 rue des Cerisiers", "47300", "Villeneuve-sur-Lot", "06 00 00 02 01", "tom.bahin@example.test"],
-      ["member-clermont-jade", "CLERMONT", "Jade", "2017-06-21", "12 rue des Roses", "47300", "Bias", "06 00 00 02 02", "jade.clermont@example.test"],
-      ["member-dahlia-noa", "DAHLIA", "Noa", "2016-02-09", "8 impasse des Ormes", "47440", "Casseneuil", "06 00 00 02 03", "noa.dahlia@example.test"],
-      ["member-evrard-lila", "EVRARD", "Lila", "2016-11-28", "21 rue Pasteur", "47300", "Pujols", "06 00 00 02 04", "lila.evrard@example.test"],
+      ["member-bahin-tom", "BAHIN", "Tom", ageBirthDate(7), "3 rue des Cerisiers", "47300", "Villeneuve-sur-Lot", "06 00 00 02 01", "tom.bahin@example.test"],
+      ["member-clermont-jade", "CLERMONT", "Jade", ageBirthDate(9), "12 rue des Roses", "47300", "Bias", "06 00 00 02 02", "jade.clermont@example.test"],
+      ["member-dahlia-noa", "DAHLIA", "Noa", ageBirthDate(10), "8 impasse des Ormes", "47440", "Casseneuil", "06 00 00 02 03", "noa.dahlia@example.test"],
+      ["member-evrard-lila", "EVRARD", "Lila", ageBirthDate(8), "21 rue Pasteur", "47300", "Pujols", "06 00 00 02 04", "lila.evrard@example.test"],
+      // Tim reste CANDIDAT hors groupe (demoUnassignedMembershipIds) : birthDate volontairement
+      // laissée fixe, non concernée par la pérennité (cf. Pix §3 — ne pas toucher les candidats).
       ["member-fabre-tim", "FABRE", "Tim", "2013-01-20", "5 chemin des Vignes", "47110", "Sainte-Livrade-sur-Lot", "06 00 00 02 05", "tim.fabre@example.test"],
       // Judo adulte (groupe 16 ans et +)
       ["member-gallo-paul", "GALLO", "Paul", "1992-05-04", "17 avenue de la Gare", "47300", "Villeneuve-sur-Lot", "06 00 00 02 06", "paul.gallo@example.test"],
@@ -26295,12 +26415,14 @@ ${esc(bodyText)}</pre>
       ["member-jamet-eva", "JAMET", "Eva", "1995-03-22", "14 rue des Écoles", "47140", "Penne-d'Agenais", "06 00 00 02 09", "eva.jamet@example.test"],
       ["member-klein-leo", "KLEIN", "Léo", "2011-08-30", "6 rue Jean Jaurès", "47300", "Pujols", "06 00 00 02 10", "leo.klein@example.test"],
       // Self-défense (groupe 12–17 ans)
-      ["member-lacroix-ines", "LACROIX", "Inès", "2012-04-10", "1 rue des Sports", "47300", "Villeneuve-sur-Lot", "06 00 00 02 11", "ines.lacroix@example.test"],
-      ["member-mahe-hugo", "MAHÉ", "Hugo", "2011-10-05", "23 rue Victor Hugo", "47300", "Bias", "06 00 00 02 12", "hugo.mahe@example.test"],
-      ["member-naud-lea", "NAUD", "Léa", "2010-07-19", "4 place du Marché", "47440", "Casseneuil", "06 00 00 02 13", "lea.naud@example.test"],
-      ["member-ott-theo", "OTT", "Théo", "2009-02-14", "10 rue des Lavandes", "47300", "Pujols", "06 00 00 02 14", "theo.ott@example.test"],
-      ["member-payet-mae", "PAYET", "Maé", "2009-12-03", "7 avenue Carnot", "47110", "Sainte-Livrade-sur-Lot", "06 00 00 02 15", "mae.payet@example.test"],
-      ["member-ravel-sam", "RAVEL", "Sam", "2010-01-25", "19 rue de la Paix", "47300", "Villeneuve-sur-Lot", "06 00 00 02 16", "sam.ravel@example.test"],
+      ["member-lacroix-ines", "LACROIX", "Inès", ageBirthDate(13), "1 rue des Sports", "47300", "Villeneuve-sur-Lot", "06 00 00 02 11", "ines.lacroix@example.test"],
+      ["member-mahe-hugo", "MAHÉ", "Hugo", ageBirthDate(14), "23 rue Victor Hugo", "47300", "Bias", "06 00 00 02 12", "hugo.mahe@example.test"],
+      ["member-naud-lea", "NAUD", "Léa", ageBirthDate(16), "4 place du Marché", "47440", "Casseneuil", "06 00 00 02 13", "lea.naud@example.test"],
+      ["member-ott-theo", "OTT", "Théo", ageBirthDate(13), "10 rue des Lavandes", "47300", "Pujols", "06 00 00 02 14", "theo.ott@example.test"],
+      ["member-payet-mae", "PAYET", "Maé", ageBirthDate(15), "7 avenue Carnot", "47110", "Sainte-Livrade-sur-Lot", "06 00 00 02 15", "mae.payet@example.test"],
+      ["member-ravel-sam", "RAVEL", "Sam", ageBirthDate(14), "19 rue de la Paix", "47300", "Villeneuve-sur-Lot", "06 00 00 02 16", "sam.ravel@example.test"],
+      // emy/axel/romy/tess-self restent CANDIDATS hors groupe (demoUnassignedMembershipIds) :
+      // birthDate volontairement laissée fixe (cf. Pix §3).
       ["member-sault-emy", "SAULT", "Emy", "2012-08-08", "3 rue des Tilleuls", "47260", "Castelmoron-sur-Lot", "06 00 00 02 17", "emy.sault@example.test"],
       ["member-toldo-axel", "TOLDO", "Axel", "2011-06-30", "11 rue du Stade", "47140", "Penne-d'Agenais", "06 00 00 02 18", "axel.toldo@example.test"],
       ["member-ucha-romy", "UCHA", "Romy", "2016-05-05", "2 rue des Mésanges", "47300", "Bias", "06 00 00 02 19", "romy.ucha@example.test"],
@@ -26308,13 +26430,18 @@ ${esc(bodyText)}</pre>
       // --- Membres ajoutés pour repeupler la démo (multi-disciplines, effectifs plus réalistes,
       // groupe Taïso et Baby judo) : villes reprises parmi celles déjà utilisées ci-dessus et
       // vérifiées fonctionnelles avec l'autocomplétion adresse (cf. correction "Le Lédat" plus haut).
-      ["member-perrin-yuna", "PERRIN", "Yuna", "2020-03-15", "6 rue des Cigognes", "47300", "Villeneuve-sur-Lot", "06 00 00 03 01", "yuna.perrin@example.test"],
-      ["member-roques-nael", "ROQUES", "Naël", "2020-06-01", "10 rue des Pinsons", "47300", "Bias", "06 00 00 03 02", "nael.roques@example.test"],
-      ["member-sabatier-lena", "SABATIER", "Léna", "2011-05-20", "3 rue des Fauvettes", "47110", "Sainte-Livrade-sur-Lot", "06 00 00 03 03", "lena.sabatier@example.test"],
+      // Yuna et Naël : multi-disciplines, réellement affectés à LA FOIS à demo-group-baby-judo
+      // (ageMax 6) ET demo-group-judo-enfants (ageMin 6/ageMax 11) — même contact, même birthDate
+      // pour les deux memberships. Seul l'âge 6 satisfait SIMULTANÉMENT les deux bornes (ageMax
+      // Baby judo ET ageMin Judo enfants) : pas d'âge "impossible" inventé, la seule valeur
+      // compatible avec les deux groupes réels est utilisée (cf. Pix §5).
+      ["member-perrin-yuna", "PERRIN", "Yuna", ageBirthDate(6), "6 rue des Cigognes", "47300", "Villeneuve-sur-Lot", "06 00 00 03 01", "yuna.perrin@example.test"],
+      ["member-roques-nael", "ROQUES", "Naël", ageBirthDate(6), "10 rue des Pinsons", "47300", "Bias", "06 00 00 03 02", "nael.roques@example.test"],
+      ["member-sabatier-lena", "SABATIER", "Léna", ageBirthDate(16), "3 rue des Fauvettes", "47110", "Sainte-Livrade-sur-Lot", "06 00 00 03 03", "lena.sabatier@example.test"],
       ["member-tisserand-adam", "TISSERAND", "Adam", "2002-08-10", "17 avenue du Lot", "47440", "Casseneuil", "06 00 00 03 04", "adam.tisserand@example.test"],
-      ["member-brunel-ilan", "BRUNEL", "Ilan", "2018-02-14", "22 rue des Coquelicots", "47300", "Pujols", "06 00 00 03 05", "ilan.brunel@example.test"],
-      ["member-cadieux-anna", "CADIEUX", "Anna", "2017-09-05", "5 impasse des Bleuets", "47260", "Castelmoron-sur-Lot", "06 00 00 03 06", "anna.cadieux@example.test"],
-      ["member-dufour-nolan", "DUFOUR", "Nolan", "2019-01-22", "9 rue des Genêts", "47140", "Penne-d'Agenais", "06 00 00 03 07", "nolan.dufour@example.test"],
+      ["member-brunel-ilan", "BRUNEL", "Ilan", ageBirthDate(9), "22 rue des Coquelicots", "47300", "Pujols", "06 00 00 03 05", "ilan.brunel@example.test"],
+      ["member-cadieux-anna", "CADIEUX", "Anna", ageBirthDate(10), "5 impasse des Bleuets", "47260", "Castelmoron-sur-Lot", "06 00 00 03 06", "anna.cadieux@example.test"],
+      ["member-dufour-nolan", "DUFOUR", "Nolan", ageBirthDate(7), "9 rue des Genêts", "47140", "Penne-d'Agenais", "06 00 00 03 07", "nolan.dufour@example.test"],
       ["member-esteban-clara", "ESTEBAN", "Clara", "1991-04-18", "14 rue du Lavoir", "47300", "Villeneuve-sur-Lot", "06 00 00 03 08", "clara.esteban@example.test"],
       ["member-fontaine-marius", "FONTAINE", "Marius", "1981-11-30", "2 rue des Amandiers", "47300", "Bias", "06 00 00 03 09", "marius.fontaine@example.test"],
       // Adhérent volontairement sans aucune inscription sportive : cas vide de la section
@@ -26384,10 +26511,27 @@ ${esc(bodyText)}</pre>
       { id: "demo-insurance-standard", clubId, category: "Première", label: "Standard", options: [15], taxRate: 0 },
       { id: "demo-insurance-plus", clubId, category: "Renforcée", label: "Plus", options: [25], taxRate: 0 },
     ];
+    // Lot démo temporelle — dates des 3 stages RELATIVES à `today` (jamais d'année fixe qui
+    // deviendrait obsolète). Les 3 rôles fonctionnels sont préservés : un stage déjà TERMINÉ
+    // (historique/inscriptions passées), un stage À VENIR proche (fonctionnalité immédiatement
+    // démontrable), un second stage À VENIR plus éloigné (celui avec hébergement, pour préserver la
+    // variété actuelle). Écarts internes (durée, délai d'inscription avant le début) identiques à
+    // l'ancien jeu figé, seule l'ancre change.
+    // ORDRE du tableau délibérément "à venir d'abord, passé en dernier" (pas chronologique strict) :
+    // normalizeState() (src/06-normalize-state.js) retombe sur tariffs.stages[0] dès que ui.stageId
+    // n'est pas fixé explicitement — c'est le cas du parcours démo web (?demo -> setupDemoClub(),
+    // qui n'assigne jamais ui.stageId, contrairement à createDemoData()/"Créer un club démo"
+    // Electron). Avec l'ancien ordre chronologique, ce filet de sécurité atterrissait sur le stage
+    // déjà terminé. Le réordonner ici suffit ; aucune nouvelle logique de sélection à écrire.
+    // Correction narrative (relecture Pix) — les IDs techniques "…-fevrier"/"…-ete-self" restent
+    // inchangés (aucun intérêt à les renommer), mais les LIBELLÉS affichés à l'utilisateur ne
+    // doivent plus nommer un mois/une saison : avec des dates désormais relatives, "Stage vacances
+    // février" peut tomber n'importe quel mois de l'année selon le jour de génération — visiblement
+    // incohérent. Noms rendus intemporels, crédibles indépendamment de la date réelle.
     const stages = [
-      { id: "demo-stage-fevrier", clubId, name: "Stage vacances février", startDate: "2026-02-17", endDate: "2026-02-21", registrationDeadline: "2026-02-10", unitPrice: 80, lodgingName: "", lodgingUnitPrice: 0, investment: 350, taxRate: 0, lodgingTaxRate: 0 },
-      { id: "demo-stage-ete-self", clubId, name: "Stage été self-défense", startDate: "2026-07-08", endDate: "2026-07-12", registrationDeadline: "2026-06-30", unitPrice: 150, lodgingName: "Hébergement", lodgingUnitPrice: 90, investment: 800, taxRate: 0, lodgingTaxRate: 0 },
-      { id: "demo-stage-decouverte", clubId, name: "Stage découverte enfants", startDate: "2026-06-15", endDate: "2026-06-15", registrationDeadline: "2026-06-08", publicAccess: "all", unitPrice: 40, lodgingName: "", lodgingUnitPrice: 0, investment: 120, taxRate: 0, lodgingTaxRate: 0 },
+      { id: "demo-stage-decouverte", clubId, name: "Stage découverte enfants", startDate: plusDays(30), endDate: plusDays(30), registrationDeadline: plusDays(23), publicAccess: "all", unitPrice: 40, lodgingName: "", lodgingUnitPrice: 0, investment: 120, taxRate: 0, lodgingTaxRate: 0 },
+      { id: "demo-stage-ete-self", clubId, name: "Stage self-défense avec hébergement", startDate: plusDays(100), endDate: plusDays(104), registrationDeadline: plusDays(92), unitPrice: 150, lodgingName: "Hébergement", lodgingUnitPrice: 90, investment: 800, taxRate: 0, lodgingTaxRate: 0 },
+      { id: "demo-stage-fevrier", clubId, name: "Stage technique judo", startDate: plusDays(-60), endDate: plusDays(-56), registrationDeadline: plusDays(-67), unitPrice: 80, lodgingName: "", lodgingUnitPrice: 0, investment: 350, taxRate: 0, lodgingTaxRate: 0 },
     ];
     const articles = [
       { id: "demo-article-tshirt", clubId, name: "T-shirt club", reference: "CDM-TSHIRT", referenceAuto: false, priceOptions: [18, 8], defaultPrice: 18, sizes: ["8 ans", "10 ans", "S", "M", "L", "XL"], sizeStock: { "8 ans": 4, "10 ans": 5, S: 6, M: 8, L: 4, XL: 2 }, stockAlert: 5, taxRate: 0 },
@@ -26492,18 +26636,22 @@ ${esc(bodyText)}</pre>
       };
     });
 
+    // Lot démo temporelle — toutes les dates de paiement des inscriptions relatives à `today`, pour
+    // rester cohérentes avec les nouvelles dates de stages ci-dessus (payé avant/pendant un stage
+    // passé, acompte déjà réglé + reste à venir sur un stage futur, etc.), jamais un mélange
+    // date-fixe/plusDays qui ne resterait vrai qu'à une date de génération précise.
     const stageRegistrations = {
       "demo-stage-fevrier": [
-        demoStageRegistration("demo-stage-reg-mila-fevrier", members[0], "demo-stage-fevrier", { quantity: 1, unitPrice: 80, discount: 0, payments: [demoPaid("cash", 80, "2026-02-12")] }, null),
+        demoStageRegistration("demo-stage-reg-mila-fevrier", members[0], "demo-stage-fevrier", { quantity: 1, unitPrice: 80, discount: 0, payments: [demoPaid("cash", 80, plusDays(-65))] }, null),
         // Paiement volontairement en retard (stage déjà passé, jamais réglé).
-        demoStageRegistration("demo-stage-reg-yanis-fevrier", members[3], "demo-stage-fevrier", { quantity: 1, unitPrice: 80, discount: 0, payments: [demoPayment("check", 80, { date: plusDays(-20), checkNumber: "200001" })] }, null),
+        demoStageRegistration("demo-stage-reg-yanis-fevrier", members[3], "demo-stage-fevrier", { quantity: 1, unitPrice: 80, discount: 0, payments: [demoPayment("check", 80, { date: plusDays(-63), checkNumber: "200001" })] }, null),
       ],
       "demo-stage-ete-self": [
-        demoStageRegistration("demo-stage-reg-maelys-ete", members[2], "demo-stage-ete-self", { quantity: 1, unitPrice: 150, discount: 0, payments: [demoPaid("transfer", 75, "2026-05-19"), demoPayment("check", 75, { date: plusDays(15), checkNumber: "200002" })] }, { quantity: 1, unitPrice: 90, discount: 0, payments: [demoPayment("check", 90, { date: plusDays(15), checkNumber: "200003" })] }),
+        demoStageRegistration("demo-stage-reg-maelys-ete", members[2], "demo-stage-ete-self", { quantity: 1, unitPrice: 150, discount: 0, payments: [demoPaid("transfer", 75, plusDays(-2)), demoPayment("check", 75, { date: plusDays(45), checkNumber: "200002" })] }, { quantity: 1, unitPrice: 90, discount: 0, payments: [demoPayment("check", 90, { date: plusDays(45), checkNumber: "200003" })] }),
         demoStageRegistration("demo-stage-reg-eliott-ete", members[9], "demo-stage-ete-self", { quantity: 1, unitPrice: 150, discount: 0, payments: [demoPayment("check", 150, { state: "Refusé", checkNumber: "200004" })] }, { quantity: 1, unitPrice: 90, discount: 0, payments: [] }),
       ],
       "demo-stage-decouverte": [
-        demoStageRegistration("demo-stage-reg-noe-decouverte", members[1], "demo-stage-decouverte", { quantity: 1, unitPrice: 40, discount: 0, payments: [demoPaid("card", 40, "2026-05-21")] }, null),
+        demoStageRegistration("demo-stage-reg-noe-decouverte", members[1], "demo-stage-decouverte", { quantity: 1, unitPrice: 40, discount: 0, payments: [demoPaid("card", 40, plusDays(5))] }, null),
         demoStageRegistration("demo-stage-reg-iris-decouverte", prospects[0], "demo-stage-decouverte", { quantity: 1, unitPrice: 40, discount: 0, payments: [demoPayment("check", 40, { date: plusDays(10), checkNumber: "200005" })] }, null, true),
       ],
     };
@@ -26524,9 +26672,12 @@ ${esc(bodyText)}</pre>
         contactId: "member-solane-mila",
         contactKind: "members",
         status: "draft",
-        createdAt: "2026-05-20T08:00:00.000Z",
+        // Lot démo temporelle (corrigé) — brouillon rédigé réellement APRÈS la fin du stage technique
+        // judo (endDate = plusDays(-56) ci-dessus), jamais pendant : plusDays(-54), 2 jours après la
+        // fin, cohérent avec sa propre date au lieu d'une date fixe déconnectée.
+        createdAt: `${plusDays(-54)}T08:00:00.000Z`,
         lines: [
-          { id: "demo-line-draft-1", sourceType: "stage", sourceId: "demo-stage-reg-mila-fevrier", sourceKey: "stage:demo-stage-fevrier:demo-stage-reg-mila-fevrier:event", label: "Stage vacances février", description: "SOLANE Mila", unitPrice: 80 },
+          { id: "demo-line-draft-1", sourceType: "stage", sourceId: "demo-stage-reg-mila-fevrier", sourceKey: "stage:demo-stage-fevrier:demo-stage-reg-mila-fevrier:event", label: "Stage technique judo", description: "SOLANE Mila", unitPrice: 80 },
         ],
         notes: "Brouillon volontaire pour tester l'édition.",
       }),
@@ -26573,14 +26724,17 @@ ${esc(bodyText)}</pre>
         contactKind: "members",
         number: "CDM-2026-0003",
         status: "issued",
-        issuedAt: "2026-05-19T14:00:00.000Z",
+        // Lot démo temporelle — émise en même temps que l'acompte de l'inscription stage été
+        // (demo-stage-reg-maelys-ete, plusDays(-2) ci-dessus) : reste cohérent quelle que soit la
+        // date de génération, au lieu d'une date fixe déconnectée du reste du scénario.
+        issuedAt: `${plusDays(-2)}T14:00:00.000Z`,
         clubSnapshot,
         contactSnapshot: demoContactSnapshot(members[2], "members"),
         lines: [
-          { id: "demo-line-maelys-1", sourceType: "stage", sourceId: "demo-stage-reg-maelys-ete", sourceKey: "stage:demo-stage-ete-self:demo-stage-reg-maelys-ete:event", label: "Stage été self-défense", description: "Inscription stage", unitPrice: 150 },
-          { id: "demo-line-maelys-2", sourceType: "frais", sourceId: "demo-stage-reg-maelys-ete", sourceKey: "stage:demo-stage-ete-self:demo-stage-reg-maelys-ete:lodging", label: "Hébergement", description: "Stage été self-défense", unitPrice: 90 },
+          { id: "demo-line-maelys-1", sourceType: "stage", sourceId: "demo-stage-reg-maelys-ete", sourceKey: "stage:demo-stage-ete-self:demo-stage-reg-maelys-ete:event", label: "Stage self-défense avec hébergement", description: "Inscription stage", unitPrice: 150 },
+          { id: "demo-line-maelys-2", sourceType: "frais", sourceId: "demo-stage-reg-maelys-ete", sourceKey: "stage:demo-stage-ete-self:demo-stage-reg-maelys-ete:lodging", label: "Hébergement", description: "Stage self-défense avec hébergement", unitPrice: 90 },
         ],
-        paymentsSnapshot: [demoPaid("transfer", 75, "2026-05-19"), demoPayment("check", 75, { date: plusDays(15), checkNumber: "400003" }), demoPayment("check", 90, { date: plusDays(15), checkNumber: "400004" })],
+        paymentsSnapshot: [demoPaid("transfer", 75, plusDays(-2)), demoPayment("check", 75, { date: plusDays(45), checkNumber: "400003" }), demoPayment("check", 90, { date: plusDays(45), checkNumber: "400004" })],
       }),
       demoInvoice({
         id: "demo-invoice-remise-lou",
@@ -26682,7 +26836,12 @@ ${esc(bodyText)}</pre>
     ];
 
     const creditNotes = [
-      { id: "demo-avoir-1", clubId, date: "2026-05-26", amount: 20, reason: "Avoir partiel cotisation (séances manquées)", type: "réduction", status: "actif", invoiceId: "demo-invoice-issued-maelys", contactId: "member-alden-maelys", note: "Geste commercial.", createdAt: "2026-05-26T10:00:00.000Z", updatedAt: "2026-05-26T10:00:00.000Z" },
+      // Lot démo temporelle — avoir émis peu après la facture demo-invoice-issued-maelys (même écart
+      // qu'auparavant : 7 jours après issuedAt), désormais relatif comme le reste du scénario.
+      // Motif corrigé (relecture Pix) — daté avant le début du stage (plusDays(5) < plusDays(100)),
+      // "séances manquées" n'a donc plus aucun sens (le stage n'a pas encore eu lieu) : remplacé par
+      // un motif plausible AVANT le stage, un ajustement tarifaire sur l'inscription.
+      { id: "demo-avoir-1", clubId, date: plusDays(5), amount: 20, reason: "Ajustement tarifaire sur l'inscription au stage", type: "réduction", status: "actif", invoiceId: "demo-invoice-issued-maelys", contactId: "member-alden-maelys", note: "Geste commercial.", createdAt: `${plusDays(5)}T10:00:00.000Z`, updatedAt: `${plusDays(5)}T10:00:00.000Z` },
       // Lot Démo Club (avoirs) — scénario "avoir utilisé + reliquat" : l'avoir initial (150 €) a été
       // utilisé à hauteur de 115 € sur la facture CDM-2026-0004 (cf. paymentsSnapshot de cette
       // facture), le reliquat de 35 € est un second avoir "actif" distinct, comme le ferait la vraie
@@ -26695,7 +26854,36 @@ ${esc(bodyText)}</pre>
       { id: "demo-note-reunion", clubId, title: "Note réunion bureau", content: "<h2>Réunion bureau</h2><p>Prévoir validation du planning, point inscriptions et stock boutique.</p>", updatedAt: "2026-05-18T18:00:00.000Z" },
       { id: "demo-note-materiel", clubId, title: "Liste matériel à acheter", content: "<ul><li>20 ceintures blanches</li><li>10 gourdes</li><li>Marqueurs pour tableau</li></ul>", updatedAt: "2026-05-19T09:00:00.000Z" },
       { id: "demo-note-inscriptions", clubId, title: "Rappel inscriptions saison", content: "<p>Relancer les dossiers sans certificat médical et les assurances non renseignées.</p>", updatedAt: "2026-05-20T11:00:00.000Z" },
-      { id: "demo-note-stage-ete", clubId, title: "Organisation stage été", content: "<p>Confirmer salle, hébergement et liste des participants avant le 30 juin.</p>", updatedAt: "2026-05-21T14:00:00.000Z" },
+      // Lot démo temporelle (relecture Pix, §2 audit des chaînes visibles) — "stage été" et "avant le
+      // 30 juin" (date calendaire fixe) narraient l'ancien stage figé, désormais incohérents avec un
+      // stage dont la date dépend du jour de génération. Reformulé sans mois ni date calendaire.
+      { id: "demo-note-stage-ete", clubId, title: "Organisation stage self-défense avec hébergement", content: "<p>Confirmer salle, hébergement et liste des participants avant le début du stage.</p>", updatedAt: "2026-05-21T14:00:00.000Z" },
+    ];
+
+    // Lot démo Notes personnalisées/contextuelles — jeu minimal démontrant les 5 mécanismes réels du
+    // système (state.memoRows, JAMAIS une seconde collection) : Notes uniquement (targetView ""),
+    // affichage contextuel (targetView éligible), les 4 priorités, le champ Montant, et Archive
+    // (reste dans Notes, jamais dans le bloc contextuel). Forme strictement conforme aux champs
+    // réellement retournés par normalizeMemoRow() (src/06-normalize-state.js) : id, title, note,
+    // amount, priority, targetView — rien de plus. Pas de clubId (absent du modèle memoRow normalisé,
+    // silencieusement supprimé sinon) ; sourceType/sourceId/category volontairement omis (notes
+    // manuelles, jamais liées à une source système) ; aucun champ inventé (pas d'updatedAt : absent
+    // du modèle memoRow). Chaque note reste rattachée à une donnée démo réellement existante
+    // (paiement en retard de Yanis, stock bas du kimono enfant, tarif réel du Gymnase municipal)
+    // plutôt qu'inventée hors sol.
+    const demoMemoRows = [
+      { id: "demo-memo-general", title: "Préparer la prochaine réunion bénévoles", note: "Faire le point sur les inscriptions, le planning et les besoins matériels.", amount: "", priority: "Normale", targetView: "" },
+      // Cohérent avec le stock réellement bas du kimono enfant (sizeStock 130: 1, sous stockAlert: 3).
+      { id: "demo-memo-stock", title: "Commande fournisseur kimonos enfant à relancer", note: "Plusieurs tailles sont sous le seuil d'alerte, en particulier la taille 130.", amount: "", priority: "Important", targetView: "stock" },
+      // Cohérent avec le paiement réellement en retard de Yanis Virel (demo-membership-yanis-baby,
+      // chèque non encaissé daté dans le passé, cf. Lot A).
+      { id: "demo-memo-payment", title: "Relancer Yanis Virel — paiement en retard", note: "Chèque non encaissé pour l'inscription Baby judo, à recontacter rapidement.", amount: "", priority: "Urgent", targetView: "due-payments" },
+      // Montant identique au tarif réel de location du Gymnase municipal (demo-room-gymnase,
+      // rentalPrice: 45) : jamais une valeur inventée hors du jeu de démonstration.
+      { id: "demo-memo-planning", title: "Acompte réservation Gymnase municipal", note: "Prévoir l'acompte pour la prochaine réservation du gymnase.", amount: 45, priority: "Normale", targetView: "planning" },
+      // Archive : reste listée et modifiable dans Notes, ne doit jamais produire de bloc contextuel
+      // sur Stages (notesForView() filtre priority === "Archive" — moteur non modifié, cf. Lot B).
+      { id: "demo-memo-stage-archive", title: "Ancienne relance stage — traité", note: "Relance terminée, conservée uniquement pour historique.", amount: "", priority: "Archive", targetView: "stages" },
     ];
 
     const activityLog = [
@@ -26703,18 +26891,32 @@ ${esc(bodyText)}</pre>
       { id: "demo-log-2", clubId, at: "2026-05-20T09:25:00.000Z", view: "disciplines", message: "Inscription de RIVORY Noé à la discipline Judo enfant" },
       { id: "demo-log-3", clubId, at: "2026-05-20T10:40:00.000Z", view: "boutique", message: "Vente boutique à MERIAN Sacha : Sac de sport et Casquette" },
       { id: "demo-log-4", clubId, at: "2026-05-20T11:05:00.000Z", view: "invoices", message: "Émission de la facture CDM-2026-0002 pour RIVORY Noé" },
-      { id: "demo-log-5", clubId, at: "2026-05-21T16:20:00.000Z", view: "stages", message: "Inscription de Maëlys Alden au Stage été self-défense avec hébergement" },
+      // Lot démo temporelle — cohérent avec l'inscription demo-stage-reg-maelys-ete (acompte à
+      // plusDays(-2) ci-dessus) : l'inscription elle-même est journalisée juste avant. Libellé
+      // corrigé (relecture Pix) pour reprendre exactement le nouveau nom intemporel du stage.
+      { id: "demo-log-5", clubId, at: `${plusDays(-3)}T16:20:00.000Z`, view: "stages", message: "Inscription de Maëlys Alden au Stage self-défense avec hébergement" },
     ];
 
     // --- Modules sport : exemples (groupes, planning, présences) ---
     const groups = [
       { id: "demo-group-judo-enfants", clubId, name: "Judo enfants", type: "Enfants", discipline: "Judo enfant", sportCategoryId: "demo-category-judo-enfant-poussins", coach: "Laurent", ageMin: 6, ageMax: 11, maxMembers: 16, color: "#3a7d44", notes: "", archived: false },
       { id: "demo-group-judo-adultes", clubId, name: "Judo adultes", type: "Adultes", discipline: "Judo adulte", sportCategoryId: "demo-category-judo-adulte-seniors", coach: "Laurent", ageMin: 16, ageMax: "", maxMembers: 20, color: "#4d5966", notes: "", archived: false },
+      // Lot C (correction) — sportCategoryId ajouté APRÈS la déclaration de `sportCategories`
+      // ci-dessous (les deux se référencent mutuellement) : voir affectation directe sur l'objet
+      // juste après `const sportCategories`.
       { id: "demo-group-self-ados", clubId, name: "Self-défense ados", type: "Confirmés", discipline: "Self-défense", coach: "Karim", ageMin: 12, ageMax: 17, maxMembers: 12, color: "#9a5148", notes: "", archived: false },
       // Lot Démo Club (repeuplement) — Taïso ouvert à tous âges (pratique courante pour ce type de
       // discipline gymnique douce), pour rester cohérent avec des adhérents multi-disciplines aussi
       // bien enfants qu'adultes (cf. memberships plus bas).
-      { id: "demo-group-taiso", clubId, name: "Taïso", type: "Tous niveaux", discipline: "Taïso", coach: "Sophie", ageMin: "", ageMax: "", maxMembers: 20, color: "#7d5ba6", notes: "", archived: false },
+      //
+      // Lot C (correction Pix) — `type` corrigé : "Tous niveaux" n'appartenait pas à la liste
+      // fermée de normalizeState() (src/06-normalize-state.js:826) et était donc silencieusement
+      // réécrit en "Autre" à l'exécution (donnée source invalide, jamais visible telle quelle).
+      // "Loisir" est la valeur valide la plus proche du rôle réel de ce groupe : pratique douce,
+      // ouverte à tous âges, sans logique de compétition — cf. commentaire ci-dessus. La
+      // sportCategory "Tous niveaux" (demo-category-taiso-tous-niveaux) reste inchangée : c'est une
+      // notion distincte (niveau affiché sur la fiche/inscription), pas le `type`/repère du groupe.
+      { id: "demo-group-taiso", clubId, name: "Taïso", type: "Loisir", discipline: "Taïso", coach: "Sophie", ageMin: "", ageMax: "", maxMembers: 20, color: "#7d5ba6", notes: "", archived: false },
       // Petit groupe volontairement peu rempli : sert de cas "faible effectif" pour tester
       // l'affichage planning/inscrits avec peu d'inscrits.
       { id: "demo-group-baby-judo", clubId, name: "Baby judo", type: "Enfants", discipline: "Baby judo", sportCategoryId: "demo-category-baby-judo-eveil", coach: "Sophie", ageMin: "", ageMax: 6, maxMembers: 10, color: "#e0a458", notes: "", archived: false },
@@ -26732,10 +26934,18 @@ ${esc(bodyText)}</pre>
     // (repeuplement) — la majorité des candidats Judo enfant/Judo adulte/Self-défense sont
     // désormais affectés directement (effectifs plus réalistes) ; un candidat par groupe reste
     // volontairement non affecté pour continuer à tester ce dialogue.
+    //
+    // Lot C (correction) — demo-membership-nina-self ajoutée ici : Nina Soriel (née 1999-12-02,
+    // adulte) était affectée par défaut à « Self-défense ados » (ageMin 12/ageMax 17) par le seul
+    // mécanisme groupByDiscipline (affectation par discipline, aveugle à l'âge). Incohérence
+    // préexistante repérée par Pix, corrigée ici comme simple donnée démo (aucune touche au
+    // moteur d'affectation) : elle garde son inscription Self-défense, mais redevient une
+    // candidate hors groupe — cas légitime déjà démontré par emy/axel/romy/tess-self ci-dessous.
     const demoUnassignedMembershipIds = [
       "demo-membership-tim-judo",
       "demo-membership-leo-judo",
       "demo-membership-emy-self", "demo-membership-axel-self", "demo-membership-romy-self", "demo-membership-tess-self",
+      "demo-membership-nina-self",
     ];
     demoUnassignedMembershipIds.forEach((mid) => { const m = membershipRows.find((x) => x.id === mid); if (m) m.groupId = ""; });
     const setDoc = (mid, fields) => { const m = membershipRows.find((x) => x.id === mid); if (m) Object.assign(m, fields); };
@@ -26759,13 +26969,38 @@ ${esc(bodyText)}</pre>
     // le profil judo. Une catégorie ARCHIVÉE (« Loisir (ancien groupe) ») reste rattachée à une
     // inscription existante (Eliott) : référence historique lisible, non proposée pour une
     // nouvelle affectation — exactement la doctrine déjà validée par le Lot 3B-2B/2C.
+    //
+    // Lot C (correction Pix) — le modèle sportCategories est volontairement personnalisable :
+    // categoryExamples (SPORT_PROFILE_REGISTRY, src/01b-sport-catalog.generated.js) est une source
+    // de SUGGESTIONS pour un profil officiel, jamais une allowlist exclusive. Une discipline
+    // personnalisée (sportId "") peut donc recevoir une vraie catégorie de club, à condition
+    // qu'elle vienne de la réalité de la démo — pas d'un libellé inventé. Préparation physique
+    // (sportId "fitness" réel) reprend "Intermédiaire" de categoryExamples. Self-défense et Taïso
+    // reprennent chacune le `type` déjà porté par leur groupe de démonstration existant
+    // (« Confirmés », « Tous niveaux ») : ni l'un ni l'autre n'est inventé pour ce lot.
     const sportCategories = [
       { id: "demo-category-judo-enfant-poussins", clubId, disciplineId: "demo-discipline-judo-enfant", label: "Poussins", order: 0, archived: false, notes: "" },
       { id: "demo-category-judo-enfant-benjamins", clubId, disciplineId: "demo-discipline-judo-enfant", label: "Benjamins", order: 10, archived: false, notes: "" },
       { id: "demo-category-judo-adulte-seniors", clubId, disciplineId: "demo-discipline-judo-adulte", label: "Seniors", order: 0, archived: false, notes: "" },
       { id: "demo-category-judo-adulte-loisir-ancien", clubId, disciplineId: "demo-discipline-judo-adulte", label: "Loisir (ancien groupe)", order: 10, archived: true, notes: "" },
       { id: "demo-category-baby-judo-eveil", clubId, disciplineId: "demo-discipline-baby-judo", label: "Éveil", order: 0, archived: false, notes: "" },
+      { id: "demo-category-prepa-intermediaire", clubId, disciplineId: "demo-discipline-prepa", label: "Intermédiaire", order: 0, archived: false, notes: "" },
+      // Libellé repris tel quel du `type` de demo-group-self-ados (déjà "Confirmés" plus haut) :
+      // démontre qu'une sportCategory peut porter un NIVEAU, pas seulement un âge.
+      { id: "demo-category-self-confirmes", clubId, disciplineId: "demo-discipline-self-defense", label: "Confirmés", order: 0, archived: false, notes: "" },
+      // "Tous niveaux" reflète la réalité déjà déclarée du groupe demo-group-taiso (ageMin/ageMax
+      // vides, commentaire "ouvert à tous âges" ci-dessus) — PAS une reprise littérale de son champ
+      // `type` (corrigé en "Loisir" plus haut, seule valeur valide de normalizeState() proche du
+      // rôle réel du groupe : cf. commentaire sur demo-group-taiso). `type` (repère de groupe) et
+      // sportCategory (catégorie sportive affichée sur les fiches/inscriptions) restent deux
+      // notions distinctes, volontairement non alignées littéralement l'une sur l'autre.
+      { id: "demo-category-taiso-tous-niveaux", clubId, disciplineId: "demo-discipline-taiso", label: "Tous niveaux", order: 0, archived: false, notes: "" },
     ];
+    // Groupes Self-défense/Taïso : rattachement à leur nouvelle catégorie, maintenant que les deux
+    // sont déclarées ci-dessus (déclaration groups -> sportCategories -> ce rattachement, dans cet
+    // ordre, car les deux collections se référencent mutuellement).
+    (groups.find((g) => g.id === "demo-group-self-ados") || {}).sportCategoryId = "demo-category-self-confirmes";
+    (groups.find((g) => g.id === "demo-group-taiso") || {}).sportCategoryId = "demo-category-taiso-tous-niveaux";
     setDoc("demo-membership-noe-judo", { sportCategoryId: "demo-category-judo-enfant-poussins" });
     setDoc("demo-membership-tom-judo", { sportCategoryId: "demo-category-judo-enfant-poussins" });
     setDoc("demo-membership-jade-judo", { sportCategoryId: "demo-category-judo-enfant-benjamins" });
@@ -26778,6 +27013,20 @@ ${esc(bodyText)}</pre>
     setDoc("demo-membership-eliott-judo", { sportCategoryId: "demo-category-judo-adulte-loisir-ancien" });
     setDoc("demo-membership-yanis-baby", { sportCategoryId: "demo-category-baby-judo-eveil" });
     setDoc("demo-membership-elio-baby", { sportCategoryId: "demo-category-baby-judo-eveil" });
+    // Seule inscription Préparation physique de la démo : aucun groupe n'existe pour cette
+    // discipline (cf. demo-course-prepa, groupId ""), donc la catégorie se rattache directement à
+    // l'inscription. "Intermédiaire" est choisi volontairement comme exemple de catégorie de
+    // niveau issue du profil Fitness, afin de démontrer une catégorie non liée à l'âge — donnée
+    // fictive de démonstration assumée, pas une inférence depuis le mode de paiement de Zoé.
+    setDoc("demo-membership-zoe-prepa", { sportCategoryId: "demo-category-prepa-intermediaire" });
+    // Self-défense/Taïso : la catégorie suit le groupe, pas une liste d'ids maintenue à la main —
+    // dérivée de membership.groupId APRÈS l'application de demoUnassignedMembershipIds ci-dessus
+    // (donc Nina, sortie du groupe, ne reçoit PAS "Confirmés" ; les candidats hors groupe restent
+    // sans catégorie, cas réaliste et déjà démontré ailleurs dans cette démo).
+    membershipRows.forEach((m) => {
+      if (m.groupId === "demo-group-self-ados") m.sportCategoryId = "demo-category-self-confirmes";
+      else if (m.groupId === "demo-group-taiso") m.sportCategoryId = "demo-category-taiso-tous-niveaux";
+    });
     setDoc("demo-membership-marc-judo", { licenseNumber: "FFJDA-100406", licenseFederation: "FFJDA", licenseEndDate: plusDays(270) });
     setDoc("demo-membership-eva-judo", { licenseNumber: "FFJDA-100407", licenseFederation: "FFJDA", licenseEndDate: plusDays(300) });
     setDoc("demo-membership-tess-self", { licenseNumber: "FFJDA-100408", licenseFederation: "FFJDA", licenseEndDate: plusDays(320) });
@@ -26883,7 +27132,7 @@ ${esc(bodyText)}</pre>
       creditNotes,
       stageRegistrations,
       notes,
-      memoRows: [],
+      memoRows: demoMemoRows,
       activityLog,
       seasonArchives: [],
       coaches,
