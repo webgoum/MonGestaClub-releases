@@ -108,6 +108,7 @@
     ["newsletter", "E-mails"],
     ["disciplines", "Disciplines"],
     ["groups", "Groupes"],
+    ["teams", "Équipes"],
     ["coaches", "Coachs"],
     ["rooms", "Salles"],
     ["planning", "Planning"],
@@ -151,6 +152,7 @@
     ["newsletter", "E-mails"],
     ["disciplines", "Disciplines"],
     ["groups", "Groupes"],
+    ["teams", "Équipes"],
     ["coaches", "Coachs"],
     ["rooms", "Salles"],
     ["planning", "Planning"],
@@ -182,14 +184,14 @@
   // compta/stats pour Stages/Boutique) reste indépendant de cette visibilité.
   const DISPLAY_MODULE_KEYS = [
     "dashboard", "tasks", "search", "contacts", "invoices", "newsletter", "disciplines",
-    "groups", "coaches", "rooms", "planning", "availability", "attendance", "documents", "stages", "boutique",
+    "groups", "teams", "coaches", "rooms", "planning", "availability", "attendance", "documents", "stages", "boutique",
     "stock", "clubs", "settings", "club-settings", "tarifs", "stats", "accounting",
     "due-payments", "notes", "history", "audit-log", "help",
   ];
   // Valeurs par défaut du mode Personnalisé (et base de migration).
   const DISPLAY_VISIBLE_DEFAULTS = {
     dashboard: true, tasks: true, search: false, contacts: true, invoices: true, newsletter: false,
-    disciplines: true, groups: false, coaches: false, rooms: false, planning: false, availability: false, attendance: false,
+    disciplines: true, groups: false, teams: false, coaches: false, rooms: false, planning: false, availability: false, attendance: false,
     documents: false, stages: true, boutique: true, stock: false, clubs: true, settings: true,
     "club-settings": true, tarifs: true, stats: false, accounting: false, "due-payments": true,
     notes: false, history: false, "audit-log": false, help: true,
@@ -403,6 +405,10 @@
     help: `<svg class="tool-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5" style="fill:currentColor;fill-opacity:.12;stroke:none"/><circle cx="12" cy="12" r="8.5"/><path d="M9.6 9.4a2.5 2.5 0 0 1 4.7 1c0 1.7-2.3 2-2.3 3.5"/><circle cx="12" cy="16.6" r=".7" style="fill:currentColor;stroke:none"/></svg>`,
     assistant: `<svg class="tool-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12.5c0 4.2 3.7 6.5 8 6.5s8-2.3 8-6.5" style="fill:currentColor;fill-opacity:.12;stroke:none"/><circle cx="12" cy="7" r="2.2"/><path d="M9.4 12.4a2.6 2.6 0 0 1 5.2 0"/><path d="M4 12.5c0 4.2 3.7 6.7 8 6.7s8-2.5 8-6.7"/></svg>`,
   };
+  // Lot K-T3C — Équipes réutilise l'icône de Groupes (même précédent que la réutilisation des
+  // classes CSS des cartes Groupes pour les cartes Équipes, cf. K-T3B2) : aucune icône dédiée
+  // inventée sans décision de planche graphique.
+  navIcons.teams = navIcons.groups;
 
   // =====================================================================================
   // MGC_ICONS — bibliothèque d'icônes ILLUSTRÉES (mini-lot, direction « planche »).
@@ -534,6 +540,9 @@
     "coach-meta-address": `<svg class="mgc-icon" viewBox="0 0 64 64" aria-hidden="true"><g fill="none" stroke="#2f3740" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"><ellipse cx="32" cy="57" rx="8" ry="2.4" fill="#a8bf8a" stroke="none"/><path d="M32 56s-15-14-15-26a15 15 0 0 1 30 0c0 12-15 26-15 26Z" fill="#df8c68"/><circle cx="32" cy="29" r="6" fill="#f3eadc"/></g></svg>`,
     "coach-meta-info": `<svg class="mgc-icon" viewBox="0 0 64 64" aria-hidden="true"><g fill="none" stroke="#2f3740" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"><circle cx="32" cy="32" r="20" fill="#9fb3c3"/><circle cx="32" cy="20.5" r="2.6" fill="#2f3740" stroke="none"/><path d="M32 28v16" stroke-width="5"/></g></svg>`,
   };
+  // Lot K-T3C — Équipes réutilise l'icône illustrée de Groupes (même précédent que la réutilisation
+  // des classes CSS des cartes Groupes pour les cartes Équipes, cf. K-T3B2).
+  MGC_ICONS.teams = MGC_ICONS.groups;
 
   // Accès à une icône illustrée par nom (clé de vue). Renvoie le SVG inline ou "".
   function getIconSvg(name) {
@@ -697,7 +706,7 @@ const SPORT_PROFILE_REGISTRY = Object.freeze({
     icon: "football",
     terminology: Object.freeze({ "member": "joueur", "members": "joueurs", "coach": "éducateur", "coaches": "éducateurs", "venue": "terrain", "venues": "terrains", "match": "match", "matches": "matchs" }),
     organization: Object.freeze({ "teams": "primary", "groups": "optional", "individual": "off", "seasons": "recommended", "categories": "recommended", "competitions": "optional" }),
-    recommendedFeatures: Object.freeze(["teams", "seasons", "memberships", "competitions", "stages", "shop"]),
+    recommendedFeatures: Object.freeze(["teams", "memberships", "competitions", "stages", "shop"]),
     categoryExamples: Object.freeze(["U7", "U9", "U11", "U13", "U15", "U18", "Seniors", "Vétérans"]),
     aliases: Object.freeze([]),
   }),
@@ -708,7 +717,7 @@ const SPORT_PROFILE_REGISTRY = Object.freeze({
     icon: "basketball",
     terminology: Object.freeze({ "member": "joueur", "members": "joueurs", "coach": "entraîneur", "coaches": "entraîneurs", "venue": "gymnase", "venues": "gymnases", "match": "match", "matches": "matchs" }),
     organization: Object.freeze({ "teams": "primary", "groups": "optional", "individual": "off", "seasons": "recommended", "categories": "recommended", "competitions": "optional" }),
-    recommendedFeatures: Object.freeze(["teams", "seasons", "memberships", "competitions"]),
+    recommendedFeatures: Object.freeze(["teams", "memberships", "competitions"]),
     categoryExamples: Object.freeze(["U9", "U11", "U13", "U15", "U18", "Seniors"]),
     aliases: Object.freeze([]),
   }),
@@ -719,7 +728,7 @@ const SPORT_PROFILE_REGISTRY = Object.freeze({
     icon: "handball",
     terminology: Object.freeze({ "member": "joueur", "members": "joueurs", "coach": "entraîneur", "coaches": "entraîneurs", "venue": "gymnase", "venues": "gymnases", "match": "match", "matches": "matchs" }),
     organization: Object.freeze({ "teams": "primary", "groups": "optional", "individual": "off", "seasons": "recommended", "categories": "recommended", "competitions": "optional" }),
-    recommendedFeatures: Object.freeze(["teams", "seasons", "memberships", "competitions"]),
+    recommendedFeatures: Object.freeze(["teams", "memberships", "competitions"]),
     categoryExamples: Object.freeze(["U9", "U11", "U13", "U15", "U18", "Seniors"]),
     aliases: Object.freeze([]),
   }),
@@ -730,7 +739,7 @@ const SPORT_PROFILE_REGISTRY = Object.freeze({
     icon: "rugby",
     terminology: Object.freeze({ "member": "joueur", "members": "joueurs", "coach": "entraîneur", "coaches": "entraîneurs", "venue": "terrain", "venues": "terrains", "match": "match", "matches": "matchs" }),
     organization: Object.freeze({ "teams": "primary", "groups": "optional", "individual": "off", "seasons": "recommended", "categories": "recommended", "competitions": "optional" }),
-    recommendedFeatures: Object.freeze(["teams", "seasons", "memberships", "competitions"]),
+    recommendedFeatures: Object.freeze(["teams", "memberships", "competitions"]),
     categoryExamples: Object.freeze(["U8", "U10", "U12", "U14", "U16", "U18", "Seniors"]),
     aliases: Object.freeze([]),
   }),
@@ -741,7 +750,7 @@ const SPORT_PROFILE_REGISTRY = Object.freeze({
     icon: "volleyball",
     terminology: Object.freeze({ "member": "joueur", "members": "joueurs", "coach": "entraîneur", "coaches": "entraîneurs", "venue": "gymnase", "venues": "gymnases", "match": "match", "matches": "matchs" }),
     organization: Object.freeze({ "teams": "primary", "groups": "optional", "individual": "off", "seasons": "recommended", "categories": "recommended", "competitions": "optional" }),
-    recommendedFeatures: Object.freeze(["teams", "seasons", "memberships", "competitions"]),
+    recommendedFeatures: Object.freeze(["teams", "memberships", "competitions"]),
     categoryExamples: Object.freeze(["M11", "M13", "M15", "M18", "M21", "Seniors"]),
     aliases: Object.freeze([]),
   }),
@@ -994,7 +1003,7 @@ const SPORT_PROFILE_REGISTRY = Object.freeze({
     icon: "water-polo",
     terminology: Object.freeze({ "member": "joueur", "members": "joueurs", "coach": "entraîneur", "coaches": "entraîneurs", "venue": "piscine", "venues": "piscines", "match": "match", "matches": "matchs" }),
     organization: Object.freeze({ "teams": "primary", "groups": "optional", "individual": "off", "seasons": "recommended", "categories": "recommended", "competitions": "optional" }),
-    recommendedFeatures: Object.freeze(["teams", "seasons", "memberships", "competitions"]),
+    recommendedFeatures: Object.freeze(["teams", "memberships", "competitions"]),
     categoryExamples: Object.freeze(["École de water-polo", "U11", "U13", "U15", "U17", "U19", "Seniors"]),
     aliases: Object.freeze([]),
   }),
@@ -1836,6 +1845,20 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
     // collections du club : filtré à l'import (une catégorie d'un autre club n'est pas reprise) et
     // ré-estampillé à la duplication, faute de quoi la copie conserverait le clubId de l'original.
     scoped.sportCategories = (scoped.sportCategories || []).filter(keep).map(stamp);
+    // Lot K-T2A — le socle Équipes suit exactement le régime des autres collections du club : filtré
+    // à l'import (une équipe d'un autre club n'est pas reprise) et ré-estampillé à la duplication,
+    // faute de quoi la copie conserverait le clubId de l'original.
+    scoped.teams = (scoped.teams || []).filter(keep).map(stamp);
+    // Lot K-T2A2 — nettoyage post-scoping MINIMAL de membership.teamIds : normalizeState() (appelé
+    // juste au-dessus) a déjà validé teamIds contre l'intégralité des Teams reçues en entrée, avant
+    // le filtrage `keep` ci-dessus qui peut retirer des Teams étrangères. Ne retire ici QUE les ids
+    // devenus orphelins par ce filtrage (aucune autre logique dupliquée : cohérence discipline,
+    // dédoublonnage etc. restent entièrement du ressort de normalizeState).
+    const scopedTeamIds = new Set(scoped.teams.map((team) => team.id));
+    (scoped.memberships || []).forEach((membership) => {
+      if (!Array.isArray(membership.teamIds) || !membership.teamIds.length) return;
+      membership.teamIds = membership.teamIds.filter((tid) => scopedTeamIds.has(tid));
+    });
     scoped.planningCourses = (scoped.planningCourses || []).filter(keep).map(stamp);
     scoped.planningExceptions = (scoped.planningExceptions || []).filter(keep).map(stamp);
     scoped.attendanceSessions = (scoped.attendanceSessions || []).filter(keep).map(stamp);
@@ -3447,6 +3470,53 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
     return { version: FEATURES_SCHEMA_VERSION, configured, enabled };
   }
 
+  // Lot K-C2A — population BRUTE de visibleModules (sans les FORCED) : priorité valeur enregistrée
+  // → ancien showX (legacyMap) → défaut. Partagée par normalizeDisplaySettings et par
+  // legacyEffectiveVisibleModules pour ne pas dupliquer cette logique.
+  function legacyVisibleModulesPopulation(srcVisible, legacyMap) {
+    const visibleModules = {};
+    DISPLAY_MODULE_KEYS.forEach((key) => {
+      if (srcVisible[key] !== undefined) visibleModules[key] = Boolean(srcVisible[key]);
+      else if (legacyMap[key] !== undefined) visibleModules[key] = Boolean(legacyMap[key]);
+      else visibleModules[key] = Boolean(DISPLAY_VISIBLE_DEFAULTS[key]);
+    });
+    return visibleModules;
+  }
+
+  // Lot K-C2A — reproduit l'ANCIEN résultat effectif du menu (mode + visibleModules + showX legacy),
+  // SANS jamais consulter hasFeature : la préférence d'affichage migrée doit survivre même
+  // fonctionnalité coupée (une feature OFF ne doit jamais effacer un choix de menu enregistré).
+  // Fonction PURE, autonome (ne lit que `source`), n'écrit rien. `mode` est fourni par l'appelant
+  // (résolu — jamais recalculé ici) pour pouvoir tester "et si ce club avait été en Simple/Avancé ?".
+  function legacyEffectiveVisibleModules(source, mode) {
+    const src = source && typeof source === "object" ? source : {};
+    const legacyDefaults = {
+      showDashboard: true, showNewsletter: true, showStages: true, showBoutique: true,
+      showTarifs: true, showStats: true, showAccounting: true, showNotes: true,
+    };
+    const base = Object.fromEntries(Object.entries(legacyDefaults).map(([key, value]) => [key, src[key] === undefined ? value : Boolean(src[key])]));
+    const srcVisible = (src.visibleModules && typeof src.visibleModules === "object") ? src.visibleModules : {};
+    const legacyMap = {
+      newsletter: base.showNewsletter, stages: base.showStages, boutique: base.showBoutique,
+      stock: base.showBoutique, tarifs: base.showTarifs, stats: base.showStats,
+      accounting: base.showAccounting, notes: base.showNotes, dashboard: base.showDashboard,
+    };
+    const visibleModules = legacyVisibleModulesPopulation(srcVisible, legacyMap);
+    const effective = {};
+    DISPLAY_MODULE_KEYS.forEach((key) => {
+      let visible;
+      if (DISPLAY_FORCED_MODULES.includes(key)) visible = true;
+      else if (mode === "advanced") visible = true;
+      else if (mode === "simple") visible = DISPLAY_SIMPLE_MODULES.includes(key);
+      else visible = (key === "stock" ? visibleModules.boutique === true : visibleModules[key] === true);
+      // Ancien axe moduleFunctionallyEnabled : uniquement stages/boutique/stock.
+      if (key === "stages" && base.showStages === false) visible = false;
+      if ((key === "boutique" || key === "stock") && base.showBoutique === false) visible = false;
+      effective[key] = visible;
+    });
+    return effective;
+  }
+
   function normalizeDisplaySettings(source = {}) {
     const src = source && typeof source === "object" ? source : {};
     const defaults = {
@@ -3466,31 +3536,59 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
     // allégée par défaut). Config déjà présente → "advanced" pour ne RIEN masquer à quelqu'un
     // qui avait déjà tout (migration sans perte). Valeur explicite respectée si valide.
     const validModes = ["simple", "advanced", "custom"];
-    let mode;
-    if (validModes.includes(src.mode)) mode = src.mode;
+    const explicitMode = validModes.includes(src.mode) ? src.mode : null;
+    let resolvedMode;
+    if (explicitMode) resolvedMode = explicitMode;
     else {
       const hadConfig = src.visibleModules !== undefined || Object.keys(defaults).some((key) => src[key] !== undefined);
-      mode = hadConfig ? "advanced" : "simple";
+      resolvedMode = hadConfig ? "advanced" : "simple";
     }
-    // Modules visibles (mode Personnalisé). Priorité : valeur enregistrée → ancien showX (migration)
-    // → défaut. Les modules protégés sont toujours visibles.
     const srcVisible = (src.visibleModules && typeof src.visibleModules === "object") ? src.visibleModules : {};
     const legacyMap = {
       newsletter: base.showNewsletter, stages: base.showStages, boutique: base.showBoutique,
       stock: base.showBoutique, tarifs: base.showTarifs, stats: base.showStats,
       accounting: base.showAccounting, notes: base.showNotes, dashboard: base.showDashboard,
     };
-    const visibleModules = {};
-    DISPLAY_MODULE_KEYS.forEach((key) => {
-      if (srcVisible[key] !== undefined) visibleModules[key] = Boolean(srcVisible[key]);
-      else if (legacyMap[key] !== undefined) visibleModules[key] = Boolean(legacyMap[key]);
-      else visibleModules[key] = Boolean(DISPLAY_VISIBLE_DEFAULTS[key]);
-    });
-    DISPLAY_FORCED_MODULES.forEach((key) => { visibleModules[key] = true; });
+    let mode;
+    let visibleModules;
+    if (resolvedMode === "custom") {
+      // Lot K-C2A — Custom (explicite, ou déjà migré) : JAMAIS canonicalisé vers simple/advanced,
+      // quel que soit son contenu. Seul l'effet legacy showBoutique/showStages est fusionné (AND) sur
+      // les 2 clés concernées ; toutes les autres préférences visibleModules restent inchangées.
+      visibleModules = legacyVisibleModulesPopulation(srcVisible, legacyMap);
+      visibleModules.boutique = visibleModules.boutique && base.showBoutique;
+      visibleModules.stock = visibleModules.boutique;
+      visibleModules.stages = visibleModules.stages && base.showStages;
+      DISPLAY_FORCED_MODULES.forEach((key) => { visibleModules[key] = true; });
+      mode = "custom";
+    } else {
+      // Lot K-C2A — Simple/Avancé (explicite ou inféré) : ne bascule en Custom QUE si l'ancien axe
+      // showBoutique/showStages crée une exception impossible à représenter par ce preset seul.
+      const effective = legacyEffectiveVisibleModules(src, resolvedMode);
+      const presetMatches = DISPLAY_MODULE_KEYS.every((key) => {
+        const presetVisible = DISPLAY_FORCED_MODULES.includes(key)
+          ? true
+          : (resolvedMode === "simple" ? DISPLAY_SIMPLE_MODULES.includes(key) : true);
+        return effective[key] === presetVisible;
+      });
+      if (presetMatches) {
+        mode = resolvedMode;
+        visibleModules = legacyVisibleModulesPopulation(srcVisible, legacyMap);
+        DISPLAY_FORCED_MODULES.forEach((key) => { visibleModules[key] = true; });
+      } else {
+        mode = "custom";
+        visibleModules = effective;
+      }
+    }
     // Préférence de lecture de la Comptabilité (P4), persistée PAR CLUB. "auto" = suit le mode global
     // (Simple → vue simple, sinon vue détaillée) tant que l'utilisateur n'a pas choisi explicitement.
     const accountingView = ["simple", "detailed"].includes(src.accountingView) ? src.accountingView : "auto";
-    return { ...base, mode, visibleModules, accountingView };
+    // Lot K-C2A — showBoutique/showStages ne sont plus retournés : legacy de LECTURE uniquement pour
+    // cette normalisation, jamais relus par aucune fonction runtime après coup (cf. isViewVisible).
+    // Idempotence : une sortie déjà migrée ne porte plus ces clés, donc rien à re-migrer au passage
+    // suivant (mode déjà explicite → branche Custom/preset ci-dessus reproduit alors le même résultat).
+    const { showBoutique, showStages, ...displayBase } = base;
+    return { ...displayBase, mode, visibleModules, accountingView };
   }
 
   function fontOptionValue(value, fallback) {
@@ -3589,16 +3687,6 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
     return visible[view] === true;
   }
 
-  // Modules FONCTIONNELS (données comptables / statistiques). Seuls Stages et Boutique peuvent être
-  // coupés des calculs ; ce réglage est INDÉPENDANT de la visibilité dans le menu (isModuleEnabled
-  // lit exactement les mêmes drapeaux). Masquer un module dans le menu ne supprime aucune donnée.
-  function moduleFunctionallyEnabled(view) {
-    const display = displaySettings();
-    if (view === "stages") return display.showStages !== false;
-    if (view === "boutique" || view === "stock") return display.showBoutique !== false;
-    return true;
-  }
-
   // Préférence d'affichage du Centre d'accompagnement et des visites guidées (Paramètres >
   // Affichage). Activé par défaut. Désactivé : on masque l'accès et on coupe les aides
   // proactives, SANS rien supprimer (réactivable, historique des visites conservé).
@@ -3606,6 +3694,10 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
     return displaySettings().showAssistant !== false;
   }
 
+  // Lot K-C2A — troisième axe (showBoutique/showStages) retiré : la visibilité d'une vue ne dépend
+  // plus que de deux axes orthogonaux — la fonctionnalité (hasFeature) et le menu (isModuleVisibleByMode,
+  // mode + visibleModules). La fonction "moduleFunctionallyEnabled" a disparu ; son ancien effet est désormais
+  // fusionné une fois pour toutes dans visibleModules par normalizeDisplaySettings à la migration.
   function isViewVisible(view) {
     // Le Centre d'accompagnement suit la préférence dédiée (masquable bien qu'« always-on »).
     if (view === "assistant") return assistantDisplayEnabled();
@@ -3613,23 +3705,18 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
     if (DISPLAY_FORCED_MODULES.includes(view)) return true;
     // Module pilote Boutique (Lot 2B) : la vue Boutique et le Stock disparaissent du menu et de la
     // navigation quand la FONCTIONNALITÉ shop est désactivée pour le club (hasFeature), sans toucher
-    // aux calculs ni à l'historique (isModuleEnabled/settings.display restent l'axe d'affichage).
-    // Axe orthogonal : une préférence d'affichage masquée n'est pas une désactivation de fonction,
-    // et une fonction désactivée n'est pas une permission de sécurité.
+    // aux calculs ni à l'historique. Axe orthogonal : une préférence d'affichage masquée n'est pas une
+    // désactivation de fonction, et une fonction désactivée n'est pas une permission de sécurité.
     if ((view === "boutique" || view === "stock") && !hasFeature("shop")) return false;
     // Module pilote Stages (Lot 2D) : même axe orthogonal que Boutique. La vue Stages disparaît du
-    // menu et de la navigation quand la FONCTIONNALITÉ stages est désactivée pour le club
-    // (hasFeature), sans toucher aux calculs ni à l'historique (isModuleEnabled/settings.display
-    // restent l'axe d'affichage).
+    // menu et de la navigation quand la FONCTIONNALITÉ stages est désactivée pour le club (hasFeature),
+    // sans toucher aux calculs ni à l'historique.
     if (view === "stages" && !hasFeature("stages")) return false;
-    return moduleFunctionallyEnabled(view) && isModuleVisibleByMode(view);
-  }
-
-  function isModuleEnabled(module) {
-    const display = displaySettings();
-    if (module === "stages") return display.showStages !== false;
-    if (module === "boutique") return display.showBoutique !== false;
-    return true;
+    // Module pilote Équipes (Lot K-T3C) : même axe orthogonal que Boutique/Stages. La vue Teams
+    // disparaît du menu et de la navigation quand la FONCTIONNALITÉ teams est désactivée pour le
+    // club (hasFeature), sans toucher aux données ni à l'historique.
+    if (view === "teams" && !hasFeature("teams")) return false;
+    return isModuleVisibleByMode(view);
   }
 
   function accountingModuleNames() {
@@ -3801,11 +3888,11 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
       // sont boutique/stages. Le futur branchement (Lot 2G-C) se fera par rendu partiel, pas par views.
       views: Object.freeze([]),
       // Lot 2G-B — available:false : la fonctionnalité est DÉCLARÉE (résolution, legacy/default, sécurité)
-      // mais PAS encore proposée dans l'écran « Fonctionnalités du club » (screenFeatures la filtre). Aucun
-      // interrupteur, aucune garde métier, aucun changement visible dans ce lot. Les textes ci-dessous sont
-      // renseignés d'avance pour le Lot 2G-D et n'influencent ni hasFeature, ni la navigation, ni les calculs.
+      // Lot K-D2 — available:true : la fonctionnalité est maintenant proposée dans l'écran « Fonctionnalités
+      // du club » (screenFeatures ne la filtre plus). views reste [] : Disciplines n'est pas une vue exclusive
+      // à Adhésions (cf. commentaire ci-dessus), donc aucune mention "visible/masquée du menu" pour sa carte.
       ui: Object.freeze({
-        available: false,
+        available: true,
         order: 3,
         description: "Gérez les inscriptions des adhérents, les cotisations, les licences, les assurances et leurs paiements.",
         dataRetention: "La désactivation masque les outils de gestion des adhésions sans supprimer les inscriptions, factures, paiements, documents ni l'historique.",
@@ -3816,16 +3903,21 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
       }),
     }),
     // ---------------------------------------------------------------------------------------------
-    // SOCLE MULTISPORTS (Lot 1) — fonctionnalités FUTURES simplement DÉCLARÉES. Elles préparent les
-    // lots suivants (Équipes, Saisons, Rencontres) mais restent totalement INERTES et INVISIBLES :
-    //  - legacyEnabled:false ET defaultEnabled:false → hasFeature renvoie TOUJOURS false (club
-    //    historique configured:false → legacyEnabled=false ; configured:true → defaultEnabled=false
-    //    tant qu'aucune activation explicite) : aucun effet sur les anciens ni les nouveaux clubs ;
-    //  - ui.available:false → screenFeatures() les EXCLUT de l'écran « Fonctionnalités du club »
-    //    (aucune carte, aucun interrupteur) ;
+    // Lot K-T3C — Équipes est désormais ACTIVE : available:true et views:["teams"]. hasFeature/
+    // ensureFeatureEnabledForMutation la gardent normalement (comme Boutique/Stages), la vue "teams"
+    // est réellement affichable/masquable (isViewVisible, DISPLAY_MODULE_KEYS), et la fonctionnalité
+    // est proposée dans l'écran « Fonctionnalités du club » (screenFeatures). legacyEnabled et
+    // defaultEnabled restent à false : Équipes est opt-in (jamais activée automatiquement pour un
+    // club existant, ni par défaut pour un club configuré n'ayant fait aucun choix explicite).
+    //
+    // Rencontres (competitions) reste FUTURE, simplement DÉCLARÉE, INERTE et INVISIBLE :
+    //  - legacyEnabled:false ET defaultEnabled:false → hasFeature("competitions") renvoie TOUJOURS
+    //    false (aucune activation explicite possible tant qu'aucun écran ne la propose) ;
+    //  - ui.available:false → screenFeatures() l'EXCLUT de l'écran « Fonctionnalités du club » ;
     //  - views:[] → aucune vue masquable, aucun élément de menu, aucune route ;
     //  - aucun handler, aucune mutation, aucune garde métier n'est branché dans ce lot.
-    // Les textes ui.* sont pré-remplis pour les lots ultérieurs et n'influencent RIEN aujourd'hui.
+    // Les textes ui.* de competitions sont pré-remplis pour un lot ultérieur et n'influencent RIEN
+    // aujourd'hui.
     teams: Object.freeze({
       key: "teams",
       label: "Équipes",
@@ -3834,36 +3926,16 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
       legacyEnabled: false,
       defaultEnabled: false,
       aliases: Object.freeze([]),
-      views: Object.freeze([]),
+      views: Object.freeze(["teams"]),
       ui: Object.freeze({
-        available: false,
+        available: true,
         order: 4,
-        description: "Gérez les équipes, leurs effectifs, leurs catégories et leurs encadrants par saison.",
-        dataRetention: "La désactivation masquera les outils de gestion des équipes sans supprimer aucune donnée existante.",
+        description: "Gérez les équipes, leurs effectifs, leurs catégories et leurs encadrants.",
+        dataRetention: "La désactivation masque les outils de gestion des équipes sans supprimer aucune donnée existante.",
         disableConfirmTitle: "Désactiver les Équipes ?",
-        disableConfirmMessage: "Les outils de gestion des Équipes seront désactivés pour le club « {club} ».\n\nAucune donnée existante ne sera supprimée. Vous pourrez réactiver les Équipes plus tard. Ce changement concerne uniquement ce club.",
+        disableConfirmMessage: "Les outils de gestion des Équipes seront désactivés pour le club « {club} ». Elles disparaîtront des menus et vous ne pourrez plus ajouter ou modifier les équipes ni leurs effectifs.\n\nAucune donnée existante ne sera supprimée. Vous pourrez réactiver les Équipes plus tard. Ce changement concerne uniquement ce club.",
         disableConfirmLabel: "Désactiver les Équipes",
-        reactivateFeedback: "Les Équipes sont réactivées pour ce club. Leur affichage suit vos réglages d'affichage.",
-      }),
-    }),
-    seasons: Object.freeze({
-      key: "seasons",
-      label: "Saisons",
-      category: "structure",
-      configurable: true,
-      legacyEnabled: false,
-      defaultEnabled: false,
-      aliases: Object.freeze([]),
-      views: Object.freeze([]),
-      ui: Object.freeze({
-        available: false,
-        order: 5,
-        description: "Structurez la vie du club par saison : effectifs, catégories, renouvellements et archivage.",
-        dataRetention: "La désactivation masquera les outils de gestion des saisons sans supprimer aucune donnée existante.",
-        disableConfirmTitle: "Désactiver les Saisons ?",
-        disableConfirmMessage: "Les outils de gestion des Saisons seront désactivés pour le club « {club} ».\n\nAucune donnée existante ne sera supprimée. Vous pourrez réactiver les Saisons plus tard. Ce changement concerne uniquement ce club.",
-        disableConfirmLabel: "Désactiver les Saisons",
-        reactivateFeedback: "Les Saisons sont réactivées pour ce club. Leur affichage suit vos réglages d'affichage.",
+        reactivateFeedback: "Les Équipes sont réactivées pour ce club. Leur affichage suit vos réglages d'affichage actuels.",
       }),
     }),
     competitions: Object.freeze({
@@ -3889,9 +3961,14 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
   });
 
   // Ordre canonique déterministe (ordre de déclaration). Ne contient que des clés canoniques.
-  // teams/seasons/competitions y figurent (résolution/garde disponibles) mais restent invisibles
-  // (ui.available:false) et inertes (legacy/default:false) — cf. commentaires du registre.
-  const FEATURE_CANONICAL_KEYS = Object.freeze(["shop", "stages", "memberships", "teams", "seasons", "competitions"]);
+  // Lot K-T3C — teams est désormais active (ui.available:true) ; competitions reste invisible
+  // (ui.available:false) et inerte (legacy/default:false) — cf. commentaires du registre.
+  // Lot K-S2 — "seasons" volontairement absent : ce n'est pas une fonctionnalité optionnelle mais un
+  // socle déjà opérationnel pour tous les clubs (settings.season, archiveSeason, state.seasonArchives,
+  // cf. K-S1). Une clé legacy settings.features.enabled.seasons reste possible dans d'anciennes
+  // sauvegardes : resolveFeatureKey("seasons") retourne "" (clé inconnue), hasFeature("seasons")
+  // retourne false, sans exception — comportement identique à toute clé jamais connue du registre.
+  const FEATURE_CANONICAL_KEYS = Object.freeze(["shop", "stages", "memberships", "teams", "competitions"]);
 
   // Table de résolution clé/alias -> clé canonique. Construite depuis le registre (jamais deux
   // fonctionnalités distinctes « shop » et « boutique » : boutique pointe vers shop).
@@ -5110,6 +5187,10 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
       // catégorie, rattachée à UNE discipline. Anciennes sauvegardes : défaut [] — migration NEUTRE,
       // aucun catalogue n'est jamais fabriqué automatiquement (voir normalizeSportCategory).
       sportCategories: Array.isArray(source.sportCategories) ? source.sportCategories : [],
+      // Lot K-T2A — socle de données Équipes (identité, cf. audit K-T1/K-T1B/K-T1C). Anciennes
+      // sauvegardes : défaut [] — migration NEUTRE, aucune équipe n'est jamais fabriquée
+      // automatiquement (voir normalizeTeam). Aucune activation UI, aucune garde métier ici.
+      teams: Array.isArray(source.teams) ? source.teams : [],
     };
     base.tariffs.articles = base.tariffs.articles || [];
     base.tariffs.disciplines = base.tariffs.disciplines || [];
@@ -5268,6 +5349,7 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
     base.creditNotes = base.creditNotes.filter((cn) => cn && typeof cn === "object").map(normalizeCreditNote);
     base.groups = base.groups.filter((group) => group && typeof group === "object").map(normalizeGroup);
     base.sportCategories = normalizeSportCategories(base.sportCategories);
+    base.teams = base.teams.filter((team) => team && typeof team === "object").map(normalizeTeam);
     base.planningCourses = base.planningCourses.filter((course) => course && typeof course === "object").map(normalizeCourse);
     // Exceptions par date : normalisées + nettoyage des orphelines (créneau récurrent supprimé).
     const validCourseIds = new Set(base.planningCourses.map((course) => course.id));
@@ -5303,6 +5385,7 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
     base.creditNotes = dedupeById(base.creditNotes);
     base.groups = dedupeById(base.groups);
     base.sportCategories = dedupeById(base.sportCategories);
+    base.teams = dedupeById(base.teams);
     base.planningCourses = dedupeById(base.planningCourses);
     base.planningExceptions = dedupeById(base.planningExceptions);
     base.attendanceSessions = dedupeById(base.attendanceSessions);
@@ -5315,7 +5398,24 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
     const repaired = repairLegacyAccentData(base);
     // Lot 3A — résolution centralisée des références de discipline (non ambiguë), après que toutes
     // les disciplines ont reçu un id et que les libellés sont réparés/dédupliqués.
-    return resolveDisciplineReferences(repaired);
+    const resolved = resolveDisciplineReferences(repaired);
+    // Lot K-T2A — roster Équipes (membership.teamIds), APRÈS résolution des disciplines (membership.
+    // disciplineId est alors fiable) : dédup (1re occurrence conservée), ne conserve que des ids
+    // d'équipes existantes DE CE CLUB, et seulement si team.disciplineId === membership.disciplineId
+    // (une inscription Football ne peut jamais rejoindre une Team Basket, cf. doctrine K-T1B §13).
+    // Indépendant de groupId (jamais lu ni modifié ici) et indépendant de toute feature (Teams/
+    // Adhésions OFF ne change rien ici — cf. doctrine K-T1C) : seule l'invalidité référentielle
+    // nettoie ce tableau.
+    const teamById = new Map((resolved.teams || []).map((team) => [team.id, team]));
+    (resolved.memberships || []).forEach((membership) => {
+      membership.teamIds = [...new Set(
+        (Array.isArray(membership.teamIds) ? membership.teamIds : []).map((tid) => asText(tid)).filter(Boolean)
+      )].filter((tid) => {
+        const team = teamById.get(tid);
+        return Boolean(team) && asText(team.disciplineId) && asText(team.disciplineId) === asText(membership.disciplineId);
+      });
+    });
+    return resolved;
   }
 
   // Champs « dossier sportif » d'un adhérent (inscription). Valeurs par défaut neutres
@@ -5610,6 +5710,26 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
       color: asText(group.color || ""),
       notes: asText(group.notes || ""),
       archived: Boolean(group.archived),
+    };
+  }
+
+  // Lot K-T2A — socle de données Équipes (identité minimale, cf. audit K-T1/K-T1B/K-T1C). Modèle
+  // volontairement minimal : aucun seasonId, aucun membershipIds/memberIds, aucun champ Planning/
+  // Présences/Compétitions (le roster vit sur membership.teamIds, jamais ici). disciplineId est
+  // PRÉSERVÉ tel quel même s'il ne résout plus vers une discipline existante — même doctrine que
+  // normalizeGroup/Lot 3A : un id inconnu n'est jamais réécrit, jamais effacé, et ne supprime jamais
+  // l'objet porteur.
+  // clubId : PAS un champ métier — pure métadonnée d'infrastructure multi-club, convention des
+  // autres collections du club (cf. normalizeSportCategory), ré-estampillée par scopeStateToClub.
+  function normalizeTeam(team) {
+    return {
+      id: team.id || id("team"),
+      name: asText(team.name) || "Équipe",
+      disciplineId: asText(team.disciplineId || ""),
+      coachId: asText(team.coachId || ""),
+      sportCategoryId: typeof team.sportCategoryId === "string" ? asText(team.sportCategoryId) : "",
+      archived: Boolean(team.archived),
+      clubId: asText(team.clubId || ""),
     };
   }
 
@@ -7826,7 +7946,10 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
       // Lot 3B-3 — le mot-clé « categorie » est RETIRÉ de cette entrée : il conduisait aux Groupes,
       // c'est-à-dire à la mauvaise notion, et c'était le seul résultat rendu pour cette recherche.
       // Il appartient désormais à la bande « Disciplines et catégories sportives » (ci-dessous).
-      ["groups", "Groupes de pratiquants et leurs membres.", ["groupe", "groupes", "equipe", "equipes", "niveau", "niveaux", "membre", "membres"]],
+      ["groups", "Groupes de pratiquants et leurs membres.", ["groupe", "groupes", "niveau", "niveaux", "membre", "membres"]],
+      // Lot K-T3C — Équipes devient une page réelle : les synonymes "equipe"/"equipes" quittent
+      // Groupes (ci-dessus) pour cette entrée, qui est désormais la bonne destination.
+      ["teams", "Équipes : effectifs, discipline, catégorie, encadrant.", ["equipe", "equipes", "effectif", "effectifs", "roster"]],
       ["coaches", "Coachs du club : fiches, spécialités, disponibilités, photos.", ["coach", "entraineur", "entraineurs", "professeur", "prof", "encadrant", "moniteur", "instructeur"]],
       ["rooms", "Salles et lieux de pratique.", ["salle", "gymnase", "dojo", "lieu", "lieux", "site", "installation"]],
       ["planning", "Planning des séances et des cours.", ["planning", "agenda", "calendrier", "horaire", "horaires", "seance", "seances", "emploi du temps"]],
@@ -7922,7 +8045,7 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
         ["ajouter une salle", "nouvelle salle", "creer une salle", "ajouter un gymnase", "ajouter un lieu", "ajouter un dojo"],
         "add-room", "rooms", null],
       ["action-add-group", "Ajouter un groupe", "Créer un groupe de pratiquants.",
-        ["ajouter un groupe", "nouveau groupe", "creer un groupe", "ajouter une equipe"],
+        ["ajouter un groupe", "nouveau groupe", "creer un groupe"],
         "add-group", "groups", null],
       // Lot 3B-4A — la création d'une discipline manquait à cet inventaire alors que toutes les
       // autres entités du club y figurent. Contrairement à « Ajouter une inscription » (écartée au
@@ -9561,6 +9684,7 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
     if (ui.view === "newsletter") return renderNewsletter();
     if (ui.view === "disciplines") return renderDisciplines();
     if (ui.view === "groups") return renderGroups();
+    if (ui.view === "teams") return renderTeams();
     if (ui.view === "coaches") return renderCoaches();
     if (ui.view === "rooms") return renderRooms();
     if (ui.view === "planning") return renderPlanning();
@@ -9931,7 +10055,7 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
     // reconstruit group("shop|amber") directement depuis stockRows(), indépendamment de
     // taskRows(). Le stock RÉELLEMENT en rupture (available < 0) reste porté par taskRows()
     // ci-dessus, inchangé ; même forme de groupe donc mêmes destinations qu'avant ce correctif.
-    if (isModuleEnabled("boutique") && hasFeature("shop")) {
+    if (hasFeature("shop")) {
       stockRows().filter((row) => row.available >= 0 && isStockLow(row)).forEach((row) => {
         const key = "shop|amber";
         const g = groups[key] || (groups[key] = { count: 0, attrs: "", amount: 0, minDate: "", minAvail: null, minName: "", zero: 0 });
@@ -10013,7 +10137,10 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
           countLabel: `${dm.members} dossier${dm.members > 1 ? "s" : ""}`,
           verb: (c.verb && c.verb[level]) || "",
           qualifier,
-          cta: c.button,
+          // Lot K-D2B — cette carte mène (directement pour 1 seul dossier, via le résolveur sinon)
+          // à edit-membership, devenu consultation lecture seule quand memberships est désactivé :
+          // « Régulariser » y serait faux. cf. vigilanceDocResolverBodyHtml, même doctrine.
+          cta: hasFeature("memberships") ? c.button : "Consulter",
         });
       }
       return cards.sort((a, b) => b.count - a.count);
@@ -10024,7 +10151,7 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
     if (!has("payments", "red")) green.push("Aucun paiement en retard");
     if (!doc.red.members && !doc.amber.members) green.push("Tous les documents sont à jour");
     if (!has("planning", "red") && !has("coaches", "red") && !has("rooms", "red")) green.push("Aucun conflit de planning");
-    if (isModuleEnabled("boutique") && hasFeature("shop") && !has("shop", "red") && !has("shop", "amber")) green.push("Stock au-dessus des seuils");
+    if (hasFeature("shop") && !has("shop", "red") && !has("shop", "amber")) green.push("Stock au-dessus des seuils");
     return { red: toCards("red"), amber: toCards("amber"), green };
   }
 
@@ -10291,9 +10418,13 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
   function vigilanceDocResolverBodyHtml(level, groups) {
     const points = groups.reduce((n, g) => n + g.items.length, 0);
     const progress = `<p class="vigilance-resolve-progress"><strong>${groups.length} dossier${groups.length > 1 ? "s" : ""} concerné${groups.length > 1 ? "s" : ""}</strong><span class="muted">${points} document${points > 1 ? "s" : ""} à compléter</span></p>`;
+    // Lot K-D2B — memberships OFF : ce bouton ouvre désormais une consultation lecture seule
+    // (openMembershipDialog readOnly, K-D2). « Régulariser » deviendrait faux ; il reste
+    // data-action="edit-membership" (ce chemin ouvre correctement le dossier en lecture seule).
+    const resolveCta = hasFeature("memberships") ? "Régulariser" : "Consulter";
     const list = groups.map((g) => `<div class="vigilance-resolve-item">
         <div class="vigilance-resolve-info"><strong>${esc(g.name)}</strong><span class="muted">${esc(g.items.map((i) => i.label).join(" · "))}</span></div>
-        <button type="button" class="primary vigilance-resolve-btn" data-action="edit-membership" data-id="${esc(g.membershipId)}">Régulariser</button>
+        <button type="button" class="primary vigilance-resolve-btn" data-action="edit-membership" data-id="${esc(g.membershipId)}">${esc(resolveCta)}</button>
       </div>`).join("");
     return progress + `<div class="vigilance-resolve-rows">${list}</div>`;
   }
@@ -10331,15 +10462,13 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
 
   function renderDashboard() {
     const stats = dashboardStats();
-    // Module pilote Boutique (Lot 2B) : les KPI et raccourcis OPÉRATIONNELS Boutique de l'accueil
-    // suivent l'affichage isModuleEnabled("boutique") ET la fonctionnalité hasFeature("shop"). Les
+    // Lot K-C2A — les KPI/alertes OPÉRATIONNELS de l'accueil suivent uniquement la FONCTIONNALITÉ
+    // (hasFeature) : un module masqué du menu mais toujours actif continue de fonctionner. Les
     // TOTAUX de dashboardStats (CA global) restent, eux, un CALCUL HISTORIQUE INCONDITIONNEL :
     // masquer ou désactiver la Boutique ne retire jamais ses ventes existantes des totaux — seuls
-    // ces indicateurs/raccourcis actionnables disparaissent avec le module.
-    const boutiqueEnabled = isModuleEnabled("boutique") && hasFeature("shop");
-    // Module pilote Stages (Lot 2D) : KPI et raccourcis OPÉRATIONNELS Stages suivent l'affichage
-    // isModuleEnabled("stages") ET la fonctionnalité hasFeature("stages"). Les CALCULS restent inconditionnels.
-    const stagesEnabled = isModuleEnabled("stages") && hasFeature("stages");
+    // ces indicateurs/raccourcis actionnables disparaissent avec la fonctionnalité.
+    const boutiqueEnabled = hasFeature("shop");
+    const stagesEnabled = hasFeature("stages");
     const today = todayInputValue();
     const memberCount = state.contacts.members.length;
     const invoicesPending = (state.invoices || [])
@@ -10397,7 +10526,7 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
           isViewVisible("assistant") ? `<button data-action="open-dashboard-target" data-target="assistant">Premiers pas guidés</button>` : "",
         ].filter(Boolean).join("")
       : [
-          isViewVisible("disciplines") ? `<button class="primary" data-action="add-membership">Ajouter un adhérent</button>` : "",
+          (isViewVisible("disciplines") && hasFeature("memberships")) ? `<button class="primary" data-action="add-membership">Ajouter un adhérent</button>` : "",
           isViewVisible("invoices") ? `<button data-action="new-invoice">Créer une facture</button>` : "",
           isViewVisible("due-payments") ? `<button data-action="show-payment-agenda">Encaisser un paiement</button>` : "",
           isViewVisible("stages") ? `<button data-action="add-stage">Créer un stage</button>` : "",
@@ -10456,21 +10585,20 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
       const calc = calcMembership(membership);
       push(membership.payments, "Discipline", membership, calc.restDue, "edit-membership", membership.id);
     }
-    if (isModuleEnabled("boutique") && hasFeature("shop")) {
-      for (const order of state.shopOrders) {
-        const calc = calcOrder(order);
-        push(order.payments, "Boutique", order, calc.restDue, "view-order", order.id);
-      }
+    // Lot K-C2A — une créance Boutique/Stages réelle ne doit JAMAIS disparaître de « Paiements dus »
+    // (ni de Vigilance, ni du compteur de retards, ni du dashboard, ni de l'assistant) parce qu'une
+    // fonctionnalité ou un menu est désactivé — même doctrine que les lignes Adhésions ci-dessus,
+    // qui n'ont jamais eu de garde. Les actions attachées (view-order/edit-registration) gardent
+    // leurs propres protections à leur point de déclenchement respectif.
+    for (const order of state.shopOrders) {
+      const calc = calcOrder(order);
+      push(order.payments, "Boutique", order, calc.restDue, "view-order", order.id);
     }
-    // Lot 2D — liste actionnable « reste dû » (mène à edit-registration, une mutation) : suit
-    // l'affichage ET la fonctionnalité, comme Boutique. Les totaux/CA restent inconditionnels ailleurs.
-    if (isModuleEnabled("stages") && hasFeature("stages")) {
-      for (const stage of state.tariffs.stages) {
-        for (const registration of state.stageRegistrations[stage.id] || []) {
-          const calc = calcRegistration(registration, stage.id);
-          const payments = [...(registration.event?.payments || []), ...(registration.lodging?.payments || [])];
-          push(payments, stage.name || "Stage", registration, calc.restDue, "edit-registration", registration.id, stage.id);
-        }
+    for (const stage of state.tariffs.stages) {
+      for (const registration of state.stageRegistrations[stage.id] || []) {
+        const calc = calcRegistration(registration, stage.id);
+        const payments = [...(registration.event?.payments || []), ...(registration.lodging?.payments || [])];
+        push(payments, stage.name || "Stage", registration, calc.restDue, "edit-registration", registration.id, stage.id);
       }
     }
     return rows
@@ -10654,7 +10782,7 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
         attrs: `data-action="open-invoice" data-id="${esc(invoice.id)}"`,
       });
     });
-    if (isModuleEnabled("boutique") && hasFeature("shop")) {
+    if (hasFeature("shop")) {
       // Lot À faire V2 — seul le stock réellement en rupture (available < 0) reste une urgence ;
       // le simple seuil bas (isStockLow non-rupture) reste visible dans la page Stock uniquement.
       stockRows().filter((row) => row.available < 0).forEach((row) => {
@@ -11141,7 +11269,11 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
         push({ type: "Discipline", title: `${personLabel(row)} · ${row.discipline || "Sans discipline"}`, detail, attrs: `data-action="edit-membership" data-id="${esc(row.id)}"` });
       }
     });
-    if (isModuleEnabled("boutique") && hasFeature("shop")) {
+    // Lot K-C2A — résultats actionnables (mènent à la vue Boutique/Stages) : suivent isViewVisible
+    // (fonctionnalité ET menu), un menu volontairement masqué ne doit pas être contourné par un
+    // raccourci de recherche. L'historique financier reste consultable via la fiche contact, les
+    // factures et la comptabilité, indépendamment de ces deux blocs.
+    if (isViewVisible("boutique")) {
       state.tariffs.articles.forEach((article, index) => {
         if (matches([article.name, article.reference, (article.sizes || []).join(" ")])) {
           push({ type: "Article", title: article.name || "Article", detail: `${article.reference || ""} · ${money(article.priceOptions?.[0] || 0)}`, attrs: `data-action="edit-stock-article" data-index="${index}"` });
@@ -11155,10 +11287,7 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
         }
       });
     }
-    // Résultats de recherche Stages : ouvrent une mutation (edit-stage/edit-registration). Surface
-    // opérationnelle (Lot 2D) -> masquée quand la fonctionnalité est désactivée ou l'affichage coupé.
-    // L'historique financier reste consultable via la fiche contact, les factures et la comptabilité.
-    if (isModuleEnabled("stages") && hasFeature("stages")) {
+    if (isViewVisible("stages")) {
       state.tariffs.stages.forEach((stage) => {
         if (matches([stage.name, stage.lodgingName])) push({ type: "Stage", title: stage.name || "Stage", detail: `${money(stage.unitPrice || 0)} · ${stageParticipantCount(stage.id)} participant(s)`, attrs: `data-action="edit-stage" data-stage-id="${esc(stage.id)}"` });
         (state.stageRegistrations[stage.id] || []).forEach((registration) => {
@@ -12122,7 +12251,7 @@ ${esc(bodyText)}</pre>
   }
 
   function groupArticles() {
-    if (!isModuleEnabled("boutique")) return [];
+    if (!hasFeature("shop")) return [];
     const map = new Map();
     for (const article of state.tariffs.articles) map.set(article.id, { articleId: article.id, article, name: article.name, count: 0, total: 0 });
     for (const order of state.shopOrders) {
@@ -12233,7 +12362,7 @@ ${esc(bodyText)}</pre>
 
   function stockMovements() {
     const rows = [];
-    if (!isModuleEnabled("boutique")) return rows;
+    if (!hasFeature("shop")) return rows;
     for (const order of state.shopOrders) {
       for (const item of order.items || []) {
         if (!asNumber(item.quantity)) continue;
@@ -12452,9 +12581,10 @@ ${esc(bodyText)}</pre>
           <div class="collapsible-inner">${editableDisciplines()}</div>
         </div>
       </div>
-      ${toolbar("add-membership", "Nouvelle inscription", `<select data-filter="discipline">${options}</select><div class="segmented">${dueFilterButton("disciplineDueOnly", ui.disciplineDueOnly)}</div>`)}
+      ${toolbar(hasFeature("memberships") ? "add-membership" : "", "Nouvelle inscription", `<select data-filter="discipline">${options}</select><div class="segmented">${dueFilterButton("disciplineDueOnly", ui.disciplineDueOnly)}</div>`)}
       <div class="band discipline-binder">
         <div class="band-title"><h2>${disciplineFilter ? esc(disciplineFilter) : "Toutes les disciplines"}</h2><strong>${rows.length} adhérents</strong></div>
+        ${!hasFeature("memberships") ? `<p class="muted feature-off-notice">Adhésions désactivées — les inscriptions existantes restent consultables et leurs paiements restent disponibles.</p>` : ""}
         ${(state.memberships || []).length === 0
           // Lot 3B-4A — deux états vides DISTINCTS : sans discipline au catalogue, on ne propose
           // pas de créer une inscription (elle n'aurait rien à quoi se rattacher).
@@ -13145,6 +13275,10 @@ ${esc(bodyText)}</pre>
     // réelle ici (saveArticleSizeStock).
     const beforeSnapshot = shopItemSnapshot(article);
     showDialog("Stock par taille", body, (data, form) => {
+      // Dialogue périmé (K-B) : la fonctionnalité a pu être désactivée pendant que le dialogue
+      // restait ouvert -> aucune mutation, aucun persist, aucun Journal (return false, avant toute
+      // écriture réelle).
+      if (!ensureFeatureEnabledForMutation("shop")) return false;
       const next = readSizeStockForm(form);
       const msg = validateSizeStockForm(form, next, hasSizes);
       if (msg) { alert(msg); return false; }
@@ -13541,11 +13675,11 @@ ${esc(bodyText)}</pre>
   }
 
   function renderStats() {
-    // Lot 2D — la section Stages (rapport historique) ne dépend plus de la fonctionnalité ni de
-    // l'affichage : elle suit les DONNÉES (jamais absente uniquement parce que Stages est désactivé ou
-    // masqué ; seulement absente s'il n'existe aucune donnée Stages).
+    // Lot 2D/K-C2A — la section Stages ET la section Boutique (rapport historique) ne dépendent plus
+    // de la fonctionnalité ni de l'affichage : elles suivent les DONNÉES (jamais absentes uniquement
+    // parce que le module est désactivé ou masqué ; seulement absentes s'il n'existe aucune donnée).
     const stagesEnabled = hasStageData();
-    const boutiqueEnabled = isModuleEnabled("boutique");
+    const boutiqueEnabled = hasBoutiqueData();
     // Sections conditionnées : module visible (mode courant) OU données présentes.
     const showStagesStats = stagesEnabled && shouldShowStatsSection("stages");
     const showBoutiqueStats = boutiqueEnabled && shouldShowStatsSection("boutique");
@@ -14407,11 +14541,12 @@ ${esc(bodyText)}</pre>
   }
 
   function renderAccounting() {
-    // Lot 2D — la rubrique Stages (rapport historique) suit les DONNÉES, jamais la fonctionnalité ni
-    // l'affichage : jamais absente uniquement parce que Stages est désactivé/masqué. Les totaux, eux,
-    // sont déjà inconditionnels (accountingData / taxDeclarationRows / accountingModuleNames).
+    // Lot 2D/K-C2A — les rubriques Stages ET Boutique (rapport historique) suivent les DONNÉES, jamais
+    // la fonctionnalité ni l'affichage : jamais absentes uniquement parce que le module est
+    // désactivé/masqué. Les totaux, eux, sont déjà inconditionnels (accountingData / taxDeclarationRows
+    // / accountingModuleNames).
     const stagesEnabled = hasStageData();
-    const boutiqueEnabled = isModuleEnabled("boutique");
+    const boutiqueEnabled = hasBoutiqueData();
     const data = accountingData();
     const expenseTotalAll = expensesTotal(clubExpenses());
     // F2-REAUDIT-006 — cashPaid (avoirs utilisés exclus) : "Solde caisse"/"Encaissé" désignent de
@@ -14599,9 +14734,9 @@ ${esc(bodyText)}</pre>
           </label>
         </div>
       `)}
-      ${isModuleEnabled("boutique") && hasFeature("shop") ? tariffCollapsibleBand("articles", "Articles", intValue(state.tariffs.articles.length), editableArticles(), "add-tariff-article") : ""}
+      ${hasFeature("shop") ? tariffCollapsibleBand("articles", "Articles", intValue(state.tariffs.articles.length), editableArticles(), "add-tariff-article") : ""}
       ${tariffCollapsibleBand("disciplines", "Disciplines", intValue(state.tariffs.disciplines.length), editableDisciplines(), "add-tariff-discipline")}
-      ${isModuleEnabled("stages") && hasFeature("stages") ? tariffCollapsibleBand("stages", "Stages", intValue(state.tariffs.stages.length), editableStages(), "add-tariff-stage") : ""}
+      ${hasFeature("stages") ? tariffCollapsibleBand("stages", "Stages", intValue(state.tariffs.stages.length), editableStages(), "add-tariff-stage") : ""}
       ${tariffCollapsibleBand("insurance", "Assurances", intValue(state.tariffs.insurance.length), editableInsurance(), "add-tariff-insurance")}`;
   }
 
@@ -14684,11 +14819,16 @@ ${esc(bodyText)}</pre>
       render();
       return;
     }
-    // Garde de MUTATION (Lot 2B) — chemin hors handleAction (validation d'une ligne Tarifs au clavier).
-    // Si la ligne éditée est un ARTICLE et que la Boutique est désactivée, on bloque l'écriture avant
-    // tout recordHistory/persist ; les autres tarifs (disciplines, stages, assurances) restent libres.
+    // Garde de MUTATION (Lot 2B, complétée K-B) — chemin hors handleAction (validation d'une ligne
+    // Tarifs au clavier). Une ligne ARTICLE dépend de Shop, une ligne STAGE dépend de Stages ; les
+    // autres tarifs (disciplines, assurances) restent hors de ces deux fonctionnalités et libres.
     const [editKind, editIndexRaw] = asText(ui.tariffEditKey).split(":");
     if (editKind === "article" && !ensureFeatureEnabledForMutation("shop")) {
+      ui.tariffEditKey = "";
+      render();
+      return;
+    }
+    if (editKind === "stage" && !ensureFeatureEnabledForMutation("stages")) {
       ui.tariffEditKey = "";
       render();
       return;
@@ -15027,8 +15167,10 @@ ${esc(bodyText)}</pre>
   }
 
   function renderHelp() {
-    const stagesEnabled = isModuleEnabled("stages") && hasFeature("stages");
-    const boutiqueEnabled = isModuleEnabled("boutique");
+    // Lot K-C2A — contenu informatif décrivant une fonctionnalité active : suit hasFeature seule,
+    // jamais la visibilité de menu (un module actif mais masqué du menu reste actif).
+    const stagesEnabled = hasFeature("stages");
+    const boutiqueEnabled = hasFeature("shop");
     return `
       <div class="help-page">
         <section class="help-layout">
@@ -15652,11 +15794,21 @@ ${esc(bodyText)}</pre>
     </label>`;
   }
 
+  // Lot K-C2B — libellé explicitement orienté "menu" pour Boutique/Stages, jamais confondu avec
+  // l'activation métier (Fonctionnalités du club) ; et clé de fonctionnalité associée, pour griser
+  // le contrôle quand elle est désactivée sans jamais toucher visibleModules (§11 du lot).
+  const VISIBLE_MODULE_MENU_LABELS = { boutique: "Afficher Boutique dans le menu", stages: "Afficher Stages dans le menu" };
+  // Lot K-C2B2 — "stock" ajouté UNIQUEMENT pour le wording du badge de l'arbre "Ordre du menu"
+  // (menuOrderItemHtml, src/16-settings-themes.js) : Stock suit toujours Boutique, sans bouton
+  // autonome (canTogglePageVisibility l'exclut déjà). Sans effet sur visibleModuleToggle("stock"),
+  // déjà verrouillé par son propre cas linkedToBoutique avant que cette table ne soit consultée.
+  const VISIBLE_MODULE_FEATURE_KEYS = { boutique: "shop", stages: "stages", stock: "shop" };
+
   // Case « module visible dans le menu » (mode Personnalisé). Désactivée hors mode personnalisé.
   // Les modules protégés (Accueil, Paramètres, Aide) sont cochés et verrouillés : jamais masquables.
   function visibleModuleToggle(key) {
     const display = displaySettings();
-    const label = (Object.fromEntries(views)[key]) || key;
+    const label = VISIBLE_MODULE_MENU_LABELS[key] || (Object.fromEntries(views)[key]) || key;
     const forced = DISPLAY_FORCED_MODULES.includes(key);
     // Bloc unique Boutique & Stock : Stock suit toujours Boutique (isModuleVisibleByMode), donc sa
     // case n'a rien à régler en propre — verrouillée avec un libellé explicite plutôt qu'un clic
@@ -15667,12 +15819,18 @@ ${esc(bodyText)}</pre>
     // voit ce qui est réellement actif dans le mode sélectionné. Les cases ne sont éditables qu'en
     // Personnalisé (disabled sinon), et le choix Personnalisé reste conservé même en Simple/Avancé.
     const checked = isModuleVisibleByMode(key);
-    const disabled = forced || linkedToBoutique || display.mode !== "custom";
+    // Lot K-C2B — feature OFF (Boutique/Stages uniquement) : la ligne reste visible mais devient non
+    // éditable, la préférence enregistrée (visibleModules) n'est JAMAIS modifiée par ce rendu — elle
+    // réapparaît telle quelle à la réactivation. hasFeature seule (jamais isViewVisible, qui redeviendrait
+    // faux dès que la case Personnalisé est simplement décochée, sans rapport avec la fonctionnalité).
+    const featureKey = VISIBLE_MODULE_FEATURE_KEYS[key];
+    const featureOff = featureKey ? !hasFeature(featureKey) : false;
+    const disabled = forced || linkedToBoutique || display.mode !== "custom" || featureOff;
     return `<label class="settings-check"${disabled ? ' style="opacity:.55"' : ""}>
       <input type="checkbox" data-visible-module="${esc(key)}" ${checked ? "checked" : ""} ${disabled ? "disabled" : ""} />
       <span>
         <strong>${esc(label)}</strong>
-        ${forced ? `<small>Toujours visible</small>` : linkedToBoutique ? `<small>Visible avec Boutique</small>` : ""}
+        ${forced ? `<small>Toujours visible</small>` : linkedToBoutique ? `<small>Visible avec Boutique</small>` : featureOff ? `<small>Fonctionnalité désactivée</small>` : ""}
       </span>
     </label>`;
   }
@@ -15725,25 +15883,42 @@ ${esc(bodyText)}</pre>
     return `<div class="display-modules-groups">${groupsHtml}${othersHtml}</div>`;
   }
 
-  // Lot 2C — écran « Fonctionnalités du club ». Axe FONCTIONNALITÉ (settings.features / hasFeature),
-  // strictement distinct de l'axe AFFICHAGE (settings.display), des permissions et de l'historique.
-  // Les préférences d'affichage showBoutique et showStages ne sont JAMAIS modifiées ici.
+  // Lot 2C/K-C2A — écran « Fonctionnalités du club ». Axe FONCTIONNALITÉ (settings.features /
+  // hasFeature), strictement distinct de l'axe AFFICHAGE (settings.display), des permissions et de
+  // l'historique. Lecture seule : ne modifie JAMAIS settings.display.
   function featureDisplayHiddenNote(def) {
-    // Actif mais masqué à l'écran = fonctionnalité disponible, mais préférence d'affichage sur
-    // « masquer ». Seules Boutique et Stages ont un réglage d'affichage lié ; une fonctionnalité qui
-    // n'en a pas n'est jamais dans cet état. Lecture seule : ne modifie JAMAIS settings.display.
-    const displayKeys = { shop: "showBoutique", stages: "showStages" };
-    const displayKey = displayKeys[def.key];
-    if (!displayKey) return false;
-    return displaySettings()[displayKey] === false;
+    // Actif mais masqué à l'écran = fonctionnalité disponible, mais préférence de MENU (mode +
+    // visibleModules) sur « masquer ». isModuleVisibleByMode (jamais isViewVisible, qui reconsulterait
+    // hasFeature ici) : une fonctionnalité OFF ne doit jamais faire disparaître sa préférence de menu
+    // enregistrée — seul le mode/visibleModules détermine cette note.
+    const view = (def.views || [])[0];
+    if (!view) return false;
+    return isModuleVisibleByMode(view) === false;
   }
+
+  // Lot K-C2B — texte rassurant, factuel, affiché UNIQUEMENT quand la fonctionnalité est désactivée
+  // (pas un avertissement, pas de bloc rouge). Distinct de def.ui.dataRetention (message de la
+  // boîte de confirmation de désactivation, plus détaillé) : ce texte-ci est celui de la carte.
+  const FEATURE_HISTORY_KEPT_NOTE = {
+    shop: "Les anciennes commandes, factures et paiements restent conservés.",
+    stages: "Les anciens stages, inscriptions, factures et paiements restent conservés.",
+    memberships: "Les anciennes inscriptions, cotisations, licences, assurances, factures et paiements restent conservés.",
+  };
 
   function featureCardHtml(def) {
     const active = hasFeature(def.key);
-    const displayHidden = active && featureDisplayHiddenNote(def);
+    // Lot K-D2 — une fonctionnalité sans vue de navigation qui lui soit exclusive (views:[], ex.
+    // Adhésions : la vue Disciplines est un socle transversal, pas sa propriété) n'a aucune notion de
+    // "visible/masquée du menu" : son statut se limite à Activée/Désactivée. Générique sur
+    // def.views.length, jamais un cas particulier par clé.
+    const hasOwnView = (def.views || []).length > 0;
+    const displayHidden = active && hasOwnView && featureDisplayHiddenNote(def);
+    // Lot K-C2B — feature OFF : jamais "Désactivée · masquée" (la préférence de menu existe encore
+    // techniquement mais n'a pas besoin d'être présentée comme un second état).
     const statusText = active
-      ? (displayHidden ? "Activée — masquée par les réglages d'affichage" : "Activée")
+      ? (hasOwnView ? (displayHidden ? "Activée · masquée du menu" : "Activée · visible dans le menu") : "Activée")
       : "Désactivée";
+    const historyNote = !active ? FEATURE_HISTORY_KEPT_NOTE[def.key] : "";
     return `<div class="feature-card feature-${esc(def.key)} ${active ? "is-on" : "is-off"}">
       <label class="settings-check feature-toggle">
         <input type="checkbox" data-feature-setting="${esc(def.key)}" ${active ? "checked" : ""} role="switch" aria-checked="${active ? "true" : "false"}" />
@@ -15754,7 +15929,7 @@ ${esc(bodyText)}</pre>
       </label>
       <div class="feature-card-meta">
         <span class="feature-badge ${active ? "is-on" : "is-off"}">${esc(statusText)}</span>
-        ${def.ui.dataRetention ? `<small class="muted">${esc(def.ui.dataRetention)}</small>` : ""}
+        ${historyNote ? `<small class="muted">${esc(historyNote)}</small>` : ""}
         <small class="muted">Ce réglage ne concerne que le club actif.</small>
       </div>
     </div>`;
@@ -15768,7 +15943,10 @@ ${esc(bodyText)}</pre>
   function featuresClubBandBody() {
     const clubName = (typeof activeClub === "function" && activeClub() && activeClub().name) || "ce club";
     const configured = Boolean(settings.features && settings.features.configured === true);
-    const intro = `<p class="muted">Ces fonctionnalités s'appliquent uniquement au club « ${esc(clubName)} ». Les autres clubs ne sont pas modifiés. Désactiver une fonctionnalité ne supprime pas ses données. Les droits des utilisateurs sont gérés séparément.</p>`;
+    // Lot K-C2B — message global : explique immédiatement la séparation Fonctionnalités/Affichage,
+    // sans vocabulaire technique, avec un accès direct vers Affichage (action déjà existante).
+    const intro = `<p class="muted">Activez uniquement les fonctionnalités utilisées par votre club « ${esc(clubName)} ». L'affichage des pages dans le menu se règle séparément dans Affichage. Désactiver une fonctionnalité ne supprime pas ses données. Les droits des utilisateurs sont gérés séparément.</p>
+      <p class="muted feature-display-link"><button type="button" class="link-button" data-action="open-display-settings">Régler l'affichage du menu</button></p>`;
     const originInfo = configured
       ? ""
       : `<p class="muted feature-origin-note">Ce club utilise encore sa configuration d'origine. Le premier changement sera enregistré uniquement pour ce club.</p>`;
@@ -15807,6 +15985,7 @@ ${esc(bodyText)}</pre>
       ${settingsCollapsibleBand("sport-categories", "Disciplines et catégories sportives", sportCategoriesBandSummary(), sportCategoriesBandBody())}
       ${settingsCollapsibleBand("group-age-policy", "Gestion des tranches d'âge", groupAgePolicyBandSummary(), groupAgePolicyBandBody())}
       ${settingsCollapsibleBand("display", "Affichage", displayModeSummary(), `<div class="settings-panel display-settings-panel">
+          <p class="muted">Ces réglages modifient uniquement la navigation et la présentation du logiciel. Ils n'activent ni ne désactivent les fonctionnalités du club.</p>
           <label class="layout-mode-select">
             <span><strong>Disposition de l'interface</strong><small>Choisissez entre l'affichage moderne actuel et une interface classique avec menus en haut.</small></span>
             <select data-action="set-layout-mode">
@@ -15817,32 +15996,28 @@ ${esc(bodyText)}</pre>
 
           <div class="settings-subsection">
             <h4>Mode d'affichage</h4>
-            <p class="muted">Choisissez la richesse de l'interface. Aucune donnée n'est supprimée : seuls les menus changent. Les vues masquées restent accessibles et fonctionnelles.</p>
+            <p class="muted">Choisissez la richesse de l'interface. Aucune donnée n'est supprimée. Ces réglages déterminent les pages proposées dans la navigation.</p>
             <div class="display-mode-row" style="display:flex;gap:8px;flex-wrap:wrap;margin:6px 0 2px">
-              ${displayModeButton("simple", "Simple", "Interface allégée pour les petits clubs")}
-              ${displayModeButton("advanced", "Avancé", "Tous les modules visibles")}
-              ${displayModeButton("custom", "Personnalisé", "Choisir précisément les modules visibles")}
+              ${displayModeButton("simple", "Simple", "Les pages essentielles")}
+              ${displayModeButton("advanced", "Avancé", "Toutes les pages disponibles")}
+              ${displayModeButton("custom", "Personnalisé", "Choisissez précisément les pages du menu")}
             </div>
           </div>
 
           <div class="settings-subsection">
-            <h4>Menus affichés dans ce mode</h4>
+            <h4>Visibilité du menu</h4>
             <p class="muted">${displaySettings().mode === "custom"
-              ? "Cochez les menus optionnels que vous souhaitez afficher. Les fonctions de base restent toujours visibles : Accueil, Recherche, E-mails, Documents sportifs, Paramètres et Aide."
-              : "Ce mode est prédéfini. Passez en <strong>Personnalisé</strong> pour modifier les menus optionnels. Les fonctions de base restent toujours visibles : Accueil, Recherche, E-mails, Documents sportifs, Paramètres et Aide."}</p>
+              ? "Cochez les pages optionnelles que vous souhaitez afficher dans le menu. Les fonctions de base restent toujours visibles : Accueil, Recherche, E-mails, Documents sportifs, Paramètres et Aide."
+              : "Ce mode est prédéfini. Passez en <strong>Personnalisé</strong> pour choisir précisément les pages du menu. Les fonctions de base restent toujours visibles : Accueil, Recherche, E-mails, Documents sportifs, Paramètres et Aide."}</p>
             ${displayVisibleModulesHtml()}
           </div>
 
           <div class="settings-subsection">
-            <h4>Options &amp; modules de données</h4>
+            <h4>Options d'interface</h4>
             <div class="settings-check-grid">
               ${displaySettingToggle("showAssistant", "Afficher le Centre d'accompagnement et les visites guidées", "Désactivez cette option si vous connaissez déjà le logiciel et ne souhaitez plus afficher les aides guidées.")}
               ${displaySettingToggle("toolbarLabels", "Texte sous les icônes", "Ajoute un petit libellé sous les boutons de la barre du haut.")}
-              ${displaySettingToggle("showStages", "Afficher les Stages lorsqu'ils sont activés", "Ce réglage masque ou affiche les écrans des Stages sans activer ni désactiver la fonctionnalité et sans modifier les données.")}
-              ${displaySettingToggle("showBoutique", "Afficher la Boutique lorsqu'elle est activée", "Ce réglage masque ou affiche les écrans de la Boutique sans activer ni désactiver la fonctionnalité et sans modifier les données.")}
             </div>
-            ${!hasFeature("stages") ? `<p class="muted feature-display-context">Les Stages sont actuellement désactivés dans Fonctionnalités du club. Ce réglage d'affichage sera conservé pour une prochaine réactivation.</p>` : ""}
-            ${!hasFeature("shop") ? `<p class="muted feature-display-context">La Boutique est actuellement désactivée dans Fonctionnalités du club. Ce réglage d'affichage sera conservé pour une prochaine réactivation.</p>` : ""}
           </div>
         </div>`)}
       ${settingsCollapsibleBand("menu-order", "Ordre du menu", menuOrderBandSummary(), `<div class="settings-panel menu-order-panel">
@@ -17047,6 +17222,11 @@ ${esc(bodyText)}</pre>
     const label = menuKeyLabel(key);
     const isCustomGroup = isCustomMenuGroup(key);
     const visible = isGroup ? true : isViewVisible(key);
+    // Lot K-C2B2 — distinguer « masqué par choix de menu » de « fonctionnalité désactivée » : même
+    // table que visibleModuleToggle (VISIBLE_MODULE_FEATURE_KEYS, src/15-memo-notes-help.js), jamais
+    // !isViewVisible(key) (qui confondrait les deux causes possibles de l'invisibilité).
+    const menuFeatureKey = !isGroup && typeof VISIBLE_MODULE_FEATURE_KEYS === "object" ? VISIBLE_MODULE_FEATURE_KEYS[key] : null;
+    const featureOff = Boolean(menuFeatureKey) && !hasFeature(menuFeatureKey);
     // Protection : rubrique custom → drapeau du groupe ; page → protection effective (couverte par une
     // rubrique protégée OU protégée individuellement). Le bouton cadenas agit sur le drapeau propre.
     const groupProtected = isCustomGroup && Boolean(customMenuGroups().find((g) => g.id === key)?.protected);
@@ -17059,8 +17239,13 @@ ${esc(bodyText)}</pre>
     const protectBtn = (isGroup && !isCustomGroup)
       ? "" // rubriques intégrées (Paramètres/Boutique) : protection non gérée dans ce lot
       : `<button type="button" class="menu-order-lock${selfProtected ? " is-on" : ""}" data-action="${isGroup ? "toggle-group-protection" : "toggle-view-protection"}" ${isGroup ? `data-group-id="${esc(key)}"` : `data-menu-key="${esc(key)}"`} aria-pressed="${selfProtected ? "true" : "false"}" title="${esc(lockLabel)}" aria-label="${esc(lockLabel)}"><span aria-hidden="true">${effectiveProtected ? "🔒" : "🔓"}</span></button>`;
+    // Lot K-C2B2 — fonctionnalité désactivée : le bouton ne doit jamais laisser croire qu'un clic
+    // réafficherait la page (le handler bloque déjà la mutation, ici c'est le rendu qui doit le dire).
+    const visLabel = featureOff
+      ? `Fonctionnalité ${label} désactivée — activez-la d'abord dans Fonctionnalités du club`
+      : (visible ? `Masquer la page ${label}` : `Afficher la page ${label}`);
     const visBtn = (!isGroup && canTogglePageVisibility(key))
-      ? `<button type="button" class="menu-order-vis" data-action="toggle-page-visibility" data-menu-key="${esc(key)}" aria-pressed="${visible ? "true" : "false"}" title="${visible ? `Masquer la page ${label}` : `Afficher la page ${label}`}" aria-label="${visible ? `Masquer la page ${label}` : `Afficher la page ${label}`}"><span aria-hidden="true">${visible ? "👁" : "🚫"}</span></button>`
+      ? `<button type="button" class="menu-order-vis" data-action="toggle-page-visibility" data-menu-key="${esc(key)}" aria-pressed="${visible ? "true" : "false"}" ${featureOff ? "disabled" : ""} title="${esc(visLabel)}" aria-label="${esc(visLabel)}"><span aria-hidden="true">${visible ? "👁" : "🚫"}</span></button>`
       : "";
     const iconBtn = `<button type="button" data-action="change-menu-icon" data-menu-key="${esc(key)}" title="Changer l'icône de ${esc(label)}" aria-label="Changer l'icône de ${esc(label)}"><span aria-hidden="true">🎨</span></button>`;
     const groupEditBtns = isCustomGroup
@@ -17074,7 +17259,7 @@ ${esc(bodyText)}</pre>
       <span class="menu-order-handle" aria-hidden="true">≡</span>
       <span class="menu-order-icon" aria-hidden="true">${menuIconSvg(key)}</span>
       <span class="menu-order-label">${esc(label)}</span>
-      ${!visible ? `<span class="menu-order-badge">masqué</span>` : ""}
+      ${!visible ? `<span class="menu-order-badge">${featureOff ? "fonctionnalité désactivée" : "masqué"}</span>` : ""}
       ${coveredByGroup ? `<span class="menu-order-badge menu-order-badge-lock" title="Cette rubrique protège toutes les pages qu'elle contient">protégée par la rubrique</span>` : ""}
       <div class="menu-order-btns">
         ${iconBtn}${protectBtn}${visBtn}${moveGroupBtn}
@@ -19328,6 +19513,12 @@ ${esc(bodyText)}</pre>
     // restituable après réactivation. Le scope global "all" (vidage complet explicitement confirmé)
     // n'est jamais concerné : désactiver une fonctionnalité ≠ masquer ≠ supprimer les données.
     if (["stages", "stage-registrations"].includes(scope) && !ensureFeatureEnabledForMutation("stages")) return;
+    // Lot K-D1 — même doctrine, UNIQUEMENT pour le scope explicitement dédié aux adhésions. Les
+    // scopes members/disciplines/groups/documents/accounting/comptabilite/all vident aussi
+    // state.memberships par cohérence, mais appartiennent à un autre domaine (Contacts, référentiel
+    // Disciplines, Groupes, Documents transversaux, Comptabilité historique, administration globale)
+    // et restent volontairement NON gardés par memberships (K-D0B).
+    if (scope === "memberships" && !ensureFeatureEnabledForMutation("memberships")) return;
     const info = resetScopeInfo(scope);
     const message = `${info.detail}\nSeul le club actif est concerné. Les autres clubs ne sont pas touchés.\nPense à exporter une sauvegarde JSON avant de supprimer. Action irréversible.`;
     // Club ciblé (Lot 2D) : capturé AVANT la confirmation protégée, qui est asynchrone (saisie du mot
@@ -19337,6 +19528,9 @@ ${esc(bodyText)}</pre>
     const targetClubId = activeClubId();
     if (!(await requestProtectedDangerAction(`Vider : ${info.label}`, message, `Vider ${info.label.toLowerCase()}`))) return;
     if (activeClubId() !== targetClubId) { ui.saveMessage = "Opération annulée : le club actif a changé."; render(); return; }
+    // Lot K-D1 — revalidation : requestProtectedDangerAction est asynchrone (saisie du mot de passe),
+    // la fonctionnalité a pu être désactivée pendant l'attente. Uniquement pour le scope memberships.
+    if (scope === "memberships" && !ensureFeatureEnabledForMutation("memberships")) return;
     recordHistory();
     applyResetScope(scope);
     persist(`Vidage : ${info.label}`);
@@ -19415,6 +19609,9 @@ ${esc(bodyText)}</pre>
       state.coachReplacements = [];
       (state.planningCourses || []).forEach((c) => { if (c.coachId) c.coachId = ""; });
       (state.groups || []).forEach((g) => { if (g.coachId) g.coachId = ""; });
+      // Lot K-T2B §31 — même geste symétrique que group.coachId ci-dessus, mutation cross-domain de
+      // cohérence (aucune garde Teams supplémentaire, exactement comme pour Groupes ici).
+      (state.teams || []).forEach((t) => { if (t.coachId) t.coachId = ""; });
     }
     if (scope === "coach-replacements") state.coachReplacements = [];
     if (scope === "rooms") {
@@ -22850,14 +23047,14 @@ ${esc(bodyText)}</pre>
         // au lieu que la section disparaisse silencieusement (c'était la cause probable du "je ne
         // trouve pas où ajouter une discipline" remonté par Thierry).
         ? `<section class="contact-recap-section">
-            <div class="dialog-mini-title"><h4>Disciplines</h4>${contact.id ? `<button type="button" data-action="add-contact-membership" data-contact-link="${esc(`member:${contact.id}`)}" title="Ajouter une nouvelle inscription discipline/groupe pour ce contact">+ Ajouter une inscription</button>` : ""}</div>
+            <div class="dialog-mini-title"><h4>Disciplines</h4>${(contact.id && hasFeature("memberships")) ? `<button type="button" data-action="add-contact-membership" data-contact-link="${esc(`member:${contact.id}`)}" title="Ajouter une nouvelle inscription discipline/groupe pour ce contact">+ Ajouter une inscription</button>` : ""}</div>
             ${memberships.length
               ? `<p class="muted">Un adhérent peut avoir plusieurs disciplines, tant que les horaires ne se chevauchent pas.</p><div class="contact-recap-list">${memberships.map(contactRecapMembership).join("")}</div>`
               : `<p class="contact-recap-empty">Aucune discipline enregistrée pour le moment.</p>`}
           </section>`
         : contactRecapSection("Disciplines", memberships, contactRecapMembership)}
-      ${contactRecapSection("Boutique", orders, contactRecapOrder, (isModuleEnabled("boutique") && hasFeature("shop")) ? "" : "Module désactivé — historique conservé. Réactivez le module pour ajouter de nouvelles données.")}
-      ${contactRecapSection("Stages", registrations, contactRecapRegistration, (isModuleEnabled("stages") && hasFeature("stages")) ? "" : "Module désactivé — historique conservé. Réactivez le module pour ajouter de nouvelles données.")}
+      ${contactRecapSection("Boutique", orders, contactRecapOrder, hasFeature("shop") ? "" : "Module désactivé — historique conservé. Réactivez le module pour ajouter de nouvelles données.")}
+      ${contactRecapSection("Stages", registrations, contactRecapRegistration, hasFeature("stages") ? "" : "Module désactivé — historique conservé. Réactivez le module pour ajouter de nouvelles données.")}
       ${invoiceRows.length ? `<section class="contact-recap-section">
         <h4>Factures</h4>
         <div class="contact-recap-kpis">
@@ -22950,7 +23147,7 @@ ${esc(bodyText)}</pre>
       <div class="contact-recap-main">
         <strong>${esc(titleText)}</strong>
         <span>${esc(subtitle || "Inscription discipline")}</span>
-        <button type="button" class="contact-recap-remove-btn" data-action="delete-membership" data-id="${esc(row.id)}" title="Retirer cette discipline de la fiche">Retirer</button>
+        ${hasFeature("memberships") ? `<button type="button" class="contact-recap-remove-btn" data-action="delete-membership" data-id="${esc(row.id)}" title="Retirer cette discipline de la fiche">Retirer</button>` : ""}
       </div>
       ${contactRecapStatus(entry.calc)}
       ${contactRecapAmounts(entry.calc)}
@@ -24414,8 +24611,10 @@ ${esc(bodyText)}</pre>
       const entry = firstContactModuleEntry(contact, module);
       // Inscription existante -> on l'ouvre ; sinon nouvelle inscription seedée avec le contact
       // (cohérent avec boutique/stages qui ouvrent déjà une nouvelle entrée quand il n'y en a pas).
+      // Lot K-D1 — CONSULTATION d'une adhésion existante : TOUJOURS autorisée, aucune garde ici,
+      // même memberships OFF. Seule la branche CRÉATION (aucune entry) est gardée.
       if (entry) openMembershipDialog(entry.row);
-      else openMembershipDialog(registrationSeedFromContact(contact, source.dataset.contactLink));
+      else if (ensureFeatureEnabledForMutation("memberships")) openMembershipDialog(registrationSeedFromContact(contact, source.dataset.contactLink));
       return;
     }
     if (module === "boutique") {
@@ -25016,6 +25215,12 @@ ${esc(bodyText)}</pre>
       identityPhotoDataUrl: row.identityPhotoDataUrl || contact.identityPhotoDataUrl || "",
       identityAvatarChoice: row.identityAvatarChoice || contact.identityAvatarChoice || "auto",
     };
+    // Lot K-D2 §12 — une inscription EXISTANTE ouverte alors qu'Adhésions est désactivé devient une
+    // vraie consultation lecture seule (même principe que openOrderDialog) : jamais un formulaire
+    // qu'on découvre bloqué seulement au clic Enregistrer. Une NOUVELLE inscription (row.id absent)
+    // n'atteint jamais ce point feature OFF (add-membership/add-contact-membership sont déjà gardés
+    // avant ouverture, K-D1) : readOnly ne peut donc être vrai que pour une inscription existante.
+    const readOnly = Boolean(row.id) && !hasFeature("memberships");
     // Dossier sportif : autorisation parentale et responsable légal ne concernent que les mineurs.
     // Adulte CONFIRMÉ (date de naissance connue et >= 18 ans) -> on masque ces champs. Mineur ou âge
     // inconnu -> on les affiche (prudent). La cohérence avec les alertes : isMinor (age<18) gère déjà
@@ -25096,7 +25301,14 @@ ${esc(bodyText)}</pre>
     ].join("");
     const footer = contactLinkAction(row);
     setNextWindowKey(row.id ? `membership:${row.id}` : null);
-    showDialog(row.id ? "Modifier l'inscription" : "Nouvelle inscription", body, (form, formElement) => {
+    showDialog(readOnly ? "Consulter l'inscription" : (row.id ? "Modifier l'inscription" : "Nouvelle inscription"), body, (form, formElement) => {
+      // Lot K-D1 — garde ABSOLUE, avant toute autre instruction : le dialogue a pu être ouvert
+      // (consultation légitime d'une adhésion existante, ou même une création déjà validée côté
+      // handler) pendant que memberships était ON, puis la fonctionnalité désactivée avant le clic
+      // Enregistrer. Aucune mutation (removeById/upsert/sync contact/paiement intégré/documents/
+      // discipline/groupe/assurance/remise) ne doit avoir lieu dans ce cas — return false, avant
+      // même la validation des champs requis.
+      if (!ensureFeatureEnabledForMutation("memberships")) return false;
       if (!validateRequiredContactLike(form, ["discipline", "lastName", "firstName", "email", "mobile", "address", "postalCode", "city", "birthDate"], "Veuillez remplir tous les champs obligatoires avant d'enregistrer l'inscription.")) return false;
       const keptDocumentIds = new Set([...formElement.querySelectorAll('input[name="existingDocuments"]')].map((input) => input.value));
       const documents = [
@@ -25323,7 +25535,7 @@ ${esc(bodyText)}</pre>
       form.elements.medicalCertificate?.addEventListener("change", update);
       form.elements.discount?.addEventListener("input", update);
       update();
-    }, footer);
+    }, footer, () => {}, "Enregistrer", { readOnly });
   }
 
   function updateMembershipFormAlerts(form) {
@@ -28487,7 +28699,7 @@ ${esc(bodyText)}</pre>
             <td><span class="st-badge ${st.cls}">${esc(st.label)}</span></td>
           </tr>`;
         }).join("")
-      : `<tr><td colspan="10" class="empty">${isModuleEnabled("boutique") ? "Aucun article dans la boutique." : "Module Boutique désactivé."}</td></tr>`;
+      : `<tr><td colspan="10" class="empty">${hasFeature("shop") ? "Aucun article dans la boutique." : "Module Boutique désactivé."}</td></tr>`;
 
     // --- Section « Articles à recommander » (stock faible, isStockLow inchangé) ---
     const lowRows = rows.filter((r) => isStockLow(r))
@@ -30018,6 +30230,10 @@ ${esc(bodyText)}</pre>
       persist();
     }
     if (target.dataset.stock) {
+      // K-B : garde AVANT toute écriture — ce listener "input" persiste réellement à chaque frappe
+      // (voir "change" plus bas pour le même contrat), donc la garder seulement sur "change" laisserait
+      // passer une première mutation.
+      if (!ensureFeatureEnabledForMutation("shop")) return;
       // Session Journal (Lot 5B) : amorcée au premier "input" d'une édition, jamais journalisée ici
       // (une frappe n'est jamais un événement) — voir finalizeShopItemInlineEdit sur "change".
       beginShopItemInlineEdit(target, target.dataset.index, target.dataset.stock);
@@ -30253,26 +30469,6 @@ ${esc(bodyText)}</pre>
       return;
     }
     if (target.dataset.displaySetting) {
-      // Lot 1 Modules désactivables — couper Boutique/Stages (modules FONCTIONNELS) retire
-      // leurs paiements de À faire, de l'agenda et de la comptabilité : refusé tant que des
-      // données actives existent (reste dû, stage à venir), sinon des dettes réelles
-      // deviendraient invisibles sans avertissement. Même gabarit que les suppressions
-      // protégées (disciplines/coachs/salles/groupes). Historique soldé : non bloquant.
-      // Garde AVANT recordHistory : un refus ne doit pas polluer l'undo. render() re-coche
-      // la case (le réglage n'ayant pas changé).
-      if (target.dataset.displaySetting === "showBoutique" && !target.checked) {
-        const activeOrders = (state.shopOrders || []).filter((order) => calcOrder(order).restDue > 0.005).length;
-        if (activeOrders) {
-          alert(`Impossible de désactiver le module Boutique : ${activeOrders} commande(s) ont encore un paiement à régulariser. Encaissez ou soldez-les d'abord.`);
-          render();
-          return;
-        }
-      }
-      // Lot 2D — showStages est désormais un réglage d'AFFICHAGE pur : masquer les écrans Stages est une
-      // opération NON destructive (aucune donnée, aucun calcul, aucune facture, aucun paiement retiré).
-      // L'ancien blocage « stages à venir / inscriptions impayées » a donc été retiré : la protection
-      // des données est portée par la FONCTIONNALITÉ (hasFeature + ensureFeatureEnabledForMutation),
-      // pas par l'affichage. La désactivation fonctionnelle, elle, ne modifie jamais showStages.
       recordHistory();
       settings.display = normalizeDisplaySettings(settings.display);
       settings.display[target.dataset.displaySetting] = Boolean(target.checked);
@@ -30295,9 +30491,15 @@ ${esc(bodyText)}</pre>
       return;
     }
     if (target.dataset.visibleModule) {
+      const key = target.dataset.visibleModule;
+      // Lot K-C2B — contrôle fonctionnellement disabled quand Shop/Stages est désactivé (§11-13).
+      // Garde AVANT recordHistory : un changement déclenché malgré l'attribut disabled (DOM périmé,
+      // console) ne doit ni muter visibleModules, ni polluer l'historique ; render() resynchronise
+      // l'état réel affiché (checked/disabled) si le DOM était périmé.
+      if (key === "boutique" && !hasFeature("shop")) { render(); return; }
+      if (key === "stages" && !hasFeature("stages")) { render(); return; }
       recordHistory();
       settings.display = normalizeDisplaySettings(settings.display);
-      const key = target.dataset.visibleModule;
       // Les modules protégés ne peuvent jamais être masqués (sécurité anti-blocage).
       if (!DISPLAY_FORCED_MODULES.includes(key)) {
         settings.display.visibleModules[key] = Boolean(target.checked);
@@ -30385,8 +30587,15 @@ ${esc(bodyText)}</pre>
       }
     }
     if (target.dataset.stockImage !== undefined) {
-      recordHistory();
-      await updateArticleImage(target);
+      if (!ensureFeatureEnabledForMutation("shop")) return;
+      const status = await updateArticleImage(target, () => {
+        if (!ensureFeatureEnabledForMutation("shop", { silent: true })) return false;
+        recordHistory();
+        return true;
+      });
+      // K-B2 : "empty" (aucun fichier image valide) et "blocked" (Shop désactivé pendant l'attente)
+      // ne persistent ni ne journalisent rien ; seul "updated" déclenche persist/render.
+      if (status !== "updated") return;
       persist("Image article mise à jour");
       render();
       return;
@@ -30399,6 +30608,11 @@ ${esc(bodyText)}</pre>
       return;
     }
     if (target.dataset.stock) {
+      // K-B : garde AVANT toute écriture. Cas de bascule pendant l'édition (session ouverte sur
+      // "input" quand Shop était ON, puis désactivé avant "change") volontairement traité comme les
+      // autres chemins K-B : aucune mutation, aucun persist, aucune finalisation d'audit ici — la
+      // session (WeakMap, clé = élément DOM) reste simplement non finalisée jusqu'au prochain render().
+      if (!ensureFeatureEnabledForMutation("shop")) return;
       recordHistory();
       updateStockArticle(target);
       persist();
@@ -30423,12 +30637,15 @@ ${esc(bodyText)}</pre>
   // session Journal reste ouverte), "focusout" (perte de focus réelle, capté même sans bouton
   // dédié) finalise quand même l'édition. Le cas normal (change déjà passé) ne trouve plus aucune
   // session ici — finalizeShopItemInlineEdit supprime toujours l'entrée avant tout calcul, donc un
-  // change suivi d'un focusout ne produit jamais qu'un seul événement.
+  // change suivi d'un focusout ne produit jamais qu'un seul événement. Si Shop a été désactivé
+  // entre l'input et la perte de focus, le repli ne doit pas contourner la garde du listener change ;
+  // mode silencieux pour ne pas afficher deux fois le même avertissement pendant une seule sortie.
   app.addEventListener("focusout", (event) => {
     const target = event.target;
-    if (target?.dataset?.stock) finalizeShopItemInlineEdit(target, target.dataset.stock);
+    if (target?.dataset?.stock && ensureFeatureEnabledForMutation("shop", { silent: true })) {
+      finalizeShopItemInlineEdit(target, target.dataset.stock);
+    }
   });
-
   // Lot Boutique -> Continuité (course de dialogue) : ferme un dialogue et ATTEND que son événement
   // natif "close" ait réellement été distribué, plutôt qu'une temporisation arbitraire. Nécessaire
   // car ce close() natif est différé par le navigateur (jamais synchrone, confirmé par isolation) —
@@ -31180,6 +31397,11 @@ ${esc(bodyText)}</pre>
     if (action === "toggle-page-visibility") {
       const key = button.dataset.menuKey;
       if (!key || displaySettings().mode !== "custom" || DISPLAY_FORCED_MODULES.includes(key) || key === "stock") return;
+      // Lot K-C2B — même garde que la case « Visibilité du menu » (§11-13) : Boutique/Stages non
+      // modifiables tant que leur fonctionnalité est désactivée, même depuis ce chemin alternatif
+      // (arbre « Ordre du menu »). visibleModules reste inchangé, aucun recordHistory.
+      if (key === "boutique" && !hasFeature("shop")) return;
+      if (key === "stages" && !hasFeature("stages")) return;
       recordHistory();
       settings.display = normalizeDisplaySettings(settings.display);
       settings.display.visibleModules[key] = !settings.display.visibleModules[key];
@@ -31370,7 +31592,6 @@ ${esc(bodyText)}</pre>
       return;
     }
     if (action === "open-contact-module") {
-      if (button.dataset.module === "boutique" && !isModuleEnabled("boutique")) return;
       // Module pilote Boutique (Lot 2B) : ouvrir une commande depuis un contact est une mutation.
       if (button.dataset.module === "boutique" && !ensureFeatureEnabledForMutation("shop")) return;
       // Module pilote Stages (Lot 2D) : ouvrir une inscription depuis un contact est une mutation métier
@@ -31391,7 +31612,6 @@ ${esc(bodyText)}</pre>
       return openContactModule(button);
     }
     if (action === "add-order-article-row") {
-      if (!isModuleEnabled("boutique")) return;
       if (!ensureFeatureEnabledForMutation("shop")) return;
       return addOrderArticleRow(button);
     }
@@ -31400,7 +31620,7 @@ ${esc(bodyText)}</pre>
     if (action === "remove-size-stock-row") return removeSizeStockRow(button);
     if (action === "show-size-stock-section") return showSizeStockSection(button);
     if (action === "toggle-stock-panel") {
-      if (!isModuleEnabled("boutique") || !hasFeature("shop")) return;
+      if (!isViewVisible("boutique")) return;
       const panel = button.dataset.panel;
       if (!ui.stockPanels) ui.stockPanels = {};
       ui.stockPanels[panel] = !ui.stockPanels[panel];
@@ -31638,7 +31858,11 @@ ${esc(bodyText)}</pre>
       render();
       return;
     }
-    if (action === "add-membership") return openMembershipDialog();
+    // Lot K-D1 — création structurelle d'une adhésion : gardée AVANT toute ouverture de dialogue
+    // (aucun formulaire de création inutile quand la fonctionnalité est désactivée). La consultation
+    // d'une adhésion EXISTANTE (edit-membership, juste en dessous) reste, elle, toujours ouvrable :
+    // la protection contre une modification structurelle vit dans openMembershipDialog.onSave.
+    if (action === "add-membership") return ensureFeatureEnabledForMutation("memberships") ? openMembershipDialog() : undefined;
     if (action === "edit-membership") return openMembershipDialog(state.memberships.find((row) => row.id === button.dataset.id));
     // Depuis la fiche contact : ajoute toujours une NOUVELLE inscription (jamais celle déjà
     // ouverte via le raccourci "Disciplines", qui ne réaffiche que la première trouvée) — permet
@@ -31646,6 +31870,7 @@ ${esc(bodyText)}</pre>
     if (action === "add-contact-membership") {
       const contact = contactByLink(button.dataset.contactLink);
       if (!contact) return;
+      if (!ensureFeatureEnabledForMutation("memberships")) return;
       return openMembershipDialog(registrationSeedFromContact(contact, button.dataset.contactLink));
     }
     // ---- Modules sport : Groupes / Planning / Présences / Documents ----
@@ -31676,6 +31901,88 @@ ${esc(bodyText)}</pre>
     }
     if (action === "view-group-members") {
       openGroupMembersDialog(button.dataset.id);
+      return;
+    }
+    // ---- Lot K-T2B — Équipes (moteur métier, aucune activation UI publique avant K-T3) ----
+    if (action === "add-team") {
+      if (!ensureFeatureEnabledForMutation("teams")) return;
+      return openTeamDialog();
+    }
+    if (action === "edit-team") {
+      // Lot K-T2B2 — openTeamDialog(team = {}) n'applique son défaut que pour `undefined`, jamais
+      // pour `null` : passer directement getTeamById(...) (qui peut renvoyer null) lèverait une
+      // exception au premier accès à team.id. Team introuvable = no-op propre, jamais un dialogue
+      // de création accidentel (la création reste exclusivement la responsabilité de add-team).
+      const team = getTeamById(button.dataset.id);
+      if (!team) return;
+      return openTeamDialog(team);
+    }
+    if (action === "toggle-archive-team") return toggleArchiveTeam(button.dataset.id);
+    if (action === "delete-team") {
+      if (!ensureFeatureEnabledForMutation("teams")) return;
+      const tm = getTeamById(button.dataset.id);
+      if (!tm) return;
+      const members = membershipsReferencingTeam(button.dataset.id).length;
+      if (members) {
+        alert(`Impossible de supprimer l'équipe « ${tm.name} » : ${members} adhérent(s) y sont encore affectés. Retirez-les d'abord de l'équipe, ou archivez-la.`);
+        return;
+      }
+      const targetClubId = activeClubId();
+      if (!await requestConfirm({ title: "Supprimer l'équipe", message: `Supprimer définitivement l'équipe « ${tm.name} » ?`, confirmLabel: "Supprimer", danger: true })) return;
+      // Lot K-T2B0B/K-T2B0C — double garde après confirmation asynchrone : feature revalidée, club
+      // cible revalidé (duplication de club = ids conservés, cf. K-T2B0B), Team retrouvée fraîchement,
+      // roster recompté par prudence (aucune référence stale jamais mutée).
+      if (!ensureFeatureEnabledForMutation("teams")) return;
+      if (activeClubId() !== targetClubId) { alert("Le club actif a changé pendant la confirmation. Réessayez."); return; }
+      const freshTeam = getTeamById(button.dataset.id);
+      if (!freshTeam) return;
+      const rosterAfter = membershipsReferencingTeam(button.dataset.id).length;
+      if (rosterAfter > 0) { alert(`Impossible de supprimer l'équipe « ${freshTeam.name} » : des adhérents y ont été affectés pendant la confirmation.`); return; }
+      recordHistory(); removeById(state.teams, button.dataset.id); persist("Équipe supprimée"); render();
+      return;
+    }
+    if (action === "add-member-to-team") {
+      // Mutation cross-domain Teams (doctrine K-T1C, classe B) : jamais de garde memberships.
+      if (!ensureFeatureEnabledForMutation("teams")) return;
+      const teamId = button.dataset.teamId;
+      const team = getTeamById(teamId);
+      if (!team || team.archived) return;
+      const membership = (state.memberships || []).find((m) => m.id === button.dataset.membershipId);
+      if (!membership) return;
+      if (asText(membership.disciplineId) !== asText(team.disciplineId)) return;
+      const current = Array.isArray(membership.teamIds) ? membership.teamIds : [];
+      if (current.includes(teamId)) return;
+      recordHistory();
+      // Ajout N<->N : jamais membership.teamIds = [teamId], toujours conserver les autres affectations.
+      membership.teamIds = [...new Set([...current, teamId])];
+      persist(`${personLabel(membership)} ajouté à l'équipe ${team.name}`);
+      render();
+      // Lot K-T3B — reflète immédiatement le nouvel état si le dialogue roster est ouvert, précédent
+      // EXACT de refreshGroupMembersDialog après add-selected-to-group/remove-member-from-group.
+      refreshTeamMembersDialog();
+      return;
+    }
+    if (action === "remove-member-from-team") {
+      // Mutation cross-domain Teams (doctrine K-T1C, classe B) : jamais de garde memberships.
+      // Team archivée : le retrait reste autorisé (nettoyage/administration d'une ancienne
+      // composition), seul l'AJOUT est bloqué sur une Team archivée.
+      if (!ensureFeatureEnabledForMutation("teams")) return;
+      const teamId = button.dataset.teamId;
+      const team = getTeamById(teamId);
+      if (!team) return;
+      const membership = (state.memberships || []).find((m) => m.id === button.dataset.membershipId);
+      if (!membership) return;
+      const current = Array.isArray(membership.teamIds) ? membership.teamIds : [];
+      if (!current.includes(teamId)) return;
+      recordHistory();
+      membership.teamIds = current.filter((tid) => tid !== teamId);
+      persist(`${personLabel(membership)} retiré de l'équipe ${team.name}`);
+      render();
+      refreshTeamMembersDialog();
+      return;
+    }
+    if (action === "view-team-members") {
+      openTeamMembersDialog(button.dataset.id);
       return;
     }
     if (action === "email-group") {
@@ -31781,13 +32088,18 @@ ${esc(bodyText)}</pre>
       const courses = coursesForCoach(button.dataset.id).length;
       const groups = (state.groups || []).filter((g) => !g.archived && g.coachId === button.dataset.id).length;
       const stages = (state.tariffs.stages || []).filter((s) => s.coachId === button.dataset.id && !stageIsPast(s)).length;
-      if (courses || groups || stages) {
+      // Lot K-T2B §30 — même précédent EXACT que les groupes actifs : une Team ACTIVE (non archivée)
+      // référençant ce coach bloque la suppression, indépendamment de hasFeature("teams") (intégrité
+      // des données ≠ visibilité de la feature, cf. doctrine K-T2B0 §5/§20). Archivage coach inchangé.
+      const teams = (state.teams || []).filter((t) => !t.archived && t.coachId === button.dataset.id).length;
+      if (courses || groups || teams || stages) {
         const impacts = [
           courses ? `${courses} créneau(x) planning` : "",
           groups ? `${groups} groupe(s)` : "",
+          teams ? `${teams} équipe(s)` : "",
           stages ? `${stages} stage(s) à venir` : "",
         ].filter(Boolean).join(", ");
-        alert(`Impossible de supprimer ${coachFullName(c)} : il est encore utilisé par ${impacts}. Archivez-le ou retirez-le d'abord des créneaux, groupes ou stages concernés.`);
+        alert(`Impossible de supprimer ${coachFullName(c)} : il est encore utilisé par ${impacts}. Archivez-le ou retirez-le d'abord des créneaux, groupes, équipes ou stages concernés.`);
         return;
       }
       if (!await requestConfirm({ title: "Supprimer le coach", message: `Supprimer définitivement ${coachFullName(c)} ?`, confirmLabel: "Supprimer", danger: true })) return;
@@ -32121,6 +32433,11 @@ ${esc(bodyText)}</pre>
       // le contact, lui, est conservé. Avertit en plus si des paiements sont déjà enregistrés sur
       // CETTE inscription (perdus avec elle si non facturés — une facture déjà émise reste
       // intacte, son montant est figé indépendamment de la membership source).
+      // Lot K-D1 — double garde. 1) avant toute confirmation : inutile de demander "es-tu sûr ?"
+      // pour une action de toute façon refusée. 2) revalidation juste avant la mutation réelle :
+      // requestConfirm est ASYNCHRONE, la fonctionnalité a pu être désactivée pendant l'attente
+      // (ON -> confirmation ouverte -> OFF -> utilisateur confirme) -> aucune suppression dans ce cas.
+      if (!ensureFeatureEnabledForMutation("memberships")) return;
       const row = state.memberships.find((m) => m.id === button.dataset.id);
       if (!row) return;
       const group = getGroupById(row.groupId);
@@ -32132,6 +32449,7 @@ ${esc(bodyText)}</pre>
       ];
       if (asNumber(calc.paid) > 0) lines.push(`Des paiements déjà enregistrés sur cette inscription (${money(calc.paid)}) seront supprimés avec elle.`);
       if (!await requestConfirm({ title: "Retirer l'inscription", message: lines.join("\n"), confirmLabel: "Retirer", danger: true })) return;
+      if (!ensureFeatureEnabledForMutation("memberships")) return;
       recordHistory();
       removeById(state.memberships, row.id);
       persist(`Inscription retirée : ${label}`);
@@ -32145,19 +32463,17 @@ ${esc(bodyText)}</pre>
       refreshOpenCourseEnrollmentDialogs();
       return;
     }
-    if (action === "add-order") return isModuleEnabled("boutique") && ensureFeatureEnabledForMutation("shop") ? openOrderDialog() : undefined;
-    if (action === "sell-article") return isModuleEnabled("boutique") && ensureFeatureEnabledForMutation("shop") ? openArticleSaleDialog(button.dataset.articleId) : undefined;
+    if (action === "add-order") return ensureFeatureEnabledForMutation("shop") ? openOrderDialog() : undefined;
+    if (action === "sell-article") return ensureFeatureEnabledForMutation("shop") ? openArticleSaleDialog(button.dataset.articleId) : undefined;
     if (action === "view-order") {
-      // Consultation : TOUJOURS autorisée, quel que soit l'état du paiement/facture. Lecture seule
-      // si la commande n'est pas modifiable, sinon formulaire d'édition (cf. openOrderForConsult).
-      // Aucune mutation ici : on n'exige pas ensureFeatureEnabledForMutation (pas une écriture).
-      if (!isModuleEnabled("boutique")) return;
+      // Consultation : TOUJOURS autorisée, quel que soit l'état du paiement/facture ou de la
+      // fonctionnalité/affichage. Lecture seule si la commande n'est pas modifiable, sinon formulaire
+      // d'édition (cf. openOrderForConsult). Aucune garde ici (ni mutation, ni display, ni feature).
       const order = state.shopOrders.find((row) => row.id === button.dataset.id);
       if (!order) return;
       return openOrderForConsult(order);
     }
     if (action === "edit-order") {
-      if (!isModuleEnabled("boutique")) return;
       if (!ensureFeatureEnabledForMutation("shop")) return;
       const order = state.shopOrders.find((row) => row.id === button.dataset.id);
       if (!order) return;
@@ -32212,6 +32528,7 @@ ${esc(bodyText)}</pre>
       return;
     }
     if (action === "regenerate-reference") {
+      if (!ensureFeatureEnabledForMutation("shop")) return;
       const index = Number(button.dataset.index);
       const article = state.tariffs.articles[index];
       if (!article) return;
@@ -32246,7 +32563,7 @@ ${esc(bodyText)}</pre>
       return;
     }
     if (action === "edit-stock-article") return ensureFeatureEnabledForMutation("shop") ? openStockArticleDialog(Number(button.dataset.index)) : undefined;
-    if (action === "edit-article-sizes") return openArticleSizeDialog(Number(button.dataset.index));
+    if (action === "edit-article-sizes") return ensureFeatureEnabledForMutation("shop") ? openArticleSizeDialog(Number(button.dataset.index)) : undefined;
     if (action === "move-article-image") {
       // En création, on agit sur le brouillon local (pas dans le state, pas de persist).
       const draftMode = button.dataset.articleDraft !== undefined;
@@ -32270,6 +32587,7 @@ ${esc(bodyText)}</pre>
         refreshDraftArticleImageEditor(form, article);
         return;
       }
+      if (!ensureFeatureEnabledForMutation("shop")) return;
       recordHistory();
       setArticleImages(article, nextImages, nextCaptions);
       persist("Images article réordonnées");
@@ -32301,6 +32619,7 @@ ${esc(bodyText)}</pre>
         refreshDraftArticleImageEditor(form, article);
         return;
       }
+      if (!ensureFeatureEnabledForMutation("shop")) return;
       recordHistory();
       setArticleImages(article, images, captions);
       persist("Image article supprimée");
@@ -33499,12 +33818,18 @@ ${esc(bodyText)}</pre>
     article.stockInitial = Object.values(article.sizeStock).reduce((sum, qty) => sum + asNumber(qty), 0);
   }
 
-  async function updateArticleImage(input) {
+  // K-B2 — retourne un statut à 3 valeurs (jamais un booléen) pour que l'appelant distingue :
+  // "empty" (aucun fichier valide -> rien à persister), "blocked" (Shop désactivé pendant l'attente
+  // asynchrone -> aucune mutation), "updated" (mutation réelle -> persist légitime). Un booléen ne
+  // permettait pas de distinguer "empty" de "updated" sans appeler beforeMutation() (donc
+  // recordHistory()) même quand aucune image n'avait été réellement ajoutée.
+  async function updateArticleImage(input, beforeMutation = () => true) {
     const article = state.tariffs.articles[Number(input.dataset.index)];
     const files = [...(input.files || [])];
-    if (!article || !files.length) return;
+    if (!article || !files.length) return "empty";
     const nextImages = articleImages(article);
     const nextCaptions = articleImageCaptions(article, nextImages.length);
+    let addedAny = false;
     for (const file of files) {
       if (!file.type.startsWith("image/")) {
         alert("Choisis uniquement des fichiers image.");
@@ -33512,8 +33837,15 @@ ${esc(bodyText)}</pre>
       }
       nextImages.push(await imageFileToDataUrl(file));
       nextCaptions.push("");
+      addedAny = true;
     }
+    if (!addedAny) return "empty";
+    // K-B2 : la conversion d'image est asynchrone. La fonctionnalité peut être désactivée pendant
+    // l'attente ; le callback revalide Shop et engage l'historique au moment exact de l'écriture,
+    // seulement si au moins une image a réellement été convertie.
+    if (beforeMutation() === false) return "blocked";
     setArticleImages(article, nextImages, nextCaptions);
+    return "updated";
   }
 
   function updateIdentityPhotoFile(input) {
@@ -33774,6 +34106,11 @@ ${esc(bodyText)}</pre>
       // d'administration et devenaient impossibles à archiver, renommer ou retirer — aucune
       // suppression physique de catégorie n'existe. On BLOQUE, on ne supprime jamais en cascade.
       sportCategoriesActive: 0, sportCategoriesArchived: 0,
+      // Lot K-T2B §28 — 7e collection référençante, découverte absente lors de l'audit K-T2B0 (§4/
+      // §5) : sans elle, une discipline référencée UNIQUEMENT par une Team était supprimable en
+      // laissant team.disciplineId orphelin. Même doctrine que les catégories sportives : bloquant
+      // par identifiant exclusivement, actif ET archivé, INDÉPENDANT de hasFeature("teams").
+      teamsActive: 0, teamsArchived: 0,
       active: 0, archived: 0, total: 0,
     };
     if (!did && !nameKey) return c;
@@ -33799,9 +34136,16 @@ ${esc(bodyText)}</pre>
         if (!belongsToClubScope(cat, clubId)) return;
         (cat.archived === true ? c.sportCategoriesArchived++ : c.sportCategoriesActive++);
       });
+      // Lot K-T2B §28 — Teams : même filtrage par identifiant exclusif + belongsToClubScope que les
+      // catégories sportives ci-dessus (Team ne porte aucun nom de discipline de repli).
+      (state.teams || []).forEach((tm) => {
+        if (!tm || asText(tm.disciplineId) !== did) return;
+        if (!belongsToClubScope(tm, clubId)) return;
+        (tm.archived === true ? c.teamsArchived++ : c.teamsActive++);
+      });
     }
-    c.active = c.memberships + c.groupsActive + c.coursesActive + c.coachesActive + c.roomsActive + c.sportCategoriesActive;
-    c.archived = c.groupsArchived + c.coursesArchived + c.coachesArchived + c.roomsArchived + c.sportCategoriesArchived;
+    c.active = c.memberships + c.groupsActive + c.coursesActive + c.coachesActive + c.roomsActive + c.sportCategoriesActive + c.teamsActive;
+    c.archived = c.groupsArchived + c.coursesArchived + c.coachesArchived + c.roomsArchived + c.sportCategoriesArchived + c.teamsArchived;
     c.total = c.active + c.archived;
     return c;
   }
@@ -33823,9 +34167,12 @@ ${esc(bodyText)}</pre>
     const coaches = blockers.coachesActive + blockers.coachesArchived;
     const rooms = blockers.roomsActive + blockers.roomsArchived;
     const categories = blockers.sportCategoriesActive + blockers.sportCategoriesArchived;
+    // Lot K-T2B §28
+    const teams = blockers.teamsActive + blockers.teamsArchived;
     const impacts = [
       blockers.memberships ? `${blockers.memberships} inscription(s)` : "",
       groups ? `${groups} groupe(s)` : "",
+      teams ? `${teams} équipe(s)` : "",
       courses ? `${courses} créneau(x) planning` : "",
       coaches ? `${coaches} coach(s)` : "",
       rooms ? `${rooms} salle(s)` : "",
@@ -33834,6 +34181,12 @@ ${esc(bodyText)}</pre>
     // Le participe s'accorde avec ce qui est RÉELLEMENT archivé (Lot 3B-3) : le masculin reste
     // l'accord correct d'un ensemble mixte, mais quand les seuls éléments archivés sont des
     // catégories sportives, « dont 1 archivé » serait une faute.
+    // Lot K-T2B — ligne volontairement INCHANGÉE (teamsArchived non inclus ici) : l'étendre aurait
+    // exigé de toucher tests/vocabulary-consistency.test.js (PL4, verrouillage littéral de cette
+    // ligne source), hors périmètre déclaré de ce lot. Limite cosmétique mineure acceptée : un
+    // blocage de suppression de discipline où SEULES des Teams archivées seraient en cause afficherait
+    // « archivé » (masculin) au lieu de « archivée » — accord correct côté catégories, à généraliser
+    // dans un futur lot si Pix le souhaite.
     const archivedFeminine = blockers.archived > 0 && blockers.archived === blockers.sportCategoriesArchived;
     const archivedNote = blockers.archived > 0
       ? ` (dont ${blockers.archived} archivé${archivedFeminine ? "e" : ""}${blockers.archived > 1 ? "s" : ""})`
@@ -33846,8 +34199,8 @@ ${esc(bodyText)}</pre>
     // La consigne de sortie ne mentionne les catégories QUE quand il y en a : proposer de « retirer
     // les catégories » alors qu'aucune n'existe désignerait une action sans objet.
     const howTo = categories
-      ? "Retirez-la d'abord des inscriptions, groupes, créneaux, coachs ou salles concernés (y compris archivés). Ses catégories sportives, elles, sont conservées avec la discipline : elles ne peuvent pas être détachées."
-      : "Retirez-la d'abord des inscriptions, groupes, créneaux, coachs ou salles concernés (y compris archivés).";
+      ? "Retirez-la d'abord des inscriptions, groupes, équipes, créneaux, coachs ou salles concernés (y compris archivés). Ses catégories sportives, elles, sont conservées avec la discipline : elles ne peuvent pas être détachées."
+      : "Retirez-la d'abord des inscriptions, groupes, équipes, créneaux, coachs ou salles concernés (y compris archivés).";
     return `Impossible de supprimer la discipline « ${name || "sans nom"} » : elle est encore utilisée par ${disciplineDeletionImpactSummary(blockers)}. ${howTo}`;
   }
 
@@ -33977,15 +34330,21 @@ ${esc(bodyText)}</pre>
   // change rien en pratique ; il évite qu'une ligne d'un autre club ne bloque jamais une suppression.
   function categoryReferenceCounts(category, clubId) {
     const cid = asText(category?.id);
-    const c = { memberships: 0, groupsActive: 0, groupsArchived: 0, active: 0, archived: 0, total: 0 };
+    // Lot K-T2B §29 — teamsActive/teamsArchived : découverte K-T2B0 §2 (absence confirmée), même
+    // doctrine que groupsActive/groupsArchived, indépendante de hasFeature("teams").
+    const c = { memberships: 0, groupsActive: 0, groupsArchived: 0, teamsActive: 0, teamsArchived: 0, active: 0, archived: 0, total: 0 };
     if (!cid) return c;
     c.memberships = (state.memberships || []).filter((m) => asText(m.sportCategoryId) === cid && belongsToClubScope(m, clubId)).length;
     (state.groups || []).forEach((g) => {
       if (asText(g.sportCategoryId) !== cid || !belongsToClubScope(g, clubId)) return;
       (g.archived ? c.groupsArchived++ : c.groupsActive++);
     });
-    c.active = c.memberships + c.groupsActive;
-    c.archived = c.groupsArchived;
+    (state.teams || []).forEach((tm) => {
+      if (asText(tm.sportCategoryId) !== cid || !belongsToClubScope(tm, clubId)) return;
+      (tm.archived ? c.teamsArchived++ : c.teamsActive++);
+    });
+    c.active = c.memberships + c.groupsActive + c.teamsActive;
+    c.archived = c.groupsArchived + c.teamsArchived;
     c.total = c.active + c.archived;
     return c;
   }
@@ -33995,18 +34354,24 @@ ${esc(bodyText)}</pre>
   // de chaque catégorie dans le dialogue de gestion.
   function categoryDeletionImpactSummary(blockers) {
     const groups = blockers.groupsActive + blockers.groupsArchived;
+    // Lot K-T2B §29
+    const teams = blockers.teamsActive + blockers.teamsArchived;
     const impacts = [
       blockers.memberships ? `${blockers.memberships} inscription(s)` : "",
       groups ? `${groups} groupe(s)` : "",
+      teams ? `${teams} équipe(s)` : "",
     ].filter(Boolean).join(", ");
+    // « équipe » est féminin : accord correct si les seuls éléments archivés sont des équipes (même
+    // doctrine que disciplineDeletionImpactSummary, cf. Lot 3B-3/K-T2B).
+    const archivedFeminine = blockers.archived > 0 && blockers.archived === blockers.teamsArchived;
     const archivedNote = blockers.archived > 0
-      ? ` (dont ${blockers.archived} archivé${blockers.archived > 1 ? "s" : ""})`
+      ? ` (dont ${blockers.archived} archivé${archivedFeminine ? "e" : ""}${blockers.archived > 1 ? "s" : ""})`
       : "";
     return `${impacts}${archivedNote}`;
   }
 
   function categoryDeletionBlockedMessage(categoryLabel, disciplineLabel, blockers) {
-    return `Impossible de supprimer la catégorie « ${categoryLabel || "sans nom"} » de la discipline « ${disciplineLabel || "sans nom"} » : elle est encore utilisée par ${categoryDeletionImpactSummary(blockers)}. Retirez-la d'abord des inscriptions ou groupes concernés (y compris archivés), ou archivez-la si elle est encore active.`;
+    return `Impossible de supprimer la catégorie « ${categoryLabel || "sans nom"} » de la discipline « ${disciplineLabel || "sans nom"} » : elle est encore utilisée par ${categoryDeletionImpactSummary(blockers)}. Retirez-la d'abord des inscriptions, groupes ou équipes concernés (y compris archivés), ou archivez-la si elle est encore active.`;
   }
 
   // PURE — suppose déjà vérifié blockers.total === 0. Supprime UNIQUEMENT la catégorie ciblée,
@@ -34172,7 +34537,6 @@ ${esc(bodyText)}</pre>
     removeById(state.memoRows, row.id);
     return true;
   }
-
 
   // =========================================================================
   // MODULES SPORT — Groupes, Planning, Présences, Documents sportifs
@@ -36537,6 +36901,273 @@ ${esc(bodyText)}</pre>
   }
 
   // =========================================================================
+  // MODULE ÉQUIPES (Lot K-T2B) — moteur métier complet, AUCUNE activation UI publique (K-T3).
+  // Architecture figée K-T2A/K-T2A2/K-T2B0/K-T2B0B/K-T2B0C :
+  //   - state.teams : id, name, disciplineId, coachId, sportCategoryId, archived, clubId (technique) ;
+  //   - roster : membership.teamIds (tableau, N<->N), totalement indépendant de membership.groupId ;
+  //   - aucun seasonId, aucun membershipIds sur Team, aucun teamId scalaire sur membership ;
+  //   - garde active-club LOCALE (jamais dans showDialog générique, cf. K-T2B0C) : capture à
+  //     l'ouverture, revalidation en tout début de onSave/avant toute mutation asynchrone.
+  // =========================================================================
+
+  function getTeamById(teamId) {
+    return (state.teams || []).find((team) => team.id === teamId) || null;
+  }
+
+  // Source de vérité du roster : EXCLUSIVEMENT membership.teamIds (jamais groupId, doctrine K-T1B/
+  // K-T1C — Groupes et Équipes restent deux relations indépendantes sur la même inscription).
+  function membershipsReferencingTeam(teamId) {
+    return (state.memberships || []).filter((m) => Array.isArray(m.teamIds) && m.teamIds.includes(teamId));
+  }
+
+  // Champs V1 strictement minimaux (Lot K-T2B §6) : nom, discipline (obligatoire), coach optionnel,
+  // catégorie sportive optionnelle. `archived` n'est jamais édité ici — cf. toggleArchiveTeam.
+  function openTeamDialog(team = {}) {
+    // Lot K-T2B0C — garde active-club LOCALE : capture au moment de l'ouverture (CREATE et EDIT),
+    // revalidée en tout début de onSave, avant toute autre validation ou mutation. showDialog
+    // générique reste intact (K-T2B0C §2/§12) : cette garde est propriété exclusive de ce dialogue.
+    const openedClubId = activeClubId();
+    const openedTeamId = team.id || "";
+    const body = [
+      field("name", "Nom de l'équipe *", team.name || "", "text", "required"),
+      disciplineSelectField("discipline", "Discipline", team),
+      sportCategorySelectField("sportCategoryId", team),
+      `<div data-coach-field>${coachPickerHtml(team.coachId, { disciplineId: team.disciplineId, discipline: team.discipline }, team.coach, "Coach / encadrant")}</div>`,
+    ].join("");
+    const readOnly = Boolean(team.id) && !hasFeature("teams");
+    setNextWindowKey(team.id ? `team:${team.id}` : null);
+    showDialog(readOnly ? "Consulter l'équipe" : (team.id ? "Modifier l'équipe" : "Nouvelle équipe"), body, (data, form) => {
+      // 1) Garde active-club — AVANT toute autre validation (K-T2B0C).
+      if (activeClubId() !== openedClubId) {
+        alert("Le club actif a changé depuis l'ouverture de ce formulaire. Rouvrez-le pour continuer.");
+        return false;
+      }
+      // 2) Garde feature — même si le dialogue a été ouvert quand Teams était ON (doctrine K-D1).
+      //    Jamais de garde memberships ici (roster/CRUD Team = mutation cross-domain, cf. K-T1C).
+      if (!ensureFeatureEnabledForMutation("teams")) return false;
+      // 3) Revalidation fraîche en édition — jamais de mutation sur une référence capturée à
+      //    l'ouverture (K-T2B0C §5/§9).
+      let current = null;
+      if (openedTeamId) {
+        current = (state.teams || []).find((t) => t.id === openedTeamId);
+        if (!current) { alert("Cette équipe n'existe plus."); return false; }
+      }
+      const name = asText(data.get("name"));
+      if (!name) { alert("Le nom de l'équipe est obligatoire."); return false; }
+      const teamTarget = disciplineTargetFromSelectValue(data.get("discipline"), current || team);
+      if (!teamTarget.disciplineId) { alert("La discipline est obligatoire."); return false; }
+      const previousDisciplineId = asText(current ? current.disciplineId : "");
+      // Lot K-T2B §13 — changement de discipline BLOQUÉ si le roster n'est pas vide : aucune perte
+      // silencieuse, aucune confirmation destructive, aucun nettoyage automatique du roster.
+      if (current && previousDisciplineId && previousDisciplineId !== teamTarget.disciplineId) {
+        const rosterCount = membershipsReferencingTeam(openedTeamId).length;
+        if (rosterCount > 0) {
+          alert(`Impossible de changer la discipline de l'équipe « ${current.name || name} » : ${rosterCount} adhérent(s) y sont encore affectés. Retirez d'abord les membres de l'équipe avant de modifier sa discipline.`);
+          return false;
+        }
+      }
+      // Coach optionnel — même règle de compatibilité qu'un Groupe, ni plus stricte ni plus permissive.
+      const teamCoachId = asText(data.get("coachId"));
+      if (teamCoachId) {
+        const linkedCoach = coachById(teamCoachId);
+        if (linkedCoach && !coachHandlesDiscipline(linkedCoach, teamTarget)) {
+          alert(`${coachFullName(linkedCoach)} ne prend pas en charge la discipline « ${teamTarget.discipline || ""} ». Choisis un coach compatible ou change la discipline.`);
+          return false;
+        }
+      }
+      // Catégorie sportive — réutilisation intégrale de la même doctrine que Groupes.
+      const categoryChoice = readSportCategoryAssignmentValue(data.get("sportCategoryId"));
+      const previousCategoryId = asText(current ? current.sportCategoryId : "");
+      const nextCategoryId = categoryChoice.keep ? previousCategoryId : categoryChoice.categoryId;
+      const categoryError = validateSportCategoryAssignment(
+        nextCategoryId, teamTarget.disciplineId, state, activeClubId(),
+        previousCategoryId, previousDisciplineId,
+      );
+      if (categoryError) { alert(categoryError); return false; }
+      const next = {
+        id: current ? current.id : id("team"),
+        name,
+        disciplineId: teamTarget.disciplineId,
+        coachId: teamCoachId,
+        sportCategoryId: nextCategoryId,
+        archived: current ? Boolean(current.archived) : false,
+        clubId: activeClubId(),
+      };
+      state.teams = state.teams || [];
+      upsert(state.teams, next);
+      return `${current ? "Modification" : "Création"} de l'équipe ${name}`;
+    }, (form) => {
+      // Re-filtre la liste des coachs selon la discipline choisie (même comportement que Groupes).
+      form.elements.discipline?.addEventListener("change", () => {
+        const wrap = form.querySelector("[data-coach-field]");
+        if (!wrap) return;
+        const newTarget = disciplineTargetFromSelectValue(form.elements.discipline.value, team);
+        const currentId = form.querySelector("[data-coach-select]")?.value || "";
+        const currentCoach = currentId ? coachById(currentId) : null;
+        const keepId = (currentCoach && coachHandlesDiscipline(currentCoach, newTarget)) ? currentId : "";
+        wrap.innerHTML = coachPickerHtml(keepId, newTarget, form.elements.coach?.value || "", "Coach / encadrant");
+        refreshSportCategoryFieldForDiscipline(form, "sportCategoryId", newTarget.disciplineId, team.sportCategoryId, team.disciplineId);
+      });
+    }, "", () => {}, "Enregistrer", { readOnly });
+  }
+
+  // Archivage : toggle simple si roster vide (symétrique de toggleArchiveGroup) ; confirmation
+  // explicite si roster non vide (la Team reste liée à ces memberships après archivage — archiver
+  // NE SUPPRIME JAMAIS teamIds). Garde active-club LOCALE autour de la confirmation asynchrone
+  // (double garde, doctrine K-D1/K-T2B0B/K-T2B0C) : la Team peut avoir changé de club entre
+  // l'ouverture de la confirmation et sa résolution (duplication de club avec ids conservés).
+  async function toggleArchiveTeam(teamId) {
+    if (!ensureFeatureEnabledForMutation("teams")) return;
+    const team = getTeamById(teamId);
+    if (!team) return;
+    const count = membershipsReferencingTeam(teamId).length;
+    if (!team.archived && count > 0) {
+      const targetClubId = activeClubId();
+      const ok = await requestConfirm({ title: "Archiver l'équipe", message: `${count} adhérent(s) sont liés à cette équipe. L'archiver le masque sans supprimer les liens. Continuer ?`, confirmLabel: "Archiver" });
+      if (!ok) return;
+      if (!ensureFeatureEnabledForMutation("teams")) return;
+      if (activeClubId() !== targetClubId) { alert("Le club actif a changé pendant la confirmation. Réessayez."); return; }
+      const freshTeam = getTeamById(teamId);
+      if (!freshTeam) return;
+      recordHistory(); freshTeam.archived = true; persist("Équipe archivée"); render();
+      return;
+    }
+    // Réactivation, ou archivage sans roster : entièrement synchrone, aucune garde club nécessaire
+    // (§11 K-T2B0B — pas d'attente asynchrone à protéger).
+    recordHistory(); team.archived = !team.archived; persist(team.archived ? "Équipe archivée" : "Équipe réactivée"); render();
+  }
+
+  // =========================================================================
+  // Lot K-T3B — PAGE + ROSTER ÉQUIPES, complets mais NON PUBLICS (FEATURE_REGISTRY.teams.ui.available
+  // reste false, views reste [] — cf. K-T3A/K-T3A2). Aucune route ui.view n'est ajoutée dans ce lot :
+  // ces fonctions ne sont appelables que directement (harness/tests), jamais depuis le menu.
+  // =========================================================================
+
+  function renderTeams() {
+    const activeTeams = (state.teams || []).filter((t) => !t.archived);
+    const archivedTeams = (state.teams || []).filter((t) => t.archived);
+    const cards = activeTeams.map(teamCardHtml).join("") || ((state.teams || []).length === 0
+      ? `<div class="empty"><p>Aucune équipe créée.</p><button type="button" class="primary" data-action="add-team">Nouvelle équipe</button></div>`
+      : `<p class="muted">Toutes les équipes sont archivées. Crée une nouvelle équipe ou réactive une équipe archivée.</p>`);
+    return `
+      ${toolbar("add-team", "Nouvelle équipe", `<span class="muted">${activeTeams.length} équipe${activeTeams.length > 1 ? "s" : ""}</span>`)}
+      <div class="band">
+        <div class="band-title"><h2>Équipes</h2></div>
+        <div class="group-grid team-grid">${cards}</div>
+      </div>
+      ${archivedTeams.length ? `<div class="band"><div class="band-title"><h2>Équipes archivées</h2><strong>${archivedTeams.length}</strong></div>
+        <div class="group-grid team-grid">${archivedTeams.map(teamCardHtml).join("")}</div></div>` : ""}`;
+  }
+
+  // Informations UNIQUEMENT disponibles sur le modèle Team (K-T2A) : nom, discipline, catégorie
+  // sportive, coach, nombre de membres. Aucun âge, aucune capacité max, aucune saison, aucun score,
+  // aucune rencontre, aucun planning — ces notions n'existent pas sur Team (doctrine K-T1/K-T3A).
+  // Lot K-T3B2 — réutilise STRICTEMENT les classes CSS Groupes déjà présentes en feuille de style
+  // (group-card/group-card-head/...), sans aucune modification de budo-electron/styles.css ni
+  // budo-app/styles.css : les classes team-* n'ajoutent qu'un repère sémantique dans le DOM (Groupes
+  // et Équipes restent deux entités visuellement distinctes dans le code, jamais dans le style).
+  function teamCardHtml(team) {
+    const categoryLabel = sportCategoryAssignmentLabel(team.sportCategoryId, team.disciplineId, state, activeClubId());
+    const memberCount = membershipsReferencingTeam(team.id).length;
+    return `<div class="group-card team-card paper ${team.archived ? "group-archived team-archived" : ""}">
+      <div class="group-card-head team-card-head">
+        <h3>${esc(team.name)}</h3>
+        <span class="cap-badge">${memberCount} membre${memberCount > 1 ? "s" : ""}</span>
+      </div>
+      <div class="group-card-meta team-card-meta">
+        <span>${esc(disciplineLabelFor(team) || "Équipe sans discipline")}</span>
+        ${categoryLabel ? `<span class="sport-category-tag">· ${esc(categoryLabel)}</span>` : ""}
+        ${coachLabelFor(team.coachId, "") ? `<span>· Coach ${esc(coachLabelFor(team.coachId, ""))}</span>` : ""}
+      </div>
+      <div class="group-card-actions team-card-actions">
+        <button type="button" data-action="view-team-members" data-id="${esc(team.id)}">Membres +/−</button>
+        <button type="button" data-action="edit-team" data-id="${esc(team.id)}">Modifier</button>
+        <button type="button" data-action="toggle-archive-team" data-id="${esc(team.id)}">${team.archived ? "Réactiver" : "Archiver"}</button>
+        <button type="button" class="icon danger" data-action="delete-team" data-id="${esc(team.id)}" title="Supprimer définitivement (si aucun adhérent lié)">×</button>
+      </div>
+    </div>`;
+  }
+
+  // =========================================================================
+  // GESTION DES MEMBRES D'UNE ÉQUIPE (dialogue) — précédent EXACT : groupMembersDialogBody /
+  // openGroupMembersDialog / refreshGroupMembersDialog. Source de vérité : membership.teamIds
+  // (N<->N, jamais groupId — doctrine K-T1B/K-T1C, inchangée ici).
+  // =========================================================================
+
+  // Candidats : membership existante, même discipline QUE la Team (comparaison canonique par id,
+  // identique à la garde du moteur add-member-to-team), id de Team absent de membership.teamIds.
+  // Une membership déjà présente dans une AUTRE Team reste candidate (N<->N, jamais exclue).
+  // membership.groupId n'est JAMAIS lu ici : Groupes et Équipes restent deux relations indépendantes.
+  // Aucune lecture de hasFeature("memberships") : Teams ON + Memberships OFF doit continuer à
+  // proposer les memberships historiques (doctrine K-T1C/K-T2B, cf. K-T3A §12).
+  function teamMemberCandidates(teamId) {
+    const team = getTeamById(teamId);
+    if (!team) return [];
+    return (state.memberships || [])
+      .filter((m) => asText(m.disciplineId) === asText(team.disciplineId) && !(Array.isArray(m.teamIds) && m.teamIds.includes(teamId)))
+      .sort((a, b) => personLabel(a).localeCompare(personLabel(b), "fr", { sensitivity: "base" }));
+  }
+
+  function teamMembersDialogBody(teamId) {
+    const team = getTeamById(teamId);
+    if (!team) return `<p class="muted">Équipe introuvable.</p>`;
+    const members = membershipsReferencingTeam(teamId);
+    // Team archivée : l'UI reflète directement la règle moteur (add-member-to-team bloque déjà si
+    // team.archived) — aucune candidate n'est proposée, jamais un bouton qui échouerait au clic.
+    const candidates = team.archived ? [] : teamMemberCandidates(teamId);
+
+    const membersHtml = members.length
+      ? `<div class="group-member-list team-member-list">${members.map((m) => `
+          <div class="group-member-row team-member-row">
+            <div class="group-member-id team-member-id">
+              <strong>${esc(personLabel(m))}</strong>
+              <span class="muted">${esc(m.discipline || "")}</span>
+            </div>
+            <button type="button" class="danger small" data-action="remove-member-from-team" data-team-id="${esc(teamId)}" data-membership-id="${esc(m.id)}">Retirer</button>
+          </div>`).join("")}</div>`
+      : `<p class="muted">Aucun membre dans cette équipe pour l'instant.</p>`;
+
+    const candidatesHtml = team.archived
+      ? `<p class="muted">Cette équipe est archivée : elle ne peut plus recevoir de nouveaux membres. Vous pouvez toujours retirer des membres ci-dessus.</p>`
+      : (candidates.length
+        ? `<div class="group-member-list team-member-list">${candidates.map((m) => `
+            <div class="group-member-row team-member-row">
+              <div class="group-member-id team-member-id">
+                <strong>${esc(personLabel(m))}</strong>
+                <span class="muted">${esc(m.discipline || "")}</span>
+              </div>
+              <button type="button" class="small" data-action="add-member-to-team" data-team-id="${esc(teamId)}" data-membership-id="${esc(m.id)}">Ajouter à l'équipe</button>
+            </div>`).join("")}</div>`
+        : `<p class="muted">Aucun adhérent disponible pour cette discipline.</p>`);
+
+    return `<div data-team-members-dialog data-team-id="${esc(teamId)}">
+      <div class="dialog-section group-members-current team-members-current">
+        <h3>Membres de l'équipe (${members.length})</h3>
+        ${membersHtml}
+      </div>
+      <div class="dialog-section group-members-add team-members-add">
+        <h3>Ajouter des membres</h3>
+        ${candidatesHtml}
+      </div>
+    </div>`;
+  }
+
+  function openTeamMembersDialog(teamId) {
+    const team = getTeamById(teamId);
+    showInfoDialog(team ? `${team.name}` : "Équipe", teamMembersDialogBody(teamId));
+  }
+
+  // Reconstruit le contenu du dialogue ouvert sans le refermer (après ajout/retrait) — précédent
+  // EXACT : refreshGroupMembersDialog.
+  function refreshTeamMembersDialog() {
+    const root = document.querySelector("[data-team-members-dialog]");
+    if (!root) return;
+    const teamId = root.dataset.teamId;
+    const host = root.closest(".dialog-body") || root.parentElement;
+    if (host) host.innerHTML = teamMembersDialogBody(teamId);
+  }
+
+  // =========================================================================
   // MODULE COACHS — intervenants du club (multi-club)
   // state.coaches : identité, spécialités (disciplines), disponibilités hebdo,
   // indisponibilités ponctuelles. Utilisé par le planning pour filtrer les coachs.
@@ -37935,6 +38566,9 @@ ${esc(bodyText)}</pre>
       difficulty: "moyen",
       estimateMinutes: 2,
       view: "disciplines",
+      // Lot K-D1 — propose une CRÉATION d'adhésion : ne doit plus être proposée quand memberships
+      // est désactivé (assistantStepVisible consulte déjà step.module séparément de visibleIf).
+      module: "memberships",
       cta: { action: "add-membership", label: "Créer une inscription" },
       visibleIf: ["module-visible", "step-incomplete"],
       done: () => (state.memberships || []).length > 0,
@@ -38125,6 +38759,10 @@ ${esc(bodyText)}</pre>
     "inscrire-adherent": {
       id: "inscrire-adherent", category: "sport", label: "Inscrire un adhérent",
       summary: "Inscrivez une personne à une discipline : MonGestaClub calcule cotisation, licence, assurance et total tout seul.", estimateMinutes: 2,
+      // Lot K-D1 — cette visite fait cliquer sur "Nouvelle inscription" (advanceOn ci-dessous) et
+      // ouvre un formulaire de CRÉATION : à ne plus proposer quand memberships est désactivé.
+      // "disciplines-comprendre" (visite précédente, purement explicative) reste, elle, inchangée.
+      module: "memberships",
       view: "disciplines", helpAnchor: "help-disciplines", priority: 68, next: ["premiere-facture"],
       segments: [
         { view: "disciplines", anchor: "[data-action='add-membership']",
@@ -38688,7 +39326,10 @@ ${esc(bodyText)}</pre>
     },
     {
       id: "members-without-discipline",
-      when: () => ((state.contacts && state.contacts.members) || []).length > 0 && (state.memberships || []).length === 0,
+      // Lot K-D1 — propose une CRÉATION d'adhésion (cta.action: "add-membership") : ajout de
+      // hasFeature("memberships") à la condition existante, patron déjà utilisé ailleurs pour ce
+      // champ "when" (fonction prédicat arbitraire, pas de mécanisme visibleIf partagé ici).
+      when: () => ((state.contacts && state.contacts.members) || []).length > 0 && (state.memberships || []).length === 0 && hasFeature("memberships"),
       title: "Enregistrez une première inscription",
       body: "Vos adhérents sont là : inscrivez-les à une discipline pour suivre paiements et présences.",
       cta: { tour: "creer-membre", action: "add-membership", label: "Créer une inscription" },
@@ -38762,6 +39403,10 @@ ${esc(bodyText)}</pre>
       priority: 80,
       difficulty: "moyen",
       estimateMinutes: 2,
+      // Lot K-D1B — le CTA propose une création d'inscription (outil métier Adhésions) : gardé via
+      // `module` (consommé par emptyStateHtml, même mécanisme que assistantStepVisible/TourVisible).
+      // Le texte pédagogique et « En savoir plus », eux, restent toujours affichés.
+      module: "memberships",
       cta: { first: { action: "add-membership", label: "Créer ma première inscription" }, more: { action: "add-membership", label: "Créer une autre inscription" } },
       media: {},
       visibleIf: ["module-visible"],
@@ -39010,6 +39655,18 @@ ${esc(bodyText)}</pre>
     return updateAssistantSettings({ itemStates });
   }
 
+  // Lot K-C2A — remplace l'ancienne fonction "isModuleEnabled" (retirée) pour les conditions génériques de
+  // l'assistant. Contrat volontairement identique à l'ancien comportement pour toute clé NON
+  // enregistrée (retourne true, comme avant) — seules les clés de fonctionnalité RÉELLEMENT
+  // enregistrées (shop/stages, alias "boutique" inclus) suivent désormais hasFeature. Ne pas
+  // remplacer mécaniquement par hasFeature seule : une clé de module future non enregistrée
+  // (ex. "planning") doit rester permise, jamais bloquée par erreur.
+  function assistantModuleFeatureEnabled(module) {
+    if (!module) return true;
+    if (typeof resolveFeatureKey === "function" && resolveFeatureKey(module)) return hasFeature(module);
+    return true;
+  }
+
   // ===================================================================================
   // Conditions déclaratives (visibleIf) — aucune logique dispersée
   // ===================================================================================
@@ -39021,7 +39678,7 @@ ${esc(bodyText)}</pre>
         case "assistant-enabled": return assistantFeatureEnabled();
         case "not-quiet": return !isAssistantQuiet();
         case "module-visible": return ctx.view ? (typeof isViewVisible === "function" ? isViewVisible(ctx.view) : true) : true;
-        case "module-enabled": return ctx.module ? (typeof isModuleEnabled === "function" ? isModuleEnabled(ctx.module) : true) : true;
+        case "module-enabled": return ctx.module ? assistantModuleFeatureEnabled(ctx.module) : true;
         case "step-incomplete": return ctx.done === false;
         case "step-complete": return ctx.done === true;
         case "not-dismissed": return ctx.itemId ? getAssistantItemState(ctx.itemId) !== "dismissed" : true;
@@ -39039,7 +39696,7 @@ ${esc(bodyText)}</pre>
 
   function assistantStepVisible(step) {
     if (!step) return false;
-    if (step.module && typeof isModuleEnabled === "function" && !isModuleEnabled(step.module)) return false;
+    if (step.module && !assistantModuleFeatureEnabled(step.module)) return false;
     if (step.view && typeof isViewVisible === "function" && !isViewVisible(step.view)) return false;
     // visibleIf complémentaire (déclaratif). On exclut volontairement "step-incomplete"
     // de ce filtre de PERTINENCE pour ne pas casser le calcul de progression (qui a
@@ -39175,7 +39832,10 @@ ${esc(bodyText)}</pre>
     const def = ASSISTANT_EMPTY_STATES[key];
     if (!def) return `<div class="empty">${esc(opts.fallback || ASSISTANT_STRINGS.emptyFallback)}</div>`;
     const count = Number.isFinite(opts.count) ? opts.count : 0;
-    const cta = assistantCtaButtonHtml(resolveAssistantCta(def.cta, { count, view: opts.view }));
+    // Lot K-D1B — un état vide dont le CTA crée un objet métier gardé par une fonctionnalité (ex.
+    // Adhésions) déclare `def.module` ; le texte/« En savoir plus » restent, seul le CTA disparaît.
+    const moduleAllowed = !def.module || assistantModuleFeatureEnabled(def.module);
+    const cta = moduleAllowed ? assistantCtaButtonHtml(resolveAssistantCta(def.cta, { count, view: opts.view })) : "";
     const why = asText(def.why);
     const anchor = ASSISTANT_EMPTY_HELP[key];
     // « En savoir plus » ouvre la rubrique correspondante dans l'Aide (documentation).
@@ -39206,7 +39866,7 @@ ${esc(bodyText)}</pre>
   // Visite pertinente pour le club actif (mode + modules).
   function assistantTourVisible(tour) {
     if (!tour) return false;
-    if (tour.module && typeof isModuleEnabled === "function" && !isModuleEnabled(tour.module)) return false;
+    if (tour.module && !assistantModuleFeatureEnabled(tour.module)) return false;
     if (tour.view && typeof isViewVisible === "function" && !isViewVisible(tour.view)) return false;
     return true;
   }
@@ -40292,9 +40952,9 @@ ${esc(bodyText)}</pre>
       if (soon && isViewVisible("documents")) items.push({ label: `${soon} document${soon > 1 ? "s" : ""} expire${soon > 1 ? "nt" : ""} bientôt`, view: "documents" });
     } catch (e) {}
     try {
-      // Lot 2D — élément actionnable menant à la vue Stages : masqué quand la fonctionnalité est
+      // Lot 2D/K-C2A — élément actionnable menant à la vue Stages : masqué quand la fonctionnalité est
       // désactivée ou l'affichage coupé (évite un lien vers une vue invisible / une redirection).
-      if (isModuleEnabled("stages") && hasFeature("stages")) {
+      if (isViewVisible("stages")) {
         const upcoming = (state.tariffs.stages || []).filter((s) => { const d = dateInputValue(s.startDate); return d && d >= today; }).length;
         if (upcoming) items.push({ label: `${upcoming} stage${upcoming > 1 ? "s" : ""} à venir`, view: "stages" });
       }
@@ -44717,14 +45377,14 @@ ${esc(bodyText)}</pre>
       ["groups", "Groupes ou cours", "Disponible dans cet assistant (étape suivante)."],
       ["individual", "Pratique individuelle", "Suivi individuel des adhérents."],
       ["categories", "Catégories", "Sera disponible dans une prochaine étape de configuration."],
-      ["teams", "Équipes", "Sera disponible dans une prochaine étape de configuration."],
-      ["seasons", "Saisons", "Sera disponible dans une prochaine étape de configuration."],
+      ["teams", "Équipes", "Disponible : activez-la à l'étape Fonctionnalités, puis gérez vos équipes depuis la page Équipes."],
+      ["seasons", "Saisons", "Se configure dans Paramètres > Données."],
       ["competitions", "Rencontres / compétitions", "Sera disponible dans une prochaine étape de configuration."],
     ];
     const levelLabel = { primary: "Principal", recommended: "Recommandé", optional: "Optionnel", off: "Non concerné" };
     const list = rows.map(([key, label, note]) => {
       const lvl = org[key] || "off";
-      const future = ["teams", "seasons", "competitions", "categories"].includes(key);
+      const future = ["competitions", "categories"].includes(key);
       return `<li class="wizard-org-row">
         <span class="wizard-org-label">${esc(label)}</span>
         <span class="wizard-org-level wizard-org-${esc(lvl)}">${esc(levelLabel[lvl] || "Optionnel")}</span>
@@ -44734,7 +45394,7 @@ ${esc(bodyText)}</pre>
     return `<div class="wizard-org">
       <p class="muted">D'après vos activités, voici l'organisation recommandée. Les éléments à venir sont indiqués honnêtement et ne sont pas activés dans cette version.</p>
       <ul class="wizard-org-list">${list}</ul>
-      <p class="muted">Vous pourrez créer des groupes ou cours et des installations dans les étapes suivantes. Les équipes, saisons et rencontres seront ajoutées ultérieurement.</p>
+      <p class="muted">Vous pourrez créer des groupes ou cours et des installations dans les étapes suivantes. Les équipes se configurent via les Fonctionnalités puis la page Équipes. Les saisons se configurent dans Paramètres > Données. Les rencontres seront disponibles ultérieurement.</p>
     </div>`;
   }
 
@@ -44796,7 +45456,7 @@ ${esc(bodyText)}</pre>
     </li>`).join("");
     return `<div class="wizard-groups">
       <p class="muted">Étape facultative. Créez vos premiers groupes, cours ou groupes d'entraînement.</p>
-      ${isTeamSport ? '<p class="wizard-note muted">Les équipes seront configurées dans un prochain lot. Vous pouvez déjà créer des groupes d\'entraînement.</p>' : ""}
+      ${isTeamSport ? '<p class="wizard-note muted">Les équipes se gèrent depuis la page Équipes une fois le club créé. Vous pouvez déjà créer des groupes d\'entraînement.</p>' : ""}
       <form class="wizard-subform" id="wizardGroupForm" autocomplete="off">
         <div class="form-grid compact">
           <label>Nom<input type="text" name="groupName" placeholder="Ex : Groupe débutants" /></label>
@@ -44844,7 +45504,7 @@ ${esc(bodyText)}</pre>
         ${row("Thème", esc(themeName))}
       </dl>
       ${wizardSummaryDisciplinesHtml(d, cp)}
-      <p class="wizard-note muted">Non encore disponibles : Équipes, Saisons, Rencontres — à configurer dans une prochaine étape.</p>
+      <p class="wizard-note muted">Non encore disponibles : Rencontres — à configurer dans une prochaine étape. Les Saisons se configurent dans Paramètres > Données ; les Équipes se configurent via Fonctionnalités puis la page Équipes.</p>
     </div>`;
   }
 
@@ -45208,6 +45868,44 @@ ${esc(bodyText)}</pre>
     return { version: FEATURES_SCHEMA_VERSION, configured: true, enabled };
   }
 
+  // Lot K-W1 — préférence display INITIALE écrite UNE SEULE FOIS à la création du club (jamais
+  // recalculée depuis les données ensuite, cf. audit "wizard -> visibilité") : préréglage Simple
+  // actuel + modules réellement configurés au wizard (salles) + vues des fonctionnalités réellement
+  // activées (mécanisme générique par FEATURE_REGISTRY[key].views, aucune liste shop/stages/teams
+  // codée en dur — fonctionnera automatiquement pour Teams une fois publique, sans toucher ce fichier).
+  // Fonction PURE : ne mute ni draft ni features ni settings, ne persiste rien, ne lit pas le DOM.
+  //
+  // Pourquoi mode:"custom" explicite : vérifié empiriquement que normalizeDisplaySettings résout le
+  // mode en "advanced" (TOUT visible, y compris les modules volontairement laissés à false) dès qu'un
+  // visibleModules est fourni SANS mode explicite — ce mécanisme n'est prévu que pour re-normaliser
+  // une configuration déjà existante, pas pour poser un préréglage étroit "Simple + exception(s)" à la
+  // création. Passer mode:"custom" est donc nécessaire pour que normalizeDisplaySettings restitue
+  // exactement les valeurs demandées ; omettre `display` quand aucun écart n'existe préserve intact le
+  // comportement historique (résolution naturelle en mode "simple", cf. audit §14).
+  function buildInitialDisplayFromWizard(draft, features) {
+    const visibleModules = {};
+    DISPLAY_MODULE_KEYS.forEach((key) => { visibleModules[key] = DISPLAY_SIMPLE_MODULES.includes(key); });
+    let hasOverride = false;
+    // Salles réellement configurées au wizard (étape "venues") — jamais une dépendance ultérieure à
+    // state.rooms.length : ceci ne s'exécute qu'ICI, au moment de la création.
+    if (Array.isArray(draft.venues) && draft.venues.length > 0 && !visibleModules.rooms) {
+      visibleModules.rooms = true;
+      hasOverride = true;
+    }
+    // Vues des fonctionnalités réellement activées (déjà filtrées par ui.available===true via
+    // buildFeaturesFromWizard/screenFeatures — aucune seconde logique ui.available ici).
+    Object.keys((features && features.enabled) || {}).forEach((key) => {
+      if (features.enabled[key] !== true) return;
+      const def = FEATURE_REGISTRY[key];
+      if (!def || !Array.isArray(def.views)) return;
+      def.views.forEach((view) => {
+        if (!DISPLAY_MODULE_KEYS.includes(view)) return;
+        if (!visibleModules[view]) { visibleModules[view] = true; hasOverride = true; }
+      });
+    });
+    return hasOverride ? { mode: "custom", visibleModules } : null;
+  }
+
   let clubWizardCreating = false; // anti double-clic / double-Entrée.
 
   function createClubFromWizard(triggerButton) {
@@ -45223,13 +45921,18 @@ ${esc(bodyText)}</pre>
     try {
       const clubProfile = buildClubProfileFromWizard(d);
       const initialState = buildInitialStateFromWizard(d, clubProfile);
+      // Lot K-W1 — calcul UNIQUE de features, réutilisé pour settings.features ET pour dériver la
+      // préférence display initiale (jamais deux calculs séparés qui pourraient diverger).
+      const features = buildFeaturesFromWizard(d);
+      const display = buildInitialDisplayFromWizard(d, features);
       const baseSettings = normalizeSettings({
         clubName: asText(d.identity.clubName) || "Mon club",
         clubSubtitle: asText(d.identity.clubSubtitle) || "Gestion de club",
         theme: d.identity.theme,
         logoDataUrl: d.identity.logoDataUrl || "",
         clubProfile,
-        features: buildFeaturesFromWizard(d),
+        features,
+        ...(display ? { display } : {}),
       });
       const fromMes = d.fromMesClubs;
       // Premier lancement : ensureClubStoreInitialized a déjà créé un club par défaut « Mon club » —
@@ -45305,6 +46008,7 @@ ${esc(bodyText)}</pre>
     "meta", "tariffs", "contacts", "memberships", "shopOrders", "invoices", "stageRegistrations", "notes",
     "memoRows", "activityLog", "seasonArchives", "groups", "planningCourses", "planningExceptions",
     "attendanceSessions", "coaches", "coachReplacements", "rooms", "roomReplacements", "expenses", "creditNotes",
+    "teams",
   ]);
 
   function clubStateHasUserData(clubState) {
