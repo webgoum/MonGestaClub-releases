@@ -3517,6 +3517,21 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
     return effective;
   }
 
+  // Lot L-D — profil Simple PROPRE AU CLUB, instantané figé une seule fois à la création (wizard).
+  // Distinct de visibleModules (profil Personnalisé, librement modifiable). null si le champ est
+  // absent (club légataire, cf. doctrine "aucune écriture artificielle" §5/§9 de l'audit L-D) : la
+  // SEULE présence de ce champ — jamais son contenu — signale un club "nouveau régime" à
+  // normalizeDisplaySettings, sans aucune heuristique sur les valeurs. Une clé DISPLAY_MODULE_KEY
+  // absente de l'objet persisté vaut false (jamais réinjectée depuis DISPLAY_SIMPLE_MODULES) : le
+  // profil reste un instantané figé, insensible à l'ajout futur d'une nouvelle clé. Les clés
+  // inconnues sont silencieusement ignorées.
+  function normalizeSimpleVisibleModules(source) {
+    if (!source || typeof source !== "object" || Array.isArray(source)) return null;
+    const result = {};
+    DISPLAY_MODULE_KEYS.forEach((key) => { result[key] = source[key] === true; });
+    return result;
+  }
+
   function normalizeDisplaySettings(source = {}) {
     const src = source && typeof source === "object" ? source : {};
     const defaults = {
@@ -3549,9 +3564,18 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
       stock: base.showBoutique, tarifs: base.showTarifs, stats: base.showStats,
       accounting: base.showAccounting, notes: base.showNotes, dashboard: base.showDashboard,
     };
+    // Lot L-D — profil Simple propre au club : sa seule PRÉSENCE (jamais son contenu, aucune
+    // heuristique) signale un club "nouveau régime". Le mode explicite fait alors foi tel quel :
+    // aucune auto-promotion vers "custom" (l'ancien mécanisme presetMatches ci-dessous reste
+    // inchangé et actif UNIQUEMENT pour les clubs légataires sans ce champ, cf. audit L-D §14/§15).
+    const simpleVisibleModules = normalizeSimpleVisibleModules(src.simpleVisibleModules);
     let mode;
     let visibleModules;
-    if (resolvedMode === "custom") {
+    if (simpleVisibleModules) {
+      mode = resolvedMode;
+      visibleModules = legacyVisibleModulesPopulation(srcVisible, legacyMap);
+      DISPLAY_FORCED_MODULES.forEach((key) => { visibleModules[key] = true; });
+    } else if (resolvedMode === "custom") {
       // Lot K-C2A — Custom (explicite, ou déjà migré) : JAMAIS canonicalisé vers simple/advanced,
       // quel que soit son contenu. Seul l'effet legacy showBoutique/showStages est fusionné (AND) sur
       // les 2 clés concernées ; toutes les autres préférences visibleModules restent inchangées.
@@ -3588,7 +3612,11 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
     // Idempotence : une sortie déjà migrée ne porte plus ces clés, donc rien à re-migrer au passage
     // suivant (mode déjà explicite → branche Custom/preset ci-dessus reproduit alors le même résultat).
     const { showBoutique, showStages, ...displayBase } = base;
-    return { ...displayBase, mode, visibleModules, accountingView };
+    const result = { ...displayBase, mode, visibleModules, accountingView };
+    // Lot L-D — champ omis (jamais `null`/`undefined` explicite) quand absent en entrée : un club
+    // légataire sans profil Simple propre ne doit jamais se voir doter artificiellement de ce champ.
+    if (simpleVisibleModules) result.simpleVisibleModules = simpleVisibleModules;
+    return result;
   }
 
   function fontOptionValue(value, fallback) {
@@ -3677,7 +3705,16 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
     const display = displaySettings();
     if (DISPLAY_FORCED_MODULES.includes(view)) return true; // Accueil, Paramètres, Aide
     if (display.mode === "advanced") return true;
-    if (display.mode === "simple") return DISPLAY_SIMPLE_MODULES.includes(view);
+    if (display.mode === "simple") {
+      // Lot L-D — un club "nouveau régime" lit son PROPRE profil Simple (instantané figé à la
+      // création) ; un club légataire sans ce champ retombe sur le socle global historique,
+      // strictement inchangé (aucune régression pour les clubs déjà créés). Pas de règle
+      // "stock suit boutique" ici : cette règle est propre au mode Personnalisé (ci-dessous),
+      // le mode Simple n'a jamais eu cette exception (stock suit sa propre présence dans le
+      // socle, comme avant ce lot).
+      if (display.simpleVisibleModules) return display.simpleVisibleModules[view] === true;
+      return DISPLAY_SIMPLE_MODULES.includes(view);
+    }
     const visible = display.visibleModules || {};
     // Bloc unique Boutique & Stock (audit modules désactivables) : Stock n'a pas de sens autonome
     // sans Boutique en V1. Plutôt qu'une case indépendante, Stock suit toujours la visibilité de
@@ -16017,7 +16054,7 @@ ${esc(bodyText)}</pre>
             <h4>Mode d'affichage</h4>
             <p class="muted">Choisissez la richesse de l'interface. Aucune donnée n'est supprimée. Ces réglages déterminent les pages proposées dans la navigation.</p>
             <div class="display-mode-row" style="display:flex;gap:8px;flex-wrap:wrap;margin:6px 0 2px">
-              ${displayModeButton("simple", "Simple", "Les pages essentielles")}
+              ${displayModeButton("simple", "Simple", "Affichage de départ du club")}
               ${displayModeButton("advanced", "Avancé", "Toutes les pages disponibles")}
               ${displayModeButton("custom", "Personnalisé", "Choisissez précisément les pages du menu")}
             </div>
@@ -38897,6 +38934,32 @@ ${esc(bodyText)}</pre>
         { view: "teams", anchor: "input[name='name']", prepare: openTeamDialogForTour, final: true,
           title: "Vous savez créer une équipe", body: "Une fois l'équipe créée, vous pourrez gérer son effectif depuis le bouton Membres +/− de sa fiche. Rien n'est enregistré tant que vous ne validez pas vous-même." },
       ] },
+    // Lot L-C — Salles est un module d'AFFICHAGE (DISPLAY_MODULE_KEYS), pas une fonctionnalité
+    // FEATURE_REGISTRY : aucun `module:` ici (il serait interprété comme une clé hasFeature par
+    // assistantTourVisible/assistantModuleFeatureEnabled). `view: "rooms"` seul suffit : le moteur
+    // générique existant (assistantTourVisible -> isViewVisible) gate déjà correctement une vue
+    // display-only, précédent identique à la visite "planning" ci-dessous (aucun module non plus).
+    // helpAnchor autorisé ici (contrairement à "creer-equipe") : help-salles n'est PAS conditionnelle
+    // à une feature, elle est toujours rendue par renderHelp().
+    "creer-salle": {
+      id: "creer-salle", category: "sport", label: "Créer une salle",
+      summary: "Enregistrez un lieu de pratique (dojo, gymnase, terrain…) pour l'utiliser ensuite dans le planning.", estimateMinutes: 2,
+      view: "rooms", helpAnchor: "help-salles", priority: 61, next: [],
+      segments: [
+        { view: "rooms", anchor: "[data-action='add-room']",
+          advanceOn: { selector: "[data-action='add-room']", event: "click" },
+          title: "À quoi sert une salle", body: "Une salle représente un lieu de pratique : dojo, gymnase, salle polyvalente, terrain extérieur… Elle pourra ensuite être choisie dans le Planning. Pour en créer une, cliquez sur « Nouvelle salle ». Rien n'est enregistré tant que vous ne validez pas, et vous pouvez quitter cette visite quand vous voulez." },
+        { view: "rooms", anchor: "input[name='name']", prepare: openRoomDialogForTour,
+          title: "Le nom de la salle", body: "Ce nom vous permettra de la reconnaître d'un coup d'œil dans le planning, par exemple « Dojo principal » ou « Gymnase municipal »." },
+        { view: "rooms", anchor: "select[name='type']", prepare: openRoomDialogForTour,
+          title: "Le type", body: "Le type précise la nature du lieu (dojo, gymnase, terrain…). Facultatif, il aide simplement à s'y retrouver parmi plusieurs salles." },
+        { view: "rooms", anchor: "input[name='capacity']", prepare: openRoomDialogForTour,
+          title: "La capacité (facultative)", body: "Indiquer le nombre de personnes que la salle peut accueillir est facultatif, mais utile pour éviter de surcharger un cours." },
+        { view: "rooms", anchor: "input[name='address']", prepare: openRoomDialogForTour,
+          title: "L'adresse (si différente du club)", body: "Facultative : à remplir seulement si la salle se trouve à une autre adresse que celle du club." },
+        { view: "rooms", anchor: "input[name='name']", prepare: openRoomDialogForTour, final: true,
+          title: "Vous savez créer une salle", body: "Une fois enregistrée, la salle pourra être choisie dans le Planning pour vos créneaux. Rien n'est enregistré tant que vous ne validez pas vous-même." },
+      ] },
     "planning": {
       id: "planning", category: "sport", label: "Construire le planning",
       summary: "Préparez un créneau pas à pas : nom, jour, horaires, discipline, groupe, coach et salle.", estimateMinutes: 3,
@@ -40498,6 +40561,16 @@ ${esc(bodyText)}</pre>
     try {
       if (document.querySelector("dialog[open] .dialog-header h2")?.textContent === "Nouvelle équipe") return;
       if (typeof openTeamDialog === "function") openTeamDialog();
+    } catch (e) {}
+  }
+  // Ouvre un dialogue « Nouvelle salle » VIERGE (openRoomDialog ne persiste rien tant que le
+  // formulaire n'est pas validé) si aucun n'est déjà ouvert. La liste de disponibilités
+  // (data-room-avail-list) est propre à ce dialogue (précédent exact : data-coach-avail-list pour
+  // Coach ci-dessous). Sert d'appui aux étapes de la visite "creer-salle".
+  function openRoomDialogForTour() {
+    try {
+      if (document.querySelector("dialog[open] [data-room-avail-list]")) return;
+      if (typeof openRoomDialog === "function") openRoomDialog();
     } catch (e) {}
   }
   // Ouvre un dialogue « Nouveau coach » VIERGE (openCoachDialog ne persiste rien tant que le
@@ -45943,29 +46016,28 @@ ${esc(bodyText)}</pre>
     return { version: FEATURES_SCHEMA_VERSION, configured: true, enabled };
   }
 
-  // Lot K-W1 — préférence display INITIALE écrite UNE SEULE FOIS à la création du club (jamais
-  // recalculée depuis les données ensuite, cf. audit "wizard -> visibilité") : préréglage Simple
-  // actuel + modules réellement configurés au wizard (salles) + vues des fonctionnalités réellement
-  // activées (mécanisme générique par FEATURE_REGISTRY[key].views, aucune liste shop/stages/teams
-  // codée en dur — fonctionnera automatiquement pour Teams une fois publique, sans toucher ce fichier).
-  // Fonction PURE : ne mute ni draft ni features ni settings, ne persiste rien, ne lit pas le DOM.
+  // Lot K-W1 (révisé Lot L-D) — profil d'affichage INITIAL du club, écrit UNE SEULE FOIS à la
+  // création (jamais recalculé depuis les données ensuite, cf. audit "wizard -> visibilité") :
+  // socle DISPLAY_SIMPLE_MODULES + modules réellement configurés au wizard (salles) + vues des
+  // fonctionnalités réellement activées (mécanisme générique par FEATURE_REGISTRY[key].views,
+  // aucune liste shop/stages/teams codée en dur). Fonction PURE : ne mute ni draft ni features ni
+  // settings, ne persiste rien, ne lit pas le DOM.
   //
-  // Pourquoi mode:"custom" explicite : vérifié empiriquement que normalizeDisplaySettings résout le
-  // mode en "advanced" (TOUT visible, y compris les modules volontairement laissés à false) dès qu'un
-  // visibleModules est fourni SANS mode explicite — ce mécanisme n'est prévu que pour re-normaliser
-  // une configuration déjà existante, pas pour poser un préréglage étroit "Simple + exception(s)" à la
-  // création. Passer mode:"custom" est donc nécessaire pour que normalizeDisplaySettings restitue
-  // exactement les valeurs demandées ; omettre `display` quand aucun écart n'existe préserve intact le
-  // comportement historique (résolution naturelle en mode "simple", cf. audit §14).
+  // Doctrine L-D : simpleVisibleModules est un INSTANTANÉ COMPLET, TOUJOURS écrit (même identique
+  // au socle générique — jamais `null`), pour que ce profil reste stable si DISPLAY_SIMPLE_MODULES
+  // évolue plus tard. Le mode reste TOUJOURS "simple" pour un nouveau club (plus d'auto-promotion
+  // vers "custom" : cf. normalizeDisplaySettings, qui respecte désormais le mode explicite dès que
+  // simpleVisibleModules est présent). visibleModules (profil Personnalisé) démarre comme une COPIE
+  // INDÉPENDANTE du même profil (objet distinct, jamais la même référence) : passer ensuite en
+  // Personnalisé part exactement de ce que l'utilisateur voyait en Simple, sans jamais écraser ce
+  // dernier en retour (cf. audit L-D §12/§23/§24).
   function buildInitialDisplayFromWizard(draft, features) {
-    const visibleModules = {};
-    DISPLAY_MODULE_KEYS.forEach((key) => { visibleModules[key] = DISPLAY_SIMPLE_MODULES.includes(key); });
-    let hasOverride = false;
+    const simpleVisibleModules = {};
+    DISPLAY_MODULE_KEYS.forEach((key) => { simpleVisibleModules[key] = DISPLAY_SIMPLE_MODULES.includes(key); });
     // Salles réellement configurées au wizard (étape "venues") — jamais une dépendance ultérieure à
     // state.rooms.length : ceci ne s'exécute qu'ICI, au moment de la création.
-    if (Array.isArray(draft.venues) && draft.venues.length > 0 && !visibleModules.rooms) {
-      visibleModules.rooms = true;
-      hasOverride = true;
+    if (Array.isArray(draft.venues) && draft.venues.length > 0) {
+      simpleVisibleModules.rooms = true;
     }
     // Vues des fonctionnalités réellement activées (déjà filtrées par ui.available===true via
     // buildFeaturesFromWizard/screenFeatures — aucune seconde logique ui.available ici).
@@ -45975,10 +46047,14 @@ ${esc(bodyText)}</pre>
       if (!def || !Array.isArray(def.views)) return;
       def.views.forEach((view) => {
         if (!DISPLAY_MODULE_KEYS.includes(view)) return;
-        if (!visibleModules[view]) { visibleModules[view] = true; hasOverride = true; }
+        simpleVisibleModules[view] = true;
       });
     });
-    return hasOverride ? { mode: "custom", visibleModules } : null;
+    return {
+      mode: "simple",
+      simpleVisibleModules,
+      visibleModules: { ...simpleVisibleModules },
+    };
   }
 
   let clubWizardCreating = false; // anti double-clic / double-Entrée.
@@ -45999,6 +46075,7 @@ ${esc(bodyText)}</pre>
       // Lot K-W1 — calcul UNIQUE de features, réutilisé pour settings.features ET pour dériver la
       // préférence display initiale (jamais deux calculs séparés qui pourraient diverger).
       const features = buildFeaturesFromWizard(d);
+      // Lot L-D — display est désormais TOUJOURS un objet complet (jamais null) : transmis tel quel.
       const display = buildInitialDisplayFromWizard(d, features);
       const baseSettings = normalizeSettings({
         clubName: asText(d.identity.clubName) || "Mon club",
@@ -46007,7 +46084,7 @@ ${esc(bodyText)}</pre>
         logoDataUrl: d.identity.logoDataUrl || "",
         clubProfile,
         features,
-        ...(display ? { display } : {}),
+        display,
       });
       const fromMes = d.fromMesClubs;
       // Premier lancement : ensureClubStoreInitialized a déjà créé un club par défaut « Mon club » —
