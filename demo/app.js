@@ -138,7 +138,7 @@
   // "tout `views` sauf quelques exclusions" : un futur nouvel ID ajouté à `views` ne doit JAMAIS
   // devenir automatiquement une destination de note sans décision explicite.
   const NOTE_TARGET_VIEW_IDS = [
-    "dashboard", "tasks", "contacts", "invoices", "newsletter", "disciplines", "groups", "coaches",
+    "dashboard", "tasks", "contacts", "invoices", "newsletter", "disciplines", "groups", "teams", "coaches",
     "rooms", "planning", "availability", "attendance", "documents", "stages", "boutique", "stock",
     "tarifs", "stats", "accounting", "due-payments",
   ];
@@ -15171,6 +15171,10 @@ ${esc(bodyText)}</pre>
     // jamais la visibilité de menu (un module actif mais masqué du menu reste actif).
     const stagesEnabled = hasFeature("stages");
     const boutiqueEnabled = hasFeature("shop");
+    // Lot L-B — doctrine confirmée par l'audit L-A : une section de fonctionnalité conditionnelle
+    // suit hasFeature seule (comme stagesEnabled/boutiqueEnabled ci-dessus), jamais isViewVisible.
+    // Une fonctionnalité active mais masquée du menu reste documentée comme disponible.
+    const teamsEnabled = hasFeature("teams");
     return `
       <div class="help-page">
         <section class="help-layout">
@@ -15185,6 +15189,7 @@ ${esc(bodyText)}</pre>
             <a href="#help-newsletter">E-mail</a>
             <a href="#help-disciplines">Disciplines</a>
             <a href="#help-groupes">Groupes</a>
+            ${teamsEnabled ? `<a href="#help-equipes">Équipes</a>` : ""}
             <a href="#help-coachs">Coachs</a>
             <a href="#help-salles">Salles</a>
             <a href="#help-planning">Planning</a>
@@ -15398,6 +15403,7 @@ ${esc(bodyText)}</pre>
               "Le catalogue proposé pour certains sports (par exemple Poussins, Benjamins, Seniors pour un profil Judo) reste une suggestion : ce n'est pas une liste fermée. Le club reste libre de créer d'autres catégories, y compris pour une discipline personnalisée qui ne correspond à aucun sport du catalogue.",
               "Dans le dialogue Gérer d'une discipline, on crée, modifie, réordonne et archive ses catégories. L'ordre choisi ici est celui utilisé partout où la catégorie est proposée dans un menu.",
               "Une catégorie sportive se choisit ensuite sur une inscription, et éventuellement sur un groupe entier. Une catégorie archivée n'est plus proposée pour une nouvelle affectation, mais reste affichée sur les inscriptions qui l'utilisaient déjà, pour garder une référence historique lisible.",
+              "Dans Paramètres > Fonctionnalités du club, la fonctionnalité Adhésions correspond exactement à la gestion des inscriptions décrite ci-dessus : c'est elle qui autorise la création et la modification d'une inscription depuis Disciplines. La désactiver bloque ces actions, mais ne supprime jamais les inscriptions déjà enregistrées ni leur historique : elles restent visibles et consultables normalement.",
             ])}
 
             ${helpSection("help-groupes", "Groupes", [
@@ -15407,6 +15413,18 @@ ${esc(bodyText)}</pre>
               "La capacité maximale signale quand le groupe est plein. La tranche d'âge aide à orienter chaque adhérent vers le bon groupe.",
               "Un groupe archivé n'est plus proposé pour de nouvelles séances mais reste dans l'historique.",
             ])}
+
+            ${teamsEnabled ? helpSection("help-equipes", "Équipes", [
+              "La page Équipes regroupe l'effectif sportif d'un club autour d'une discipline : c'est là que se suit qui joue dans quelle équipe.",
+              "Différence avec Groupes : un Groupe organise des cours ou des entraînements, alors qu'une Équipe représente un effectif sportif (par exemple une équipe qui dispute des matchs ou des compétitions).",
+              "La discipline est obligatoire pour créer une équipe. Elle ne peut plus être changée tant que l'équipe compte des membres : il faut d'abord les retirer.",
+              "La catégorie sportive est facultative : elle n'est proposée que si la discipline choisie en définit.",
+              "Le coach ou encadrant est facultatif. Seul un coach compatible avec la discipline de l'équipe peut être choisi.",
+              "Le bouton Membres +/− sur la fiche d'une équipe permet d'ajouter ou de retirer des adhérents de son effectif, parmi les personnes déjà inscrites à la même discipline.",
+              "Une équipe archivée n'est plus proposée pour de nouvelles affectations mais reste dans l'historique. Elle peut être réactivée à tout moment.",
+              "Une équipe qui compte encore des membres ne peut pas être supprimée directement : il faut d'abord vider son effectif.",
+              "Désactiver la fonctionnalité Équipes dans Paramètres > Fonctionnalités du club masque les outils de gestion, mais ne supprime aucune équipe ni aucun effectif déjà enregistré. Tout redevient disponible dès la réactivation.",
+            ]) : ""}
 
             ${helpSection("help-coachs", "Coachs", [
               "La page Coachs regroupe les encadrants du club : entraîneurs, bénévoles, salariés ou intervenants extérieurs.",
@@ -15614,6 +15632,7 @@ ${esc(bodyText)}</pre>
               "Le thème Contraste élevé renforce les écarts de couleur pour une meilleure lisibilité. Il fonctionne comme les autres thèmes : Choisir pour l'appliquer, sans modifier aucune donnée du club.",
               "Le bloc Affichage contient des cases à cocher pour ajouter ou retirer le texte sous les icônes de la barre du haut, et pour afficher ou masquer certaines pages comme Accueil, E-mail, Tarifs, Statistiques ou Notes.",
               "Le bloc Affichage propose aussi trois modes d'interface : Simple (menu allégé pour les petits clubs), Avancé (tous les modules visibles) et Personnalisé (choisir précisément les pages visibles). Changer de mode ne supprime aucune donnée : seules des entrées du menu sont masquées, et les vues masquées restent fonctionnelles. Un nouveau club démarre en mode Simple ; le club de démonstration démarre en mode Avancé pour montrer tout de suite l'ensemble des fonctions.",
+              "Fonctionnalités du club et Affichage sont deux réglages différents, à ne pas confondre. Fonctionnalités du club active ou désactive un comportement (par exemple Boutique, Stages, Adhésions ou Équipes) : une fonctionnalité désactivée bloque la création et la modification, mais ne supprime jamais les données déjà enregistrées. Affichage choisit seulement ce qui apparaît dans les menus : une fonctionnalité peut donc rester active tout en étant masquée du menu, et la réafficher plus tard ne recrée rien, elle redevient simplement visible.",
               "Une puce en bas du menu indique le mode courant (Mode simple, Mode avancé ou Mode personnalisé). Cliquer dessus ouvre directement Paramètres > Affichage pour changer de mode.",
               "Le réglage Disposition (dans Affichage) choisit la mise en page générale : Moderne place le menu principal à gauche (l'affichage par défaut, inchangé) ; Classique le transforme en une barre de menus en haut du logiciel, avec sous-menus déroulants, façon logiciel de bureau. Les deux dispositions donnent accès aux mêmes pages ; on bascule de l'une à l'autre à tout moment, sans rien perdre.",
               "On peut replier le menu et la barre d'outils pour gagner de la place. En disposition Moderne : le bouton ⟨ / ☰ masque ou réaffiche le menu de gauche, et le bouton ⌃ replie la barre du haut (le bouton ⌄ la rouvre). En disposition Classique, le menu fin du haut reste toujours visible : le bouton ⌃ replie uniquement la barre d'outils, et le bouton ⌄ Barre d'outils la réaffiche. Ces préférences sont mémorisées d'une session à l'autre.",
@@ -15678,7 +15697,7 @@ ${esc(bodyText)}</pre>
               "Le bouton + Note crée un nouvel onglet. Supprimer l'onglet retire la note active. Si la dernière note est supprimée, une nouvelle note vide est automatiquement créée pour rester prêt à écrire.",
               "Les Notes sont enregistrées automatiquement, et le bouton Enregistrer confirme la sauvegarde. Exporter PDF depuis Notes crée un PDF propre avec seulement le titre et le contenu de la note active. Exporter CSV exporte les titres et le texte brut de toutes les notes.",
               "Plus bas sur la même page, le tableau Notes personnalisées sert à de courts pense-bêtes, avec quatre colonnes : Afficher dans, Sujet, Note et Priorité.",
-              "Afficher dans choisit où la note doit aussi apparaître, en plus de la page Notes. Laissé sur Notes uniquement, la note ne vit que dans ce tableau. En choisissant une page (par exemple Stock, Paiements dus ou Planning), la même note reste dans ce tableau ET apparaît en plus sur cette page, dans un petit bloc « 📌 Notes ».",
+              "Afficher dans choisit où la note doit aussi apparaître, en plus de la page Notes. Laissé sur Notes uniquement, la note ne vit que dans ce tableau. En choisissant une page (par exemple Équipes, Planning, Stock ou Paiements dus), la même note reste dans ce tableau ET apparaît en plus sur cette page, dans un petit bloc « 📌 Notes ».",
               "Ce ne sont pas deux notes différentes : c'est la même Note personnalisée, simplement affichée à un deuxième endroit utile. Depuis ce bloc sur la page cible, on peut directement la modifier (sujet, note, priorité, destination) ou la supprimer, sans repasser par la page Notes.",
               "La Priorité (Normale, Important, Urgent ou Archive) sert à trier ces notes. Sur une page cible, les notes urgentes s'affichent en premier, puis les importantes, puis les normales.",
               "Mettre une note en priorité Archive ne la supprime pas : elle reste dans le tableau Notes personnalisées, garde sa destination enregistrée, mais n'apparaît plus dans le petit bloc de la page cible. C'est une façon de la ranger sans perdre l'historique.",
@@ -38514,6 +38533,23 @@ ${esc(bodyText)}</pre>
       done: () => (state.groups || []).length > 0,
     },
     {
+      // Lot L-B — étape déclarative pour la fonctionnalité Équipes (K-T3C). `module: "teams"` est
+      // géré par le moteur générique existant (assistantStepVisible/assistantModuleFeatureEnabled),
+      // exactement comme first-membership : aucune logique spéciale ajoutée dans le moteur.
+      id: "first-team",
+      category: "organisation",
+      label: "Créer votre première équipe",
+      why: "Une équipe rassemble un effectif autour d'une discipline, avec son coach et sa catégorie.",
+      priority: 62,
+      difficulty: "facile",
+      estimateMinutes: 1,
+      view: "teams",
+      module: "teams",
+      cta: { action: "add-team", label: "Créer une équipe" },
+      visibleIf: ["module-visible", "step-incomplete"],
+      done: () => (state.teams || []).length > 0,
+    },
+    {
       // Lot Onboarding — les salles ne sont pas indispensables à tous les clubs (un seul
       // dojo n'en a pas besoin), donc étape sobre, priorité modeste : après coachs (70)
       // et groupes (65), avant le planning (55) qu'elle aide à compléter (créneau + salle).
@@ -38832,6 +38868,34 @@ ${esc(bodyText)}</pre>
           title: "Ses disponibilités", body: "Vous pouvez noter ses jours et horaires de disponibilité. MonGestaClub s'en servira pour éviter les conflits au planning." },
         { view: "coaches", anchor: "input[name='lastName']", prepare: openCoachDialogForTour, final: true,
           title: "Vous savez créer un coach", body: "Une fois enregistré, vous pourrez l'affecter à un groupe et à des créneaux. Rien n'est enregistré tant que vous ne validez pas volontairement." },
+      ] },
+    // Lot L-B — visite feature-gated par `module: "teams"`, précédent EXACT des visites Boutique/
+    // Stages (cf. "creer-article"/"boutique"/"stages" ci-dessus, mêmes champs view+module, même
+    // moteur assistantTourVisible). Visite volontairement courte (§21) : s'arrête après la création
+    // de l'équipe, sans guider la gestion de l'effectif (expliquée dans l'Aide, cf. help-equipes).
+    "creer-equipe": {
+      id: "creer-equipe", category: "sport", label: "Créer une équipe",
+      summary: "Rassemblez un effectif autour d'une discipline, avec son encadrement.", estimateMinutes: 2,
+      // Pas de helpAnchor : contrairement à Stages/Boutique (legacyEnabled:true, actifs par défaut
+      // sur un club non configuré), Teams est opt-in (legacyEnabled:false) — pointer vers une
+      // section d'Aide elle-même conditionnelle à hasFeature("teams") créerait une référence
+      // BOITEUSE sur un club non configuré (E1, tests/assistant-journey.test.js), précédent identique
+      // à "creer-groupe" ci-dessus qui n'en déclare pas non plus.
+      view: "teams", module: "teams", priority: 65, next: [],
+      segments: [
+        { view: "teams", anchor: "[data-action='add-team']",
+          advanceOn: { selector: "[data-action='add-team']", event: "click" },
+          title: "À quoi sert une équipe", body: "Une équipe rassemble un effectif sportif autour d'une discipline, à la différence d'un groupe qui organise des cours ou des entraînements. Pour en créer une, cliquez sur « Nouvelle équipe ». Rien n'est enregistré tant que vous ne validez pas, et vous pouvez quitter cette visite quand vous voulez." },
+        { view: "teams", anchor: "input[name='name']", prepare: openTeamDialogForTour,
+          title: "Le nom de l'équipe", body: "Ce nom vous permettra de reconnaître l'équipe d'un coup d'œil, par exemple « Seniors A » ou « U15 Compétition »." },
+        { view: "teams", anchor: "select[name='discipline']", prepare: openTeamDialogForTour,
+          title: "La discipline", body: "La discipline est obligatoire : elle relie l'équipe à l'activité pratiquée. Une fois l'équipe créée avec des membres, la discipline ne pourra plus être changée sans d'abord vider l'effectif." },
+        { view: "teams", anchor: "select[name='sportCategoryId']", prepare: openTeamDialogForTour,
+          title: "La catégorie sportive (facultative)", body: "Si la discipline choisie propose des catégories sportives, vous pouvez en attribuer une à l'équipe. C'est facultatif : vous pourrez l'ajouter ou la changer plus tard." },
+        { view: "teams", anchor: "[data-coach-field]", prepare: openTeamDialogForTour,
+          title: "Le coach (facultatif)", body: "Désigner un coach est facultatif. MonGestaClub ne proposera que les coachs compatibles avec la discipline de l'équipe." },
+        { view: "teams", anchor: "input[name='name']", prepare: openTeamDialogForTour, final: true,
+          title: "Vous savez créer une équipe", body: "Une fois l'équipe créée, vous pourrez gérer son effectif depuis le bouton Membres +/− de sa fiche. Rien n'est enregistré tant que vous ne validez pas vous-même." },
       ] },
     "planning": {
       id: "planning", category: "sport", label: "Construire le planning",
@@ -40423,6 +40487,17 @@ ${esc(bodyText)}</pre>
     try {
       if (document.querySelector("dialog[open] input[name='maxMembers']")) return;
       if (typeof openGroupDialog === "function") openGroupDialog();
+    } catch (e) {}
+  }
+  // Ouvre un dialogue « Nouvelle équipe » VIERGE (openTeamDialog ne persiste rien tant que le
+  // formulaire n'est pas validé) si aucun n'est déjà ouvert. Le formulaire Team n'a pas de champ
+  // qui lui soit propre (name/discipline/sportCategoryId/coach sont un sous-ensemble exact des
+  // champs Groupe) : le titre du dialogue (`<h2>`) est donc le seul marqueur fiable pour éviter
+  // de le rouvrir. Sert d'appui aux étapes de la visite "creer-equipe".
+  function openTeamDialogForTour() {
+    try {
+      if (document.querySelector("dialog[open] .dialog-header h2")?.textContent === "Nouvelle équipe") return;
+      if (typeof openTeamDialog === "function") openTeamDialog();
     } catch (e) {}
   }
   // Ouvre un dialogue « Nouveau coach » VIERGE (openCoachDialog ne persiste rien tant que le
