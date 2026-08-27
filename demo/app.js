@@ -11367,6 +11367,27 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
         });
       }
     });
+    // Lot L-I — Équipes : absentes de la recherche jusqu'ici alors que la fonctionnalité et la vue
+    // existent (écart P2 signalé au Lot L-G). Gatée comme Boutique/Stages : isViewVisible("teams")
+    // couvre déjà les deux axes (hasFeature ET menu) — une équipe historique existant alors que la
+    // fonctionnalité est désactivée reste stockée mais n'apparaît pas ici, sans exception. Team
+    // n'a pas de champ texte legacy (contrairement à Group) : discipline/coach/catégorie sont
+    // TOUJOURS résolus via les mêmes fonctions que teamCardHtml, jamais un id comparé comme texte.
+    if (isViewVisible("teams")) {
+      (state.teams || []).forEach((team) => {
+        const disciplineLabel = disciplineLabelFor(team);
+        const coachLabel = coachLabelFor(team.coachId, "");
+        const categoryLabel = sportCategoryAssignmentLabel(team.sportCategoryId, team.disciplineId, state, activeClubId());
+        if (matches([team.name, disciplineLabel, coachLabel, categoryLabel])) {
+          push({
+            type: "Équipe",
+            title: team.name || "Équipe",
+            detail: [disciplineLabel, categoryLabel, coachLabel ? `Coach ${coachLabel}` : "", team.archived ? "archivée" : ""].filter(Boolean).join(" · "),
+            attrs: `data-action="edit-team" data-id="${esc(team.id)}"`,
+          });
+        }
+      });
+    }
     (state.rooms || []).forEach((room) => {
       if (matches([room.name, room.address, room.type, (room.disciplines || []).join(" "), room.equipment, room.notes, room.description, room.managerName, room.managerEmail, room.managerPhone, roomAvailabilitySummary(room)])) {
         push({ type: "Salle", title: roomName(room), detail: [room.type, (room.disciplines || []).join(", "), room.archived ? "archivée" : ""].filter(Boolean).join(" · "), attrs: `data-action="edit-room" data-id="${esc(room.id)}"` });
