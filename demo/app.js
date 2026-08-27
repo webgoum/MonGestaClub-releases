@@ -39452,6 +39452,28 @@ ${esc(bodyText)}</pre>
         { view: "settings", anchor: ".sport-categories-panel", prepare: openSportCategoriesPanel, final: true,
           title: "Où elle s'utilise ensuite", body: "Une fois créée, une catégorie se choisit sur l'inscription d'un adhérent, et éventuellement sur un groupe entier. Vous savez maintenant à quoi servent les catégories sportives et comment les gérer." },
       ] },
+    // Lot L-H — Statistiques : page 100% lecture/synthèse, aucune mutation possible. Visite
+    // STRICTEMENT PASSIVE (aucun prepare, aucun advanceOn), ancrée uniquement sur des éléments
+    // INCONDITIONNELS de renderStats (kpi-grid, bar-list, stats-pie-band — tous les trois rendus
+    // même sans aucune donnée ni fonctionnalité activée) : les sections Stages/Boutique/
+    // Coachs-salles/Comptabilité dépendent des features et des données du club, donc jamais
+    // utilisées comme ancre. "stats" n'est pas dans DISPLAY_SIMPLE_MODULES : masquée par défaut
+    // en mode Simple, visible en Avancé ou en Personnalisé si activée — la visite suit
+    // automatiquement isViewVisible("stats"), sans module associé.
+    "statistiques": {
+      id: "statistiques", category: "suivi", label: "Comprendre les statistiques",
+      summary: "Une vue d'ensemble en lecture seule pour comprendre l'activité et les chiffres de votre club.", estimateMinutes: 1,
+      view: "stats", helpAnchor: "help-stats", priority: 35, next: [],
+      segments: [
+        { view: "stats", anchor: ".kpi-grid",
+          title: "Une vue d'ensemble, rien de plus", body: "La page Statistiques résume l'activité de votre club : adhérents, participants, articles… Elle ne fait que lire vos données existantes, rien ne sera modifié pendant cette visite." },
+        { view: "stats", anchor: ".bar-list",
+          title: "Lire l'utilisation des disciplines", body: "Ce graphique compare le nombre d'adhérents par discipline : plus la barre est longue, plus la discipline compte d'inscrits. Pratique pour repérer en un coup d'œil vos disciplines les plus suivies." },
+        { view: "stats", anchor: ".stats-pie-band",
+          title: "Lire les chiffres financiers", body: "Ce graphique en secteurs répartit les montants entre disciplines : chaque part correspond au total facturé pour une discipline. Vous pouvez basculer l'affichage entre montants et quantités selon ce que vous voulez comparer." },
+        { view: "stats", anchor: ".kpi-grid", final: true,
+          title: "D'autres sections peuvent apparaître", body: "Selon les fonctionnalités activées pour ce club et les données déjà présentes, d'autres blocs peuvent s'ajouter : Stages, Boutique, Coachs & salles, ou Synthèse comptable. Ce sont les mêmes principes de lecture — rien à modifier ici, uniquement des chiffres à consulter." },
+      ] },
     // --- Lot F — Notes : deux systèmes distincts, jamais confondus. -----------------------
     "notes-riches": {
       id: "notes-riches", category: "suivi", label: "Découvrir les Notes",
