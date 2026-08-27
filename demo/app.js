@@ -39538,6 +39538,23 @@ ${esc(bodyText)}</pre>
         { view: "settings", anchor: "[data-action='import-json']", final: true,
           title: "En cas de besoin", body: "Importer JSON restaure une sauvegarde précédemment exportée. C'est votre vrai filet de sécurité — bien plus complet qu'un simple historique d'actions." },
       ] },
+    // Lot L-G — nouvelle visite découverte (audit L-G, priorité P2) : la page Recherche a une
+    // structure stable en toutes circonstances (champ + bouton + conteneur toujours rendus) et une
+    // fonctionnalité peu évidente à découvrir seule (elle exécute aussi des pages/réglages/actions,
+    // pas seulement des données). Visite STRICTEMENT PASSIVE : aucun prepare, aucun advanceOn,
+    // aucune recherche déclenchée par la visite elle-même.
+    "decouvrir-recherche": {
+      id: "decouvrir-recherche", category: "decouverte", label: "Découvrir la recherche globale",
+      summary: "Retrouvez rapidement une personne, une donnée, une page, un réglage ou une action depuis une seule recherche.", estimateMinutes: 1,
+      view: "search", helpAnchor: "help-recherche", priority: 6, next: [],
+      segments: [
+        { view: "search", anchor: ".search-page-form",
+          title: "Tout retrouver au même endroit", body: "La recherche globale retrouve à la fois des personnes, des données du club, mais aussi des pages, des réglages et des actions du logiciel. Cette visite ne lance aucune recherche et ne modifie rien : vous pouvez la quitter quand vous voulez." },
+        { view: "search", anchor: "[data-global-search]",
+          title: "Tapez ce que vous cherchez", body: "Un nom, un numéro de téléphone, un coach, une salle, une facture, du stock… mais aussi un mot comme « SMTP » ou une action comme « ajouter un coach » : tout fonctionne depuis le même champ." },
+        { view: "search", anchor: "[data-search-results]", final: true,
+          title: "Les résultats vous emmènent au bon endroit", body: "Les résultats sont classés en deux groupes : Pages, réglages et actions, puis Données du club. Cliquer sur un résultat disponible ouvre directement la page, la fiche ou l'action correspondante." },
+      ] },
     "nouveautes": { id: "nouveautes", category: "decouverte", label: "Découvrir les nouveautés", summary: "Un tour rapide des nouveautés de cette version : visites interactives, carte Aujourd'hui et accompagnement enrichi.", estimateMinutes: 2, helpAnchor: "help-demarrer", priority: 5,
       segments: [
         { view: "dashboard", anchor: ".cockpit-hero", title: "Nouveauté : la carte Aujourd'hui", body: "L'accueil vous propose désormais la prochaine étape utile et un rappel des points à suivre, au bon moment." },
