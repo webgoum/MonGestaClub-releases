@@ -8096,6 +8096,14 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
       ["action-add-group", "Ajouter un groupe", "Créer un groupe de pratiquants.",
         ["ajouter un groupe", "nouveau groupe", "creer un groupe"],
         "add-group", "groups", null],
+      // Lot L-K — Équipes manquait à cet inventaire alors que toutes les autres entités structurantes
+      // du club (Groupes ci-dessus, Coachs, Salles, Disciplines, Stages…) y figurent. normalizeSearchText
+      // gère déjà les accents (les variantes sans accent seraient redondantes) : mots-clés accentués
+      // uniquement, prouvés fonctionner par test. module/feature "teams" : commandEntryAvailability()
+      // existant gère seul la disponibilité (feature OFF / module masqué), sans logique nouvelle.
+      ["action-add-team", "Ajouter une équipe", "Créer une équipe et définir sa discipline, sa catégorie et son encadrant.",
+        ["ajouter une équipe", "nouvelle équipe", "créer une équipe"],
+        "add-team", "teams", "teams"],
       // Lot 3B-4A — la création d'une discipline manquait à cet inventaire alors que toutes les
       // autres entités du club y figurent. Contrairement à « Ajouter une inscription » (écartée au
       // Lot 3B-3), elle n'exige AUCUN contexte : ni contact, ni groupe — seulement le club actif.
