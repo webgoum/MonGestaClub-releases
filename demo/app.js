@@ -3708,10 +3708,17 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
     if (display.mode === "simple") {
       // Lot L-D — un club "nouveau régime" lit son PROPRE profil Simple (instantané figé à la
       // création) ; un club légataire sans ce champ retombe sur le socle global historique,
-      // strictement inchangé (aucune régression pour les clubs déjà créés). Pas de règle
-      // "stock suit boutique" ici : cette règle est propre au mode Personnalisé (ci-dessous),
-      // le mode Simple n'a jamais eu cette exception (stock suit sa propre présence dans le
-      // socle, comme avant ce lot).
+      // strictement inchangé (aucune régression pour les clubs déjà créés).
+      const simpleBoutiqueVisible = display.simpleVisibleModules
+        ? display.simpleVisibleModules.boutique === true
+        : DISPLAY_SIMPLE_MODULES.includes("boutique");
+      // Lot L-F1 — même doctrine "Stock suit toujours Boutique" qu'en Personnalisé (ci-dessous),
+      // désormais étendue au mode Simple : Stock n'a pas de sens autonome sans Boutique. Lecture
+      // directe (pas de récursion sur isModuleVisibleByMode) : la valeur éventuellement stockée
+      // pour "stock" (simpleVisibleModules.stock) n'est jamais écrite ni détruite ici, seulement
+      // ignorée à la lecture — couvre uniformément nouveaux clubs, clubs L-D déjà créés avec
+      // l'ancien bug, et clubs légataires sans simpleVisibleModules, sans aucune migration.
+      if (view === "stock") return simpleBoutiqueVisible;
       if (display.simpleVisibleModules) return display.simpleVisibleModules[view] === true;
       return DISPLAY_SIMPLE_MODULES.includes(view);
     }
@@ -3869,7 +3876,12 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
       defaultEnabled: true,
       // « boutique » est la clé historique/d'appel existante -> alias de la clé canonique « shop ».
       aliases: Object.freeze(["boutique"]),
-      views: Object.freeze(["boutique"]),
+      // Lot L-F1 — Stock n'a pas de sens autonome sans Boutique (aucune vente possible sans article) :
+      // les deux vues appartiennent au même domaine fonctionnel Shop. Cette liste alimente le
+      // mécanisme générique de src/31-club-wizard.js (buildInitialDisplayFromWizard), qui force
+      // désormais aussi "stock" dans le profil Simple d'un nouveau club dès que Shop est activé,
+      // sans aucun hard-code wizard.
+      views: Object.freeze(["boutique", "stock"]),
       // Lot 2C — métadonnées de PRÉSENTATION pour l'écran « Fonctionnalités du club » uniquement.
       // N'influencent NI hasFeature, NI les calculs historiques, NI la visibilité (axes distincts).
       // available:true -> la carte est proposée dans l'écran. order -> ordre d'affichage. Les textes
@@ -15259,7 +15271,7 @@ ${esc(bodyText)}</pre>
               </div>
               <div class="help-version">
                 <strong>Version actuelle</strong>
-                <span>Multi-clubs, contacts, factures, e-mails, disciplines, coachs, salles, planning${boutiqueEnabled ? ", boutique, stock" : ""}${stagesEnabled ? ", stages" : ""}, dépenses, statistiques, comptabilité, tarifs, notes et sauvegardes.</span>
+                <span>Multi-clubs, contacts, factures, e-mails, disciplines, coachs, salles${teamsEnabled ? ", équipes" : ""}, planning${boutiqueEnabled ? ", boutique, stock" : ""}${stagesEnabled ? ", stages" : ""}, dépenses, statistiques, comptabilité, tarifs, notes et sauvegardes.</span>
               </div>
             </section>
 
@@ -15275,8 +15287,8 @@ ${esc(bodyText)}</pre>
               "Utilise E-mail pour annoncer un stage, envoyer une newsletter, préparer une relance ou écrire un message personnalisé.",
               "Pour inscrire un adhérent, ouvre Disciplines puis Nouvelle inscription. Choisis le contact, la discipline, l'assurance et le paiement.",
               "Les paiements utilisent les modes acceptés du club actif : espèces, chèque, carte bancaire, virement, coupons sport, chèques vacances ou autre selon les réglages. Le logiciel affiche le reste dû et les alertes automatiquement.",
-              boutiqueEnabled ? "Pour vendre un article, ouvre Boutique. Choisis l'article, la taille, la quantité, le client, puis le paiement." : "",
-              boutiqueEnabled ? "Le Stock suit les articles, les tailles, les photos, les seuils d'alerte et les mouvements de boutique." : "",
+              boutiqueEnabled ? "Crée et gère d'abord tes articles dans Stock : nom, tailles, photos, prix et quantités, avec un seuil d'alerte si besoin." : "",
+              boutiqueEnabled ? "Pour vendre un article, ouvre Boutique. Choisis l'article, la taille, la quantité, le client, puis le paiement : le stock disponible se met alors à jour tout seul." : "",
               stagesEnabled ? "Pour gérer un stage, ouvre Stages. Crée le stage si besoin, ajoute les participants, puis valide stage et hébergement." : "",
               "L'accueil sert à surveiller rapidement les encaissements, les alertes et les actions importantes.",
               "Statistiques donne une vue d'ensemble de l'activité. Comptabilité donne les recettes, restes dus, TVA et résultats indicatifs.",
@@ -15405,7 +15417,8 @@ ${esc(bodyText)}</pre>
               "Le bouton Réafficher les contacts retirés remet dans la liste les contacts supprimés de l'envoi sans modifier le sujet ni le message.",
               "L'aperçu du message reste visible sous le texte pour vérifier rapidement le contenu avant l'ouverture de la messagerie.",
               "Le bouton Ouvrir la messagerie prépare un e-mail avec les destinataires en copie cachée pour préserver la confidentialité.",
-              "Le logiciel ne force pas l'envoi : il prépare le message, puis l'envoi final se fait depuis la messagerie de l'utilisateur. Aucun e-mail n'est envoyé automatiquement sans validation.",
+              "Si un SMTP est configuré dans Paramètres > E-mails, un bouton Envoyer depuis MonGestaClub permet aussi d'envoyer directement le message sans passer par la messagerie externe.",
+              "Le logiciel ne force pas l'envoi : il prépare le message, puis l'envoi final se fait depuis la messagerie de l'utilisateur (ou depuis MonGestaClub si le SMTP est configuré). Aucun e-mail n'est envoyé automatiquement sans validation.",
               "Les modèles d'e-mail incluent aussi des modèles pour les coachs et les salles (message simple ou demande de remplacement / changement), modifiables dans Paramètres > Messages e-mail.",
               "Les variables entre accolades sont remplacées automatiquement à l'envoi. En plus des variables contact, club, paiement et facture, il existe des variables coach ({coachNom}, {coachPrenom}, {coachEmail}, {coachTelephone}, {coachSpecialites}), salle ({salleNom}, {salleAdresse}, {salleType}, {salleCapacite}, {salleResponsableNom}, {salleResponsableEmail}, {salleResponsableTelephone}, {salleTarif}) et séance ({dateSeance}, {heureDebut}, {heureFin}, {statutSeance}, {discipline}, {lieu}).",
               "La liste complète des variables, avec leur description, est cliquable pour copie dans Paramètres > Messages e-mail. Une variable sans valeur dans le contexte est simplement laissée vide.",
@@ -15449,6 +15462,8 @@ ${esc(bodyText)}</pre>
               "La discipline reliée au groupe sert à proposer des coachs compatibles et à relier le groupe aux bons créneaux du planning.",
               "La capacité maximale signale quand le groupe est plein. La tranche d'âge aide à orienter chaque adhérent vers le bon groupe.",
               "Un groupe archivé n'est plus proposé pour de nouvelles séances mais reste dans l'historique.",
+              "Le bouton Membres +/− sur la fiche d'un groupe ouvre son effectif : les adhérents déjà affectés y sont listés, avec la possibilité d'en retirer un. Les candidats proposés pour l'ajout viennent des inscriptions déjà existantes du club, avec une recherche disponible dès qu'il y en a plusieurs.",
+              "Selon la discipline, la catégorie ou la tranche d'âge du groupe, un avertissement peut s'afficher pour un candidat ; selon les réglages du club, certaines règles d'âge peuvent même empêcher réellement son ajout.",
             ])}
 
             ${teamsEnabled ? helpSection("help-equipes", "Équipes", [
@@ -15457,8 +15472,8 @@ ${esc(bodyText)}</pre>
               "La discipline est obligatoire pour créer une équipe. Elle ne peut plus être changée tant que l'équipe compte des membres : il faut d'abord les retirer.",
               "La catégorie sportive est facultative : elle n'est proposée que si la discipline choisie en définit.",
               "Le coach ou encadrant est facultatif. Seul un coach compatible avec la discipline de l'équipe peut être choisi.",
-              "Le bouton Membres +/− sur la fiche d'une équipe permet d'ajouter ou de retirer des adhérents de son effectif, parmi les personnes déjà inscrites à la même discipline.",
-              "Une équipe archivée n'est plus proposée pour de nouvelles affectations mais reste dans l'historique. Elle peut être réactivée à tout moment.",
+              "Le bouton Membres +/− sur la fiche d'une équipe permet d'ajouter ou de retirer des adhérents de son effectif, parmi les personnes déjà inscrites à la même discipline. Un même adhérent peut appartenir à plusieurs équipes à la fois.",
+              "Une équipe archivée conserve son effectif et reste dans l'historique, mais n'accepte plus de nouvelles affectations. Elle peut être réactivée à tout moment.",
               "Une équipe qui compte encore des membres ne peut pas être supprimée directement : il faut d'abord vider son effectif.",
               "Désactiver la fonctionnalité Équipes dans Paramètres > Fonctionnalités du club masque les outils de gestion, mais ne supprime aucune équipe ni aucun effectif déjà enregistré. Tout redevient disponible dès la réactivation.",
             ]) : ""}
@@ -15564,6 +15579,7 @@ ${esc(bodyText)}</pre>
             ])}
 
             ${boutiqueEnabled ? helpSection("help-boutique", "Boutique", [
+              "La Boutique et le Stock fonctionnent ensemble : les articles proposés ici viennent du Stock, où on les crée et où on gère leurs quantités. Une vente diminue automatiquement le stock disponible de l'article vendu.",
               "La boutique sert à créer des ventes pour un adhérent ou pour un non adhérent.",
               "En arrivant sur Boutique, les articles disponibles sont affichés. On choisit d'abord l'article, puis la taille et la quantité, puis le client et le paiement.",
               "Un article peut avoir plusieurs photos. Les miniatures permettent de choisir l'image à afficher en grand, et les flèches permettent de passer d'une image à l'autre.",
@@ -15585,6 +15601,7 @@ ${esc(bodyText)}</pre>
             ]) : ""}
 
             ${boutiqueEnabled ? helpSection("help-stock", "Stock", [
+              "Stock fait partie intégrante de la fonctionnalité Boutique : ce n'est pas une fonctionnalité indépendante. Boutique et Stock apparaissent et disparaissent toujours ensemble. Désactiver Boutique ne supprime aucun article, aucune quantité, aucune commande ni aucun historique : tout redevient disponible tel quel dès la réactivation.",
               "La page Stock contient les articles de boutique, leurs références, tailles, prix de vente, prix d'achat et quantités.",
               "Stock est rangé sous Boutique dans le menu principal.",
               "Les quantités de stock, avec ou sans tailles, utilisent les mêmes boutons − et + séparés que le reste du logiciel.",
@@ -15668,8 +15685,8 @@ ${esc(bodyText)}</pre>
               "Changer de thème ne modifie aucune donnée du club. Cela change uniquement les couleurs, les arrondis, les fonds et l'apparence générale.",
               "Le thème Contraste élevé renforce les écarts de couleur pour une meilleure lisibilité. Il fonctionne comme les autres thèmes : Choisir pour l'appliquer, sans modifier aucune donnée du club.",
               "Le bloc Affichage contient des cases à cocher pour ajouter ou retirer le texte sous les icônes de la barre du haut, et pour afficher ou masquer certaines pages comme Accueil, E-mail, Tarifs, Statistiques ou Notes.",
-              "Le bloc Affichage propose aussi trois modes d'interface : Simple (menu allégé pour les petits clubs), Avancé (tous les modules visibles) et Personnalisé (choisir précisément les pages visibles). Changer de mode ne supprime aucune donnée : seules des entrées du menu sont masquées, et les vues masquées restent fonctionnelles. Un nouveau club démarre en mode Simple ; le club de démonstration démarre en mode Avancé pour montrer tout de suite l'ensemble des fonctions.",
-              "Fonctionnalités du club et Affichage sont deux réglages différents, à ne pas confondre. Fonctionnalités du club active ou désactive un comportement (par exemple Boutique, Stages, Adhésions ou Équipes) : une fonctionnalité désactivée bloque la création et la modification, mais ne supprime jamais les données déjà enregistrées. Affichage choisit seulement ce qui apparaît dans les menus : une fonctionnalité peut donc rester active tout en étant masquée du menu, et la réafficher plus tard ne recrée rien, elle redevient simplement visible.",
+              "Le bloc Affichage propose aussi trois modes d'interface. Mode Simple : c'est le mode de départ d'un nouveau club — son contenu est construit une seule fois, au moment de la création du club, à partir de ce que ce club a réellement choisi ou configuré (par exemple les salles créées ou les fonctionnalités activées). Ce profil appartient à ce club : y revenir plus tard restaure exactement ce même profil, et activer ensuite une nouvelle fonctionnalité ne l'ajoute jamais automatiquement à ce profil déjà enregistré. Mode Avancé : affiche toutes les pages disponibles, autorisées par les fonctionnalités actives du club. Mode Personnalisé : permet de choisir précisément, page par page, ce qui est affiché. Changer de mode ne supprime aucune donnée : masquer une page dans Affichage ne désactive jamais sa fonctionnalité métier, elle est simplement retirée de l'interface et de la navigation selon le mode choisi. Un nouveau club démarre en mode Simple ; le club de démonstration démarre en mode Avancé pour montrer tout de suite l'ensemble des fonctions.",
+              "Fonctionnalités du club et Affichage sont deux réglages différents, à ne pas confondre. Fonctionnalités du club active ou désactive un comportement (par exemple Boutique, Stages, Adhésions ou Équipes) : une fonctionnalité désactivée bloque la création et la modification, mais ne supprime jamais les données déjà enregistrées, et ne réinitialise jamais tes préférences d'affichage déjà enregistrées. Affichage choisit seulement ce qui apparaît dans les menus : une fonctionnalité peut donc rester active tout en étant masquée du menu, et la réafficher plus tard ne recrée rien, elle redevient simplement visible. La fonctionnalité Boutique regroupe toujours les pages Boutique et Stock : elles apparaissent, se masquent et reviennent toujours ensemble, jamais l'une sans l'autre — Stock ne se règle jamais comme une fonctionnalité indépendante.",
               "Une puce en bas du menu indique le mode courant (Mode simple, Mode avancé ou Mode personnalisé). Cliquer dessus ouvre directement Paramètres > Affichage pour changer de mode.",
               "Le réglage Disposition (dans Affichage) choisit la mise en page générale : Moderne place le menu principal à gauche (l'affichage par défaut, inchangé) ; Classique le transforme en une barre de menus en haut du logiciel, avec sous-menus déroulants, façon logiciel de bureau. Les deux dispositions donnent accès aux mêmes pages ; on bascule de l'une à l'autre à tout moment, sans rien perdre.",
               "On peut replier le menu et la barre d'outils pour gagner de la place. En disposition Moderne : le bouton ⟨ / ☰ masque ou réaffiche le menu de gauche, et le bouton ⌃ replie la barre du haut (le bouton ⌄ la rouvre). En disposition Classique, le menu fin du haut reste toujours visible : le bouton ⌃ replie uniquement la barre d'outils, et le bouton ⌄ Barre d'outils la réaffiche. Ces préférences sont mémorisées d'une session à l'autre.",
@@ -38871,7 +38888,9 @@ ${esc(bodyText)}</pre>
     "creer-groupe": {
       id: "creer-groupe", category: "sport", label: "Créer un groupe",
       summary: "Rassemblez des adhérents qui s'entraînent ensemble : c'est la base pour faire l'appel et organiser le planning.", estimateMinutes: 2,
-      view: "groups", priority: 67, next: ["creer-coach"],
+      // Lot L-E-2 — next: la suite logique est désormais de gérer l'effectif du groupe qui vient
+      // d'être créé, avant d'enchaîner sur le coach (chaîne : créer -> gérer l'effectif -> coach).
+      view: "groups", helpAnchor: "help-groupes", priority: 67, next: ["gerer-effectif-groupe"],
       segments: [
         { view: "groups", anchor: "[data-action='add-group']",
           advanceOn: { selector: "[data-action='add-group']", event: "click" },
@@ -38906,19 +38925,37 @@ ${esc(bodyText)}</pre>
         { view: "coaches", anchor: "input[name='lastName']", prepare: openCoachDialogForTour, final: true,
           title: "Vous savez créer un coach", body: "Une fois enregistré, vous pourrez l'affecter à un groupe et à des créneaux. Rien n'est enregistré tant que vous ne validez pas volontairement." },
       ] },
+    // Lot L-E-2 — nouvelle visite (audit L-E, priorité P2) : le vrai dialogue "Membres +/−"
+    // (openGroupMembersDialog, src/23-sport-modules.js) est un workflow réel et distinct de la
+    // création du groupe (sélection multiple par cases à cocher, garde-fous d'âge/capacité) —
+    // jamais couvert jusqu'ici, seulement mentionné en passant dans l'Aide.
+    "gerer-effectif-groupe": {
+      id: "gerer-effectif-groupe", category: "sport", label: "Gérer l'effectif d'un groupe",
+      summary: "Ajoutez ou retirez des adhérents de l'effectif d'un groupe, parmi les inscriptions déjà existantes.", estimateMinutes: 2,
+      view: "groups", helpAnchor: "help-groupes", priority: 64, next: ["creer-coach"],
+      segments: [
+        { view: "groups", anchor: "[data-action='view-group-members']",
+          advanceOn: { selector: "[data-action='view-group-members']", event: "click" },
+          title: "Ouvrir l'effectif", body: "Le bouton « Membres +/− », sur la fiche de chaque groupe, ouvre la liste de son effectif. Rien n'est modifié tant que vous ne validez pas une action, et vous pouvez quitter cette visite quand vous voulez." },
+        { view: "groups", anchor: ".group-members-current", prepare: openGroupMembersDialogForTour,
+          title: "Les membres du groupe", body: "Les adhérents déjà affectés à ce groupe apparaissent ici, avec la possibilité de retirer chacun d'eux." },
+        { view: "groups", anchor: ".group-members-add", prepare: openGroupMembersDialogForTour,
+          title: "Ajouter des adhérents", body: "Les candidats proposés viennent des inscriptions déjà existantes du club, avec une recherche disponible dès qu'il y en a plusieurs. Discipline, catégorie et âge peuvent afficher un avertissement, et certaines règles d'âge peuvent réellement empêcher l'ajout selon les paramètres du club." },
+        { view: "groups", anchor: ".group-members-current", prepare: openGroupMembersDialogForTour, final: true,
+          title: "Vous savez gérer l'effectif", body: "Cochez les adhérents disponibles puis validez « Ajouter au groupe », ou retirez un membre existant avec son propre bouton. Rien de tout cela n'est fait par cette visite guidée." },
+      ] },
     // Lot L-B — visite feature-gated par `module: "teams"`, précédent EXACT des visites Boutique/
     // Stages (cf. "creer-article"/"boutique"/"stages" ci-dessus, mêmes champs view+module, même
-    // moteur assistantTourVisible). Visite volontairement courte (§21) : s'arrête après la création
-    // de l'équipe, sans guider la gestion de l'effectif (expliquée dans l'Aide, cf. help-equipes).
+    // moteur assistantTourVisible).
     "creer-equipe": {
       id: "creer-equipe", category: "sport", label: "Créer une équipe",
       summary: "Rassemblez un effectif autour d'une discipline, avec son encadrement.", estimateMinutes: 2,
-      // Pas de helpAnchor : contrairement à Stages/Boutique (legacyEnabled:true, actifs par défaut
-      // sur un club non configuré), Teams est opt-in (legacyEnabled:false) — pointer vers une
-      // section d'Aide elle-même conditionnelle à hasFeature("teams") créerait une référence
-      // BOITEUSE sur un club non configuré (E1, tests/assistant-journey.test.js), précédent identique
-      // à "creer-groupe" ci-dessus qui n'en déclare pas non plus.
-      view: "teams", module: "teams", priority: 65, next: [],
+      // Lot L-E-2 — helpAnchor ajouté : la carte "creer-equipe" est elle-même masquée quand Teams
+      // est OFF (assistantTourVisible, module:"teams"), exactement comme la section d'Aide
+      // help-equipes n'est rendue que si hasFeature("teams") — jamais de lien "boiteux" affiché,
+      // les deux disparaissent et réapparaissent toujours ensemble. next : la suite logique est
+      // désormais de gérer l'effectif de l'équipe qui vient d'être créée.
+      view: "teams", module: "teams", helpAnchor: "help-equipes", priority: 65, next: ["gerer-effectif-equipe"],
       segments: [
         { view: "teams", anchor: "[data-action='add-team']",
           advanceOn: { selector: "[data-action='add-team']", event: "click" },
@@ -38933,6 +38970,26 @@ ${esc(bodyText)}</pre>
           title: "Le coach (facultatif)", body: "Désigner un coach est facultatif. MonGestaClub ne proposera que les coachs compatibles avec la discipline de l'équipe." },
         { view: "teams", anchor: "input[name='name']", prepare: openTeamDialogForTour, final: true,
           title: "Vous savez créer une équipe", body: "Une fois l'équipe créée, vous pourrez gérer son effectif depuis le bouton Membres +/− de sa fiche. Rien n'est enregistré tant que vous ne validez pas vous-même." },
+      ] },
+    // Lot L-E-2 — nouvelle visite (audit L-E, priorité P2) : le vrai dialogue "Membres +/−"
+    // (openTeamMembersDialog, src/23-sport-modules.js) est un workflow réel et distinct de la
+    // création de l'équipe. Doctrine Teams (§21 du lot) : dépend UNIQUEMENT de module/view
+    // "teams" — jamais de module "memberships" — car l'ajout/retrait d'effectif reste possible
+    // même Memberships désactivé (mutation cross-domain, classe B, doctrine K-T1C).
+    "gerer-effectif-equipe": {
+      id: "gerer-effectif-equipe", category: "sport", label: "Gérer l'effectif d'une équipe",
+      summary: "Rattachez ou retirez des adhérents de l'effectif d'une équipe, parmi ceux inscrits dans la même discipline.", estimateMinutes: 2,
+      view: "teams", module: "teams", helpAnchor: "help-equipes", priority: 63, next: [],
+      segments: [
+        { view: "teams", anchor: "[data-action='view-team-members']",
+          advanceOn: { selector: "[data-action='view-team-members']", event: "click" },
+          title: "Ouvrir l'effectif", body: "Le bouton « Membres +/− », sur la fiche de chaque équipe, ouvre la liste de son effectif. Rien n'est modifié tant que vous ne validez pas une action, et vous pouvez quitter cette visite quand vous voulez." },
+        { view: "teams", anchor: ".team-members-current", prepare: openTeamMembersDialogForTour,
+          title: "Les membres de l'équipe", body: "L'effectif actuel apparaît ici, avec la possibilité de retirer chaque membre. L'équipe conserve son effectif tant que vous ne retirez personne." },
+        { view: "teams", anchor: ".team-members-add", prepare: openTeamMembersDialogForTour,
+          title: "Ajouter des membres", body: "Seuls les adhérents ayant une inscription dans la même discipline que l'équipe sont proposés. Un adhérent peut appartenir à plusieurs équipes à la fois, mais une équipe archivée n'accepte plus de nouveaux membres." },
+        { view: "teams", anchor: ".team-members-current", prepare: openTeamMembersDialogForTour, final: true,
+          title: "Vous savez gérer l'effectif", body: "« Ajouter à l'équipe » ou « Retirer » : chaque membre se gère individuellement depuis cette liste. Cette visite guidée elle-même ne change jamais l'effectif." },
       ] },
     // Lot L-C — Salles est un module d'AFFICHAGE (DISPLAY_MODULE_KEYS), pas une fonctionnalité
     // FEATURE_REGISTRY : aucun `module:` ici (il serait interprété comme une clé hasFeature par
@@ -39164,6 +39221,27 @@ ${esc(bodyText)}</pre>
           title: "TVA et assurances aussi", body: "Vous réglez aussi ici la TVA, appliquée ensuite toute seule, et les formules d'assurance proposées au moment de l'inscription. Tout est centralisé : vous n'y revenez que lorsque vos tarifs évoluent." },
       ] },
     // --- Série e-mails : petites visites pas à pas (ciblent Paramètres › Messages e-mail). ---
+    // Lot L-E-1 — nouvelle visite (audit L-E, priorité P1) : la page E-mails (view "newsletter",
+    // envoi réel) n'était couverte par AUCUNE visite — les 4 visites "email-*" ci-dessous ne
+    // couvrent que la CONFIGURATION des modèles en Paramètres. Visite strictement passive :
+    // aucun `prepare` (la page rend déjà toutes ses ancres), aucune action d'envoi déclenchée.
+    "envoyer-email": {
+      id: "envoyer-email", category: "communication", label: "Envoyer un e-mail",
+      summary: "Choisissez les destinataires, un modèle et votre message, puis envoyez depuis la messagerie externe ou directement si le SMTP est configuré.", estimateMinutes: 2,
+      view: "newsletter", helpAnchor: "help-newsletter", priority: 46, next: ["email-decouvrir"],
+      segments: [
+        { view: "newsletter", anchor: "select[data-newsletter-field='audience']",
+          title: "Choisir les destinataires", body: "Adhérents, non-adhérents, un groupe précis, les coachs, les responsables de salle, les paiements en retard… ou une sélection entièrement libre. Le public choisi détermine automatiquement la liste ci-dessous." },
+        { view: "newsletter", anchor: "select[data-newsletter-field='templateKey']",
+          title: "Choisir un modèle", body: "Les modèles configurés dans Paramètres > Messages e-mail servent de base : objet et message se remplissent tout seuls, prêts à être ajustés." },
+        { view: "newsletter", anchor: "textarea[data-newsletter-field='body']",
+          title: "Adapter le message", body: "Le contenu repris du modèle reste entièrement modifiable avant l'envoi, pour cette fois comme pour toujours." },
+        { view: "newsletter", anchor: ".newsletter-recipients-panel",
+          title: "Vérifier les destinataires", body: "La liste réelle des destinataires s'affiche ici : retirez une personne, ou ajoutez une adresse manuellement. Les destinataires sont toujours placés en copie cachée pour préserver leur confidentialité." },
+        { view: "newsletter", anchor: "[data-action='open-newsletter-mail']", final: true,
+          title: "Votre e-mail est prêt", body: "La messagerie externe s'ouvre avec tout déjà rempli. Si un SMTP est configuré, MonGestaClub peut aussi envoyer directement depuis le logiciel. Cette visite guidée ne vous a rien fait envoyer : c'est toujours vous qui déclenchez l'envoi." },
+      ],
+    },
     "email-decouvrir": {
       id: "email-decouvrir", category: "communication", label: "Découvrir vos e-mails automatiques",
       summary: "Voyons ensemble où se trouvent vos e-mails et à quoi ils servent.", estimateMinutes: 1,
@@ -39231,6 +39309,27 @@ ${esc(bodyText)}</pre>
           title: "Voilà, vous savez tout faire", body: "Vous êtes maintenant capable de personnaliser vos e-mails tout seul. Et si un doute apparaît un jour, vous pourrez relancer ces visites quand vous le souhaitez depuis le Centre d'accompagnement." },
       ],
     },
+    // Lot L-E-2 — nouvelle visite découverte (audit L-E, priorité P2) : "creer-article"/"boutique"
+    // sont deux visites ACTION, aucune ne montre la page dans son ensemble (catalogue, commandes,
+    // encaissements, ventes par article). Visite STRICTEMENT PASSIVE : aucun prepare, aucun
+    // advanceOn, aucun panneau replié n'est ouvert automatiquement (le moteur retombe sur son
+    // fallback d'ancre centrée si un panneau replié masque momentanément la cible).
+    "decouvrir-boutique": {
+      id: "decouvrir-boutique", category: "boutique", label: "Découvrir la Boutique",
+      summary: "La Boutique rassemble les articles disponibles, les ventes, les encaissements et les commandes de vos clients.", estimateMinutes: 2,
+      view: "boutique", module: "boutique", helpAnchor: "help-boutique", priority: 33, next: ["creer-article"],
+      segments: [
+        { view: "boutique", anchor: ".shop-catalog-band",
+          title: "Les articles prêts à vendre", body: "Ce catalogue reprend les articles déjà créés dans le Stock, avec leur prix et leur quantité disponible : Boutique et Stock fonctionnent ensemble, jamais l'un sans l'autre. Si aucun article n'apparaît ici, il faut d'abord en créer un." },
+        { view: "boutique", anchor: "[data-shop-panel='payments']",
+          title: "Les encaissements à suivre", body: "Les commandes pour lesquelles il reste quelque chose à encaisser sont regroupées ici, pour ne rien oublier." },
+        { view: "boutique", anchor: "[data-shop-panel='orders']",
+          title: "Retrouver les commandes", body: "Chaque commande client apparaît ici avec son total, ce qui est réglé, ce qu'il reste à payer, sa facture et ses paiements." },
+        { view: "boutique", anchor: "[data-shop-panel='articles']",
+          title: "Voir ce qui s'est vendu", body: "Retrouvez ici les articles déjà vendus et les quantités correspondantes." },
+        { view: "boutique", anchor: "[data-shop-panel='chart']", final: true,
+          title: "Vous connaissez votre Boutique", body: "Un graphique suit vos ventes article par article. Pour commencer réellement : créez un article, puis enregistrez une vente. Cette visite guidée n'a modifié aucune donnée." },
+      ] },
     "creer-article": {
       id: "creer-article", category: "boutique", label: "Créer un article",
       summary: "Avant de vendre, on crée l'article : son nom, son prix et son stock de départ. MonGestaClub suit ensuite les quantités tout seul.", estimateMinutes: 2,
@@ -39255,7 +39354,11 @@ ${esc(bodyText)}</pre>
     "boutique": {
       id: "boutique", category: "boutique", label: "Vendre un article",
       summary: "Enregistrez une vente (t-shirt, équipement…) : MonGestaClub calcule le total et met à jour le stock.", estimateMinutes: 2,
-      view: "boutique", module: "boutique", helpAnchor: "help-boutique", priority: 30, next: ["stages"],
+      // Lot L-E-1/L-E-2 — next:[] définitif : l'ancien enchaînement vers "stages" n'avait aucune
+      // justification produit (Vente puis Stage relevaient d'une simple proximité de catégorie,
+      // désormais corrigée). "Vendre un article" est la dernière étape de la chaîne Boutique
+      // (Découvrir -> Créer un article -> Vendre), elle ne propose donc plus aucune suite.
+      view: "boutique", module: "boutique", helpAnchor: "help-boutique", priority: 30, next: [],
       segments: [
         { view: "boutique", anchor: "[data-action='add-order']",
           advanceOn: { selector: "[data-action='add-order']", event: "click" },
@@ -39270,9 +39373,15 @@ ${esc(bodyText)}</pre>
           title: "Vous savez enregistrer une vente", body: "Une fois validée, la vente est enregistrée et le stock mis à jour. Rien n'est enregistré tant que vous ne validez pas vous-même." },
       ] },
     "stages": {
-      id: "stages", category: "boutique", label: "Organiser un stage",
+      // Lot L-E-1 — reclassé "boutique" -> "sport" : un stage est structurellement une activité
+      // sportive ponctuelle (dates, public, encadrement), pas une vente. Sa dimension tarifaire
+      // est partagée par la plupart des visites "sport" (inscrire-adherent notamment) sans que
+      // cela justifie une catégorie "boutique" (audit L-E, cause du rendu observé par Thierry).
+      id: "stages", category: "sport", label: "Organiser un stage",
       summary: "Créez un stage ponctuel (week-end, vacances…) auquel vos adhérents pourront s'inscrire.", estimateMinutes: 2,
-      view: "stages", module: "stages", helpAnchor: "help-stages", priority: 25, next: ["premiere-facture"],
+      // next: la suite logique est désormais d'inscrire un participant, plus jamais un lien vers
+      // Boutique (aucune justification produit à cette ancienne transition, cf. audit L-E).
+      view: "stages", module: "stages", helpAnchor: "help-stages", priority: 25, next: ["stage-inscription"],
       segments: [
         { view: "stages", anchor: "[data-action='add-stage']",
           advanceOn: { selector: "[data-action='add-stage']", event: "click" },
@@ -39285,6 +39394,30 @@ ${esc(bodyText)}</pre>
           title: "Le prix du stage", body: "Ce prix sera repris automatiquement à chaque inscription au stage, et comptabilisé dans les recettes du club. Vous le fixez une fois, ici." },
         { view: "stages", anchor: "input[name='name']", prepare: openStageDialogForTour, final: true,
           title: "Vous savez organiser un stage", body: "Une fois le stage créé, vous y inscrirez des participants : MonGestaClub reprend tout seul leurs coordonnées et le prix du stage, exactement comme pour une inscription à une discipline. Chaque participant peut ensuite être facturé et son paiement suivi. Rien n'est enregistré tant que vous ne validez pas volontairement." },
+      ] },
+    // Lot L-E-1 — nouvelle visite (audit L-E, priorité P1) : le dialogue réel d'inscription à un
+    // stage (openRegistrationDialog, src/19-contact-dialogs.js) est riche (participant lié ou
+    // externe, prestation Stage, prestation Hébergement, paiements, impression de facture) et
+    // totalement distinct de la création du stage lui-même — d'où une visite dédiée plutôt qu'un
+    // enrichissement de "stages" (doctrine "une visite = un objectif clair").
+    "stage-inscription": {
+      id: "stage-inscription", category: "sport", label: "Inscrire un participant à un stage",
+      summary: "Choisissez un participant (adhérent ou non), sa prestation stage et son éventuel hébergement, puis suivez son paiement.", estimateMinutes: 2,
+      view: "stages", module: "stages", helpAnchor: "help-stages", priority: 24, next: ["premiere-facture"],
+      segments: [
+        { view: "stages", anchor: "[data-action='add-registration']",
+          advanceOn: { selector: "[data-action='add-registration']", event: "click" },
+          title: "Inscrire quelqu'un au stage", body: "Ce bouton ajoute un participant à un stage déjà créé (adhérent, ou personne extérieure selon le public autorisé pour ce stage). Cliquez sur « Nouvelle inscription ». Rien n'est enregistré tant que vous ne validez pas, et vous pouvez quitter cette visite quand vous voulez." },
+        { view: "stages", anchor: "[data-contact-link]", prepare: openStageRegistrationDialogForTour,
+          title: "Choisir le participant", body: "Sélectionnez un adhérent ou un non-adhérent déjà connu du club, ou laissez ce champ vide pour créer un nouveau participant qui ne sera lié à aucune fiche existante." },
+        { view: "stages", anchor: "input[name='lastName']", prepare: openStageRegistrationDialogForTour,
+          title: "Un nouveau participant", body: "Si aucun contact existant n'est choisi, ses coordonnées se saisissent directement ici." },
+        { view: "stages", anchor: "input[name='eventQty']", prepare: openStageRegistrationDialogForTour,
+          title: "Le stage et son prix", body: "Le tarif du stage est repris automatiquement depuis sa fiche. La quantité et une éventuelle remise déterminent le montant à régler, dont le suivi de paiement apparaît juste en dessous." },
+        { view: "stages", anchor: "input[name='lodgingQty']", prepare: openStageRegistrationDialogForTour,
+          title: "L'hébergement, si nécessaire", body: "Le stage et l'hébergement sont deux prestations distinctes, chacune avec son propre montant et son propre suivi de paiement." },
+        { view: "stages", anchor: "[data-registration-print]", prepare: openStageRegistrationDialogForTour, final: true,
+          title: "Vous savez inscrire un participant", body: "Une fois l'inscription enregistrée, son paiement peut être suivi et une facture imprimée à tout moment. Rien n'est enregistré tant que vous ne validez pas vous-même : cette visite ne crée ni inscription, ni facture, ni paiement." },
       ] },
     "documents": {
       id: "documents", category: "documents", label: "Suivre les documents sportifs",
@@ -40563,6 +40696,34 @@ ${esc(bodyText)}</pre>
       if (typeof openTeamDialog === "function") openTeamDialog();
     } catch (e) {}
   }
+  // Ouvre l'effectif d'un groupe RÉEL déjà existant (openGroupMembersDialog ne fait qu'afficher :
+  // aucune création/modification tant que l'utilisateur ne clique pas lui-même Ajouter/Retirer) si
+  // aucun n'est déjà ouvert. Ne crée JAMAIS de groupe ni ne modifie une inscription : sur un club
+  // sans aucun groupe, ne fait rien (fallback d'ancre centrée du moteur, sans exception). Préfère
+  // un groupe non archivé (effectif réellement modifiable). Sert d'appui à "gerer-effectif-groupe".
+  function openGroupMembersDialogForTour() {
+    try {
+      if (document.querySelector("dialog[open] [data-group-members-dialog]")) return;
+      const groups = state.groups || [];
+      if (!groups.length) return;
+      const group = groups.find((g) => !g.archived) || groups[0];
+      if (group && typeof openGroupMembersDialog === "function") openGroupMembersDialog(group.id);
+    } catch (e) {}
+  }
+  // Ouvre l'effectif d'une équipe RÉELLE déjà existante (openTeamMembersDialog ne fait qu'afficher :
+  // aucune création/modification tant que l'utilisateur ne clique pas lui-même Ajouter/Retirer) si
+  // aucun n'est déjà ouvert. Ne crée JAMAIS d'équipe ni ne modifie teamIds : sur un club sans
+  // aucune équipe, ne fait rien (fallback d'ancre centrée du moteur, sans exception). Préfère une
+  // équipe non archivée. Sert d'appui à la visite "gerer-effectif-equipe".
+  function openTeamMembersDialogForTour() {
+    try {
+      if (document.querySelector("dialog[open] [data-team-members-dialog]")) return;
+      const teams = state.teams || [];
+      if (!teams.length) return;
+      const team = teams.find((t) => !t.archived) || teams[0];
+      if (team && typeof openTeamMembersDialog === "function") openTeamMembersDialog(team.id);
+    } catch (e) {}
+  }
   // Ouvre un dialogue « Nouvelle salle » VIERGE (openRoomDialog ne persiste rien tant que le
   // formulaire n'est pas validé) si aucun n'est déjà ouvert. La liste de disponibilités
   // (data-room-avail-list) est propre à ce dialogue (précédent exact : data-coach-avail-list pour
@@ -40598,6 +40759,20 @@ ${esc(bodyText)}</pre>
     try {
       if (document.querySelector("dialog[open] select[name='publicAccess']")) return;
       if (typeof openStageDialog === "function") openStageDialog();
+    } catch (e) {}
+  }
+  // Ouvre l'inscription à un stage RÉEL déjà existant (openRegistrationDialog ne persiste rien
+  // tant que le formulaire n'est pas validé) si aucune n'est déjà ouverte. L'impression de facture
+  // (data-registration-print) est propre à ce dialogue. Ne crée JAMAIS de stage ni d'inscription
+  // fictifs : sur un club sans aucun stage, ne fait rien (le moteur de visite retombe sur son
+  // fallback d'ancre centrée, sans exception). Sert d'appui à la visite "stage-inscription".
+  function openStageRegistrationDialogForTour() {
+    try {
+      if (document.querySelector("dialog[open] [data-registration-print]")) return;
+      const stages = (state.tariffs && state.tariffs.stages) || [];
+      if (!stages.length) return;
+      const stage = stages.find((s) => typeof stageRegistrationClosed !== "function" || !stageRegistrationClosed(s)) || stages[0];
+      if (stage && typeof openRegistrationDialog === "function") openRegistrationDialog(stage.id);
     } catch (e) {}
   }
   // Ouvre un dialogue « Nouvelle commande » VIERGE (openOrderDialog ne persiste rien tant que le
