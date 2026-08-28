@@ -116,6 +116,7 @@
     ["attendance", "Présences"],
     ["documents", "Documents sportifs"],
     ["stages", "Stages"],
+    ["competitions", "Rencontres"],
     ["boutique", "Boutique"],
     ["clubs", "Mes clubs"],
     ["settings", "Paramètres"],
@@ -160,6 +161,7 @@
     ["attendance", "Présences"],
     ["documents", "Documents sportifs"],
     ["stages", "Stages"],
+    ["competitions", "Rencontres"],
     ["boutique", "Boutique"],
     ["due-payments", "Paiements dus"],
     ["clubs", "Mes clubs"],
@@ -184,7 +186,7 @@
   // compta/stats pour Stages/Boutique) reste indépendant de cette visibilité.
   const DISPLAY_MODULE_KEYS = [
     "dashboard", "tasks", "search", "contacts", "invoices", "newsletter", "disciplines",
-    "groups", "teams", "coaches", "rooms", "planning", "availability", "attendance", "documents", "stages", "boutique",
+    "groups", "teams", "coaches", "rooms", "planning", "availability", "attendance", "documents", "stages", "competitions", "boutique",
     "stock", "clubs", "settings", "club-settings", "tarifs", "stats", "accounting",
     "due-payments", "notes", "history", "audit-log", "help",
   ];
@@ -192,7 +194,9 @@
   const DISPLAY_VISIBLE_DEFAULTS = {
     dashboard: true, tasks: true, search: false, contacts: true, invoices: true, newsletter: false,
     disciplines: true, groups: false, teams: false, coaches: false, rooms: false, planning: false, availability: false, attendance: false,
-    documents: false, stages: true, boutique: true, stock: false, clubs: true, settings: true,
+    // Lot M-B3 — Rencontres suit exactement la doctrine Teams (module sportif optionnel) : masquée
+    // par défaut en Personnalisé, absente de DISPLAY_SIMPLE_MODULES (décision produit Pix).
+    documents: false, stages: true, competitions: false, boutique: true, stock: false, clubs: true, settings: true,
     "club-settings": true, tarifs: true, stats: false, accounting: false, "due-payments": true,
     notes: false, history: false, "audit-log": false, help: true,
   };
@@ -1849,6 +1853,12 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
     // à l'import (une équipe d'un autre club n'est pas reprise) et ré-estampillé à la duplication,
     // faute de quoi la copie conserverait le clubId de l'original.
     scoped.teams = (scoped.teams || []).filter(keep).map(stamp);
+    // Lot M-B1 — le socle Rencontres suit exactement le même régime que Teams/Groupes : filtré à
+    // l'import, ré-estampillé à la duplication. Les convocations sont internes à l'objet Rencontre
+    // (pas une collection club séparée) : `stamp` ne les touche pas, `contactLink` n'est jamais
+    // re-stampé ni supprimé si le contact référencé devient orphelin (le snapshot `name` reste lisible
+    // — doctrine M-A2, aucun nettoyage automatique dans ce lot).
+    scoped.competitions = (scoped.competitions || []).filter(keep).map(stamp);
     // Lot K-T2A2 — nettoyage post-scoping MINIMAL de membership.teamIds : normalizeState() (appelé
     // juste au-dessus) a déjà validé teamIds contre l'intégralité des Teams reçues en entrée, avant
     // le filtrage `keep` ci-dessus qui peut retirer des Teams étrangères. Ne retire ici QUE les ids
@@ -3760,6 +3770,10 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
     // disparaît du menu et de la navigation quand la FONCTIONNALITÉ teams est désactivée pour le
     // club (hasFeature), sans toucher aux données ni à l'historique.
     if (view === "teams" && !hasFeature("teams")) return false;
+    // Module pilote Rencontres (Lot M-B3) : même axe orthogonal que Boutique/Stages/Équipes. La vue
+    // Rencontres disparaît du menu et de la navigation quand la FONCTIONNALITÉ competitions est
+    // désactivée pour le club (hasFeature), sans toucher aux données ni à l'historique.
+    if (view === "competitions" && !hasFeature("competitions")) return false;
     return isModuleVisibleByMode(view);
   }
 
@@ -3959,14 +3973,11 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
     // defaultEnabled restent à false : Équipes est opt-in (jamais activée automatiquement pour un
     // club existant, ni par défaut pour un club configuré n'ayant fait aucun choix explicite).
     //
-    // Rencontres (competitions) reste FUTURE, simplement DÉCLARÉE, INERTE et INVISIBLE :
-    //  - legacyEnabled:false ET defaultEnabled:false → hasFeature("competitions") renvoie TOUJOURS
-    //    false (aucune activation explicite possible tant qu'aucun écran ne la propose) ;
-    //  - ui.available:false → screenFeatures() l'EXCLUT de l'écran « Fonctionnalités du club » ;
-    //  - views:[] → aucune vue masquable, aucun élément de menu, aucune route ;
-    //  - aucun handler, aucune mutation, aucune garde métier n'est branché dans ce lot.
-    // Les textes ui.* de competitions sont pré-remplis pour un lot ultérieur et n'influencent RIEN
-    // aujourd'hui.
+    // Lot M-B1/M-B2/M-B3 — Rencontres (competitions) : moteur, UI et CRUD complets (M-B1/M-B2),
+    // views:["competitions"] posé (M-B3, route/menu réellement câblés). legacyEnabled et
+    // defaultEnabled restent à false : Rencontres est opt-in, comme Équipes. ui.available bascule à
+    // true seulement en tout dernier geste du Lot M-B3, une fois recherche/registre de commandes/
+    // aide/données démo vérifiés — même séquence que celle suivie pour Équipes (K-T2x puis K-T3x).
     teams: Object.freeze({
       key: "teams",
       label: "Équipes",
@@ -3995,9 +4006,9 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
       legacyEnabled: false,
       defaultEnabled: false,
       aliases: Object.freeze([]),
-      views: Object.freeze([]),
+      views: Object.freeze(["competitions"]),
       ui: Object.freeze({
-        available: false,
+        available: true,
         order: 6,
         description: "Suivez les rencontres, matchs ou compétitions et les convocations des équipes.",
         dataRetention: "La désactivation masquera les outils de gestion des rencontres sans supprimer aucune donnée existante.",
@@ -4010,8 +4021,9 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
   });
 
   // Ordre canonique déterministe (ordre de déclaration). Ne contient que des clés canoniques.
-  // Lot K-T3C — teams est désormais active (ui.available:true) ; competitions reste invisible
-  // (ui.available:false) et inerte (legacy/default:false) — cf. commentaires du registre.
+  // Lot K-T3C — teams est désormais active (ui.available:true). Lot M-B3 — competitions l'est
+  // également (ui.available:true, views:["competitions"]) ; les deux restent opt-in
+  // (legacy/default:false) — cf. commentaires du registre.
   // Lot K-S2 — "seasons" volontairement absent : ce n'est pas une fonctionnalité optionnelle mais un
   // socle déjà opérationnel pour tous les clubs (settings.season, archiveSeason, state.seasonArchives,
   // cf. K-S1). Une clé legacy settings.features.enabled.seasons reste possible dans d'anciennes
@@ -5240,6 +5252,11 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
       // sauvegardes : défaut [] — migration NEUTRE, aucune équipe n'est jamais fabriquée
       // automatiquement (voir normalizeTeam). Aucune activation UI, aucune garde métier ici.
       teams: Array.isArray(source.teams) ? source.teams : [],
+      // Lot M-B1 — socle de données Rencontres (audit M-A/M-A2). Anciennes sauvegardes : défaut [] —
+      // migration NEUTRE, aucune rencontre n'est jamais fabriquée automatiquement (voir
+      // normalizeCompetition). Aucune activation UI, aucune garde métier, aucun handler dans ce lot
+      // (feature "competitions" reste ui.available:false, views:[]).
+      competitions: Array.isArray(source.competitions) ? source.competitions : [],
     };
     base.tariffs.articles = base.tariffs.articles || [];
     base.tariffs.disciplines = base.tariffs.disciplines || [];
@@ -5399,6 +5416,7 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
     base.groups = base.groups.filter((group) => group && typeof group === "object").map(normalizeGroup);
     base.sportCategories = normalizeSportCategories(base.sportCategories);
     base.teams = base.teams.filter((team) => team && typeof team === "object").map(normalizeTeam);
+    base.competitions = base.competitions.filter((c) => c && typeof c === "object").map(normalizeCompetition);
     base.planningCourses = base.planningCourses.filter((course) => course && typeof course === "object").map(normalizeCourse);
     // Exceptions par date : normalisées + nettoyage des orphelines (créneau récurrent supprimé).
     const validCourseIds = new Set(base.planningCourses.map((course) => course.id));
@@ -5435,6 +5453,7 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
     base.groups = dedupeById(base.groups);
     base.sportCategories = dedupeById(base.sportCategories);
     base.teams = dedupeById(base.teams);
+    base.competitions = dedupeById(base.competitions);
     base.planningCourses = dedupeById(base.planningCourses);
     base.planningExceptions = dedupeById(base.planningExceptions);
     base.attendanceSessions = dedupeById(base.attendanceSessions);
@@ -5779,6 +5798,47 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
       sportCategoryId: typeof team.sportCategoryId === "string" ? asText(team.sportCategoryId) : "",
       archived: Boolean(team.archived),
       clubId: asText(team.clubId || ""),
+    };
+  }
+
+  // Lot M-B1 — socle de données Rencontres (audit M-A/M-A2, feature "competitions" — reste
+  // ui.available:false, INERTE : aucune UI, aucun handler, aucune activation dans ce lot).
+  // teamName et convocations[].name sont des SNAPSHOTS DOCUMENTAIRES (doctrine déjà appliquée à
+  // Invoice.paymentsSnapshot et ShopOrder.lastName/firstName) : jamais résolus/recalculés ici depuis
+  // state.teams ou state.contacts, jamais effacés si la Team ou le contact source disparaît ensuite.
+  // convocations référence un contact via contactLink ("member:<id>"/"prospect:<id>", motif déjà
+  // utilisé par contactLinkForRow/contactByLink pour les commandes boutique), jamais un contactId nu
+  // ni un membershipId — les deux tableaux contacts.members/contacts.prospects restent distincts.
+  function normalizeCompetition(value = {}) {
+    const convocations = (Array.isArray(value.convocations) ? value.convocations : [])
+      .filter((c) => c && typeof c === "object")
+      .map((c) => ({
+        contactLink: asText(c.contactLink || ""),
+        name: asText(c.name || ""),
+        status: ["pending", "confirmed", "declined"].includes(c.status) ? c.status : "pending",
+      }))
+      .filter((c) => c.contactLink);
+    return {
+      id: value.id || id("competition"),
+      name: asText(value.name) || "Rencontre",
+      type: ["match", "competition", "tournament", "other"].includes(value.type) ? value.type : "other",
+      disciplineId: asText(value.disciplineId || ""),
+      sportCategoryId: typeof value.sportCategoryId === "string" ? asText(value.sportCategoryId) : "",
+      teamId: asText(value.teamId || ""),
+      teamName: asText(value.teamName || ""),
+      coachId: asText(value.coachId || ""),
+      startDate: dateInputValue(value.startDate),
+      endDate: dateInputValue(value.endDate) || dateInputValue(value.startDate),
+      startTime: asText(value.startTime || ""),
+      endTime: asText(value.endTime || ""),
+      location: asText(value.location || ""),
+      opponent: asText(value.opponent || ""),
+      status: ["planned", "completed", "cancelled"].includes(value.status) ? value.status : "planned",
+      resultText: asText(value.resultText || ""),
+      notes: asText(value.notes || ""),
+      convocations,
+      archived: Boolean(value.archived),
+      clubId: asText(value.clubId || ""),
     };
   }
 
@@ -8006,6 +8066,8 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
       ["attendance", "Feuilles de présence des séances.", ["presence", "appel", "emargement", "pointage", "absence"]],
       ["documents", "Documents sportifs : certificats, licences, autorisations.", ["document", "certificat", "licence", "attestation", "autorisation", "dossier"]],
       ["stages", "Stages et sessions : inscriptions, hébergement, paiements.", ["stage", "camp", "session", "seminaire", "sortie"]],
+      ["competitions", "Rencontres : matchs, compétitions, tournois et convocations.",
+        ["rencontre", "rencontres", "match", "matchs", "competition", "competitions", "tournoi", "tournois", "convocation", "convocations"]],
       ["boutique", "Boutique du club : articles, commandes, ventes.", ["boutique", "magasin", "vente", "ventes", "commande", "commandes", "article", "articles", "shop"]],
       ["stock", "Stock des articles de la boutique.", ["stock", "inventaire", "quantite", "reassort", "approvisionnement"]],
       ["clubs", "Gérer les clubs : créer, dupliquer, activer, archiver.", ["club", "mes clubs", "multi club", "association", "changer de club"]],
@@ -8116,6 +8178,11 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
       ["action-add-stage", "Ajouter un stage", "Créer un stage ou une session.",
         ["ajouter un stage", "nouveau stage", "creer un stage", "ajouter un camp", "nouvelle session"],
         "add-stage", "stages", "stages"],
+      // Lot M-B3 — même doctrine que action-add-team (Lot L-K) : feature/module gérés par
+      // commandEntryAvailability() existant, aucune logique nouvelle.
+      ["action-add-competition", "Ajouter une rencontre", "Créer une rencontre, un match ou un tournoi et gérer ses convocations.",
+        ["ajouter une rencontre", "nouvelle rencontre", "créer une rencontre", "ajouter un match", "nouveau match", "ajouter une compétition", "ajouter un tournoi"],
+        "add-competition", "competitions", "competitions"],
       ["action-new-invoice", "Créer une facture", "Établir une nouvelle facture pour un contact.",
         ["creer une facture", "nouvelle facture", "ajouter une facture", "facturer", "editer une facture"],
         "new-invoice", "invoices", null],
@@ -9742,6 +9809,7 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
     if (ui.view === "disciplines") return renderDisciplines();
     if (ui.view === "groups") return renderGroups();
     if (ui.view === "teams") return renderTeams();
+    if (ui.view === "competitions") return renderCompetitions();
     if (ui.view === "coaches") return renderCoaches();
     if (ui.view === "rooms") return renderRooms();
     if (ui.view === "planning") return renderPlanning();
@@ -11392,6 +11460,25 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
             title: team.name || "Équipe",
             detail: [disciplineLabel, categoryLabel, coachLabel ? `Coach ${coachLabel}` : "", team.archived ? "archivée" : ""].filter(Boolean).join(" · "),
             attrs: `data-action="edit-team" data-id="${esc(team.id)}"`,
+          });
+        }
+      });
+    }
+    // Lot M-B3 — Rencontres : même doctrine que Boutique/Stages/Équipes (isViewVisible couvre déjà
+    // hasFeature ET menu). teamName/convocations[].name sont des SNAPSHOTS (doctrine M-A2/M-B1) :
+    // jamais résolus depuis state.teams/state.contacts ici, on les lit tels quels comme pour tout
+    // autre champ texte de l'entité — resultText inclus (utile pour retrouver "3 - 1", "2e place"…).
+    if (isViewVisible("competitions")) {
+      (state.competitions || []).forEach((competition) => {
+        const disciplineLabel = competition.disciplineId ? disciplineLabelFor(competition) : "";
+        const categoryLabel = competition.sportCategoryId ? sportCategoryAssignmentLabel(competition.sportCategoryId, competition.disciplineId, state, activeClubId()) : "";
+        const coachLabel = coachLabelFor(competition.coachId, "");
+        if (matches([competition.name, competition.opponent, competition.location, competition.teamName, disciplineLabel, categoryLabel, coachLabel, competition.resultText])) {
+          push({
+            type: "Rencontre",
+            title: competition.name || "Rencontre",
+            detail: [disciplineLabel, categoryLabel, competition.teamName, competition.opponent ? `vs ${competition.opponent}` : "", competition.location, competition.archived ? "archivée" : ""].filter(Boolean).join(" · "),
+            attrs: `data-action="edit-competition" data-id="${esc(competition.id)}"`,
           });
         }
       });
@@ -15253,6 +15340,7 @@ ${esc(bodyText)}</pre>
     // suit hasFeature seule (comme stagesEnabled/boutiqueEnabled ci-dessus), jamais isViewVisible.
     // Une fonctionnalité active mais masquée du menu reste documentée comme disponible.
     const teamsEnabled = hasFeature("teams");
+    const competitionsEnabled = hasFeature("competitions");
     return `
       <div class="help-page">
         <section class="help-layout">
@@ -15279,6 +15367,7 @@ ${esc(bodyText)}</pre>
             ${boutiqueEnabled ? `<a href="#help-boutique">Boutique</a>` : ""}
             ${boutiqueEnabled ? `<a href="#help-stock">Stock</a>` : ""}
             ${stagesEnabled ? `<a href="#help-stages">Stages</a>` : ""}
+            ${competitionsEnabled ? `<a href="#help-rencontres">Rencontres</a>` : ""}
             <a href="#help-tarifs">Tarifs</a>
             <a href="#help-parametres">Paramètres</a>
             <a href="#help-utilisateurs">Utilisateurs</a>
@@ -15300,7 +15389,7 @@ ${esc(bodyText)}</pre>
               </div>
               <div class="help-version">
                 <strong>Version actuelle</strong>
-                <span>Multi-clubs, contacts, factures, e-mails, disciplines, coachs, salles${teamsEnabled ? ", équipes" : ""}, planning${boutiqueEnabled ? ", boutique, stock" : ""}${stagesEnabled ? ", stages" : ""}, dépenses, statistiques, comptabilité, tarifs, notes et sauvegardes.</span>
+                <span>Multi-clubs, contacts, factures, e-mails, disciplines, coachs, salles${teamsEnabled ? ", équipes" : ""}, planning${boutiqueEnabled ? ", boutique, stock" : ""}${stagesEnabled ? ", stages" : ""}${competitionsEnabled ? ", rencontres" : ""}, dépenses, statistiques, comptabilité, tarifs, notes et sauvegardes.</span>
               </div>
             </section>
 
@@ -15679,6 +15768,22 @@ ${esc(bodyText)}</pre>
               "Le Prix U est verrouillé : il reprend automatiquement le tarif défini dans la page Tarifs et ne se modifie pas à la main. Pour accorder un geste commercial, utilise le champ Remise.",
               "Les paiements du stage et de l'hébergement sont séparés pour garder une lecture claire, et chacun peut être réglé en plusieurs fois indépendamment.",
               "En bas de la fiche, une ligne Total inscription récapitule le stage, l'hébergement et leur somme dès qu'un montant de stage est saisi.",
+            ]) : ""}
+
+            ${competitionsEnabled ? helpSection("help-rencontres", "Rencontres", [
+              "La page Rencontres permet de suivre les matchs, compétitions, tournois et autres rencontres sportives du club.",
+              "Chaque rencontre a un type : Match, Compétition, Tournoi ou Autre — un simple repère, sans effet sur le fonctionnement.",
+              "Une rencontre fonctionne aussi bien pour un sport collectif (avec une équipe) que pour un sport individuel (sans équipe).",
+              "L'équipe, la discipline, la catégorie sportive et l'encadrant sont tous facultatifs : renseigne uniquement ce qui a du sens pour cette rencontre.",
+              "Choisir une équipe à la création propose de reprendre automatiquement sa discipline, sa catégorie et son encadrant, ainsi que son effectif actuel pour les convocations — ce sont des valeurs de départ, pas un lien permanent.",
+              "Le nom de l'équipe et le nom des personnes convoquées restent affichés tels qu'ils étaient au moment de la rencontre, même si l'équipe est renommée, l'effectif change, ou une personne est supprimée par la suite.",
+              "Les convocations listent les personnes invitées à la rencontre, adhérents ou non-adhérents, chacune avec une réponse : En attente, Confirmée ou Refusée. C'est le gestionnaire du club qui saisit ces réponses ; aucun message n'est envoyé automatiquement.",
+              "La rencontre elle-même a un statut : Prévue, Terminée ou Annulée. Ce statut se change simplement en modifiant la rencontre.",
+              "Le résultat est un texte libre (par exemple 3 - 1, 2e place, ou Médaille d'or), pour rester adapté à tous les sports plutôt que d'imposer un score unique.",
+              "Le lieu est également un texte libre : une rencontre à l'extérieur n'oblige pas à créer une salle dans le logiciel.",
+              "Le bouton Archiver masque une rencontre passée sans la supprimer ; Réactiver la fait réapparaître.",
+              "Le bouton Supprimer retire uniquement la rencontre elle-même, après confirmation. L'équipe, les contacts, les adhésions, la discipline et l'encadrant liés ne sont jamais supprimés.",
+              "Comme les autres pages du club, Rencontres ne montre que les rencontres du club actif.",
             ]) : ""}
 
             ${helpSection("help-tarifs", "Tarifs", [
@@ -27722,12 +27827,47 @@ ${esc(bodyText)}</pre>
       ] },
     ];
 
+    // Lot M-B3 — Rencontres : uniquement des références RÉELLEMENT créées ci-dessus (aucune Team
+    // démo n'existe — Teams reste opt-in, jamais activé par défaut — teamId/teamName restent donc
+    // vides, ce qui est un usage valide et volontaire de la doctrine "équipe facultative"). Les
+    // noms de convocations sont des SNAPSHOTS figés au moment de la création, comme en production.
+    const competitions = [
+      { id: "demo-competition-match-judo-adulte", clubId, name: "Rencontre inter-clubs Judo adulte", type: "match",
+        disciplineId: "demo-discipline-judo-adulte", sportCategoryId: "demo-category-judo-adulte-seniors", coachId: "demo-coach-laurent",
+        startDate: "2026-04-12", endDate: "2026-04-12", startTime: "14:00", endTime: "18:00",
+        location: "Dojo principal", opponent: "Judo Club Villeneuve",
+        status: "completed", resultText: "5 victoires - 3 défaites", notes: "",
+        convocations: [
+          { contactLink: "member:member-alden-maelys", name: "ALDEN Maëlys", status: "confirmed" },
+          { contactLink: "member:member-gallo-paul", name: "GALLO Paul", status: "confirmed" },
+          { contactLink: "member:member-hardy-sara", name: "HARDY Sara", status: "declined" },
+        ], archived: false },
+      { id: "demo-competition-tournoi-self", clubId, name: "Tournoi régional Self-défense", type: "tournament",
+        disciplineId: "demo-discipline-self-defense", sportCategoryId: "demo-category-self-confirmes", coachId: "demo-coach-karim",
+        startDate: "2026-05-03", endDate: "2026-05-03", startTime: "", endTime: "",
+        location: "Salle des sports, Agen", opponent: "",
+        status: "completed", resultText: "2e place", notes: "",
+        convocations: [
+          { contactLink: "member:member-mahe-hugo", name: "MAHÉ Hugo", status: "confirmed" },
+        ], archived: false },
+      { id: "demo-competition-rencontre-enfants", clubId, name: "Rencontre amicale Judo enfants", type: "competition",
+        disciplineId: "demo-discipline-judo-enfant", sportCategoryId: "demo-category-judo-enfant-poussins", coachId: "demo-coach-nadia",
+        startDate: plusDays(60), endDate: plusDays(60), startTime: "10:00", endTime: "12:00",
+        location: "Dojo principal", opponent: "",
+        status: "planned", resultText: "", notes: "",
+        convocations: [
+          { contactLink: "member:member-rivory-noe", name: "RIVORY Noé", status: "confirmed" },
+          { contactLink: "member:member-bahin-tom", name: "BAHIN Tom", status: "pending" },
+        ], archived: false },
+    ];
+
     return normalizeState(scopeStateToClub({
       meta: { clubId, demoData: true, createdAt: new Date().toISOString() },
       tariffs: { disciplines, insurance, stages, articles },
       contacts: { members, prospects },
       memberships: membershipRows,
       sportCategories,
+      competitions,
       shopOrders,
       invoices,
       creditNotes,
@@ -32085,6 +32225,35 @@ ${esc(bodyText)}</pre>
     }
     if (action === "view-team-members") {
       openTeamMembersDialog(button.dataset.id);
+      return;
+    }
+    // ---- Lot M-B2 — Rencontres (moteur métier, aucune activation UI publique avant M-B3) ----
+    if (action === "add-competition") {
+      if (!ensureFeatureEnabledForMutation("competitions")) return;
+      return openCompetitionDialog();
+    }
+    if (action === "edit-competition") {
+      // Même doctrine que edit-team (K-T2B2) : Rencontre introuvable = no-op propre, jamais un
+      // dialogue de création accidentel (la création reste exclusivement add-competition).
+      const competition = getCompetitionById(button.dataset.id);
+      if (!competition) return;
+      return openCompetitionDialog(competition);
+    }
+    if (action === "toggle-archive-competition") return toggleArchiveCompetition(button.dataset.id);
+    if (action === "delete-competition") {
+      if (!ensureFeatureEnabledForMutation("competitions")) return;
+      const competition = getCompetitionById(button.dataset.id);
+      if (!competition) return;
+      const targetClubId = activeClubId();
+      if (!await requestConfirm({ title: "Supprimer la rencontre", message: `Supprimer définitivement la rencontre « ${competition.name} » ?`, confirmLabel: "Supprimer", danger: true })) return;
+      // Double garde après confirmation asynchrone (précédent exact : delete-team K-T2B0B/K-T2B0C).
+      if (!ensureFeatureEnabledForMutation("competitions")) return;
+      if (activeClubId() !== targetClubId) { alert("Le club actif a changé pendant la confirmation. Réessayez."); return; }
+      const fresh = getCompetitionById(button.dataset.id);
+      if (!fresh) return;
+      // Aucune cascade (doctrine M-B2 §15) : ni Team, ni Contact, ni Membership, ni Discipline, ni
+      // Coach ne sont jamais touchés — seule la Rencontre elle-même disparaît.
+      recordHistory(); removeById(state.competitions, button.dataset.id); persist("Rencontre supprimée"); render();
       return;
     }
     if (action === "email-group") {
@@ -37267,6 +37436,327 @@ ${esc(bodyText)}</pre>
     const teamId = root.dataset.teamId;
     const host = root.closest(".dialog-body") || root.parentElement;
     if (host) host.innerHTML = teamMembersDialogBody(teamId);
+  }
+
+  // =========================================================================
+  // Lot M-B2 — PAGE + CRUD RENCONTRES ("competitions", libellé produit "Rencontres"), moteur M-B1.
+  // Complets mais NON PUBLICS — FEATURE_REGISTRY.competitions.ui.available reste false, views reste
+  // [] (cf. M-A/M-A2). Précédent EXACT : "K-T3B — PAGE + ROSTER ÉQUIPES" ci-dessus. Aucune route
+  // ui.view n'est ajoutée dans ce lot : ces fonctions ne sont appelables que directement (harness/
+  // tests), jamais depuis le menu — la même Rencontre n'est jamais atteignable par navigation avant
+  // le Lot M-B3 (activation publique).
+  // =========================================================================
+
+  function competitionTypeLabel(type) {
+    if (type === "match") return "Match";
+    if (type === "competition") return "Compétition";
+    if (type === "tournament") return "Tournoi";
+    return "Autre";
+  }
+
+  function competitionStatusLabel(status) {
+    if (status === "completed") return "Terminée";
+    if (status === "cancelled") return "Annulée";
+    return "Prévue";
+  }
+
+  function competitionConvocationStatusLabel(status) {
+    if (status === "confirmed") return "Confirmée";
+    if (status === "declined") return "Refusée";
+    return "En attente";
+  }
+
+  function getCompetitionById(competitionId) {
+    return (state.competitions || []).find((c) => c.id === competitionId) || null;
+  }
+
+  function competitionConvocationSummary(competition) {
+    const list = Array.isArray(competition && competition.convocations) ? competition.convocations : [];
+    return {
+      total: list.length,
+      confirmed: list.filter((c) => c.status === "confirmed").length,
+      declined: list.filter((c) => c.status === "declined").length,
+      pending: list.filter((c) => c.status === "pending").length,
+    };
+  }
+
+  // Candidats convocables : adhérents ET non-adhérents (doctrine M-A2 §7, réutilise le motif
+  // contactLink déjà employé par contactLinkForRow/contactByLink pour les commandes boutique —
+  // jamais un contactId nu, jamais un membershipId). Aucune notion d'archivage sur Contact.
+  function competitionContactCandidates() {
+    const members = (state.contacts?.members || []).map((c) => ({ contactLink: `member:${c.id}`, name: personLabel(c) }));
+    const prospects = (state.contacts?.prospects || []).map((c) => ({ contactLink: `prospect:${c.id}`, name: personLabel(c) }));
+    return [...members, ...prospects].sort((a, b) => a.name.localeCompare(b.name, "fr", { sensitivity: "base" }));
+  }
+
+  // Point de départ (M-A2 §6/§9) : l'effectif ACTUEL de la Team au moment de l'appel. Résolution via
+  // membershipsReferencingTeam (source de vérité du roster, doctrine K-T1B/K-T1C) puis
+  // contactForMembership (déjà utilisé pour retrouver la fiche contact d'une inscription). Une
+  // membership sans contact résolvable est ignorée (aucun contactLink fabriqué). Le résultat est un
+  // SNAPSHOT : rien n'est jamais résolu à nouveau après l'enregistrement de la Rencontre.
+  function competitionConvocationsFromTeamRoster(teamId) {
+    return membershipsReferencingTeam(teamId)
+      .map((m) => {
+        const contact = (typeof contactForMembership === "function") ? contactForMembership(m) : null;
+        if (!contact) return null;
+        const kind = (state.contacts?.members || []).includes(contact) ? "member" : "prospect";
+        return { contactLink: `${kind}:${contact.id}`, name: personLabel(contact), status: "pending" };
+      })
+      .filter(Boolean);
+  }
+
+  function competitionConvocationRowHtml(convocation, index) {
+    const statuses = ["pending", "confirmed", "declined"];
+    return `<div class="group-member-row competition-convocation-row">
+      <div class="group-member-id">
+        <strong>${esc(convocation.name || "Personne")}</strong>
+      </div>
+      <select name="convocationStatus__${index}">
+        ${statuses.map((s) => `<option value="${esc(s)}" ${convocation.status === s ? "selected" : ""}>${esc(competitionConvocationStatusLabel(s))}</option>`).join("")}
+      </select>
+      <label class="settings-check compact-check"><input type="checkbox" name="convocationRemove__${index}" value="1" /><span>Retirer</span></label>
+    </div>`;
+  }
+
+  function competitionCardHtml(competition) {
+    const summary = competitionConvocationSummary(competition);
+    const dateLabel = [competition.startDate ? dateDisplay(competition.startDate) : "", competition.startTime].filter(Boolean).join(" · ");
+    const disciplineLabel = competition.disciplineId ? (disciplineById(competition.disciplineId)?.name || "") : "";
+    const categoryLabel = competition.sportCategoryId ? asText(sportCategoryAssignmentLabel(competition.sportCategoryId, competition.disciplineId, state, activeClubId())) : "";
+    const coachLabel = competition.coachId ? coachLabelFor(competition.coachId, "") : "";
+    const meta = [
+      competitionTypeLabel(competition.type),
+      disciplineLabel,
+      categoryLabel,
+      competition.teamName || "",
+      competition.opponent ? `vs ${competition.opponent}` : "",
+      dateLabel,
+      competition.location || "",
+      coachLabel ? `Coach ${coachLabel}` : "",
+    ].filter(Boolean).join(" · ");
+    const convocationLine = summary.total
+      ? `${summary.total} convoqué${summary.total > 1 ? "s" : ""} · ${summary.confirmed} confirmé${summary.confirmed > 1 ? "s" : ""} · ${summary.declined} refusé${summary.declined > 1 ? "s" : ""}${summary.pending ? ` · ${summary.pending} en attente` : ""}`
+      : "";
+    return `<div class="group-card team-card paper competition-card ${competition.archived ? "group-archived team-archived" : ""}">
+      <div class="group-card-head team-card-head">
+        <h3>${esc(competition.name)}</h3>
+        <span class="cap-badge">${esc(competitionStatusLabel(competition.status))}</span>
+      </div>
+      <div class="group-card-meta team-card-meta">
+        <span>${esc(meta || "Aucune information renseignée")}</span>
+      </div>
+      ${convocationLine ? `<div class="group-card-meta team-card-meta"><span>${esc(convocationLine)}</span></div>` : ""}
+      <div class="group-card-actions team-card-actions">
+        <button type="button" data-action="edit-competition" data-id="${esc(competition.id)}">Modifier</button>
+        <button type="button" data-action="toggle-archive-competition" data-id="${esc(competition.id)}">${competition.archived ? "Réactiver" : "Archiver"}</button>
+        <button type="button" class="icon danger" data-action="delete-competition" data-id="${esc(competition.id)}" title="Supprimer définitivement">×</button>
+      </div>
+    </div>`;
+  }
+
+  // Classement (doctrine M-B2 §4) : archived===true -> archivées ; sinon status==="planned" -> à
+  // venir ; sinon (completed/cancelled) -> terminées. status reste une donnée métier EXPLICITE :
+  // aucun moteur temporel n'infère jamais un statut depuis startDate/endDate.
+  function renderCompetitions() {
+    const all = state.competitions || [];
+    const upcoming = all.filter((c) => !c.archived && c.status === "planned");
+    const past = all.filter((c) => !c.archived && c.status !== "planned");
+    const archived = all.filter((c) => c.archived);
+    if (!all.length) {
+      return `<div class="empty"><p>Aucune rencontre créée.</p><button type="button" class="primary" data-action="add-competition">Nouvelle rencontre</button></div>`;
+    }
+    return `
+      ${toolbar("add-competition", "Nouvelle rencontre", `<span class="muted">${upcoming.length} à venir</span>`)}
+      <div class="band">
+        <div class="band-title"><h2>Rencontres à venir</h2></div>
+        <div class="group-grid team-grid">${upcoming.map(competitionCardHtml).join("") || `<p class="muted">Aucune rencontre à venir.</p>`}</div>
+      </div>
+      <div class="band">
+        <div class="band-title"><h2>Rencontres terminées</h2></div>
+        <div class="group-grid team-grid">${past.map(competitionCardHtml).join("") || `<p class="muted">Aucune rencontre terminée.</p>`}</div>
+      </div>
+      ${archived.length ? `<div class="band"><div class="band-title"><h2>Rencontres archivées</h2><strong>${archived.length}</strong></div>
+        <div class="group-grid team-grid">${archived.map(competitionCardHtml).join("")}</div></div>` : ""}`;
+  }
+
+  // Correction M-B2 — une Team supprimée après création de la Rencontre n'a plus d'entrée dans
+  // state.teams : sans option dédiée, le <select> retomberait sur « — Aucune — » et un simple
+  // ouvrir/enregistrer sans toucher au champ Équipe effacerait silencieusement teamId (alors même
+  // que teamName, snapshot, restait affiché). L'option historique préserve l'ancien id EXACT : seul
+  // un choix VOLONTAIRE d'une autre valeur (« Aucune » ou une autre Team) change quoi que ce soit.
+  function competitionTeamOptionsHtml(selectedTeamId, snapshotName) {
+    const teams = state.teams || [];
+    const knownSelected = teams.some((tm) => tm.id === selectedTeamId);
+    const orphanOption = (selectedTeamId && !knownSelected)
+      ? `<option value="${esc(selectedTeamId)}" selected>${esc(snapshotName || "Équipe")} (indisponible)</option>`
+      : "";
+    const options = teams.map((tm) => `<option value="${esc(tm.id)}" ${tm.id === selectedTeamId ? "selected" : ""}>${esc(tm.name)}${tm.archived ? " (archivée)" : ""}</option>`).join("");
+    return `<label>Équipe<select name="teamId">${`<option value="" ${selectedTeamId ? "" : "selected"}>— Aucune —</option>` + orphanOption + options}</select></label>`;
+  }
+
+  function competitionDialogBody(competition) {
+    const candidates = competitionContactCandidates();
+    const existingLinks = new Set((competition.convocations || []).map((c) => c.contactLink));
+    const addCandidates = candidates.filter((c) => !existingLinks.has(c.contactLink));
+    const types = ["match", "competition", "tournament", "other"];
+    const statuses = ["planned", "completed", "cancelled"];
+    return `
+      <fieldset class="dialog-section"><legend>Rencontre</legend>
+        ${field("name", "Nom *", competition.name || "", "text", "required")}
+        <label>Type<select name="type">${types.map((tp) => `<option value="${esc(tp)}" ${competition.type === tp ? "selected" : ""}>${esc(competitionTypeLabel(tp))}</option>`).join("")}</select></label>
+        <label>Statut<select name="status">${statuses.map((st) => `<option value="${esc(st)}" ${competition.status === st ? "selected" : ""}>${esc(competitionStatusLabel(st))}</option>`).join("")}</select></label>
+      </fieldset>
+      <fieldset class="dialog-section"><legend>Sport</legend>
+        ${disciplineSelectField("discipline", "Discipline", competition)}
+        ${sportCategorySelectField("sportCategoryId", competition)}
+        ${competitionTeamOptionsHtml(competition.teamId, competition.teamName)}
+        <div data-coach-field>${coachPickerHtml(competition.coachId, { disciplineId: competition.disciplineId, discipline: "" }, "", "Encadrant")}</div>
+      </fieldset>
+      <fieldset class="dialog-section"><legend>Date et lieu</legend>
+        ${field("startDate", "Début", competition.startDate || "", "date")}
+        ${field("endDate", "Fin", competition.endDate || "", "date")}
+        ${field("startTime", "Heure de début", competition.startTime || "", "time")}
+        ${field("endTime", "Heure de fin", competition.endTime || "", "time")}
+        ${field("location", "Lieu", competition.location || "", "text", 'placeholder="Ex : Gymnase municipal, Agen"')}
+        ${field("opponent", "Adversaire", competition.opponent || "", "text", 'placeholder="Ex : ASPTT Agen"')}
+      </fieldset>
+      <fieldset class="dialog-section"><legend>Convocations</legend>
+        ${!competition.id ? `<label class="settings-check compact-check"><input type="checkbox" name="convokeTeamRoster" value="1" /><span>Convoquer l'effectif actuel de l'équipe choisie</span></label>` : ""}
+        ${(competition.convocations || []).length ? `<div class="group-member-list team-member-list">${(competition.convocations || []).map((c, i) => competitionConvocationRowHtml(c, i)).join("")}</div>` : `<p class="muted">Aucune convocation pour l'instant.</p>`}
+        <label>Ajouter des convocations<select name="addConvocation" multiple size="6">${addCandidates.map((c) => `<option value="${esc(c.contactLink)}">${esc(c.name)}</option>`).join("")}</select></label>
+      </fieldset>
+      <fieldset class="dialog-section"><legend>Résultat</legend>
+        ${field("resultText", "Résultat", competition.resultText || "", "text", 'placeholder="Ex : 3 - 1, 2e place, Médaille d\'or"')}
+        ${textareaField("notes", "Notes", competition.notes || "")}
+      </fieldset>`;
+  }
+
+  // Champs V1 (doctrine M-A2/M-B2) : teamName/convocations[].name sont des SNAPSHOTS jamais résolus
+  // à nouveau ; à la création seulement, une Team choisie peut préremplir discipline/catégorie/coach
+  // ET fournir un point de départ pour les convocations (jamais une référence vivante ensuite,
+  // doctrine M-A2 §6/§9) ; en édition, aucune réécriture silencieuse d'un champ déjà enregistré.
+  function openCompetitionDialog(competition = {}) {
+    const openedClubId = activeClubId();
+    const openedCompetitionId = competition.id || "";
+    const previousConvocations = Array.isArray(competition.convocations) ? competition.convocations : [];
+    setNextWindowKey(competition.id ? `competition:${competition.id}` : null);
+    showDialog(competition.id ? "Modifier la rencontre" : "Nouvelle rencontre", competitionDialogBody(competition), (data, form) => {
+      if (activeClubId() !== openedClubId) { alert("Le club actif a changé depuis l'ouverture de ce formulaire. Rouvrez-le pour continuer."); return false; }
+      if (!ensureFeatureEnabledForMutation("competitions")) return false;
+      let current = null;
+      if (openedCompetitionId) {
+        current = getCompetitionById(openedCompetitionId);
+        if (!current) { alert("Cette rencontre n'existe plus."); return false; }
+      }
+      const name = asText(data.get("name"));
+      if (!name) { alert("Le nom de la rencontre est obligatoire."); return false; }
+      const teamTarget = disciplineTargetFromSelectValue(data.get("discipline"), current || competition);
+      const isCreate = !current;
+      // Correction M-B2 — résolution teamId/teamName : trois cas EXPLICITES, jamais une résolution
+      // implicite depuis chosenTeam seul (chosenTeam est null aussi bien pour "Aucune" que pour une
+      // Team orpheline, les deux ne doivent pourtant jamais produire le même résultat).
+      //  1. valeur soumise vide -> choix volontaire de "— Aucune —" (ou aucune Team en création) :
+      //     teamId ET teamName vidés.
+      //  2. valeur soumise identique à l'existant (y compris une Team orpheline, préservée dans le
+      //     <select> par competitionTeamOptionsHtml) -> AUCUNE réécriture, snapshot intact.
+      //  3. valeur soumise différente -> sélection réellement volontaire d'une autre Team : nouveau
+      //     snapshot pris sur cette Team au moment de l'enregistrement, jamais revisité ensuite.
+      const submittedTeamId = asText(data.get("teamId"));
+      const previousTeamId = asText(current ? current.teamId : "");
+      const previousTeamName = asText(current ? current.teamName : "");
+      let teamId, teamName, chosenTeam = null;
+      if (!submittedTeamId) {
+        teamId = "";
+        teamName = "";
+      } else if (submittedTeamId === previousTeamId) {
+        teamId = previousTeamId;
+        teamName = previousTeamName;
+        chosenTeam = getTeamById(submittedTeamId);
+      } else {
+        chosenTeam = getTeamById(submittedTeamId);
+        teamId = submittedTeamId;
+        teamName = chosenTeam ? asText(chosenTeam.name) : "";
+      }
+      // Préremplissage CRÉATION UNIQUEMENT (jamais en édition, doctrine M-B2 §8) : seulement si le
+      // champ correspondant n'a pas été renseigné dans le formulaire.
+      const disciplineId = teamTarget.disciplineId || (isCreate && chosenTeam ? asText(chosenTeam.disciplineId) : "");
+      const categoryChoice = readSportCategoryAssignmentValue(data.get("sportCategoryId"));
+      const sportCategoryId = categoryChoice.keep
+        ? asText(current ? current.sportCategoryId : "")
+        : (categoryChoice.categoryId || (isCreate && chosenTeam ? asText(chosenTeam.sportCategoryId) : ""));
+      const coachId = asText(data.get("coachId")) || (isCreate && chosenTeam ? asText(chosenTeam.coachId) : "");
+      // Convocations : (1) statuts/retraits appliqués aux convocations existantes ; (2) point de
+      // départ effectif de Team si demandé (création uniquement) ; (3) ajouts manuels — dédupliqués
+      // par contactLink, jamais de doublon, jamais de résolution différée.
+      const kept = previousConvocations
+        .map((c, i) => {
+          if (asText(data.get(`convocationRemove__${i}`))) return null;
+          const status = asText(data.get(`convocationStatus__${i}`));
+          return { contactLink: c.contactLink, name: c.name, status: ["pending", "confirmed", "declined"].includes(status) ? status : c.status };
+        })
+        .filter(Boolean);
+      const seen = new Set(kept.map((c) => c.contactLink));
+      const merged = [...kept];
+      if (isCreate && teamId && asText(data.get("convokeTeamRoster"))) {
+        competitionConvocationsFromTeamRoster(teamId).forEach((c) => {
+          if (!seen.has(c.contactLink)) { seen.add(c.contactLink); merged.push(c); }
+        });
+      }
+      const candidateByLink = new Map(competitionContactCandidates().map((c) => [c.contactLink, c.name]));
+      const getAllAdd = (typeof data.getAll === "function") ? data.getAll("addConvocation") : [];
+      (getAllAdd || []).forEach((link) => {
+        const contactLink = asText(link);
+        if (!contactLink || seen.has(contactLink)) return;
+        seen.add(contactLink);
+        merged.push({ contactLink, name: candidateByLink.get(contactLink) || "", status: "pending" });
+      });
+      const next = {
+        id: current ? current.id : id("competition"),
+        name,
+        type: ["match", "competition", "tournament", "other"].includes(asText(data.get("type"))) ? asText(data.get("type")) : "other",
+        disciplineId,
+        sportCategoryId,
+        teamId,
+        teamName,
+        coachId,
+        startDate: dateInputValue(asText(data.get("startDate"))),
+        endDate: dateInputValue(asText(data.get("endDate"))) || dateInputValue(asText(data.get("startDate"))),
+        startTime: asText(data.get("startTime")),
+        endTime: asText(data.get("endTime")),
+        location: asText(data.get("location")),
+        opponent: asText(data.get("opponent")),
+        status: ["planned", "completed", "cancelled"].includes(asText(data.get("status"))) ? asText(data.get("status")) : "planned",
+        resultText: asText(data.get("resultText")),
+        notes: asText(data.get("notes")),
+        convocations: merged,
+        archived: current ? Boolean(current.archived) : false,
+        clubId: activeClubId(),
+      };
+      state.competitions = state.competitions || [];
+      upsert(state.competitions, next);
+      return `${current ? "Modification" : "Création"} de la rencontre ${name}`;
+    }, (form) => {
+      // Préremplissage LIVE (progressive enhancement) : seulement à la création, seulement si les
+      // champs sont encore vides — jamais une réécriture de valeurs déjà saisies par l'utilisateur.
+      if (openedCompetitionId) return;
+      form.elements.teamId?.addEventListener("change", () => {
+        const chosen = form.elements.teamId.value ? getTeamById(form.elements.teamId.value) : null;
+        if (!chosen) return;
+        if (form.elements.discipline && !form.elements.discipline.value) form.elements.discipline.value = chosen.disciplineId || "";
+        if (form.elements.sportCategoryId && !form.elements.sportCategoryId.value) form.elements.sportCategoryId.value = chosen.sportCategoryId || "";
+        if (form.elements.coachId && !form.elements.coachId.value) form.elements.coachId.value = chosen.coachId || "";
+      });
+    });
+  }
+
+  async function toggleArchiveCompetition(competitionId) {
+    if (!ensureFeatureEnabledForMutation("competitions")) return;
+    const competition = getCompetitionById(competitionId);
+    if (!competition) return;
+    recordHistory();
+    competition.archived = !competition.archived;
+    persist(competition.archived ? "Rencontre archivée" : "Rencontre réactivée");
+    render();
   }
 
   // =========================================================================
