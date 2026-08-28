@@ -30679,10 +30679,18 @@ ${esc(bodyText)}</pre>
       if (!desired) {
         // Désactivation : confirmation prudente. Interrupteur figé pendant l'opération asynchrone.
         target.disabled = true;
+        // Lot N-B2 — avertissement contextuel : featureDisableImpact (moteur pur, N-B1) ne bloque
+        // rien et ne modifie rien ; il enrichit seulement le message/libellé de LA MÊME confirmation
+        // quand du travail actif (jamais un simple historique) reste à traiter. Calculé pour
+        // targetClubId, jamais recalculé après le dialogue (même doctrine que la garde active-club
+        // ci-dessous). Feature hors périmètre N-B1 (ex. memberships) -> hasImpact toujours false ->
+        // confirmation strictement identique à l'historique.
+        const impact = featureDisableImpact(canonical, targetClubId);
+        const baseMessage = (def.ui.disableConfirmMessage || "").split("{club}").join(targetClubName);
         const confirmed = await requestConfirm({
           title: def.ui.disableConfirmTitle || "Désactiver ?",
-          message: (def.ui.disableConfirmMessage || "").split("{club}").join(targetClubName),
-          confirmLabel: def.ui.disableConfirmLabel || `Désactiver ${def.label}`,
+          message: impact.hasImpact ? `Attention : ${impact.summary}\n\n${baseMessage}` : baseMessage,
+          confirmLabel: impact.hasImpact ? "Désactiver quand même" : (def.ui.disableConfirmLabel || `Désactiver ${def.label}`),
           danger: true,
         });
         if (!confirmed) { render(); return; } // Annulation : aucune écriture ; render() rétablit la case
@@ -34676,6 +34684,112 @@ ${esc(bodyText)}</pre>
     })) return false;
     performSportCategoryDeletion(category, discipline);
     return true;
+  }
+
+  // =====================================================================================================
+  // Lot N-B1 — moteur PUR d'analyse d'impact avant désactivation d'une fonctionnalité optionnelle
+  // (écran « Fonctionnalités du club »). AUCUNE écriture, AUCUN persist, AUCUN render, AUCUN alert,
+  // AUCUN recordHistory : purement consultatif, destiné à un futur écran de confirmation (N-B2). Ne
+  // crée AUCUN mécanisme de blocage — la désactivation reste toujours possible après confirmation.
+  //
+  // Doctrine issue de l'audit N-A (§O) : seul du TRAVAIL ACTIF encore à traiter produit un impact.
+  // Une donnée simplement conservée pour l'historique (terminée, annulée, archivée, passée, soldée)
+  // n'est JAMAIS à elle seule un motif d'impact — « données présentes » ne veut pas dire « impact ».
+  //
+  // Périmètre volontairement restreint aux fonctionnalités opt-in dont la désactivation coupe une
+  // vraie capacité de mutation : shop, stages, teams, competitions (jamais memberships, contacts,
+  // planning, accounting... hors registre concerné par ce lot).
+  //
+  // clubId : même doctrine défensive que disciplineReferenceCounts/categoryReferenceCounts ci-dessus
+  // (belongsToClubScope, jamais une filtration ad hoc ni un second système de scoping).
+  // =====================================================================================================
+
+  function featureDisableImpact(featureKey, clubId) {
+    const canonical = resolveFeatureKey(featureKey);
+    const neutral = (key) => ({ hasImpact: false, featureKey: key || "", activeCount: 0, summary: "", details: [] });
+    // Éligibilité : clé résolue, DÉFINITION RÉELLE du registre (jamais une simple whitelist locale),
+    // réellement configurable, réellement disponible publiquement (ui.available), ET dans le
+    // périmètre N-B1. Une feature retirée/dépubliée du registre redevient neutre sans y toucher ici.
+    const def = canonical ? featureDefinition(canonical) : null;
+    if (
+      !canonical
+      || !def
+      || def.configurable !== true
+      || !def.ui
+      || def.ui.available !== true
+      || !["shop", "stages", "teams", "competitions"].includes(canonical)
+    ) return neutral(canonical);
+
+    if (canonical === "teams") {
+      // Impact actif = Team NON archivée réellement référencée par au moins une inscription
+      // (membership.teamIds). Une Team archivée, ou une Team active sans aucun membre, ne compte pas.
+      const activeTeams = (state.teams || []).filter((team) => team && !team.archived && belongsToClubScope(team, clubId));
+      const usedMembershipIds = new Set();
+      const details = [];
+      activeTeams.forEach((team) => {
+        const referencing = membershipsReferencingTeam(team.id);
+        if (!referencing.length) return;
+        referencing.forEach((m) => usedMembershipIds.add(m.id));
+        details.push({ type: "team", id: team.id, name: team.name, membershipsCount: referencing.length });
+      });
+      const activeCount = details.length;
+      const membershipsCount = usedMembershipIds.size;
+      const summary = activeCount
+        ? `${activeCount} équipe${activeCount > 1 ? "s" : ""} active${activeCount > 1 ? "s" : ""} ${activeCount > 1 ? "sont" : "est"} encore utilisée${activeCount > 1 ? "s" : ""} par ${membershipsCount} adhésion${membershipsCount > 1 ? "s" : ""}.`
+        : "";
+      return { hasImpact: activeCount > 0, featureKey: canonical, activeCount, summary, details };
+    }
+
+    if (canonical === "competitions") {
+      // Impact actif = Rencontre non archivée ET encore "planned". completed/cancelled/archived ne
+      // comptent jamais, même si elles restent dans state (conservées pour l'historique).
+      const planned = (state.competitions || []).filter((c) => c && c.archived !== true && c.status === "planned" && belongsToClubScope(c, clubId));
+      const activeCount = planned.length;
+      const details = planned.map((c) => ({ type: "competition", id: c.id, name: c.name, startDate: c.startDate }));
+      const summary = activeCount
+        ? `${activeCount} rencontre${activeCount > 1 ? "s" : ""} ${activeCount > 1 ? "sont" : "est"} encore prévue${activeCount > 1 ? "s" : ""}.`
+        : "";
+      return { hasImpact: activeCount > 0, featureKey: canonical, activeCount, summary, details };
+    }
+
+    if (canonical === "stages") {
+      // Impact actif = stage non encore passé (stageIsPast), qu'il ait ou non des inscriptions. Un
+      // stage passé, même avec des inscriptions historiques, ne compte jamais. Les paiements dus déjà
+      // existants restent encaissables indépendamment (doctrine Lot 2D) : ce moteur ne les mentionne
+      // pas comme motif de blocage, seulement le fait qu'un stage à venir reste à organiser.
+      const futureStages = (state.tariffs.stages || []).filter((stage) => stage && !stageIsPast(stage) && belongsToClubScope(stage, clubId));
+      const details = futureStages.map((stage) => ({ type: "stage", id: stage.id, name: stage.name, registrationsCount: stageParticipantCount(stage.id) }));
+      const activeCount = details.length;
+      const registrationsCount = details.reduce((sum, d) => sum + d.registrationsCount, 0);
+      const summary = activeCount
+        ? (activeCount === 1
+            ? `1 stage à venir contient ${registrationsCount} inscription${registrationsCount > 1 ? "s" : ""}.`
+            : `${activeCount} stages à venir contiennent ${registrationsCount} inscription${registrationsCount > 1 ? "s" : ""}.`)
+        : "";
+      return { hasImpact: activeCount > 0, featureKey: canonical, activeCount, summary, details };
+    }
+
+    // shop (alias "boutique") — impact actif = commande avec reste dû positif (calcOrder) ou paiement
+    // encore pending/planned, ET/OU stock encore physiquement disponible (stockRows, indépendant de
+    // la visibilité). Une commande intégralement soldée n'est qu'un historique, jamais un motif.
+    const orders = (state.shopOrders || []).filter((order) => order && belongsToClubScope(order, clubId));
+    const activeOrders = [];
+    orders.forEach((order) => {
+      const calc = calcOrder(order);
+      const hasRestDue = asNumber(calc.restDue) > 0;
+      const hasPendingPayment = (order.payments || []).some((payment) => paymentIsPendingOrPlanned(payment));
+      if (hasRestDue || hasPendingPayment) activeOrders.push({ type: "order", id: order.id, restDue: calc.restDue, pendingPayment: hasPendingPayment });
+    });
+    const availableStock = stockRows()
+      .filter((row) => row && row.article && asNumber(row.available) > 0 && belongsToClubScope(row.article, clubId))
+      .map((row) => ({ type: "stock", id: row.article.id, name: row.article.name, available: row.available }));
+    const details = [...activeOrders, ...availableStock];
+    const activeCount = details.length;
+    const parts = [];
+    if (activeOrders.length) parts.push(`${activeOrders.length} commande${activeOrders.length > 1 ? "s" : ""} ${activeOrders.length > 1 ? "ont" : "a"} encore un reste dû ou un paiement à venir`);
+    if (availableStock.length) parts.push("du stock est disponible");
+    const summary = parts.length ? `${parts.join(" et ")}.` : "";
+    return { hasImpact: activeCount > 0, featureKey: canonical, activeCount, summary, details };
   }
 
   // =====================================================================================================
