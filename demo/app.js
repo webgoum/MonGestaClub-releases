@@ -1213,6 +1213,10 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
     view: "dashboard",
     contactKind: "members",
     stageId: "stage-1",
+    // Lot O-E2-B7R (§3) — club RÉELLEMENT chargé par loadActiveClubFromStore(), maintenu pour
+    // distinguer un vrai changement de club (reset UI club-bound justifié) d'un simple re-chargement
+    // du même club (ex. save d'un club déjà actif) : jamais déduit de clubStore après écriture.
+    loadedClubId: "",
     query: "",
     globalSearch: "",
     // Curseur virtuel dans les résultats de recherche (flèches haut/bas). -1 = aucun résultat
@@ -1269,6 +1273,11 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
     showArchivedClubs: false,
     noteId: "",
     tariffEditKey: "",
+    // Lot O-E2-B5R2 (§9-18) — club/id d'origine d'une édition Tarif ARTICLE, mémorisés EXPLICITEMENT
+    // au moment de l'entrée en édition (jamais recalculés depuis activeClubId() au save) : une ligne
+    // ne reste "editing" que si le club actif ET l'article correspondent encore à ceux capturés ici.
+    tariffEditClubId: "",
+    tariffEditArticleId: "",
     newsletterAudience: "members",
     newsletterManualOnly: false,
     newsletterTitle: "",
@@ -1290,6 +1299,9 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
     emailTemplateKey: "reminder",
     emailTemplateEditing: false,
     emailTemplateDraft: null,
+    // Lot O-E2-B7 — club d'origine de la session d'édition du modèle e-mail en cours (capturé à
+    // l'entrée en mode édition), jamais activeClubId() seul comme identité d'autorité à l'enregistrement.
+    emailTemplateClubId: "",
     historyExpandedRows: [],
     sidebarNavScroll: 0,
     helpTarget: "",
@@ -1683,6 +1695,15 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
     };
   }
 
+  // Lot O-B — Responsables dynamiques : choix de FONCTION PRÉDÉFINIE proposés dans le sélecteur de
+  // chaque carte Responsable, plus une entrée neutre "custom" pour toute fonction libre non prévue
+  // (ex. "Responsable communication"). Dérivé de clubManagerLabels() (source unique des 7 libellés
+  // historiques) : jamais de liste dupliquée. "role" ici reste une FONCTION HUMAINE (bureau du
+  // club) — sans aucun rapport avec Membership.role (droits logiciels futurs, Lot O-D).
+  function clubManagerFunctionOptions() {
+    return [...Object.entries(clubManagerLabels()), ["custom", "Autre / Fonction personnalisée"]];
+  }
+
   function normalizeClubIdentity(source = {}) {
     const now = new Date().toISOString();
     const name = asText(source.name || source.clubName || "Mon club") || "Mon club";
@@ -1728,16 +1749,25 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
         website: asText(source.contact?.website),
         social: asText(source.contact?.social),
       },
-      managers: managerRows.map((manager, index) => ({
-        id: asText(manager.id || id("manager")),
-        role: asText(manager.role || Object.keys(clubManagerLabels())[index] || "admin"),
-        function: asText(manager.function || clubManagerLabels()[manager.role] || manager.role),
-        lastName: asText(manager.lastName),
-        firstName: asText(manager.firstName),
-        email: asText(manager.email),
-        phone: asText(manager.phone),
-        notes: asText(manager.notes),
-      })),
+      // Lot O-B — Responsables DYNAMIQUES : liste réellement ouverte (0, 1 ou N entrées), aucune
+      // reconstruction/déduplication par role, plusieurs entrées peuvent légitimement partager le
+      // même role (ex. deux "registrations"). role:"custom" est une fonction libre valide au même
+      // titre que les 7 rôles historiques. L'identité d'une entrée est EXCLUSIVEMENT manager.id
+      // (jamais role/index/nom) : un id déjà présent est TOUJOURS préservé, jamais régénéré ; un id
+      // manquant (entrée legacy/importée incomplète) en reçoit un nouveau une seule fois ici.
+      managers: managerRows.map((manager) => {
+        const role = asText(manager.role) || "custom";
+        return {
+          id: asText(manager.id) || id("manager"),
+          role,
+          function: asText(manager.function) || clubManagerLabels()[role] || "Responsable",
+          lastName: asText(manager.lastName),
+          firstName: asText(manager.firstName),
+          email: asText(manager.email),
+          phone: asText(manager.phone),
+          notes: asText(manager.notes),
+        };
+      }),
       payments: {
         acceptedModes: Array.isArray(source.payments?.acceptedModes) ? uniqueValues(source.payments.acceptedModes.map(normalizePaymentModeKey).filter(Boolean)) : ["cash", "check", "card"],
         maxSplitPayments: normalizePaymentCheckCount(source.payments?.maxSplitPayments ?? source.payments?.paymentCheckCount),
@@ -6918,25 +6948,42 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
     return typeof window !== "undefined" && !!window.monGestaClubShell && typeof window.monGestaClubShell.smtpSend === "function";
   }
 
+  // Lot O-E2-B7 (§19-20) — plus jamais de repli "default" : sans club actif réel, aucune identité
+  // d'autorité pour une action SMTP/Newsletter utilisateur (fail closed), chaîne vide sinon.
   function activeClubIdForSmtp() {
     try {
-      return (typeof activeClub === "function" && activeClub()?.id) || "default";
+      return (typeof activeClub === "function" && activeClub()?.id) || "";
     } catch (error) {
-      return "default";
+      return "";
     }
   }
 
-  async function refreshSmtpSecretStatus() {
+  // Lot O-E2-B7R2 (§24) — un effet UI post-await (ui.smtpSecretStatus, ui.saveMessage, un message de
+  // test...) ne doit s'appliquer QU'AU club encore affiché quand l'attente se termine. Le secret A
+  // sauvegardé/effacé côté main process reste correct pour A quoi qu'il arrive (effet PERSISTANT déjà
+  // ciblé explicitement) : seul l'AFFICHAGE ne doit jamais montrer un statut A sur un écran passé à B.
+  function smtpUiStillBoundToClub(clubId) {
+    return Boolean(clubId && activeClubId() === clubId && ui.loadedClubId === clubId);
+  }
+
+  // Lot O-E2-B7R2 (§26) — clubId désormais EXPLICITE (jamais activeClubIdForSmtp() en interne) : le
+  // statut interrogé et écrit dans l'UI concerne toujours le club demandé par l'appelant, jamais un
+  // club ambiant relu tardivement. Sans club id, aucune interrogation ni écriture UI (fail closed).
+  async function refreshSmtpSecretStatus(clubId = "") {
+    if (!clubId) return { present: false, secure: false };
     if (!smtpShellAvailable()) {
-      ui.smtpSecretStatus = { present: false, secure: false };
-      return ui.smtpSecretStatus;
+      const status = { present: false, secure: false };
+      if (smtpUiStillBoundToClub(clubId)) ui.smtpSecretStatus = status;
+      return status;
     }
+    let status;
     try {
-      ui.smtpSecretStatus = await window.monGestaClubShell.smtpSecretStatus(activeClubIdForSmtp());
+      status = await window.monGestaClubShell.smtpSecretStatus(clubId);
     } catch (error) {
-      ui.smtpSecretStatus = { present: false, secure: false };
+      status = { present: false, secure: false };
     }
-    return ui.smtpSecretStatus;
+    if (smtpUiStillBoundToClub(clubId)) ui.smtpSecretStatus = status;
+    return status;
   }
 
   // À appeler à CHAQUE changement de club actif (voir loadActiveClubFromStore, seul point commun
@@ -6955,7 +7002,10 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
     ui.smtpSecretStatus = undefined;
     ui.smtpTesting = false;
     ui.smtpSending = false;
-    if (smtpShellAvailable()) refreshSmtpSecretStatus().then(() => render());
+    // Lot O-E2-B7R2 (§27) — activeClubId() est LU ICI, immédiatement après le reset ci-dessus (donc
+    // déjà le club B nouvellement actif) : le résultat asynchrone ne s'appliquera à ui.smtpSecretStatus
+    // que si B est toujours affiché à son retour (smtpUiStillBoundToClub, vérifié par la primitive).
+    if (smtpShellAvailable()) refreshSmtpSecretStatus(activeClubId()).then(() => render());
   }
 
   // Brouillon d'édition des champs SMTP (Paramètres > E-mails) : initialisé depuis settings.smtp,
@@ -6989,7 +7039,11 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
   // nouveau mot de passe a été saisi, le transmet au main process pour stockage sécurisé — jamais
   // conservé dans settings/les sauvegardes JSON. Utilisé par "Enregistrer" ET "Tester l'envoi"
   // (qui enregistre d'abord, pour tester exactement la configuration affichée à l'écran).
-  async function commitSmtpDraftSettings() {
+  // Lot O-E2-B7 (§23) — clubId EXPLICITE transmis par l'appelant (jamais recalculé en interne via
+  // activeClubIdForSmtp()) : la primitive elle-même exige un club valide + newsletter.write, ses
+  // deux seuls appelants (save/test SMTP) exigent déjà cette même permission pour ce même domaine.
+  async function commitSmtpDraftSettings(clubId) {
+    if (!clubId || clubId !== activeClubIdForSmtp() || !currentUserHasPermission("newsletter.write", clubId)) return false;
     const draft = smtpDraftValues();
     const password = asText(draft.password || "");
     settings.smtp = normalizeSmtpSettings({
@@ -7005,12 +7059,17 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
     });
     persistSettings();
     if (smtpShellAvailable() && password) {
-      const result = await window.monGestaClubShell.smtpSaveSecret(activeClubIdForSmtp(), password);
-      ui.smtpSecretStatus = { present: true, secure: Boolean(result?.secure) };
+      const result = await window.monGestaClubShell.smtpSaveSecret(clubId, password);
+      // Lot O-E2-B7R2 (§22-25) — le secret A est bien enregistré côté main process quoi qu'il arrive
+      // (effet persistant déjà ciblé explicitement, clubId), mais ui.smtpSecretStatus ne doit refléter
+      // ce résultat A que si l'écran affiche ENCORE A à ce moment (sinon : switch B pendant l'attente,
+      // aucune contamination de l'UI B par un statut A).
+      if (smtpUiStillBoundToClub(clubId)) ui.smtpSecretStatus = { present: true, secure: Boolean(result?.secure) };
     } else if (smtpShellAvailable()) {
-      await refreshSmtpSecretStatus();
+      await refreshSmtpSecretStatus(clubId);
     }
     draft.password = "";
+    return true;
   }
 
   // Envoi réel via SMTP (main process). Retourne toujours {ok, message?, accepted?, rejected?} —
@@ -7023,10 +7082,19 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
   // htmlWithoutLogo (repli sans cid:) transmis en plus de html : le main process choisit lequel des
   // deux envoyer réellement selon que la pièce jointe logo a pu être construite ou non (voir
   // smtpSend, budo-electron/main.js) — jamais de cid: orphelin possible.
-  async function sendEmailIntegrated({ to = [], bcc = [], subject = "", text = "", html = "", htmlWithoutLogo = "", logoDataUrl = "" } = {}) {
+  // Lot O-E2-B7R (§16-20) — moteur GÉNÉRIQUE d'envoi (Newsletter, fiche Contact, relance...) : la
+  // primitive elle-même exige un clubId EXPLICITE (jamais activeClubIdForSmtp() comme autorité) et
+  // newsletter.write, quel que soit le domaine appelant — sécuriser un seul appelant (Newsletter)
+  // ne suffisait pas tant que ce moteur partagé restait lui-même sans garde. newsletter.write
+  // SEUL (jamais newsletter.read) : write n'implique pas read, mais l'effet externe reste gouverné
+  // par write indépendamment de la vue d'où l'appel provient.
+  async function sendEmailIntegrated({ clubId = "", to = [], bcc = [], subject = "", text = "", html = "", htmlWithoutLogo = "", logoDataUrl = "" } = {}) {
+    if (!clubId || activeClubId() !== clubId || !currentUserHasPermission("newsletter.write", clubId)) {
+      return { ok: false, message: "Vous n'avez pas l'autorisation nécessaire." };
+    }
     if (!smtpShellAvailable()) return { ok: false, message: "Envoi intégré indisponible dans cette version." };
     try {
-      const result = await window.monGestaClubShell.smtpSend(activeClubIdForSmtp(), smtpSettings(), { to, bcc, subject, text, html, htmlWithoutLogo: htmlWithoutLogo || html, logoDataUrl });
+      const result = await window.monGestaClubShell.smtpSend(clubId, smtpSettings(), { to, bcc, subject, text, html, htmlWithoutLogo: htmlWithoutLogo || html, logoDataUrl });
       return result || { ok: false, message: "Réponse invalide du processus principal." };
     } catch (error) {
       return { ok: false, message: asText(error?.message) || "Erreur d'envoi inconnue." };
@@ -7093,7 +7161,14 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
     }).join("");
   }
 
-  function openContactEmailDialog(contact = {}, templateKey = "contact", extraContext = {}) {
+  // Lot O-E2-B7R (§22-27) — bypass majeur fermé : openedClubId EXPLICITE obligatoire (jamais de
+  // repli tardif sur activeClubId()), newsletter.read exigé pour même OUVRIR le composeur (§24),
+  // newsletter.write revérifié à CHAQUE effet externe (SMTP au submit, mailto au submit, mailto du
+  // bouton secondaire — qui peut rester ouvert longtemps, §27) : aucun des trois chemins ne peut
+  // produire d'envoi sans repasser par cette vérification au moment précis de l'effet.
+  function openContactEmailDialog(contact = {}, templateKey = "contact", extraContext = {}, openedClubId = "") {
+    if (!openedClubId) return;
+    if (activeClubId() !== openedClubId || !currentUserHasPermission("newsletter.read", openedClubId)) return;
     if (!asText(contact.email)) {
       alert("Ce contact n'a pas d'adresse e-mail.");
       return;
@@ -7131,21 +7206,42 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
     // pas de faux bouton d'envoi intégré désactivé). Quand le SMTP est prêt, la messagerie externe
     // devient une action secondaire explicite (bouton neutre, zone gauche du pied de dialogue,
     // jamais confondue avec l'action principale) plutôt que de disparaître.
-    const mailtoFallbackButton = smtpReady
+    // Lot O-E2-B7R (§31) — sans newsletter.write, le composeur reste consultable (newsletter.read
+    // suffit à l'ouvrir) mais le bouton mailto secondaire disparaît ; le bouton principal reste
+    // affiché (contrainte showDialog) mais devient INERTE (onSave refuse avant tout effet).
+    const canSendNow = currentUserHasPermission("newsletter.write", openedClubId);
+    const mailtoFallbackButton = smtpReady && canSendNow
       ? `<button type="button" class="dialog-mailto-fallback" data-action="dialog-open-mailto" title="Ouvrir votre messagerie habituelle avec ce message déjà préparé">Ouvrir la messagerie externe</button>`
       : "";
     const submitLabel = smtpReady ? "Envoyer depuis MonGestaClub" : "Ouvrir la messagerie externe";
     showDialog("Envoyer un mail", body, async (form, formElement) => {
+      // Lot O-E2-B7R (§25-26) — revalidation avant TOUT effet externe, y compris le mailto : le
+      // dialogue a pu rester ouvert longtemps (aucun await requis pour l'atteindre au premier essai).
+      if (activeClubId() !== openedClubId || !currentUserHasPermission("newsletter.write", openedClubId)) {
+        alert("Vous n'avez pas l'autorisation nécessaire.");
+        return false;
+      }
       const email = form.get("email");
       const subject = form.get("subject");
       const message = form.get("body");
       if (smtpReady) {
         if (!(await confirmReservedDemoEmailIfNeeded(email))) return false;
+        // Revalidation post-confirmation (§25) : club et permission ont pu changer pendant l'attente.
+        if (activeClubId() !== openedClubId || !currentUserHasPermission("newsletter.write", openedClubId)) {
+          alert("Vous n'avez pas l'autorisation nécessaire.");
+          return false;
+        }
         const submitBtn = formElement?.querySelector(".dialog-footer-actions button[type=\"submit\"]");
         const originalLabel = submitBtn?.textContent;
         if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = "Envoi..."; }
         const smtpPayload = await prepareEmailForSmtp(subject, message, { context });
+        // Revalidation immédiatement avant l'effet externe (prepareEmailForSmtp peut attendre le logo).
+        if (activeClubId() !== openedClubId || !currentUserHasPermission("newsletter.write", openedClubId)) {
+          if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = originalLabel; }
+          return false;
+        }
         const result = await sendEmailIntegrated({
+          clubId: openedClubId,
           to: [email],
           subject: smtpPayload.subject,
           text: smtpPayload.text,
@@ -7178,6 +7274,9 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
       formElement.elements.body?.addEventListener("input", refreshPreview);
       const mailtoBtn = formElement.querySelector('[data-action="dialog-open-mailto"]');
       mailtoBtn?.addEventListener("click", () => {
+        // Lot O-E2-B7R (§27) — le bouton secondaire peut rester ouvert longtemps : revalider À
+        // CHAQUE clic, jamais seulement à l'ouverture du dialogue.
+        if (activeClubId() !== openedClubId || !currentUserHasPermission("newsletter.write", openedClubId)) return;
         window.location.href = mailtoHref(formElement.elements.email.value, formElement.elements.subject.value, formElement.elements.body.value);
       });
     }, mailtoFallbackButton, () => {}, submitLabel);
@@ -7646,16 +7745,30 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
   // refresh) pour ne jamais faire diverger la liste entre l'affichage et la garde de mutation.
   const PENDING_PAYMENT_STATUSES = ["A encaisser", "En cours"];
 
+  // Lot O-E2-B3B-1 — POINT UNIQUE de rendu des paiements embarqués "live" (cartes/tableaux Adhésions/
+  // Boutique/Stages, consultation commande incluse) : un paiement embarqué n'est jamais une donnée
+  // autonome (§6), donc payments.read + lecture du PARENT (déduite de `module`, jamais devinée pour un
+  // module inconnu — fail closed) sont vérifiées ICI, une seule fois, pour les 11 points d'appel
+  // existants. clubId = activeClubId() au moment du rendu, également stampé sur chaque contrôle
+  // (data-payment-club-id) pour que les mutations "live" (validatePayment/updatePaymentFromControl/
+  // cancelPendingPayment) puissent détecter un changement de club après coup (§18-19), plutôt que de
+  // relire activeClubId() tardivement sur un DOM potentiellement resté affiché après un switch.
   function paymentControls(module, rowId, payments, options = {}) {
+    const clubId = activeClubId();
+    if (!currentUserCanReadEmbeddedPayment(module, clubId)) {
+      return `<div class="payment-hidden-note muted">Vous n'avez pas accès à cette section.</div>`;
+    }
     // Lot 3A (clôture absolue, FIN-PAY-1) — tarif ABSENT (billable=false) : aucun paiement ne doit être
     // suggéré ni saisi tant que le tarif n'est pas défini. On remplace le tiroir par une note explicite
     // UNIQUEMENT s'il n'existe encore aucun paiement (jamais de masquage de paiements déjà saisis).
     if (options.billable === false && !(payments || []).some(hasPaymentContent)) {
       return `<div class="payment-undefined-note muted">Tarif non défini — définissez le tarif de la discipline avant d'encaisser un paiement.</div>`;
     }
+    const canWrite = currentUserCanWriteEmbeddedPayment(module, clubId);
     const attrs = [
       `data-payment-module="${esc(module)}"`,
       `data-id="${esc(rowId)}"`,
+      `data-payment-club-id="${esc(clubId)}"`,
       options.stageId ? `data-stage-id="${esc(options.stageId)}"` : "",
       options.part ? `data-part="${esc(options.part)}"` : "",
       options.total !== undefined ? `data-payment-total="${esc(asNumber(options.total))}"` : "",
@@ -7668,6 +7781,7 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
       defaultTaxRate: options.defaultTaxRate ?? effectiveDefaultVatRate(),
       maxChecks: paymentCheckCount(),
       title: "Paiements",
+      canWrite,
       // Lot I-B — restriction OPTIONNELLE et rétrocompatible (absente partout ailleurs, comportement
       // historique inchangé) : quand fournie, seules les lignes dont paymentStatus() figure dans cette
       // liste restent actionnables (bouton + champs actifs) ; les autres deviennent consultatives,
@@ -7714,6 +7828,7 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
         defaultTaxRate: options.defaultTaxRate,
         actionableStatuses: options.actionableStatuses,
         claimKey: options.claimKey || "",
+        canWrite: options.canWrite ?? true,
       })).join("")}
       </div>
     </details>`;
@@ -7816,7 +7931,7 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
     </button>`;
   }
 
-  function compactPaymentEditor({ index, payment = {}, attrs = "", mode = "form", prefix = "", active = false, visible = true, suggestedAmount = 0, defaultTaxRate = 0, claimKey = "", actionableStatuses = null }) {
+  function compactPaymentEditor({ index, payment = {}, attrs = "", mode = "form", prefix = "", active = false, visible = true, suggestedAmount = 0, defaultTaxRate = 0, claimKey = "", actionableStatuses = null, canWrite = true }) {
     const amountValue = payment?.amount || suggestedAmount || "";
     const amountNumber = asNumber(amountValue);
     // Correctif Boutique — un montant affiché qui vient de suggestedAmount (aucun payment.amount
@@ -7841,7 +7956,11 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
     // comportement historique inchangé au bit près.
     const restricted = Array.isArray(actionableStatuses);
     const actionable = !restricted || actionableStatuses.includes(paymentStatus(payment));
-    const lockedForContext = paid || (restricted && !actionable);
+    // Lot O-E2-B3B-1 (§11) — canWrite=false (payments.write manquant ou parent.read manquant) verrouille
+    // la ligne EXACTEMENT comme un paiement déjà validé : champs readonly, aucun bouton de mutation. La
+    // sécurité réelle reste dans les fonctions mutantes (validatePayment/updatePaymentFromControl/
+    // cancelPendingPayment/validateFormPayment), jamais dans ce seul attribut d'affichage.
+    const lockedForContext = paid || (restricted && !actionable) || !canWrite;
     const lockI = lockedForContext ? ' readonly tabindex="-1"' : "";
     const lockS = lockedForContext ? ' tabindex="-1"' : "";
     const dateVal = dateInputValue(payment.date || (parseDate(payment.state) ? payment.state : ""));
@@ -7880,7 +7999,7 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
     // restent modifiables : validatePayment() lit leur valeur DOM directement au clic, sans dépendre
     // de ce listener) et UNIQUEMENT quand actionableStatuses est fourni (jamais hors de ce contexte —
     // Boutique/Paiements dus, elles, vivent bien dans #app et ce select y fonctionne normalement).
-    const liveStateDisabled = restricted ? " disabled" : "";
+    const liveStateDisabled = (restricted || !canWrite) ? " disabled" : "";
     const stateInput = mode === "form"
       ? `<label class="payment-state-field">Statut
           <select data-form-payment-state data-prefix="${esc(prefix)}" data-index="${index}" data-claim-key="${esc(claimKey)}"${lockS}>
@@ -7907,7 +8026,7 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
     // bouton de mutation : c'est précisément ce qui empêche « Annuler paiement » d'apparaître pour
     // un paiement déjà validé dans la consultation de commande. Hors contexte restreint, comportement
     // historique strictement inchangé (refused reste le seul cas sans bouton).
-    const okButton = refused || (restricted && !actionable)
+    const okButton = refused || (restricted && !actionable) || !canWrite
       ? ""
       : mode === "live"
       ? `<button class="payment-ok ${paid ? "cancel-payment" : ""}" type="button" title="${esc(payButtonTitle)}" data-action="validate-payment" data-index="${index}" ${attrs}>${esc(payButtonLabel)}</button>`
@@ -7919,7 +8038,7 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
     // pas encore encaissé sans passer par « Annuler paiement » (réservé à un paiement déjà validé).
     // Réutilise exactement les mêmes identifiants que le bouton live (attrs + data-index), aucune
     // deuxième méthode d'identification du paiement.
-    const cancelPendingButton = (restricted && actionable)
+    const cancelPendingButton = (restricted && actionable && canWrite)
       ? `<button class="payment-cancel-pending" type="button" title="Annuler ce paiement en attente" data-action="cancel-pending-payment" data-index="${index}" ${attrs}>Annuler ce paiement en attente</button>`
       : "";
     return `<div class="payment-mini-row ${mode === "live" ? "live" : "form"} ${immediate ? "immediate-payment" : ""} ${lockedForContext ? "locked" : ""}" data-payment-row="${index}" data-payment-visible="${visible ? "1" : "0"}"${lockedData} ${!visible || (mode === "live" && !active) ? "hidden" : ""}>
@@ -8303,12 +8422,32 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
     return list;
   }
 
+  // Lot O-E2-B8R2 (§40-41) — WRITE réel requis pour PROPOSER une entrée "action" (elle déclenche
+  // une mutation), en plus du READ déjà vérifié via targetModule. "action-export-json" est
+  // volontairement absent : data.export reste hors périmètre B8R2 (réservé à B9).
+  const SEARCH_ACTION_WRITE_OVERRIDES = Object.freeze({
+    "action-add-contact": "contacts.write",
+    "action-add-coach": "sport.write",
+    "action-add-room": "sport.write",
+    "action-add-group": "sport.write",
+    "action-add-team": "sport.write",
+    "action-add-discipline": "sport.write",
+    "action-add-stage": "stages.write",
+    "action-add-competition": "competitions.write",
+    "action-new-invoice": "billing.write",
+    "action-add-stock-article": "shop.write",
+    "action-add-order": "shop.write",
+    "action-add-course": "sport.write",
+    "action-new-user": "users.manage",
+  });
+
   // --- Disponibilité ----------------------------------------------------------------------------
   // Trois axes distincts, déjà portés par l'application : la FONCTIONNALITÉ du club (hasFeature),
   // l'AFFICHAGE du module (isViewVisible : mode Simple/Avancé/Personnalisé) et le club actif.
   // Règle retenue : une entrée dont le module est simplement MASQUÉ reste proposée, signalée comme
   // indisponible avec le chemin pour l'activer — sinon l'utilisateur ne peut pas découvrir comment
   // réactiver ce qu'il cherche. Une entrée dont la FONCTIONNALITÉ est coupée est traitée pareil.
+  // Lot O-E2-B8R2 — quatrième axe ajouté : le WRITE réel pour les entrées "action" (ci-dessus).
   function commandEntryAvailability(entry) {
     if (typeof entry.available === "function") {
       let ok = false;
@@ -8331,6 +8470,36 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
         fixView: "settings",
         fixPanel: "display",
       };
+    }
+    // Lot O-E2-B1 — une destination mono-domaine protégée par une permission de lecture ne doit
+    // jamais être proposée comme résultat actif si l'utilisateur ne l'a pas : pas de fixView/fixPanel
+    // ici (contrairement aux deux cas ci-dessus), aucun réglage ne peut « corriger » ce refus soi-même.
+    if (targetModule && typeof currentUserCanAccessView === "function" && !currentUserCanAccessView(targetModule)) {
+      return { available: false, reason: "Vous n'avez pas accès à cette rubrique." };
+    }
+    // Lot O-E2-B9R3 (Partie B, §13-16) — action-export-json est un cas unique : ni un WRITE métier
+    // classique (SEARCH_ACTION_WRITE_OVERRIDES ci-dessous, volontairement absent pour cette entrée
+    // depuis B8R2), ni un READ de page (targetModule est volontairement null : le backup est global,
+    // non lié à une vue). Sa disponibilité doit pourtant refléter la RÈGLE ALL-CLUBS réelle du
+    // handler (data.export vrai sur CHAQUE club de clubStore.clubs, jamais seulement le club actif) —
+    // sinon la Recherche proposerait une action qui échouerait systématiquement dès le clic (ou pire,
+    // laisserait croire qu'un backup partiel serait acceptable). currentUserCanExportGlobalBackup()
+    // est LA MÊME autorité que le bouton sidebar (28-users.js) : jamais une permission dérivée du
+    // DOM/de l'entrée elle-même, jamais classée comme un WRITE (data.export n'en est pas un).
+    if (entry.id === "action-export-json" && typeof currentUserCanExportGlobalBackup === "function" && !currentUserCanExportGlobalBackup()) {
+      return { available: false, reason: "Vous n'avez pas l'autorisation nécessaire." };
+    }
+    // Lot O-E2-B8R2 (§40-41) — une entrée "action" (type: "action") déclenche une MUTATION réelle
+    // (ajouter un contact/coach/salle/groupe/équipe/discipline/stage/rencontre/facture/article/
+    // commande/créneau/utilisateur) : le READ vérifié ci-dessus (via targetModule) ne suffit pas à la
+    // PROPOSER — le WRITE réel est requis, même si le handler final la garde déjà (UX + non-
+    // divulgation, jamais l'inverse). Mapping fixe par id (jamais une clé lue depuis le DOM/l'entrée
+    // elle-même) ; data.export volontairement absent de ce mapping (réservé à B9, §23/§44).
+    if (entry.type === "action") {
+      const writeKey = SEARCH_ACTION_WRITE_OVERRIDES[entry.id];
+      if (writeKey && typeof currentUserHasPermission === "function" && !currentUserHasPermission(writeKey, activeClubId())) {
+        return { available: false, reason: "Vous n'avez pas l'autorisation nécessaire." };
+      }
     }
     return { available: true };
   }
@@ -8431,7 +8600,18 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
       if (entry.module && views.some(([key]) => key === entry.module) && ui.view !== entry.module) {
         navigateToViewFromMenu(entry.module);
       }
-      await handleAction({ dataset: { action: entry.action } });
+      // Lot O-E2-B4R (§13/§21) — dispatch programmatique (pas un clic DOM périmé) : le club actif
+      // EST le contexte légitime d'exécution. Les 3 clés sont transmises sans distinction : chaque
+      // handler ne lit que celle de son propre domaine (sport/stage/competition), les autres sont
+      // ignorées sans risque.
+      const dispatchClubId = activeClubId();
+      // Lot O-E2-B9R2 (Partie B, §13) — même doctrine que sportClubId/stageClubId/competitionClubId
+      // ci-dessus : exportClubId est transmis EXPLICITEMENT ici (dispatch programmatique synchrone,
+      // jamais un clic DOM périmé), pour que la garde centrale de handleAction() et la revalidation
+      // post-attente de export-json (21-handlers.js) aient un contexte d'origine, exactement comme un
+      // bouton réel rendu sous ce club. Sans cette clé, ce chemin interne resterait couvert (l'attribut
+      // absent ne bloque jamais), mais la revalidation TOCTOU perdrait son point de comparaison.
+      await handleAction({ dataset: { action: entry.action, sportClubId: dispatchClubId, stageClubId: dispatchClubId, competitionClubId: dispatchClubId, exportClubId: dispatchClubId } });
       return true;
     }
     return false;
@@ -9141,7 +9321,7 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
           <div class="backup-actions">
             <button type="button" class="sidebar-mode-chip" data-action="open-display-settings" title="Mode d'affichage — cliquer pour le changer dans Paramètres">${esc(displayModeSummary())}</button>
             <div class="backup-io">
-              <button type="button" class="backup-io-btn" data-action="export-json" title="Exporter une sauvegarde JSON" aria-label="Exporter une sauvegarde JSON">${toolbarIcon("download")}<span class="backup-io-label">Exporter</span></button>
+              <button type="button" class="backup-io-btn" data-action="export-json" data-export-club-id="${esc(activeClubId())}" title="Exporter une sauvegarde JSON" aria-label="Exporter une sauvegarde JSON" ${currentUserCanExportGlobalBackup() ? "" : "disabled"}>${toolbarIcon("download")}<span class="backup-io-label">Exporter</span></button>
               <button type="button" class="backup-io-btn" data-action="import-json" title="Importer une sauvegarde JSON" aria-label="Importer une sauvegarde JSON">${toolbarIcon("upload")}<span class="backup-io-label">Importer</span></button>
             </div>
             <span>Thème ${esc(theme.name)}</span>
@@ -9180,9 +9360,9 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
         <button class="tool-button" title="Coller dans le champ actif" data-action="edit-paste">${toolbarIcon("paste")}<span class="tool-label">Coller</span></button>
       </div>
       <div class="tool-group">
-        ${ui.view === "availability" ? "" : `<button class="tool-button" title="Imprimer la page" data-action="print-page">${toolbarIcon("print")}<span class="tool-label">Imprimer</span></button>
-        <button class="tool-button" title="Exporter en PDF" data-action="export-pdf"><span class="tool-text-icon">PDF</span><span class="tool-label">PDF</span></button>
-        <button class="tool-button" title="Exporter la page en CSV" data-action="export-csv"><span class="tool-text-icon">CSV</span><span class="tool-label">Exporter</span></button>`}
+        ${ui.view === "availability" ? "" : `<button class="tool-button" title="Imprimer la page" data-action="print-page" data-export-club-id="${esc(activeClubId())}" data-export-view-id="${esc(ui.view)}">${toolbarIcon("print")}<span class="tool-label">Imprimer</span></button>
+        <button class="tool-button" title="Exporter en PDF" data-action="export-pdf" data-export-club-id="${esc(activeClubId())}" data-export-view-id="${esc(ui.view)}"><span class="tool-text-icon">PDF</span><span class="tool-label">PDF</span></button>
+        <button class="tool-button" title="Exporter la page en CSV" data-action="export-csv" data-export-club-id="${esc(activeClubId())}" data-export-view-id="${esc(ui.view)}"><span class="tool-text-icon">CSV</span><span class="tool-label">Exporter</span></button>`}
         <button class="tool-button" title="Ouvrir l'aide dans un panneau latéral (sans quitter la page)" data-action="toggle-help-panel">${toolbarIcon("help")}<span class="tool-label">Aide</span></button>
         ${isViewVisible("assistant") ? `<button class="tool-button${ui.view === "assistant" ? " active" : ""}" title="Ouvrir le Centre d'accompagnement de l'assistant" data-action="open-dashboard-target" data-target="assistant">${toolbarIcon("assistant")}<span class="tool-label">Accompagnement</span></button>` : ""}
       </div>
@@ -9637,7 +9817,13 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
   }
 
   function renderDuePayments() {
-    const alerts = allAlerts();
+    // Lot O-E2-B3B-1R (§13-14) — chaque ligne exige EN PLUS de payments.read (garde de page, B1) sa
+    // propre lecture de parent (memberships.read/shop.read/stages.read) : une ligne dont le parent
+    // n'est pas lisible NE DOIT PAS apparaître, même si la page elle-même est accessible. item.type
+    // vaut exactement "membership"/"order"/"registration" (allAlerts), les mêmes clés que
+    // currentUserCanReadEmbeddedPayment (§6, réutilisé tel quel, aucune nouvelle règle).
+    const clubId = activeClubId();
+    const alerts = allAlerts().filter((item) => currentUserCanReadEmbeddedPayment(item.type, clubId));
     const totalDue = alerts.reduce((sum, a) => sum + a.amount, 0);
 
     if (!alerts.length) {
@@ -9774,7 +9960,7 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
         </div>
         ${email || phone ? `<div class="due-card-contact">
           ${email ? (contactLinkForRow(person)
-            ? `<button type="button" class="link-button" data-action="send-contact-email" data-contact-link="${esc(contactLinkForRow(person))}" title="Envoyer un mail à ce contact">${esc(email)}</button>`
+            ? `<button type="button" class="link-button" data-action="send-contact-email" data-contact-link="${esc(contactLinkForRow(person))}" data-email-club-id="${esc(clubId)}" title="Envoyer un mail à ce contact">${esc(email)}</button>`
             // Lot H-B — ligne fusionnée sans contact réellement résolvable (contactLinkForRow
             // échoue) : ouvre quand même le compositeur MonGestaClub à partir d'un contact minimal
             // (email + nom/prénom déjà connus ici), au lieu d'un mailto: brut qui ne garantirait
@@ -9782,7 +9968,10 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
             // éditeur e-mail) via la nouvelle action send-minimal-email — le contexte de paiement
             // déjà calculé ici (montant total dû, modules concernés) est transmis avec, pour que le
             // modèle « Relance » dispose des mêmes variables que sur un contact résolu.
-            : `<button type="button" class="link-button" data-action="send-minimal-email" data-email="${esc(email)}" data-last-name="${esc(person.lastName || "")}" data-first-name="${esc(person.firstName || "")}" data-amount="${esc(money(total))}" data-module="${esc(items.map((item) => sourceLabel[item.type] || item.type).join(", "))}" data-detail="${esc(items.map((item) => `${sourceLabel[item.type] || item.type} — ${item.module}`).join(" · "))}" title="Envoyer un mail à ce contact">${esc(email)}</button>`) : ""}
+            // Lot O-E2-B7R2 (§10-11) — data-email-club-id fige le club d'origine du rendu, et
+            // data-email-source-domain="payments" identifie le domaine READ à revalider dans le
+            // handler (whitelist interne, cette carte est intégralement issue de allAlerts/payments).
+            : `<button type="button" class="link-button" data-action="send-minimal-email" data-email="${esc(email)}" data-last-name="${esc(person.lastName || "")}" data-first-name="${esc(person.firstName || "")}" data-amount="${esc(money(total))}" data-module="${esc(items.map((item) => sourceLabel[item.type] || item.type).join(", "))}" data-detail="${esc(items.map((item) => `${sourceLabel[item.type] || item.type} — ${item.module}`).join(" · "))}" data-email-club-id="${esc(clubId)}" data-email-source-domain="payments" title="Envoyer un mail à ce contact">${esc(email)}</button>`) : ""}
           ${phone ? `<span>${esc(phone)}</span>` : ""}
         </div>` : ""}
         <div class="due-card-items">${itemRows}</div>
@@ -9801,6 +9990,12 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
   function renderView() {
     const protectionKey = viewProtectionKey(ui.view);
     if (protectionKey && !(ui.unlockedGroups && ui.unlockedGroups[protectionKey])) return renderLockedView(ui.view, protectionKey);
+    // Lot O-E2-B1 — garde de LECTURE au point UNIQUE où le contenu principal de la vue est choisi
+    // (§8) : quel que soit le chemin qui a positionné ui.view (menu, data-view direct, recherche
+    // fonctionnelle, historique back/forward, action programmatique), aucune vue mono-domaine
+    // protégée ne rend jamais ses données métier sans la permission de lecture correspondante.
+    // Jamais de permission *.write consultée ici (§3/§24).
+    if (!currentUserCanAccessView(ui.view)) return unauthorizedViewHtml();
     if (ui.view === "tasks") return renderTasks();
     if (ui.view === "search") return renderSearch();
     if (ui.view === "contacts") return renderContacts();
@@ -9973,7 +10168,19 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
     return [];
   }
 
+  // Lot O-E2-B3B-1R2 (§8) — révèle explicitement la LISTE des personnes ayant un reste dû : exige
+  // payments.read + lecture du parent correspondant, jamais seulement le fait que le bouton normal
+  // (show-overview-due) soit déjà masqué côté rendu. Appel direct/DOM forcé : refus, aucune donnée.
+  const OVERVIEW_DUE_SCOPE_MODULE = Object.freeze({ disciplines: "membership", boutique: "order", stages: "registration" });
   function openOverviewDueDialog(scope) {
+    // Lot O-E2-B4R2 (§10) — club capturé À L'OUVERTURE (précédent exact : openPaymentAgendaRow),
+    // propagé tel quel à openRegistrationDialog plutôt qu'un recalcul tardif via activeClubId().
+    const openedClubId = activeClubId();
+    const module = OVERVIEW_DUE_SCOPE_MODULE[scope] || "";
+    if (!module || !currentUserCanReadEmbeddedPayment(module, openedClubId)) {
+      if (typeof alert === "function") alert("Vous n'avez pas l'autorisation nécessaire.");
+      return;
+    }
     const rows = overviewDueRows(scope);
     const total = rows.reduce((sum, row) => sum + asNumber(row.amount), 0);
     const title = scope === "boutique" ? "Restes dus boutique" : scope === "stages" ? "Restes dus stage" : "Restes dus disciplines";
@@ -10000,8 +10207,26 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
         const stageId = row.dataset.stageId;
         dialog.close();
         if (action === "edit-membership") return openMembershipDialog(state.memberships.find((item) => item.id === rowId));
-        if (action === "view-order") return openOrderForConsult(state.shopOrders.find((item) => item.id === rowId));
-        if (action === "edit-registration") return openRegistrationDialog(stageId, state.stageRegistrations[stageId]?.find((item) => item.id === rowId));
+        if (action === "view-order") {
+          // Lot O-E2-B5 (§38) — même doctrine que edit-registration ci-dessous : revalidation club
+          // avant propagation (le clic peut survenir après un délai asynchrone) + garde stale-read
+          // (find() undefined ne doit jamais dégénérer en commande vide via le défaut de paramètre).
+          if (activeClubId() !== openedClubId) return;
+          const dueOrder = state.shopOrders.find((item) => item.id === rowId);
+          if (!dueOrder) return;
+          return openOrderForConsult(dueOrder, openedClubId);
+        }
+        if (action === "edit-registration") {
+          // Lot O-E2-B4R2 (§10) — revalidation club avant propagation : le clic peut survenir après
+          // un délai (fenêtre asynchrone utilisateur) pendant lequel le club actif a pu changer.
+          if (activeClubId() !== openedClubId) return;
+          // Lot O-E2-B4 (§44) — STALE EDIT INTERDIT : find() undefined dégénérerait en création
+          // silencieuse via le paramètre par défaut de openRegistrationDialog (même doctrine que
+          // src/21-handlers.js edit-registration).
+          const dueRegistration = state.stageRegistrations[stageId]?.find((item) => item.id === rowId);
+          if (!dueRegistration) return;
+          return openRegistrationDialog(stageId, dueRegistration, openedClubId);
+        }
       });
     });
   }
@@ -10026,6 +10251,24 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
   // modules) et regroupe par famille via taskFilterGroupOf(). Le Centre
   // affiche, hiérarchise et guide — il ne calcule rien.
   // =========================================================================
+  // Lot O-E2-B8 (§34-36) — READ métier requis pour VOIR une famille de Vigilance (carte comme
+  // résolveur). Mapping fixe, jamais une clé brute issue du DOM : payments/documents/shop suivent
+  // leur propre READ ; planning/coaches/rooms/misc (groupes) vivent tous sous sport.read (même
+  // périmètre que VIEW_PERMISSION_MAP pour ces vues, aucune permission Staff/Groupe distincte
+  // n'existe dans le registre).
+  const VIGILANCE_FAMILY_READ_PERMISSION = Object.freeze({
+    payments: "payments.read",
+    documents: "documents.read",
+    shop: "shop.read",
+    planning: "sport.read",
+    coaches: "sport.read",
+    rooms: "sport.read",
+    misc: "sport.read",
+  });
+  function canReadVigilanceFamily(fam, clubId = activeClubId()) {
+    const key = VIGILANCE_FAMILY_READ_PERMISSION[fam];
+    return Boolean(key) && currentUserHasPermission(key, clubId);
+  }
   // Chaque famille déclare : icône, destination (action ou vue), libellé COMPTEUR
   // (nom + pluriel) et CTA. Les TITRES sont formulés comme des actions, par niveau.
   function vigilanceFamilyConfig() {
@@ -10185,7 +10428,7 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
         const key = "shop|amber";
         const g = groups[key] || (groups[key] = { count: 0, attrs: "", amount: 0, minDate: "", minAvail: null, minName: "", zero: 0 });
         g.count += 1;
-        if (g.count === 1) g.attrs = `data-action="edit-stock-article" data-index="${row.index}"`;
+        if (g.count === 1) g.attrs = `data-action="edit-stock-article" data-article-id="${esc(row.article.id)}" data-shop-club-id="${esc(activeClubId())}"`;
         if (g.minAvail === null || row.available < g.minAvail) { g.minAvail = row.available; g.minName = row.article.name || "Article"; }
         if (row.available === 0) g.zero += 1;
       });
@@ -10201,7 +10444,11 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
       const g = groups[key] || (groups[key] = { count: 0, attrs: "", amount: 0, minDate: "", minAvail: null, minName: "", zero: 0 });
       impacts.forEach((x) => {
         g.count += 1;
-        if (g.count === 1) g.attrs = `data-action="${actionName}" data-course-id="${esc(x.course.id)}" data-ps="${esc(x.periodStart)}" data-pe="${esc(x.periodEnd)}"`;
+        // Lot O-E2-B8 (§41-43) — data-sport-club-id manquait ici : le bouton issu de Vigilance
+        // (directement ou via vigilanceButtonFromAttrs dans le résolveur) était un NO-OP silencieux
+        // contre la garde déjà exigée par le handler replace-session/replace-room-session (club id
+        // explicite, doctrine B4/B7R2). Corrigé pour le rendre à nouveau fonctionnel ET club-bound.
+        if (g.count === 1) g.attrs = `data-action="${actionName}" data-course-id="${esc(x.course.id)}" data-ps="${esc(x.periodStart)}" data-pe="${esc(x.periodEnd)}" data-sport-club-id="${esc(activeClubId())}"`;
         const nextDate = x.archived ? "" : (typeof impactFirstPendingDate === "function" ? impactFirstPendingDate(x) : "");
         if (nextDate && (!g.minDate || nextDate < g.minDate)) g.minDate = nextDate;
       });
@@ -10221,6 +10468,10 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
         // "Encaisser", même destination). Règle strictement limitée à cette famille : Documents/
         // Stock/Groupes gardent rouge et orange, qui y représentent des informations distinctes.
         .filter((k) => !(level === "amber" && k === "payments|amber" && groups["payments|red"]))
+        // Lot O-E2-B8 (§34-35) — sans le READ métier de la famille, la carte disparaît proprement
+        // (aucune carte, aucun compteur, aucun texte révélant qu'il existe des éléments) : jamais
+        // une garde unique sur le bloc Vigilance entier.
+        .filter((k) => canReadVigilanceFamily(k.split("|")[0], activeClubId()))
         .map((k) => {
           const fam = k.split("|")[0];
           const c = cfg[fam];
@@ -10231,7 +10482,7 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
           let dest;
           if (g.count === 1 && g.attrs) dest = g.attrs;            // 1 → ouverture directe
           else if (c.action) dest = `data-action="${esc(c.action)}"`; // paiements → agenda
-          else if (g.count <= 5) dest = `data-action="vigilance-resolve-open" data-fam="${esc(fam)}" data-level="${esc(level)}"`; // 2-5 → résolveur
+          else if (g.count <= 5) dest = `data-action="vigilance-resolve-open" data-fam="${esc(fam)}" data-level="${esc(level)}" data-vig-club-id="${esc(activeClubId())}"`; // 2-5 → résolveur
           else dest = vigilanceMultiIntentAttrs(fam, level, c);     // > 5 → liste filtrée
           // Charte : titre = famille · verbe = action · qualificatif = levier de décision · bouton = action.
           let qualifier = "";
@@ -10249,7 +10500,10 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
         });
       // Carte DOCUMENTS (unité = dossier) : « N dossiers concernés · M documents à compléter »,
       // clic → fenêtre de résolution locale (par dossier), même pour une longue liste.
-      const dm = doc[level];
+      // Lot O-E2-B8 (§26/§35) — carte (agrégat, aucun nom) gouvernée par documents.read seul ; le
+      // résolveur (noms des adhérents) exige EN PLUS memberships.read, revérifié dans
+      // openVigilanceDocResolver lui-même (jamais seulement parce que la carte est déjà visible).
+      const dm = canReadVigilanceFamily("documents", activeClubId()) ? doc[level] : { members: 0, expired: 0 };
       if (dm.members > 0) {
         const c = cfg.documents;
         // Levier de décision = conformité : on met en avant les documents EXPIRÉS (risque
@@ -10257,7 +10511,7 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
         const qualifier = dm.expired > 0 ? `dont ${dm.expired} dossier${dm.expired > 1 ? "s" : ""} avec un document expiré` : "";
         cards.push({
           fam: "documents", level, count: dm.members, icon: c.icon,
-          dest: `data-action="vigilance-doc-resolve-open" data-level="${esc(level)}"`,
+          dest: `data-action="vigilance-doc-resolve-open" data-level="${esc(level)}" data-vig-club-id="${esc(activeClubId())}"`,
           title: vigilanceFamilyLabel("documents"),
           countLabel: `${dm.members} dossier${dm.members > 1 ? "s" : ""}`,
           verb: (c.verb && c.verb[level]) || "",
@@ -10271,12 +10525,15 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
       return cards.sort((a, b) => b.count - a.count);
     };
     const has = (fam, level) => Boolean(groups[`${fam}|${level}`]);
-    // Le vert n'affirme que ce qui est RÉELLEMENT vrai (absence d'alerte sur la famille).
+    const clubId = activeClubId();
+    // Le vert n'affirme que ce qui est RÉELLEMENT vrai (absence d'alerte sur la famille) — et
+    // seulement pour une famille que l'utilisateur peut lire (Lot O-E2-B8 §35) : une affirmation
+    // négative ("Aucun paiement en retard") reste une information métier, jamais montrée sans READ.
     const green = [];
-    if (!has("payments", "red")) green.push("Aucun paiement en retard");
-    if (!doc.red.members && !doc.amber.members) green.push("Tous les documents sont à jour");
-    if (!has("planning", "red") && !has("coaches", "red") && !has("rooms", "red")) green.push("Aucun conflit de planning");
-    if (hasFeature("shop") && !has("shop", "red") && !has("shop", "amber")) green.push("Stock au-dessus des seuils");
+    if (canReadVigilanceFamily("payments", clubId) && !has("payments", "red")) green.push("Aucun paiement en retard");
+    if (canReadVigilanceFamily("documents", clubId) && !doc.red.members && !doc.amber.members) green.push("Tous les documents sont à jour");
+    if (canReadVigilanceFamily("planning", clubId) && !has("planning", "red") && !has("coaches", "red") && !has("rooms", "red")) green.push("Aucun conflit de planning");
+    if (canReadVigilanceFamily("shop", clubId) && hasFeature("shop") && !has("shop", "red") && !has("shop", "amber")) green.push("Stock au-dessus des seuils");
     return { red: toCards("red"), amber: toCards("amber"), green };
   }
 
@@ -10362,7 +10619,10 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
     // --- Confirmation visuelle (transition d'une famille vers zéro alerte) ---
     const now = Date.now();
     const activeFamilies = new Set([...model.red, ...model.amber].map((c) => c.fam));
-    vigilanceShownFamilies.forEach((fam) => { if (!activeFamilies.has(fam) && !vigilanceFlash.has(fam)) vigilanceFlash.set(fam, now + VIGILANCE_CONFIRM_MS); });
+    // Lot O-E2-B8 (§35) — une famille qui disparaît de activeFamilies parce que son READ vient
+    // d'être retiré (ou parce que le club actif a changé) n'est PAS une résolution réelle : ne
+    // jamais afficher de fausse carte "✓ tous les éléments sont traités" dans ce cas.
+    vigilanceShownFamilies.forEach((fam) => { if (!activeFamilies.has(fam) && canReadVigilanceFamily(fam, activeClubId()) && !vigilanceFlash.has(fam)) vigilanceFlash.set(fam, now + VIGILANCE_CONFIRM_MS); });
     [...vigilanceFlash.keys()].forEach((fam) => { if (vigilanceFlash.get(fam) <= now || activeFamilies.has(fam)) vigilanceFlash.delete(fam); });
     const confirmCards = [...vigilanceFlash.keys()].map(vigilanceConfirmCardHtml).join("");
     const confirmBlock = confirmCards ? `<div class="band vigilance-band vigilance-confirm-band"><div class="vigilance-grid">${confirmCards}</div></div>` : "";
@@ -10396,33 +10656,45 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
       return stockRows().filter((row) => row.available >= 0 && isStockLow(row)).map((row) => ({
         title: row.article.name || "Article",
         detail: `${intValue(row.available)} disponible · seuil ${intValue(row.article.stockAlert || 0)}`,
-        attrs: `data-action="edit-stock-article" data-index="${row.index}"`,
+        attrs: `data-action="edit-stock-article" data-article-id="${esc(row.article.id)}" data-shop-club-id="${esc(activeClubId())}"`,
       }));
     }
     // Lot À faire V2 (fenêtre coachs/salles) — même précédent que le stock ci-dessus : coaches/rooms
     // ne sont plus dans taskRows() au-delà d'aujourd'hui/demain, donc reconstruits ici depuis
     // pendingCoachReplacements()/pendingRoomReplacements() pour que le résolveur Vigilance (2 à 5
     // éléments) continue de lister tous les remplacements pending, comme avant ce lot.
+    // Lot O-E2-B8 (§41-43) — data-sport-club-id ajouté ici (même correctif que buildReplacementGroup
+    // ci-dessus) : ces boutons, réutilisés tels quels par vigilanceButtonFromAttrs, étaient sinon un
+    // NO-OP contre la garde déjà exigée par le handler replace-session/replace-room-session.
     if (fam === "coaches" && typeof pendingCoachReplacements === "function") {
       return pendingCoachReplacements().filter((x) => typeof impactStillPendingForTasks !== "function" || impactStillPendingForTasks(x)).map((x) => ({
         title: `${x.course.name} · ${coachFullName(x.coach)}`,
         detail: `${x.course.day || "?"} ${x.course.startTime || ""}`,
-        attrs: `data-action="replace-session" data-course-id="${esc(x.course.id)}" data-ps="${esc(x.periodStart)}" data-pe="${esc(x.periodEnd)}"`,
+        attrs: `data-action="replace-session" data-course-id="${esc(x.course.id)}" data-ps="${esc(x.periodStart)}" data-pe="${esc(x.periodEnd)}" data-sport-club-id="${esc(activeClubId())}"`,
       }));
     }
     if (fam === "rooms" && typeof pendingRoomReplacements === "function") {
       return pendingRoomReplacements().filter((x) => typeof impactStillPendingForTasks !== "function" || impactStillPendingForTasks(x)).map((x) => ({
         title: `${x.course.name} · ${roomName(x.room)}`,
         detail: `${x.course.day || "?"} ${x.course.startTime || ""}`,
-        attrs: `data-action="replace-room-session" data-course-id="${esc(x.course.id)}" data-ps="${esc(x.periodStart)}" data-pe="${esc(x.periodEnd)}"`,
+        attrs: `data-action="replace-room-session" data-course-id="${esc(x.course.id)}" data-ps="${esc(x.periodStart)}" data-pe="${esc(x.periodEnd)}" data-sport-club-id="${esc(activeClubId())}"`,
       }));
     }
-    return (typeof taskRows === "function" ? taskRows() : []).filter((row) => {
+    const rows = (typeof taskRows === "function" ? taskRows() : []).filter((row) => {
       if (row.tone === "ok") return false;
       const f = (typeof taskFilterGroupOf === "function") ? taskFilterGroupOf(row) : "misc";
       const lv = row.tone === "late" ? "red" : "amber";
       return f === fam && lv === level;
     });
+    // Lot O-E2-B8 (§12/§22/§24) — la famille "payments" mélange, via taskRows(), des paiements
+    // embarqués (membership/order/registration) ET des factures en retard (open-invoice) : deux
+    // objets distincts, jamais le même READ. Une ligne dont le READ métier réel n'est pas accordé
+    // est exclue ICI (source unique, profite aussi à refreshOpenVigilanceResolver) — jamais montrée,
+    // jamais comptée dans la progression, sans bloquer les lignes que l'utilisateur PEUT lire.
+    if (fam === "payments" && typeof canReadVigilancePaymentRow === "function") {
+      return rows.filter((row) => canReadVigilancePaymentRow(row, activeClubId()));
+    }
+    return rows;
   }
 
   function vigilanceResolverCta(fam) {
@@ -10481,7 +10753,11 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
     return b;
   }
 
-  function openVigilanceResolver(fam, level) {
+  // Lot O-E2-B8 (§36) — revalidation club + READ métier de la famille AU CLIC, jamais seulement parce
+  // que la carte était déjà masquée au rendu (un vieux bouton conservé ou rejoué ne doit pas
+  // contourner la garde de rendu). clubId capturé au rendu (data-vig-club-id) et transmis tel quel.
+  function openVigilanceResolver(fam, level, clubId = "") {
+    if (!clubId || activeClubId() !== clubId || !canReadVigilanceFamily(fam, clubId)) return;
     const rows = vigilanceResolverRows(fam, level);
     if (!rows.length) return;
     if (rows.length === 1 && rows[0].attrs) { handleAction(vigilanceButtonFromAttrs(rows[0].attrs)); return; }
@@ -10554,7 +10830,12 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
     return progress + `<div class="vigilance-resolve-rows">${list}</div>`;
   }
 
-  function openVigilanceDocResolver(level) {
+  // Lot O-E2-B8 (§26/§36) — révèle des noms d'adhérents (g.name) : documents.read (carte) NE SUFFIT
+  // PAS ici, memberships.read est EN PLUS exigé (doctrine "liste nominative d'adhérents"), revalidés
+  // au clic avec le club capturé au rendu (data-vig-club-id), jamais seulement parce que la carte
+  // était déjà masquée.
+  function openVigilanceDocResolver(level, clubId = "") {
+    if (!clubId || activeClubId() !== clubId || !currentUserHasPermission("documents.read", clubId) || !currentUserHasPermission("memberships.read", clubId)) return;
     const groups = vigilanceDocGroups().filter((g) => g.level === level);
     if (!groups.length) return;
     if (groups.length === 1) { handleAction(vigilanceButtonFromAttrs(`data-action="edit-membership" data-id="${groups[0].membershipId}"`)); return; }
@@ -10585,7 +10866,27 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
     showFloatingDialog(dialog, ".vigilance-resolve-btn");
   }
 
+  // Lot O-E2-B8 (§20-21/§26-27/§29/§32) — READ requis pour CHAQUE KPI/axe de l'Accueil : jamais une
+  // garde globale sur renderDashboard() (le shell reste toujours accessible, aucune entrée
+  // "dashboard" dans VIEW_PERMISSION_MAP), chaque agrégat filtré individuellement. "Adhérents" est le
+  // KPI purement analytique (aucun métier précis, même nature qu'un total Stats) -> stats.read ;
+  // Encaissé/Restant à encaisser -> payments.read (agrégat, jamais de nom) ; Factures en attente ->
+  // billing.read ; Stages à venir -> stages.read (en plus des conditions existantes feature/données).
+  function dashboardWidgetReads(clubId) {
+    return {
+      stats: currentUserHasPermission("stats.read", clubId),
+      payments: currentUserHasPermission("payments.read", clubId),
+      billing: currentUserHasPermission("billing.read", clubId),
+      stages: currentUserHasPermission("stages.read", clubId),
+      documents: currentUserHasPermission("documents.read", clubId),
+      shop: currentUserHasPermission("shop.read", clubId),
+      sport: currentUserHasPermission("sport.read", clubId),
+    };
+  }
+
   function renderDashboard() {
+    const clubId = activeClubId();
+    const can = dashboardWidgetReads(clubId);
     const stats = dashboardStats();
     // Lot K-C2A — les KPI/alertes OPÉRATIONNELS de l'accueil suivent uniquement la FONCTIONNALITÉ
     // (hasFeature) : un module masqué du menu mais toujours actif continue de fonctionner. Les
@@ -10609,27 +10910,47 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
     const lowStock = boutiqueEnabled ? stockRows().filter(isStockLow).length : 0;
     const upcomingDocs = asNumber(ds.certSoon) + asNumber(ds.licSoon);
     const clubName = (typeof activeClub === "function" && activeClub() && activeClub().name) || settings.clubName || "MonGestaClub";
-    const allCalm = lateCount === 0 && certMissing === 0 && lowStock === 0 && upcomingDocs === 0;
-    // Club tout neuf (premier démarrage) : aucun adhérent ni facture. On oriente plutôt
-    // que d'afficher « tout est à jour » (trompeur quand il n'y a encore rien).
-    const clubIsEmpty = memberCount === 0 && invoicesPending === 0 && !(stagesEnabled && hasStageData());
+    // Lot O-E2-B8 (§38) / O-E2-B8R (§42-43) — un "tout va bien" global ne doit jamais se déduire
+    // d'une famille illisible pour l'utilisateur courant : chaque axe (paiements/documents/stock) ne
+    // contribue à allCalm que si son READ est présent. Correctif B8R : la formule B8
+    // ((!can.x || calme_x) && ...) devenait VRAIE par défaut si AUCUN axe n'était lisible (tous les
+    // termes vacuously true) — "Tout est à jour" sans avoir rien vérifié, INTERDIT (§42). Exige
+    // désormais explicitement qu'au moins un axe opérationnel soit lisible.
+    const hasReadableOperationalAxis = can.payments || can.documents || can.shop;
+    const allCalm = hasReadableOperationalAxis
+      && (!can.payments || lateCount === 0)
+      && (!can.documents || (certMissing === 0 && upcomingDocs === 0))
+      && (!can.shop || lowStock === 0);
+    // Club tout neuf (premier démarrage) : aucun adhérent ni facture. On oriente plutôt que
+    // d'afficher « tout est à jour » (trompeur quand il n'y a encore rien).
+    // Lot O-E2-B8R (§40/§44) — memberCount/invoicesPending/hasStageData() dépendent respectivement de
+    // stats.read/billing.read/stages.read (mêmes READ que les KPI correspondants) : affirmer
+    // "club vide" à un utilisateur qui ne peut lire AUCUN de ces trois axes révélerait indirectement
+    // l'état cachée du club. clubIsEmpty ne peut donc être vrai que si les trois sont prouvables.
+    const canProveClubEmpty = can.stats && can.billing && can.stages;
+    const clubIsEmpty = canProveClubEmpty && memberCount === 0 && invoicesPending === 0 && !(stagesEnabled && hasStageData());
+    // Lot O-E2-B8R (§45) — sans AUCUN axe opérationnel lisible, même le message de repli ("Quelques
+    // points demandent votre attention") est une affirmation non vérifiable : message générique ne
+    // dépendant d'aucune donnée cachée.
     const welcomeMsg = clubIsEmpty
       ? "Bienvenue ! Votre club est prêt. Commencez par vos disciplines et vos adhérents, puis construisez vos groupes et votre planning."
       : allCalm
         ? "Tout est à jour. Vous avez le club bien en main 👍"
-        : "Voici l'essentiel de votre club. Quelques points demandent votre attention ci-dessous.";
+        : hasReadableOperationalAxis
+          ? "Voici l'essentiel de votre club. Quelques points demandent votre attention ci-dessous."
+          : "Bienvenue sur votre tableau de bord.";
 
-    // Indicateurs principaux (5).
+    // Indicateurs principaux (5), chacun gouverné par son propre READ (jamais de garde unique).
     const kpiItems = [
-      { label: "Adhérents", value: intValue(memberCount) },
-      { label: "Encaissé saison", value: money(stats.paid) },
-      { label: "Restant à encaisser", value: money(stats.restDue) },
-      { label: "Factures en attente", value: intValue(invoicesPending) },
-    ];
+      can.stats ? { label: "Adhérents", value: intValue(memberCount) } : null,
+      can.payments ? { label: "Encaissé saison", value: money(stats.paid) } : null,
+      can.payments ? { label: "Restant à encaisser", value: money(stats.restDue) } : null,
+      can.billing ? { label: "Factures en attente", value: intValue(invoicesPending) } : null,
+    ].filter(Boolean);
     // KPI optionnel : affiché seulement si le module Stages est activé ET qu'il existe des données
     // de stages (helper existant hasStageData) — évite un « Stages à venir : 0 » pour un club qui
     // n'utilise pas les stages. L'action « Créer un stage » reste, elle, toujours disponible.
-    if (stagesEnabled && hasStageData()) kpiItems.push({ label: "Stages à venir", value: intValue(upcomingStages) });
+    if (can.stages && stagesEnabled && hasStageData()) kpiItems.push({ label: "Stages à venir", value: intValue(upcomingStages) });
 
     // Actions rapides (dialogues = toujours sûrs ; navigation pour Boutique/Factures).
     // Club tout neuf : on propose la mise en route (disciplines/tarifs + premiers pas guidés)
@@ -10638,6 +10959,16 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
     // navigation (mode simple/avancé/personnalisé + drapeau fonctionnel Stages/Boutique) —
     // pour éviter qu'un raccourci reste affiché ici alors que son menu correspondant est
     // masqué dans Paramètres > Affichage (cf. correctif déjà appliqué au bas de fiche contact).
+    // Lot O-E2-B8R (§26-39) — Permission != Affichage : isViewVisible() (mode d'affichage + feature)
+    // reste nécessaire mais ne suffit plus. Chaque raccourci exige EN PLUS le droit métier réel de
+    // l'action qu'il déclenche (WRITE pour une mutation, READ pour une simple consultation/navigation
+    // vers une surface déjà protégée) — jamais seulement parce que son entrée de menu est visible.
+    // Les guards directs des handlers (add-membership, new-invoice, add-stage, etc.) restent
+    // inchangés et sont TOUJOURS la protection réelle (§34) : ce filtrage est UX + non-divulgation.
+    const canWriteContacts = currentUserHasPermission("contacts.write", clubId);
+    const canWriteMemberships = currentUserHasPermission("memberships.write", clubId);
+    const canWriteBilling = currentUserHasPermission("billing.write", clubId);
+    const canWriteStages = currentUserHasPermission("stages.write", clubId);
     const quickActions = clubIsEmpty
       ? [
           // Club tout neuf : « Ajouter un adhérent » ouvre une fiche contact simple (add-contact),
@@ -10646,16 +10977,16 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
           // adhérent » qui utilise déjà add-contact. L'inscription à une discipline reste accessible
           // ensuite depuis la fiche contact. La branche « club configuré » ci-dessous garde
           // add-membership (une discipline existe alors, pas d'impasse).
-          isViewVisible("contacts") ? `<button class="primary" data-action="add-contact">Ajouter un adhérent</button>` : "",
-          isViewVisible("disciplines") ? `<button data-view="disciplines">Mes disciplines &amp; tarifs</button>` : "",
+          (isViewVisible("contacts") && canWriteContacts) ? `<button class="primary" data-action="add-contact">Ajouter un adhérent</button>` : "",
+          (isViewVisible("disciplines") && can.sport) ? `<button data-view="disciplines">Mes disciplines &amp; tarifs</button>` : "",
           isViewVisible("assistant") ? `<button data-action="open-dashboard-target" data-target="assistant">Premiers pas guidés</button>` : "",
         ].filter(Boolean).join("")
       : [
-          (isViewVisible("disciplines") && hasFeature("memberships")) ? `<button class="primary" data-action="add-membership">Ajouter un adhérent</button>` : "",
-          isViewVisible("invoices") ? `<button data-action="new-invoice">Créer une facture</button>` : "",
-          isViewVisible("due-payments") ? `<button data-action="show-payment-agenda">Encaisser un paiement</button>` : "",
-          isViewVisible("stages") ? `<button data-action="add-stage">Créer un stage</button>` : "",
-          isViewVisible("boutique") ? `<button data-view="boutique">Accéder à la boutique</button>` : "",
+          (isViewVisible("disciplines") && hasFeature("memberships") && canWriteMemberships) ? `<button class="primary" data-action="add-membership">Ajouter un adhérent</button>` : "",
+          (isViewVisible("invoices") && canWriteBilling) ? `<button data-action="new-invoice">Créer une facture</button>` : "",
+          (isViewVisible("due-payments") && can.payments) ? `<button data-action="show-payment-agenda">Encaisser un paiement</button>` : "",
+          (isViewVisible("stages") && canWriteStages) ? `<button data-action="add-stage">Créer un stage</button>` : "",
+          (isViewVisible("boutique") && can.shop) ? `<button data-view="boutique">Accéder à la boutique</button>` : "",
         ].filter(Boolean).join("");
 
     return `
@@ -10672,7 +11003,7 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
       </div>
       ${vigilanceBlockHtml()}
       ${typeof assistantTodayCardHtml === "function" ? assistantTodayCardHtml() : ""}
-      ${kpis(kpiItems)}
+      ${kpiItems.length ? kpis(kpiItems) : ""}
     `;
   }
 
@@ -10920,7 +11251,7 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
           available: row.available,
           postitType: "stock",
           action: "edit-stock-article",
-          attrs: `data-action="edit-stock-article" data-index="${row.index}"`,
+          attrs: `data-action="edit-stock-article" data-article-id="${esc(row.article.id)}" data-shop-club-id="${esc(activeClubId())}"`,
         });
       });
     }
@@ -11048,6 +11379,24 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
     return "misc"; // Groupe complet / presque complet, Anniversaire à venir, etc.
   }
 
+  // Lot O-E2-B8R (§4-6) — READ métier réel d'une ligne taskRows(), pour le filtrage à la présentation
+  // (jamais taskRows() lui-même, qui reste le moteur interne complet réutilisé par « À faire »,
+  // Vigilance, l'export CSV et les KPI). Réutilise EXACTEMENT les mêmes helpers que Vigilance (B8) :
+  // même famille (taskFilterGroupOf), même mapping (canReadVigilanceFamily), même doctrine paiement/
+  // facture mixte (canReadVigilancePaymentRow) — aucune deuxième doctrine Finance recréée. La famille
+  // "documents" exige EN PLUS memberships.read (les lignes "Document" nomment un adhérent, doctrine
+  // §8/§26 déjà appliquée à Vigilance).
+  function canReadTaskRow(row, clubId = activeClubId()) {
+    const fam = taskFilterGroupOf(row);
+    if (!canReadVigilanceFamily(fam, clubId)) return false;
+    if (fam === "payments") return canReadVigilancePaymentRow(row, clubId);
+    if (fam === "documents") return currentUserHasPermission("memberships.read", clubId);
+    return true;
+  }
+  function visibleTaskRowsForCurrentUser(clubId = activeClubId()) {
+    return taskRows().filter((row) => canReadTaskRow(row, clubId));
+  }
+
   // Regroupement AFFICHAGE des alertes Documents par adhérent (ne touche pas taskRows ni les KPIs).
   // Lot Dossier incomplet (routage direct) — le nom du champ de formulaire du contact à
   // focus/scroller après ouverture, pour chaque clé d'anomalie « personne ». Source UNIQUE de cette
@@ -11117,7 +11466,7 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
         ${summary ? `<span class="task-doc-summary">${esc(summary)}</span>` : ""}
       </div>
       <div class="task-postit-actions">
-        <button type="button" data-action="view-dossier-documents" data-contact-link="${esc(group.link)}">Voir le détail</button>
+        <button type="button" data-action="view-dossier-documents" data-contact-link="${esc(group.link)}" data-task-club-id="${esc(activeClubId())}">Voir le détail</button>
       </div>
     </article>`;
   }
@@ -11155,7 +11504,11 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
       <ul class="dossier-doc-list">${list}</ul>`;
   }
 
-  function openDossierDocumentsDialog(contactLink) {
+  // Lot O-E2-B8R (§12) — révèle une liste nominative (documents + identité de l'adhérent) : exige
+  // documents.read + memberships.read + club explicite capturé au rendu (data-task-club-id), jamais
+  // seulement parce que la carte groupée était déjà masquée par le filtrage de renderTasks().
+  function openDossierDocumentsDialog(contactLink, clubId = "") {
+    if (!clubId || activeClubId() !== clubId || !currentUserHasPermission("documents.read", clubId) || !currentUserHasPermission("memberships.read", clubId)) return;
     const group = dossierDocumentGroups().get(contactLink);
     if (!group || !group.items.length) {
       showInfoDialog("Dossier", "<p class=\"muted\">Aucun document à vérifier pour cet adhérent.</p>");
@@ -11178,8 +11531,31 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
     });
   }
 
+  // Lot O-E2-B8R (§16) — vrai si l'utilisateur peut lire AU MOINS une famille présentée par « À
+  // faire » : distingue « aucun droit métier, page structurellement vide pour vous » de « vous avez
+  // des droits, il n'y a réellement rien d'urgent » (deux messages différents, §16/TASK-SHELL-01),
+  // sans jamais révéler de compte exact dans le premier cas.
+  function canReadAnyTaskFamily(clubId = activeClubId()) {
+    return currentUserHasPermission("payments.read", clubId)
+      || currentUserHasPermission("documents.read", clubId)
+      || currentUserHasPermission("shop.read", clubId)
+      || currentUserHasPermission("sport.read", clubId);
+  }
+
   function renderTasks() {
-    const rows = taskRows();
+    const clubId = activeClubId();
+    // Lot O-E2-B8R (§1-7) — TOUT renderTasks() se base désormais sur les lignes déjà filtrées par
+    // READ métier (visibleTaskRowsForCurrentUser), jamais sur taskRows() brut : KPI, compteurs de
+    // filtre, recherche, post-it, tout en découle. taskRows() reste le moteur interne complet,
+    // inchangé, toujours réutilisé tel quel par Vigilance/l'export CSV/le calcul lui-même.
+    const rows = visibleTaskRowsForCurrentUser(clubId);
+    const canSeePayments = currentUserHasPermission("payments.read", clubId);
+    const canSeeShopFamily = currentUserHasPermission("shop.read", clubId);
+    // Lot O-E2-B8R (§8) — la carte Documents (agrégat, aucun nom) reste gouvernée par documents.read
+    // seul (même doctrine que Vigilance, DASH-DOC-02) ; le contenu NOMINATIF (dossierDocumentGroups,
+    // noms d'adhérents) exige EN PLUS memberships.read, jamais construit/rendu sans les deux.
+    const canSeeDocumentsCard = currentUserHasPermission("documents.read", clubId);
+    const canSeeDocumentNames = canSeeDocumentsCard && currentUserHasPermission("memberships.read", clubId);
     const paymentCount = rows.filter((row) => row.category.includes("Paiement") || row.category === "À encaisser").length;
     const lateCount = rows.filter((row) => row.tone === "late").length;
     // --- Filtres d'AFFICHAGE (jamais de suppression/résolution d'alerte) ---
@@ -11206,7 +11582,10 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
     // (Affichage uniquement : taskRows et les KPIs restent basés sur les alertes réelles ci-dessus.)
     const priority = { late: 0, due: 1, wait: 2, ok: 3, "": 4 };
     const nonDocVisible = visibleRows.filter((row) => row.category !== "Document");
-    const docGroups = hidden.has("documents") ? [] : [...dossierDocumentGroups().values()].filter((g) => g.items.length);
+    // Lot O-E2-B8R (§8) — dossierDocumentGroups() reconstruit ses groupes DIRECTEMENT depuis
+    // state.memberships (noms d'adhérents), en dehors de `rows` : sans memberships.read EN PLUS de
+    // documents.read, cette liste nominative n'est ni construite ni rendue, jamais seulement masquée.
+    const docGroups = (!canSeeDocumentNames || hidden.has("documents")) ? [] : [...dossierDocumentGroups().values()].filter((g) => g.items.length);
     const displayItems = [
       ...nonDocVisible.map((row) => ({ tone: row.tone, html: taskRowHtml(row) })),
       ...docGroups.map((g) => {
@@ -11223,7 +11602,9 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
       }),
     ].sort((a, b) => (priority[a.tone] ?? 5) - (priority[b.tone] ?? 5));
     const gridHtml = rows.length === 0
-      ? `<div class="empty">Rien d'urgent pour le moment.</div>`
+      ? (canReadAnyTaskFamily(clubId)
+        ? `<div class="empty">Rien d'urgent pour le moment.</div>`
+        : `<div class="empty">Rien à afficher avec vos droits actuels.</div>`)
       : displayItems.length === 0
         ? `<div class="empty">Toutes les alertes (${rows.length}) sont masquées par les filtres. <button type="button" class="link-like" data-action="task-filter-show-all">Tout afficher</button></div>`
         : `<div class="task-postit-grid">${displayItems.map((it) => it.html).join("")}</div>`;
@@ -11241,13 +11622,18 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
         </div>`
       : gridHtml;
     return `
-      ${kpis([
-        { label: "Actions", value: rows.length },
-        { label: "Prioritaires", value: lateCount },
-        { label: "Paiements", value: paymentCount },
-        { label: "Stocks", value: rows.filter((row) => row.category === "Stock").length },
-        { label: "Documents", value: rows.filter((row) => row.category === "Document" || row.category === "Assurance à vérifier").length },
-      ])}
+      ${(() => {
+        // Lot O-E2-B8R (§7) — préférence explicite : ne pas rendre le KPI d'une famille sans son
+        // READ, plutôt que d'afficher un "0" ambigu à côté des KPI des familles autorisées.
+        const items = [
+          { label: "Actions", value: rows.length },
+          { label: "Prioritaires", value: lateCount },
+          canSeePayments ? { label: "Paiements", value: paymentCount } : null,
+          canSeeShopFamily ? { label: "Stocks", value: rows.filter((row) => row.category === "Stock").length } : null,
+          canSeeDocumentsCard ? { label: "Documents", value: rows.filter((row) => row.category === "Document" || row.category === "Assurance à vérifier").length } : null,
+        ].filter(Boolean);
+        return items.length ? kpis(items) : "";
+      })()}
       <div class="band">
         <div class="band-title">
           <div><h2>À faire aujourd'hui</h2><p class="muted">Les vraies urgences à traiter, regroupées automatiquement.</p></div>
@@ -11282,7 +11668,7 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
       <p>${esc(row.detail)}</p>
       <div class="task-postit-actions">
         <button type="button" ${row.attrs || ""}>Ouvrir</button>
-        ${row.reminder ? `<button type="button" data-action="open-reminder" data-task-id="${esc(row.id)}">Relancer</button>` : ""}
+        ${row.reminder && currentUserHasPermission("newsletter.read", activeClubId()) ? `<button type="button" data-action="open-reminder" data-task-id="${esc(row.id)}" data-email-club-id="${esc(activeClubId())}">Relancer</button>` : ""}
       </div>
     </article>`;
   }
@@ -11336,14 +11722,25 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
   // libre sans lien fiable), on construit un contact minimal à partir de task.person + l'e-mail
   // connu, pour ne jamais perdre la fonctionnalité existante. Repli "copier le message" conservé
   // seulement pour le cas réellement sans e-mail (SMS/messagerie manuelle).
-  function openReminderDialog(taskId) {
+  // Lot O-E2-B7R2 (§15-18) — openedClubId vient du bouton « Relancer » (data-email-club-id, capturé
+  // au rendu), JAMAIS d'un repli sur activeClubId() : un vieux bouton "Relancer" conservé après un
+  // changement de club ne doit jamais résoudre un taskId sous le club désormais actif (collision
+  // d'id possible, même risque que send-contact-email/send-minimal-email). Seules les lignes
+  // "reminder: true" (alertes de paiement) exposent ce bouton : le parent READ réel est donc
+  // toujours payments.read sur le module concerné (PAYMENT_AGENDA_ROW_MODULE, même whitelist que
+  // paymentAgendaTasksHtml/12-shop-contacts-render.js) — jamais un parent WRITE.
+  function openReminderDialog(taskId, openedClubId = "") {
+    if (!openedClubId) return;
+    if (activeClubId() !== openedClubId) return;
     const task = taskRows().find((row) => row.id === taskId);
     if (!task) return;
+    const module = (typeof PAYMENT_AGENDA_ROW_MODULE === "object" && PAYMENT_AGENDA_ROW_MODULE) ? PAYMENT_AGENDA_ROW_MODULE[task.action] || "" : "";
+    if (!module || !currentUserCanReadEmbeddedPayment(module, openedClubId)) return;
     const email = asText(task.email || reminderEmailForPerson(task.person));
     if (email) {
       const resolved = contactByLink(contactLinkForRow(task.person || {}));
       const contact = resolved || { ...(task.person || {}), email };
-      openContactEmailDialog(contact, "reminder", reminderContext(task));
+      openContactEmailDialog(contact, "reminder", reminderContext(task), openedClubId);
       return;
     }
     const text = reminderTextForTask(task);
@@ -11369,98 +11766,124 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
     }
   }
 
+  // Lot O-E2-B8R2 (§25-35) — audit exhaustif : globalSearchRows() construisait titre/détail/attrs
+  // (noms, e-mails, téléphones, montants) pour CHAQUE type AVANT tout READ métier — seuls Boutique/
+  // Stages/Équipes/Rencontres suivaient déjà isViewVisible() (affichage/feature, pas permission).
+  // Chaque bloc est désormais gardé par le READ réel de son domaine, filtré AVANT la construction du
+  // résultat (jamais un nom construit puis un bouton seulement masqué après coup, §29).
+  // Lot O-E2-B8R3 — chaque row porte en plus data-search-club-id (club actif AU RENDU) : barrière
+  // supplémentaire propre au shell Recherche, appliquée par handleAction avant toute résolution
+  // métier, en complément des data-*-club-id métier déjà présents (jamais un remplacement).
   function globalSearchRows(query = ui.globalSearch) {
     const needle = normalizedPersonText(query);
     if (!needle) return [];
     const matches = (values = []) => normalizedPersonText(values.filter(Boolean).join(" ")).includes(needle);
     const rows = [];
     const push = (row) => rows.push(row);
-    state.contacts.members.forEach((contact) => {
-      if (matches([contact.lastName, contact.firstName, contact.email, contact.mobile, contact.phone, contact.city])) {
-        push({ type: "Adhérent", title: personLabel(contact), detail: [contact.email, contact.mobile || contact.phone, contact.city].filter(Boolean).join(" · "), attrs: `data-action="edit-contact" data-kind="members" data-id="${esc(contact.id)}"` });
-      }
-    });
-    state.contacts.prospects.forEach((contact) => {
-      if (matches([contact.lastName, contact.firstName, contact.email, contact.mobile, contact.phone, contact.city])) {
-        push({ type: "Non adhérent", title: personLabel(contact), detail: [contact.email, contact.mobile || contact.phone, contact.city].filter(Boolean).join(" · "), attrs: `data-action="edit-contact" data-kind="prospects" data-id="${esc(contact.id)}"` });
-      }
-    });
-    state.memberships.forEach((row) => {
-      if (matches([row.lastName, row.firstName, row.discipline, row.email, row.city])) {
-        const calc = calcMembership(row);
-        // Lot 3A (clôture absolue, FIN-ABS-2) — recherche globale : « Tarif non défini » plutôt qu'un
-        // trompeur « Total 0,00 € · reste 0,00 € » pour une inscription au tarif absent.
-        const detail = calc.hasGrossTotal ? `Total ${money(calc.total)} · reste ${money(calc.restDue)}` : "Tarif non défini";
-        push({ type: "Discipline", title: `${personLabel(row)} · ${row.discipline || "Sans discipline"}`, detail, attrs: `data-action="edit-membership" data-id="${esc(row.id)}"` });
-      }
-    });
+    const clubId = activeClubId();
+    if (currentUserHasPermission("contacts.read", clubId)) {
+      state.contacts.members.forEach((contact) => {
+        if (matches([contact.lastName, contact.firstName, contact.email, contact.mobile, contact.phone, contact.city])) {
+          push({ type: "Adhérent", title: personLabel(contact), detail: [contact.email, contact.mobile || contact.phone, contact.city].filter(Boolean).join(" · "), attrs: `data-action="edit-contact" data-kind="members" data-id="${esc(contact.id)}" data-search-club-id="${esc(clubId)}"` });
+        }
+      });
+      state.contacts.prospects.forEach((contact) => {
+        if (matches([contact.lastName, contact.firstName, contact.email, contact.mobile, contact.phone, contact.city])) {
+          push({ type: "Non adhérent", title: personLabel(contact), detail: [contact.email, contact.mobile || contact.phone, contact.city].filter(Boolean).join(" · "), attrs: `data-action="edit-contact" data-kind="prospects" data-id="${esc(contact.id)}" data-search-club-id="${esc(clubId)}"` });
+        }
+      });
+    }
+    if (currentUserHasPermission("memberships.read", clubId)) {
+      state.memberships.forEach((row) => {
+        if (matches([row.lastName, row.firstName, row.discipline, row.email, row.city])) {
+          const calc = calcMembership(row);
+          // Lot 3A (clôture absolue, FIN-ABS-2) — recherche globale : « Tarif non défini » plutôt qu'un
+          // trompeur « Total 0,00 € · reste 0,00 € » pour une inscription au tarif absent.
+          const detail = calc.hasGrossTotal ? `Total ${money(calc.total)} · reste ${money(calc.restDue)}` : "Tarif non défini";
+          push({ type: "Discipline", title: `${personLabel(row)} · ${row.discipline || "Sans discipline"}`, detail, attrs: `data-action="edit-membership" data-id="${esc(row.id)}" data-search-club-id="${esc(clubId)}"` });
+        }
+      });
+    }
     // Lot K-C2A — résultats actionnables (mènent à la vue Boutique/Stages) : suivent isViewVisible
     // (fonctionnalité ET menu), un menu volontairement masqué ne doit pas être contourné par un
     // raccourci de recherche. L'historique financier reste consultable via la fiche contact, les
     // factures et la comptabilité, indépendamment de ces deux blocs.
-    if (isViewVisible("boutique")) {
+    // Lot O-E2-B8R2 — shop.read ajouté (Permission != Affichage, isViewVisible seul ne suffisait pas).
+    if (isViewVisible("boutique") && currentUserHasPermission("shop.read", clubId)) {
       state.tariffs.articles.forEach((article, index) => {
         if (matches([article.name, article.reference, (article.sizes || []).join(" ")])) {
-          push({ type: "Article", title: article.name || "Article", detail: `${article.reference || ""} · ${money(article.priceOptions?.[0] || 0)}`, attrs: `data-action="edit-stock-article" data-index="${index}"` });
+          push({ type: "Article", title: article.name || "Article", detail: `${article.reference || ""} · ${money(article.priceOptions?.[0] || 0)}`, attrs: `data-action="edit-stock-article" data-article-id="${esc(article.id)}" data-shop-club-id="${esc(activeClubId())}" data-search-club-id="${esc(clubId)}"` });
         }
       });
       state.shopOrders.forEach((order) => {
         const articles = orderItemDetails(order).map((item) => `${item.article.name} ${item.sizesText}`).join(" ");
         if (matches([order.lastName, order.firstName, order.email, order.phone, articles])) {
           const calc = calcOrder(order);
-          push({ type: "Commande", title: personLabel(order), detail: `${articles || "Commande"} · reste ${money(calc.restDue)}`, attrs: `data-action="view-order" data-id="${esc(order.id)}"` });
+          push({ type: "Commande", title: personLabel(order), detail: `${articles || "Commande"} · reste ${money(calc.restDue)}`, attrs: `data-action="view-order" data-id="${esc(order.id)}" data-shop-club-id="${esc(activeClubId())}" data-search-club-id="${esc(clubId)}"` });
         }
       });
     }
-    if (isViewVisible("stages")) {
+    if (isViewVisible("stages") && currentUserHasPermission("stages.read", clubId)) {
       state.tariffs.stages.forEach((stage) => {
-        if (matches([stage.name, stage.lodgingName])) push({ type: "Stage", title: stage.name || "Stage", detail: `${money(stage.unitPrice || 0)} · ${stageParticipantCount(stage.id)} participant(s)`, attrs: `data-action="edit-stage" data-stage-id="${esc(stage.id)}"` });
+        if (matches([stage.name, stage.lodgingName])) push({ type: "Stage", title: stage.name || "Stage", detail: `${money(stage.unitPrice || 0)} · ${stageParticipantCount(stage.id)} participant(s)`, attrs: `data-action="edit-stage" data-stage-id="${esc(stage.id)}" data-stage-club-id="${esc(clubId)}" data-search-club-id="${esc(clubId)}"` });
         (state.stageRegistrations[stage.id] || []).forEach((registration) => {
           if (matches([registration.lastName, registration.firstName, registration.email, stage.name])) {
             const calc = calcRegistration(registration, stage.id);
-            push({ type: "Participant stage", title: `${personLabel(registration)} · ${stage.name}`, detail: `Total ${money(calc.total)} · reste ${money(calc.restDue)}`, attrs: `data-action="edit-registration" data-stage-id="${esc(stage.id)}" data-id="${esc(registration.id)}"` });
+            push({ type: "Participant stage", title: `${personLabel(registration)} · ${stage.name}`, detail: `Total ${money(calc.total)} · reste ${money(calc.restDue)}`, attrs: `data-action="edit-registration" data-stage-id="${esc(stage.id)}" data-id="${esc(registration.id)}" data-stage-club-id="${esc(clubId)}" data-search-club-id="${esc(clubId)}"` });
           }
         });
       });
     }
-    state.notes.forEach((note) => {
-      if (matches([note.title, noteText(note.content)])) push({ type: "Note", title: note.title || "Note", detail: noteText(note.content).slice(0, 120), attrs: `data-action="open-note-result" data-note-id="${esc(note.id)}"` });
-    });
-    (state.coaches || []).forEach((coach) => {
-      if (matches([coach.firstName, coach.lastName, coach.email, coach.phone, (coach.specialties || []).join(" "), coach.notes, coachAvailabilitySummary(coach)])) {
-        push({ type: "Coach", title: coachFullName(coach), detail: [(coach.specialties || []).join(", "), coach.archived ? "archivé" : ""].filter(Boolean).join(" · "), attrs: `data-action="edit-coach" data-id="${esc(coach.id)}"` });
-      }
-    });
-    // Groupes : absents de la recherche métier jusqu'ici alors que la page existe et que les
-    // groupes sont une entité de premier plan. Comblé ici (signalé comme écart préexistant).
-    (state.groups || []).forEach((group) => {
-      if (matches([group.name, group.discipline, group.type, group.notes])) {
-        push({
-          type: "Groupe",
-          title: group.name || "Groupe",
-          detail: [group.discipline, group.type, group.archived ? "archivé" : ""].filter(Boolean).join(" · "),
-          attrs: `data-action="edit-group" data-id="${esc(group.id)}"`,
+    if (currentUserHasPermission("notes.read", clubId)) {
+      state.notes.forEach((note) => {
+        if (matches([note.title, noteText(note.content)])) push({ type: "Note", title: note.title || "Note", detail: noteText(note.content).slice(0, 120), attrs: `data-action="open-note-result" data-note-id="${esc(note.id)}" data-search-club-id="${esc(clubId)}"` });
+      });
+    }
+    if (currentUserHasPermission("sport.read", clubId)) {
+      (state.coaches || []).forEach((coach) => {
+        if (matches([coach.firstName, coach.lastName, coach.email, coach.phone, (coach.specialties || []).join(" "), coach.notes, coachAvailabilitySummary(coach)])) {
+          // Lot O-E2-B8R2 (§36-38) — data-sport-club-id ajouté : edit-coach exige déjà ce club id
+          // explicite (doctrine B4), absent ici jusqu'à ce lot -> bouton auparavant NO-OP silencieux
+          // depuis la Recherche (même correctif que Vigilance/B8).
+          push({ type: "Coach", title: coachFullName(coach), detail: [(coach.specialties || []).join(", "), coach.archived ? "archivé" : ""].filter(Boolean).join(" · "), attrs: `data-action="edit-coach" data-id="${esc(coach.id)}" data-sport-club-id="${esc(clubId)}" data-search-club-id="${esc(clubId)}"` });
+        }
+      });
+      // Groupes : absents de la recherche métier jusqu'ici alors que la page existe et que les
+      // groupes sont une entité de premier plan. Comblé ici (signalé comme écart préexistant).
+      (state.groups || []).forEach((group) => {
+        if (matches([group.name, group.discipline, group.type, group.notes])) {
+          push({
+            type: "Groupe",
+            title: group.name || "Groupe",
+            detail: [group.discipline, group.type, group.archived ? "archivé" : ""].filter(Boolean).join(" · "),
+            attrs: `data-action="edit-group" data-id="${esc(group.id)}" data-sport-club-id="${esc(clubId)}" data-search-club-id="${esc(clubId)}"`,
+          });
+        }
+      });
+      // Lot L-I — Équipes : absentes de la recherche jusqu'ici alors que la fonctionnalité et la vue
+      // existent (écart P2 signalé au Lot L-G). Gatée comme Boutique/Stages : isViewVisible("teams")
+      // couvre déjà les deux axes (hasFeature ET menu) — une équipe historique existant alors que la
+      // fonctionnalité est désactivée reste stockée mais n'apparaît pas ici, sans exception. Team
+      // n'a pas de champ texte legacy (contrairement à Group) : discipline/coach/catégorie sont
+      // TOUJOURS résolus via les mêmes fonctions que teamCardHtml, jamais un id comparé comme texte.
+      if (isViewVisible("teams")) {
+        (state.teams || []).forEach((team) => {
+          const disciplineLabel = disciplineLabelFor(team);
+          const coachLabel = coachLabelFor(team.coachId, "");
+          const categoryLabel = sportCategoryAssignmentLabel(team.sportCategoryId, team.disciplineId, state, activeClubId());
+          if (matches([team.name, disciplineLabel, coachLabel, categoryLabel])) {
+            push({
+              type: "Équipe",
+              title: team.name || "Équipe",
+              detail: [disciplineLabel, categoryLabel, coachLabel ? `Coach ${coachLabel}` : "", team.archived ? "archivée" : ""].filter(Boolean).join(" · "),
+              attrs: `data-action="edit-team" data-id="${esc(team.id)}" data-sport-club-id="${esc(clubId)}" data-search-club-id="${esc(clubId)}"`,
+            });
+          }
         });
       }
-    });
-    // Lot L-I — Équipes : absentes de la recherche jusqu'ici alors que la fonctionnalité et la vue
-    // existent (écart P2 signalé au Lot L-G). Gatée comme Boutique/Stages : isViewVisible("teams")
-    // couvre déjà les deux axes (hasFeature ET menu) — une équipe historique existant alors que la
-    // fonctionnalité est désactivée reste stockée mais n'apparaît pas ici, sans exception. Team
-    // n'a pas de champ texte legacy (contrairement à Group) : discipline/coach/catégorie sont
-    // TOUJOURS résolus via les mêmes fonctions que teamCardHtml, jamais un id comparé comme texte.
-    if (isViewVisible("teams")) {
-      (state.teams || []).forEach((team) => {
-        const disciplineLabel = disciplineLabelFor(team);
-        const coachLabel = coachLabelFor(team.coachId, "");
-        const categoryLabel = sportCategoryAssignmentLabel(team.sportCategoryId, team.disciplineId, state, activeClubId());
-        if (matches([team.name, disciplineLabel, coachLabel, categoryLabel])) {
-          push({
-            type: "Équipe",
-            title: team.name || "Équipe",
-            detail: [disciplineLabel, categoryLabel, coachLabel ? `Coach ${coachLabel}` : "", team.archived ? "archivée" : ""].filter(Boolean).join(" · "),
-            attrs: `data-action="edit-team" data-id="${esc(team.id)}"`,
-          });
+      (state.rooms || []).forEach((room) => {
+        if (matches([room.name, room.address, room.type, (room.disciplines || []).join(" "), room.equipment, room.notes, room.description, room.managerName, room.managerEmail, room.managerPhone, roomAvailabilitySummary(room)])) {
+          push({ type: "Salle", title: roomName(room), detail: [room.type, (room.disciplines || []).join(", "), room.archived ? "archivée" : ""].filter(Boolean).join(" · "), attrs: `data-action="edit-room" data-id="${esc(room.id)}" data-sport-club-id="${esc(clubId)}" data-search-club-id="${esc(clubId)}"` });
         }
       });
     }
@@ -11468,7 +11891,8 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
     // hasFeature ET menu). teamName/convocations[].name sont des SNAPSHOTS (doctrine M-A2/M-B1) :
     // jamais résolus depuis state.teams/state.contacts ici, on les lit tels quels comme pour tout
     // autre champ texte de l'entité — resultText inclus (utile pour retrouver "3 - 1", "2e place"…).
-    if (isViewVisible("competitions")) {
+    // Lot O-E2-B8R2 — competitions.read ajouté.
+    if (isViewVisible("competitions") && currentUserHasPermission("competitions.read", clubId)) {
       (state.competitions || []).forEach((competition) => {
         const disciplineLabel = competition.disciplineId ? disciplineLabelFor(competition) : "";
         const categoryLabel = competition.sportCategoryId ? sportCategoryAssignmentLabel(competition.sportCategoryId, competition.disciplineId, state, activeClubId()) : "";
@@ -11478,28 +11902,25 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
             type: "Rencontre",
             title: competition.name || "Rencontre",
             detail: [disciplineLabel, categoryLabel, competition.teamName, competition.opponent ? `vs ${competition.opponent}` : "", competition.location, competition.archived ? "archivée" : ""].filter(Boolean).join(" · "),
-            attrs: `data-action="edit-competition" data-id="${esc(competition.id)}"`,
+            attrs: `data-action="edit-competition" data-id="${esc(competition.id)}" data-competition-club-id="${esc(clubId)}" data-search-club-id="${esc(clubId)}"`,
           });
         }
       });
     }
-    (state.rooms || []).forEach((room) => {
-      if (matches([room.name, room.address, room.type, (room.disciplines || []).join(" "), room.equipment, room.notes, room.description, room.managerName, room.managerEmail, room.managerPhone, roomAvailabilitySummary(room)])) {
-        push({ type: "Salle", title: roomName(room), detail: [room.type, (room.disciplines || []).join(", "), room.archived ? "archivée" : ""].filter(Boolean).join(" · "), attrs: `data-action="edit-room" data-id="${esc(room.id)}"` });
-      }
-    });
-    (state.invoices || []).filter(invoiceBelongsToActiveClub).forEach((invoice) => {
-      if (!invoiceMatchesSearch(invoice, query)) return;
-      const contact = invoiceDisplayContact(invoice);
-      const totals = invoiceDisplayTotals(invoice);
-      const status = invoiceStatusLabel({ ...invoice, status: computedInvoiceStatus(invoice) });
-      push({
-        type: "Facture",
-        title: invoice.number || "Brouillon de facture",
-        detail: `${personLabel(contact) || "Contact"} · ${status} · total ${money(totals.total)} · reste ${money(totals.restDue)}`,
-        attrs: `data-action="open-invoice" data-id="${esc(invoice.id)}"`,
+    if (currentUserHasPermission("billing.read", clubId)) {
+      (state.invoices || []).filter(invoiceBelongsToActiveClub).forEach((invoice) => {
+        if (!invoiceMatchesSearch(invoice, query)) return;
+        const contact = invoiceDisplayContact(invoice);
+        const totals = invoiceDisplayTotals(invoice);
+        const status = invoiceStatusLabel({ ...invoice, status: computedInvoiceStatus(invoice) });
+        push({
+          type: "Facture",
+          title: invoice.number || "Brouillon de facture",
+          detail: `${personLabel(contact) || "Contact"} · ${status} · total ${money(totals.total)} · reste ${money(totals.restDue)}`,
+          attrs: `data-action="open-invoice" data-id="${esc(invoice.id)}" data-search-club-id="${esc(clubId)}"`,
+        });
       });
-    });
+    }
     return rows.slice(0, 80);
   }
 
@@ -11546,8 +11967,13 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
 
   // Construit la liste unifiée : fonctionnel d'abord (on cherche souvent « où est X ? »), puis les
   // données métier — qui ne sont jamais masquées, seulement regroupées sous leur propre titre.
+  // Lot O-E2-B8R3 (§12-15) — data-search-club-id capturé UNE FOIS ici (club actif au moment du
+  // RENDU du résultat, jamais recalculé au clic) : couvre aussi les pages/réglages/actions, pas
+  // seulement les données métier — un vieux résultat "Ajouter un coach" rendu sous A ne doit jamais
+  // recalculer sa disponibilité sous B après un switch de club.
   function searchOptions(query = ui.globalSearch) {
     const options = [];
+    const searchClubId = activeClubId();
     functionalSearchResults(query).forEach((row) => {
       const { entry, availability } = row;
       options.push({
@@ -11559,7 +11985,7 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
         destination: entry.view ? viewLabel(entry.view) : "",
         unavailable: availability.available ? "" : availability.reason,
         // Exécution par identifiant, validé contre le registre au moment du clic.
-        attrs: `data-action="run-search-command" data-command-id="${esc(entry.id)}"${availability.available ? "" : ' data-command-fix="1"'}`,
+        attrs: `data-action="run-search-command" data-command-id="${esc(entry.id)}" data-search-club-id="${esc(searchClubId)}"${availability.available ? "" : ' data-command-fix="1"'}`,
       });
     });
     globalSearchRows(query).forEach((row) => {
@@ -11768,6 +12194,36 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
     });
     return out;
   }
+  // Lot O-E2-B7 (§36-41) — appelé depuis le point commun loadActiveClubFromStore (16-settings-
+  // themes.js) à CHAQUE changement de club actif (switch/création+activation/suppression du club
+  // actif). Les identifiants sélectionnés (coachIds/roomId/groupId) référencent des entités DU
+  // CLUB PRÉCÉDENT : les conserver risquerait une résolution croisée accidentelle si un id
+  // identique existe dans le nouveau club (même doctrine que les collisions manager.id, Lot O-E2-
+  // B6). Les adresses ajoutées/exclues manuellement (§39-40) et le contenu du message en cours de
+  // composition ne doivent jamais non plus survivre au changement de club.
+  function resetNewsletterUiStateForClubSwitch() {
+    ui.newsletterAudience = "members";
+    ui.newsletterManualOnly = false;
+    ui.newsletterCoachIds = [];
+    ui.newsletterRoomId = "";
+    ui.newsletterGroupId = "";
+    ui.newsletterTemplateKey = "";
+    ui.newsletterTitle = "";
+    ui.newsletterDetail = "";
+    ui.newsletterDate = "";
+    ui.newsletterPlace = "";
+    ui.newsletterMessage = "";
+    ui.newsletterNote = "";
+    ui.newsletterComplement = "";
+    ui.newsletterSignatureLibre = "";
+    ui.newsletterSubject = "";
+    ui.newsletterBody = "";
+    ui.newsletterNewEmail = "";
+    ui.newsletterExcludedEmails = [];
+    ui.newsletterExtraEmails = [];
+    ui.newsletterSessionContext = {};
+  }
+
   function newsletterAudienceSource(audience = ui.newsletterAudience) {
     if (audience === "coaches") return { source: (typeof activeCoaches === "function" ? activeCoaches() : []), sourceTag: "coach" };
     if (audience === "coaches-selected") {
@@ -12095,8 +12551,15 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
   function renderNewsletter() {
     if (ui.smtpSecretStatus === undefined && typeof refreshSmtpSecretStatus === "function") {
       ui.smtpSecretStatus = { present: false, secure: false };
-      refreshSmtpSecretStatus().then(() => render());
+      refreshSmtpSecretStatus(activeClubId()).then(() => render());
     }
+    // Lot O-E2-B7 (§12/§21) — newsletter.write gouverne les actions d'envoi/mutation (Envoyer,
+    // Ouvrir la messagerie, Modifier ce modèle) ; la consultation (audience, modèle, aperçu,
+    // sélection des destinataires) reste accessible avec newsletter.read seul (§13). clubId
+    // explicite estampillé sur les boutons d'action externe/mutante, jamais activeClubId() seul
+    // relu tardivement dans le handler.
+    const newsletterClubId = activeClubId();
+    const canWriteNewsletter = currentUserHasPermission("newsletter.write", newsletterClubId);
     const recipients = newsletterRecipients();
     const missingMembers = state.contacts.members.filter((contact) => !asText(contact.email)).length;
     const missingProspects = state.contacts.prospects.filter((contact) => !asText(contact.email)).length;
@@ -12158,7 +12621,7 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
             </select>
           </label>
           <div class="inline-actions">
-            <button type="button" data-action="edit-current-email-template">Modifier ce modèle</button>
+            ${canWriteNewsletter ? `<button type="button" data-action="edit-current-email-template" data-newsletter-club-id="${esc(newsletterClubId)}">Modifier ce modèle</button>` : ""}
             <button type="button" data-action="open-payment-reminders">Relances paiement</button>
           </div>
           <p class="muted">Modèle sélectionné : ${esc(templateDef.label || "Modèle")} · Les modèles se configurent dans Paramètres > Messages e-mail.</p>
@@ -12171,14 +12634,14 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
           </label>
           <div class="newsletter-paper">${newsletterPreviewInnerHtml()}</div>
           <div class="inline-actions">
-            <button ${smtpReadyForSend() ? "" : `class="primary"`} type="button" data-action="open-newsletter-mail">Ouvrir la messagerie externe</button>
-            ${smtpReadyForSend() ? `<button class="primary" type="button" data-action="send-newsletter-mail-integrated" ${ui.smtpSending ? "disabled" : ""}>${ui.smtpSending ? "Envoi en cours…" : "Envoyer depuis MonGestaClub"}</button>` : ""}
+            ${canWriteNewsletter ? `<button ${smtpReadyForSend() ? "" : `class="primary"`} type="button" data-action="open-newsletter-mail" data-newsletter-club-id="${esc(newsletterClubId)}">Ouvrir la messagerie externe</button>` : ""}
+            ${canWriteNewsletter && smtpReadyForSend() ? `<button class="primary" type="button" data-action="send-newsletter-mail-integrated" data-newsletter-club-id="${esc(newsletterClubId)}" ${ui.smtpSending ? "disabled" : ""}>${ui.smtpSending ? "Envoi en cours…" : "Envoyer depuis MonGestaClub"}</button>` : ""}
             <button type="button" data-action="copy-newsletter-emails">Copier les e-mails</button>
             <button type="button" data-action="copy-newsletter-message">Copier le message</button>
             <button type="button" data-action="reset-newsletter-template">Recharger le modèle</button>
             <button type="button" data-action="open-payment-reminders">Relances paiement</button>
           </div>
-          ${smtpReadyForSend() ? "" : `<p class="muted smtp-hint">Envoi intégré non configuré. Configurez le SMTP dans Paramètres &gt; E-mails, ou utilisez le bouton « Ouvrir la messagerie externe » ci-dessus.</p>`}
+          ${!canWriteNewsletter || smtpReadyForSend() ? "" : `<p class="muted smtp-hint">Envoi intégré non configuré. Configurez le SMTP dans Paramètres &gt; E-mails, ou utilisez le bouton « Ouvrir la messagerie externe » ci-dessus.</p>`}
           <p class="muted mailto-logo-hint">La messagerie externe prépare un message texte : la mise en page et le logo du club ne sont pas inclus.</p>
           <p class="muted">Les adresses sont placées en copie cachée pour préserver la confidentialité. Pour de très grosses listes, il vaut mieux envoyer en plusieurs fois.</p>
         </div>
@@ -12278,8 +12741,22 @@ ${esc(bodyText)}</pre>
     </div>`;
   }
 
+  const PAYMENT_AGENDA_ROW_MODULE = Object.freeze({ "edit-membership": "membership", "view-order": "order", "edit-registration": "registration" });
   function openPaymentAgendaDialog() {
-    const rows = paymentAgendaRows();
+    // Lot O-E2-B3B-1R2 (§16-19) — "À encaisser" est une surface Payment opérationnelle (Module/
+    // Personne/Statut/Date/Reste dû/Total), pas un agrégat Stats : exige payments.read AVANT toute
+    // ouverture (appel direct/forcé refusé, pas seulement l'appui sur le bouton déjà masqué), puis
+    // chaque ligne est filtrée par la lecture du PARENT correspondant — même doctrine que
+    // renderDuePayments (§ Lot O-E2-B3B-1R).
+    if (!currentUserHasPermission("payments.read", activeClubId())) {
+      if (typeof alert === "function") alert("Vous n'avez pas l'autorisation nécessaire.");
+      return;
+    }
+    // Lot O-E2-B3B-1R3 (§5) — club figé à l'ouverture : toutes les lignes du dialogue lui
+    // appartiennent, et le clic (potentiellement tardif) revérifiera CE club précis, jamais le
+    // club actif au moment du clic (qui a pu changer entre-temps).
+    const openedClubId = activeClubId();
+    const rows = paymentAgendaRows().filter((row) => currentUserCanReadEmbeddedPayment(PAYMENT_AGENDA_ROW_MODULE[row.editAction] || "", openedClubId));
     const total = rows.reduce((sum, row) => sum + asNumber(row.amount), 0);
     const body = rows.length
       ? `<div class="dialog-table-wrap"><div class="dialog-table-scroll"><table>
@@ -12300,15 +12777,43 @@ ${esc(bodyText)}</pre>
     </div>`);
     dialog.querySelectorAll("[data-agenda-action]").forEach((row) => {
       row.addEventListener("click", () => {
-        const action = row.dataset.agendaAction;
-        const rowId = row.dataset.id;
-        const stageId = row.dataset.stageId;
-        dialog.close();
-        if (action === "edit-membership") return openMembershipDialog(state.memberships.find((item) => item.id === rowId));
-        if (action === "view-order") return openOrderForConsult(state.shopOrders.find((item) => item.id === rowId));
-        if (action === "edit-registration") return openRegistrationDialog(stageId, state.stageRegistrations[stageId]?.find((item) => item.id === rowId));
+        openPaymentAgendaRow(row.dataset.agendaAction, row.dataset.id, row.dataset.stageId, openedClubId);
       });
     });
+  }
+
+  // Lot O-E2-B3B-1R3 (§4-9) — le filtrage des lignes à l'OUVERTURE de l'agenda ne suffit pas : entre
+  // l'ouverture et le clic, le club actif peut changer, une permission peut être retirée, le
+  // membership de l'utilisateur modifié, le DOM forgé, ou le parent supprimé. Ce chemin revérifie
+  // TOUT au moment du clic (fail closed, silencieux, aucune alerte technique) avant de fermer le
+  // dialogue Agenda et d'ouvrir le dialogue cible. Testable isolément (retourne true/false), sans
+  // DOM forgé côté test. Le listener de clic ci-dessus n'appelle plus que ce helper.
+  function openPaymentAgendaRow(action, rowId, stageId, openedClubId) {
+    if (activeClubId() !== openedClubId) return false;
+    const module = PAYMENT_AGENDA_ROW_MODULE[action] || "";
+    if (!module || !currentUserCanReadEmbeddedPayment(module, openedClubId)) return false;
+    if (module === "membership") {
+      const row = state.memberships.find((item) => item.id === rowId);
+      if (!row) return false;
+      dialog.close();
+      openMembershipDialog(row);
+      return true;
+    }
+    if (module === "order") {
+      const row = state.shopOrders.find((item) => item.id === rowId);
+      if (!row) return false;
+      dialog.close();
+      openOrderForConsult(row, openedClubId);
+      return true;
+    }
+    if (module === "registration") {
+      const row = (state.stageRegistrations[stageId] || []).find((item) => item.id === rowId);
+      if (!row) return false;
+      dialog.close();
+      openRegistrationDialog(stageId, row, openedClubId);
+      return true;
+    }
+    return false;
   }
 
   function chartBand(title, rows, formatValue = money) {
@@ -12558,13 +13063,17 @@ ${esc(bodyText)}</pre>
     });
   }
 
-  function toolbar(addAction, addLabel, extra = "", rightBefore = "") {
+  // Lot O-E2-B4R (§14) — `addAttrs` optionnel (défaut "", AUCUN changement pour les ~20 appelants
+  // existants) : permet d'poser un data-*-club-id explicite sur le bouton de CRÉATION lui-même pour
+  // les domaines Sport/Stages/Compétitions, où un bouton "Ajouter" rendu sous un club reste
+  // utilisable après un changement de club actif tant que la page n'a pas été re-rendue.
+  function toolbar(addAction, addLabel, extra = "", rightBefore = "", addAttrs = "") {
     return `<div class="toolbar">
       <div class="left">
         <input class="search" data-focus="query" data-filter="query" placeholder="Rechercher" value="${esc(ui.query)}" />
         ${extra}
       </div>
-      <div class="right">${rightBefore}${addAction ? `<button class="primary" data-action="${esc(addAction)}">${esc(addLabel)}</button>` : ""}</div>
+      <div class="right">${rightBefore}${addAction ? `<button class="primary" data-action="${esc(addAction)}"${addAttrs}>${esc(addLabel)}</button>` : ""}</div>
     </div>`;
   }
 
@@ -12636,7 +13145,7 @@ ${esc(bodyText)}</pre>
     return `<tr class="clickable-row" data-action="edit-contact" data-kind="${esc(kind)}" data-id="${esc(row.id)}">
       <td>${esc(row.lastName)}</td>
       <td>${esc(row.firstName)}</td>
-      <td>${row.email ? `<button type="button" class="link-button" data-action="send-contact-email" data-contact-link="${esc(contactLink)}" title="Envoyer un mail à ce contact">${esc(row.email)}</button>` : ""}</td>
+      <td>${row.email ? `<button type="button" class="link-button" data-action="send-contact-email" data-contact-link="${esc(contactLink)}" data-email-club-id="${esc(activeClubId())}" title="Envoyer un mail à ce contact">${esc(row.email)}</button>` : ""}</td>
       <td>${tel ? `<a href="tel:${esc(tel)}">${esc(tel)}</a>` : ""}</td>
       <td>${esc(row.city)}</td>
       <td>${dateDisplay(row.birthDate) || `<span class="muted">-</span>`}</td>
@@ -12668,7 +13177,7 @@ ${esc(bodyText)}</pre>
     return `<article class="membership-card contact-line clickable-card ${tone ? `payment-${tone}` : ""}" data-action="edit-contact" data-kind="${esc(kind)}" data-id="${esc(row.id)}">
       <div>${personCell(row)}</div>
       <div class="membership-card-meta contact-line-info">
-        ${row.email ? `<button type="button" class="link-button" data-action="send-contact-email" data-contact-link="${esc(contactLink)}" title="Envoyer un mail à ce contact">${esc(row.email)}</button>` : alertInfoBadge("E-mail non renseigné")}
+        ${row.email ? `<button type="button" class="link-button" data-action="send-contact-email" data-contact-link="${esc(contactLink)}" data-email-club-id="${esc(activeClubId())}" title="Envoyer un mail à ce contact">${esc(row.email)}</button>` : alertInfoBadge("E-mail non renseigné")}
         ${tel ? `<a href="tel:${esc(tel)}">${esc(tel)}</a>` : alertInfoBadge("Téléphone non renseigné")}
       </div>
       <div class="membership-card-meta">
@@ -12684,6 +13193,17 @@ ${esc(bodyText)}</pre>
   }
 
   function contactPaymentTone(kind, row = {}) {
+    // Lot O-E2-B3B-1R2 (§11-15) — agrège Adhésions/Boutique/Stages/Factures : NE PAS construire de
+    // "tone partiel" à partir des seuls domaines lisibles (changerait la sémantique du badge et
+    // pourrait tromper). Si une seule permission source manque -> aucun tone financier (chaîne vide,
+    // exactement comme le cas "aucune ligne" ci-dessous). billing.read est ici une exception étroite,
+    // en lecture seule, pour éviter que l'absence du seul module Factures ne fasse fuir un état
+    // financier cross-domaine incomplet ; billing.write n'est jamais impliqué (Lot B3B-2, non commencé).
+    const clubId = activeClubId();
+    const requiredPermissions = kind === "members"
+      ? ["payments.read", "memberships.read", "shop.read", "stages.read", "billing.read"]
+      : ["payments.read", "shop.read", "stages.read", "billing.read"];
+    if (!requiredPermissions.every((key) => currentUserHasPermission(key, clubId))) return "";
     const modules = kind === "members" ? ["disciplines", "boutique", "stages"] : ["boutique", "stages"];
     const entries = modules.flatMap((module) => contactModuleEntries(row, module));
     const invoices = contactInvoices(row, kind).filter((invoice) => invoice.status !== "cancelled");
@@ -12710,10 +13230,16 @@ ${esc(bodyText)}</pre>
     const options = [`<option value="">Toutes les disciplines</option>`]
       .concat(activeDisciplines.map((discipline) => `<option value="${esc(discipline.name)}" ${disciplineFilter === discipline.name ? "selected" : ""}>${esc(discipline.name)}</option>`))
       .join("");
+    // Lot O-E2-B3B-1R2 (§2-4) — un filtre "Reste dû" est lui-même une surface Payment : savoir QUI
+    // apparaît/disparaît quand on l'active révèle déjà qui a une dette, même sans afficher le montant.
+    // La préférence ui.disciplineDueOnly peut rester mémorisée, mais elle est IGNORÉE ici sans
+    // payments.read + memberships.read (jamais réécrite silencieusement, cf. toggle-due-filter).
+    const canReadMembershipPayments = currentUserCanReadEmbeddedPayment("membership", activeClubId());
+    const disciplineDueOnly = canReadMembershipPayments && ui.disciplineDueOnly;
     const rows = state.memberships
       .filter((row) => includesQuery(row, ui.query))
       .filter((row) => !disciplineFilter || row.discipline === disciplineFilter)
-      .filter((row) => !ui.disciplineDueOnly || calcMembership(row).restDue > 0)
+      .filter((row) => !disciplineDueOnly || calcMembership(row).restDue > 0)
       .sort((a, b) => personKey(a).localeCompare(personKey(b)));
     // Lot 3A (clôture absolue, FIN-ABS-2) — les inscriptions au tarif ABSENT ne sont pas comptées comme
     // 0 € dans les agrégats sans le dire : elles sont exclues des sommes et signalées à part, pour que
@@ -12724,12 +13250,17 @@ ${esc(bodyText)}</pre>
     const total = billableCalcs.reduce((sum, calc) => sum + calc.total, 0);
     const paid = billableCalcs.reduce((sum, calc) => sum + calc.paid, 0);
     const due = billableCalcs.reduce((sum, calc) => sum + calc.restDue, 0);
+    // Lot O-E2-B3B-1R (§17) — "Total" reste CONTRACTUEL (tarif), visible via sport.read seul (page
+    // déjà accessible) ; "Réglé"/"Reste dû" sont CALCULÉS depuis les paiements réels et exigent
+    // payments.read + memberships.read (même doctrine que le tiroir de paiement, §6).
     return `
       ${overviewBand("disciplines", "Disciplines en un coup d'oeil", [
         { label: "Inscriptions", value: rows.length },
         { label: "Total", value: money(total) },
-        { label: "Réglé", value: money(paid) },
-        { label: "Reste dû", value: money(due), action: "show-overview-due", scope: "disciplines", title: "Voir les adhérents avec un reste dû" },
+        ...(canReadMembershipPayments ? [
+          { label: "Réglé", value: money(paid) },
+          { label: "Reste dû", value: money(due), action: "show-overview-due", scope: "disciplines", title: "Voir les adhérents avec un reste dû" },
+        ] : []),
         ...(undefinedCount > 0 ? [{ label: "Tarif non défini", value: undefinedCount }] : []),
       ])}
       <div class="band collapsible-band overview-band ${ui.overviewPanels?.disciplineManagement ? "open" : ""}">
@@ -12746,7 +13277,7 @@ ${esc(bodyText)}</pre>
           <div class="collapsible-inner">${editableDisciplines()}</div>
         </div>
       </div>
-      ${toolbar(hasFeature("memberships") ? "add-membership" : "", "Nouvelle inscription", `<select data-filter="discipline">${options}</select><div class="segmented">${dueFilterButton("disciplineDueOnly", ui.disciplineDueOnly)}</div>`)}
+      ${toolbar(hasFeature("memberships") ? "add-membership" : "", "Nouvelle inscription", `<select data-filter="discipline">${options}</select><div class="segmented">${canReadMembershipPayments ? dueFilterButton("disciplineDueOnly", ui.disciplineDueOnly) : ""}</div>`)}
       <div class="band discipline-binder">
         <div class="band-title"><h2>${disciplineFilter ? esc(disciplineFilter) : "Toutes les disciplines"}</h2><strong>${rows.length} adhérents</strong></div>
         ${!hasFeature("memberships") ? `<p class="muted feature-off-notice">Adhésions désactivées — les inscriptions existantes restent consultables et leurs paiements restent disponibles.</p>` : ""}
@@ -12762,10 +13293,13 @@ ${esc(bodyText)}</pre>
     const calc = calcMembership(row);
     // Lot 3A (clôture absolue, FIN-ABS-2) — Total/Reste dû « Non calculable » pour un tarif absent.
     const disp = membershipTotalDisplay(calc);
+    // Lot O-E2-B3B-1R (§17) — Total reste contractuel ; Réglé/Reste dû exigent payments.read (même
+    // doctrine que paymentControls, déjà gardée dans cette même ligne).
+    const canReadPayments = currentUserCanReadEmbeddedPayment("membership", activeClubId());
     return `<tr>
       <td>${personCell(row)}</td><td>${paymentControls("membership", row.id, row.payments || [], { total: calc.total, defaultTaxRate: membershipDefaultTaxRate(row), billable: calc.hasGrossTotal })}</td><td>${esc(row.discipline)}</td>
       <td>${row.medicalCertificate ? "Oui" : "Non"}</td>
-      <td class="money">${disp.total}</td><td class="money">${disp.paid}</td><td class="money">${disp.restDue}</td>
+      <td class="money">${disp.total}</td><td class="money">${canReadPayments ? disp.paid : "—"}</td><td class="money">${canReadPayments ? disp.restDue : "—"}</td>
       <td><div class="actions"><button class="icon" title="Modifier" data-action="edit-membership" data-id="${row.id}">✎</button><button class="icon danger" title="Retirer" data-action="delete-membership" data-id="${row.id}">×</button></div></td>
     </tr>`;
   }
@@ -12815,7 +13349,10 @@ ${esc(bodyText)}</pre>
 
   function membershipCard(row) {
     const calc = calcMembership(row);
-    const tone = membershipPaymentTone(row, calc);
+    // Lot O-E2-B3B-1R (§17) — Total reste contractuel ; Réglé/Reste dû/statut d'encaissement (tone)
+    // exigent payments.read (même doctrine que paymentControls, déjà gardée plus bas sur cette carte).
+    const canReadPayments = currentUserCanReadEmbeddedPayment("membership", activeClubId());
+    const tone = canReadPayments ? membershipPaymentTone(row, calc) : "unknown";
     // Lot 3A (clôture absolue, FIN-ABS-2) — Total/Reste dû « Non calculable » pour un tarif absent
     // (jamais 0,00 €) ; un badge signale explicitement le tarif non défini.
     const disp = membershipTotalDisplay(calc);
@@ -12830,8 +13367,8 @@ ${esc(bodyText)}</pre>
       </div>
       <div class="membership-card-totals">
         <div><span>Total</span><strong>${disp.total}</strong></div>
-        <div><span>Réglé</span><strong>${disp.paid}</strong></div>
-        <div class="${calc.restDue > 0 && calc.hasGrossTotal ? "due" : ""}"><span>Reste dû</span><strong>${disp.restDue}</strong></div>
+        ${canReadPayments ? `<div><span>Réglé</span><strong>${disp.paid}</strong></div>
+        <div class="${calc.restDue > 0 && calc.hasGrossTotal ? "due" : ""}"><span>Reste dû</span><strong>${disp.restDue}</strong></div>` : ""}
       </div>
       <div class="membership-card-payments">${paymentControls("membership", row.id, row.payments || [], { total: calc.total, defaultTaxRate: membershipDefaultTaxRate(row), billable: calc.hasGrossTotal })}</div>
     </article>`;
@@ -12842,10 +13379,17 @@ ${esc(bodyText)}</pre>
   }
 
   function renderBoutique() {
+    // Lot O-E2-B3B-1R2 (§2-3/§9-10) — un filtre/tri "Reste dû" est lui-même une surface Payment : même
+    // sans afficher le montant, savoir qui apparaît en tête (tri) ou qui reste après filtrage révèle
+    // déjà qui a une dette. La préférence ui.shopDueOnly peut rester mémorisée mais est IGNORÉE sans
+    // payments.read + shop.read (jamais réécrite silencieusement, cf. toggle-due-filter). Sans ce
+    // droit, le tri retombe sur l'ordre neutre (nom), indépendant de tout calcul de paiement.
+    const canReadShopPayments = currentUserCanReadEmbeddedPayment("order", activeClubId());
+    const shopDueOnly = canReadShopPayments && ui.shopDueOnly;
     const rows = state.shopOrders
       .filter((row) => includesQuery(row, ui.query))
-      .filter((row) => !ui.shopDueOnly || calcOrder(row).restDue > 0)
-      .sort((a, b) => calcOrder(b).restDue - calcOrder(a).restDue || personKey(a).localeCompare(personKey(b)));
+      .filter((row) => !shopDueOnly || calcOrder(row).restDue > 0)
+      .sort((a, b) => (canReadShopPayments ? (calcOrder(b).restDue - calcOrder(a).restDue) : 0) || personKey(a).localeCompare(personKey(b)));
     const articleRows = groupArticles().filter((row) => asNumber(row.count) || asNumber(row.total));
     const catalogRows = stockRows()
       .filter(({ article }) => article.active !== false)
@@ -12855,23 +13399,28 @@ ${esc(bodyText)}</pre>
     const due = rows.reduce((sum, row) => sum + calcOrder(row).restDue, 0);
     const articleCount = rows.reduce((sum, row) => sum + orderItemDetails(row).reduce((itemSum, item) => itemSum + item.quantity, 0), 0);
     const unpaidRows = rows.filter((row) => calcOrder(row).restDue > 0);
+    // Lot O-E2-B3B-1R (§18) — "Commandes"/"Articles achetés"/"Total boutique" restent CONTRACTUELS,
+    // visibles via shop.read seul (page déjà accessible) ; "Réglé"/"Reste dû"/"À suivre" et le bandeau
+    // "Encaissements boutique" sont CALCULÉS depuis les paiements réels et exigent payments.read.
     return `
       ${overviewBand("boutique", "Boutique en un coup d'oeil", [
         { label: "Commandes", value: rows.length },
         { label: "Articles achetés", value: intValue(articleCount) },
         { label: "Total boutique", value: money(total) },
-        { label: "Réglé", value: money(paid) },
-        { label: "Reste dû", value: money(due), action: "show-overview-due", scope: "boutique", title: "Voir les clients boutique avec un reste dû" },
-        { label: "À suivre", value: unpaidRows.length },
+        ...(canReadShopPayments ? [
+          { label: "Réglé", value: money(paid) },
+          { label: "Reste dû", value: money(due), action: "show-overview-due", scope: "boutique", title: "Voir les clients boutique avec un reste dû" },
+          { label: "À suivre", value: unpaidRows.length },
+        ] : []),
       ])}
-      ${toolbar("add-order", "Nouvelle commande", `<div class="segmented">${dueFilterButton("shopDueOnly", ui.shopDueOnly)}</div>`)}
+      ${toolbar((hasFeature("shop") && currentUserHasPermission("shop.write", activeClubId())) ? "add-order" : "", "Nouvelle commande", `<div class="segmented">${canReadShopPayments ? dueFilterButton("shopDueOnly", ui.shopDueOnly) : ""}</div>`, "", ` data-shop-club-id="${esc(activeClubId())}"`)}
       <div class="band shop-catalog-band">
         <div class="band-title"><h2>Articles à vendre</h2><strong>${intValue(catalogRows.length)}</strong></div>
         <div class="shop-catalog-grid">
           ${catalogRows.map(shopCatalogCard).join("") || (((state.tariffs && state.tariffs.articles) || []).length === 0 ? emptyStateHtml("boutique") : `<div class="empty">Aucun article disponible</div>`)}
         </div>
       </div>
-      ${shopCollapsibleBand("payments", "Encaissements boutique", money(due), shopPaymentFollowUp(unpaidRows))}
+      ${canReadShopPayments ? shopCollapsibleBand("payments", "Encaissements boutique", money(due), shopPaymentFollowUp(unpaidRows)) : ""}
       ${shopCollapsibleBand("articles", "Articles vendus", intValue(articleRows.reduce((sum, row) => sum + row.count, 0)), shopArticleSummary(articleRows))}
       ${shopCollapsibleBand("orders", "Commandes clients", money(total), `
         <div class="shop-order-list">
@@ -12888,6 +13437,9 @@ ${esc(bodyText)}</pre>
       ? (article.sizes || []).map((size) => `${size} ${intValue(availableBySize?.[size] ?? 0)}`).join(" · ")
       : "Sans taille";
     const tone = available < 0 ? "stock-negative" : isStockLow(row) ? "stock-warning" : "";
+    // Lot O-E2-B5 (§22) — vendre un article est une mutation Boutique : masqué sans shop.write (ou
+    // feature shop OFF), le catalogue lui-même restant visible via shop.read seul (page accessible).
+    const canWriteShop = hasFeature("shop") && currentUserHasPermission("shop.write", activeClubId());
     return `<article class="shop-catalog-card ${tone}">
       <div class="shop-catalog-image">${articleImage(article, "medium")}</div>
       <div class="shop-catalog-info">
@@ -12898,7 +13450,7 @@ ${esc(bodyText)}</pre>
       <div class="shop-catalog-footer">
         <div><span>Prix</span><strong>${money(price)}</strong></div>
         <div><span>Stock</span><strong>${intValue(available)}</strong></div>
-        <button class="primary" data-action="sell-article" data-article-id="${esc(article.id)}">Vendre</button>
+        ${canWriteShop ? `<button class="primary" data-action="sell-article" data-article-id="${esc(article.id)}" data-shop-club-id="${esc(activeClubId())}">Vendre</button>` : ""}
       </div>
     </article>`;
   }
@@ -12906,7 +13458,7 @@ ${esc(bodyText)}</pre>
   function shopPaymentFollowUp(rows) {
     const content = rows.slice(0, 8).map((row) => {
       const calc = calcOrder(row);
-      return `<button class="shop-follow-row" data-action="view-order" data-id="${esc(row.id)}">
+      return `<button class="shop-follow-row" data-action="view-order" data-id="${esc(row.id)}" data-shop-club-id="${esc(activeClubId())}">
         <div>${personCell(row)}</div>
         ${statusPill(shopOrderStatus(row, calc))}
         <strong>${money(calc.restDue)}</strong>
@@ -12958,7 +13510,11 @@ ${esc(bodyText)}</pre>
 
   function orderCard(row) {
     const calc = calcOrder(row);
-    const status = shopOrderStatus(row, calc);
+    // Lot O-E2-B3B-1R (§18) — statut/Réglé/Reste dû sont CALCULÉS depuis les paiements réels et
+    // exigent payments.read ; Articles/Total restent CONTRACTUELS (shop.read seul, page déjà
+    // accessible).
+    const canReadPayments = currentUserCanReadEmbeddedPayment("order", activeClubId());
+    const status = canReadPayments ? shopOrderStatus(row, calc) : "";
     const items = orderItemDetails(row);
     const itemCount = items.reduce((sum, item) => sum + item.quantity, 0);
     const clientName = [row.lastName, row.firstName].filter(Boolean).join(" ") || "Client sans nom";
@@ -12970,16 +13526,21 @@ ${esc(bodyText)}</pre>
     const invoice = integrity.invoice;
     const editTitle = integrity.editBlocked ? ` title="${esc(shopOrderIntegrityMessage(integrity.editReasons, "edit"))}"` : "";
     const deleteTitle = integrity.deleteBlocked ? ` title="${esc(shopOrderIntegrityMessage(integrity.deleteReasons, "delete"))}"` : "";
-    return `<details class="shop-order-card ${calc.restDue > 0 ? "has-due" : "is-paid"}">
+    // Lot O-E2-B5 (§22) — édition/suppression masquées sans shop.write (ou feature shop OFF) ; la
+    // Facturation (open-order-invoice/print/PDF) suit sa PROPRE gouvernance (billing.*+shop.read,
+    // B3B-2) et reste visible indépendamment de shop.write, cf. 18-contacts-invoices.js.
+    const canWriteShop = hasFeature("shop") && currentUserHasPermission("shop.write", activeClubId());
+    const clubIdAttr = ` data-shop-club-id="${esc(activeClubId())}"`;
+    return `<details class="shop-order-card ${canReadPayments ? (calc.restDue > 0 ? "has-due" : "is-paid") : ""}">
       <summary class="shop-order-summary">
         <span class="shop-order-client">
           <strong>${esc(clientName)}</strong>
           <small>${itemCount ? `${intValue(itemCount)} article${itemCount > 1 ? "s" : ""}` : "Aucun article"}</small>
         </span>
-        ${statusPill(status)}
+        ${canReadPayments ? statusPill(status) : ""}
         <span class="shop-order-amount"><small>Total</small><strong>${money(calc.total)}</strong></span>
-        <span class="shop-order-amount"><small>Réglé</small><strong>${money(calc.paid)}</strong></span>
-        <span class="shop-order-amount ${calc.restDue > 0 ? "due" : ""}"><small>Reste dû</small><strong>${money(calc.restDue)}</strong></span>
+        ${canReadPayments ? `<span class="shop-order-amount"><small>Réglé</small><strong>${money(calc.paid)}</strong></span>
+        <span class="shop-order-amount ${calc.restDue > 0 ? "due" : ""}"><small>Reste dû</small><strong>${money(calc.restDue)}</strong></span>` : ""}
         <span class="shop-order-toggle">›</span>
         ${orderItemsPreview(row)}
       </summary>
@@ -12992,19 +13553,19 @@ ${esc(bodyText)}</pre>
         <div class="shop-total-grid">
           <div><span>Articles</span><strong>${intValue(itemCount)}</strong></div>
           <div><span>Total</span><strong>${money(calc.total)}</strong></div>
-          <div><span>Réglé</span><strong>${money(calc.paid)}</strong></div>
-          <div><span>Reste dû</span><strong>${money(calc.restDue)}</strong></div>
+          ${canReadPayments ? `<div><span>Réglé</span><strong>${money(calc.paid)}</strong></div>
+          <div><span>Reste dû</span><strong>${money(calc.restDue)}</strong></div>` : ""}
         </div>
         <details class="shop-payments">
           <summary>Paiements</summary>
           ${paymentControls("order", row.id, row.payments || [], { total: calc.total, defaultTaxRate: orderDefaultTaxRate(row) })}
         </details>
         <div class="shop-order-actions">
-          <button data-action="edit-order" data-id="${esc(row.id)}" ${integrity.editBlocked ? "disabled" : ""}${editTitle}>Modifier la commande</button>
-          <button data-action="open-order-invoice" data-id="${esc(row.id)}">${invoice ? "Ouvrir la facture" : "Créer / éditer la facture"}</button>
-          <button data-action="print-order-invoice" data-id="${esc(row.id)}">Imprimer la facture</button>
-          <button data-action="export-order-invoice-pdf" data-id="${esc(row.id)}">PDF facture</button>
-          <button class="danger" data-action="delete-order" data-id="${esc(row.id)}" ${integrity.deleteBlocked ? "disabled" : ""}${deleteTitle}>Supprimer</button>
+          ${canWriteShop ? `<button data-action="edit-order" data-id="${esc(row.id)}"${clubIdAttr} ${integrity.editBlocked ? "disabled" : ""}${editTitle}>Modifier la commande</button>` : ""}
+          <button data-action="open-order-invoice" data-id="${esc(row.id)}"${clubIdAttr}>${invoice ? "Ouvrir la facture" : "Créer / éditer la facture"}</button>
+          <button data-action="print-order-invoice" data-id="${esc(row.id)}"${clubIdAttr}>Imprimer la facture</button>
+          <button data-action="export-order-invoice-pdf" data-id="${esc(row.id)}"${clubIdAttr}>PDF facture</button>
+          ${canWriteShop ? `<button class="danger" data-action="delete-order" data-id="${esc(row.id)}"${clubIdAttr} ${integrity.deleteBlocked ? "disabled" : ""}${deleteTitle}>Supprimer</button>` : ""}
         </div>
       </div>
     </details>`;
@@ -13027,7 +13588,7 @@ ${esc(bodyText)}</pre>
         { label: "Total vendu", value: money(soldTotal) },
         { label: "Seuils atteints", value: low },
       ])}
-      ${toolbar("add-stock-article", "Nouvel article")}
+      ${toolbar((hasFeature("shop") && currentUserHasPermission("shop.write", activeClubId())) ? "add-stock-article" : "", "Nouvel article", "", "", ` data-shop-club-id="${esc(activeClubId())}"`)}
       ${stockCollapsibleBand("articles", "Articles et stock", intValue(rows.length), `
         <div class="table-wrap"><table class="stock-table">
           <thead><tr><th>Image</th><th>Article</th><th>Prix</th><th>Tailles</th><th>Stock</th><th>Seuil d'alerte</th><th>Valeur</th><th></th></tr></thead>
@@ -13060,6 +13621,11 @@ ${esc(bodyText)}</pre>
     const { article, index, sold, available, purchaseTotal, total } = row;
     const alert = isStockLow(row);
     const tone = stockAlertTone(row);
+    // Lot O-E2-B5 (§42-46) — identité de sécurité = article.id (jamais data-index seul) ; mutation
+    // (édition/suppression/stock alerte) masquée sans shop.write (ou feature shop OFF).
+    const canWriteShop = hasFeature("shop") && currentUserHasPermission("shop.write", activeClubId());
+    const clubIdAttr = ` data-shop-club-id="${esc(activeClubId())}"`;
+    const articleIdAttr = ` data-article-id="${esc(article.id)}"`;
     return `<tr class="stock-row ${tone}">
       <td>${articleImage(article, "small")}</td>
       <td>
@@ -13071,23 +13637,25 @@ ${esc(bodyText)}</pre>
       <td><div class="stock-price-cell"><span>Vente <strong>${money(article.priceOptions?.[0] ?? article.defaultPrice ?? 0)}</strong></span><span>Achat <strong>${money(article.priceOptions?.[1] ?? 0)}</strong></span></div></td>
       <td>${stockSizeEditor(row)}</td>
       <td><div class="stock-count-cell"><strong>${intValue(available)}</strong><span>vendu ${intValue(sold)}</span>${alert ? `<span class="status due">${available < 0 ? "Stock négatif" : `Alerte ${intValue(article.stockAlert || 0)}`}</span>` : `<span class="status ok">OK</span>`}</div></td>
-      <td><input class="stock-alert-inline" data-stock="stockAlert" data-index="${index}" type="number" step="1" min="0" value="${esc(article.stockAlert || 0)}" /></td>
+      <td><input class="stock-alert-inline" data-stock="stockAlert"${articleIdAttr}${clubIdAttr} data-index="${index}" type="number" step="1" min="0" value="${esc(article.stockAlert || 0)}" ${canWriteShop ? "" : "disabled"} /></td>
       <td><div class="stock-value-cell"><span>Achat ${money(purchaseTotal)}</span><span>Vendu ${money(total)}</span></div></td>
-      <td><div class="actions"><button class="icon" title="Modifier l'article" data-action="edit-stock-article" data-index="${index}">✎</button><button class="icon danger" title="Supprimer l'article" data-action="delete-stock-article" data-index="${index}">×</button></div></td>
+      <td><div class="actions">${canWriteShop ? `<button class="icon" title="Modifier l'article" data-action="edit-stock-article"${articleIdAttr}${clubIdAttr}>✎</button><button class="icon danger" title="Supprimer l'article" data-action="delete-stock-article"${articleIdAttr}${clubIdAttr}>×</button>` : ""}</div></td>
     </tr>`;
   }
 
   function stockSizeEditor(row) {
     const { article, index } = row;
     const sizes = articleSizeKeys(article);
+    const canWriteShop = hasFeature("shop") && currentUserHasPermission("shop.write", activeClubId());
+    const clubIdAttr = ` data-shop-club-id="${esc(activeClubId())}" data-article-id="${esc(article.id)}"`;
     if (!sizes.length) {
       return `<div class="stock-size-editor no-sizes">
-        <input class="stock-qty-stepper" title="Modifier le stock disponible" data-stock="available" data-index="${index}" type="number" step="1" min="0" value="${esc(row.available || 0)}" />
-        <button type="button" title="Ajouter une gestion par tailles" data-action="edit-article-sizes" data-index="${index}">+ tailles</button>
+        <input class="stock-qty-stepper" title="Modifier le stock disponible" data-stock="available"${clubIdAttr} data-index="${index}" type="number" step="1" min="0" value="${esc(row.available || 0)}" ${canWriteShop ? "" : "disabled"} />
+        ${canWriteShop ? `<button type="button" title="Ajouter une gestion par tailles" data-action="edit-article-sizes"${clubIdAttr}>+ tailles</button>` : ""}
       </div>`;
     }
     return `<div class="stock-size-editor">
-      <button type="button" data-action="edit-article-sizes" data-index="${index}">Tailles</button>
+      ${canWriteShop ? `<button type="button" data-action="edit-article-sizes"${clubIdAttr}>Tailles</button>` : `<span>Tailles</span>`}
       <span class="muted">${intValue(row.available)} en stock</span>
     </div>`;
   }
@@ -13207,6 +13775,9 @@ ${esc(bodyText)}</pre>
     // En création (brouillon hors-state), les actions image agissent sur le brouillon local
     // (cf. ui.stockArticleDraft) et ne persistent rien tant que « Enregistrer » n'est pas cliqué.
     const draftAttr = isDraft ? ' data-article-draft="1"' : "";
+    // Lot O-E2-B5 (§42/§50) — identité stable + club DOM sur les actions persistantes (jamais en
+    // mode brouillon, qui ne persiste rien).
+    const persistAttrs = isDraft ? "" : ` data-article-id="${esc(article.id || "")}" data-shop-club-id="${esc(activeClubId())}"`;
     return `<div class="article-image-editor">
       <div class="dialog-mini-title"><h3>Images</h3><span class="muted">${intValue(images.length)} photo${images.length > 1 ? "s" : ""}</span></div>
       ${images.length ? `<div class="article-image-library" data-article-image-library data-gallery-index="0">
@@ -13230,11 +13801,11 @@ ${esc(bodyText)}</pre>
             </button>
             <label class="article-caption-field">Légende ${imageIndex + 1}<input name="articleImageCaption_${imageIndex}" value="${esc(captions[imageIndex] || "")}" placeholder="Ex : pantalon noir XL" /></label>
             <div class="article-image-order-actions" aria-label="Ordre de l'image">
-              <button class="icon" type="button" title="Mettre cette image en première" data-action="move-article-image" data-index="${index}" data-image-index="${imageIndex}" data-direction="first"${draftAttr} ${imageIndex === 0 ? "disabled" : ""}>1</button>
-              <button class="icon" type="button" title="Monter cette image" data-action="move-article-image" data-index="${index}" data-image-index="${imageIndex}" data-direction="-1"${draftAttr} ${imageIndex === 0 ? "disabled" : ""}>↑</button>
-              <button class="icon" type="button" title="Descendre cette image" data-action="move-article-image" data-index="${index}" data-image-index="${imageIndex}" data-direction="1"${draftAttr} ${imageIndex === images.length - 1 ? "disabled" : ""}>↓</button>
+              <button class="icon" type="button" title="Mettre cette image en première" data-action="move-article-image" data-index="${index}" data-image-index="${imageIndex}" data-direction="first"${draftAttr}${persistAttrs} ${imageIndex === 0 ? "disabled" : ""}>1</button>
+              <button class="icon" type="button" title="Monter cette image" data-action="move-article-image" data-index="${index}" data-image-index="${imageIndex}" data-direction="-1"${draftAttr}${persistAttrs} ${imageIndex === 0 ? "disabled" : ""}>↑</button>
+              <button class="icon" type="button" title="Descendre cette image" data-action="move-article-image" data-index="${index}" data-image-index="${imageIndex}" data-direction="1"${draftAttr}${persistAttrs} ${imageIndex === images.length - 1 ? "disabled" : ""}>↓</button>
             </div>
-            <button class="icon danger" type="button" title="Supprimer cette image" data-action="delete-article-image" data-index="${index}" data-image-index="${imageIndex}"${draftAttr}>×</button>
+            <button class="icon danger" type="button" title="Supprimer cette image" data-action="delete-article-image" data-index="${index}" data-image-index="${imageIndex}"${draftAttr}${persistAttrs}>×</button>
           </div>
           `).join("")}
         </div>
@@ -13281,10 +13852,28 @@ ${esc(bodyText)}</pre>
     </label>`;
   }
 
-  function openStockArticleDialog(index, options = {}) {
+  function openStockArticleDialog(articleId, options = {}, openedClubId = "") {
+    // Lot O-E2-B5 (§10/§42-46) — openedClubId EXPLICITE, aucun fallback interne vers activeClubId() ;
+    // identité par id STABLE (jamais l'index seul comme identité de sécurité), même doctrine que
+    // openRegistrationDialog/delete-tariff-stage.
+    if (!openedClubId) return;
+    if (activeClubId() !== openedClubId) return;
+    if (!currentUserHasPermission("shop.read", openedClubId)) return;
     const isCreate = options.create === true;
+    // Lot O-E2-B5 (§11) — une CRÉATION exige en plus la feature Shop ET shop.write (mutation métier
+    // réelle) ; une consultation/édition d'un article EXISTANT exige seulement shop.read pour ouvrir,
+    // la garde shop.write/feature réelle portant sur la SAUVEGARDE (onSave ci-dessous), jamais ici.
+    if (isCreate && !(hasFeature("shop") && currentUserHasPermission("shop.write", openedClubId))) return;
+    // index dérivé de l'id STABLE (jamais l'inverse) : usage purement local au rendu (ex.
+    // makeArticleReference, stockRows()[index]) — l'identité de sécurité reste articleId.
+    const index = isCreate ? state.tariffs.articles.length : state.tariffs.articles.findIndex((a) => a.id === articleId);
+    if (!isCreate && index < 0) return;
     const article = isCreate ? options.draftArticle : state.tariffs.articles[index];
     if (!article) return;
+    // Lot O-E2-B5 (§12) — édition/consultation sans shop.write (ou feature shop OFF) : dialogue en
+    // lecture seule (aucun champ Shop mutable, aucune écriture possible au save), même doctrine que
+    // openOrderForConsult pour une commande non modifiable.
+    const readOnly = !isCreate && !(hasFeature("shop") && currentUserHasPermission("shop.write", openedClubId));
     // En création : le brouillon est exposé pour que les actions image (déplacer/supprimer/ajouter)
     // l'éditent en local, sans le persister tant que « Enregistrer » n'est pas validé.
     if (isCreate) ui.stockArticleDraft = article;
@@ -13327,36 +13916,43 @@ ${esc(bodyText)}</pre>
     // encore dans state.tariffs.articles. Capturé avant tout champ modifié ci-dessous.
     const beforeSnapshot = isCreate ? null : shopItemSnapshot(article);
     showDialog(isCreate ? "Nouvel article" : "Modifier l'article", body, async (data, form) => {
-      // Garde de MUTATION (Lot 2B) au MOMENT exact de l'enregistrement : bloque toute écriture si la
-      // Boutique a été désactivée pendant que ce dialogue restait ouvert (ou après un changement de
-      // club). return false -> aucune mutation, aucun persist, message affiché.
+      if (readOnly) return false; // sécurité : aucune écriture depuis une consultation.
+      // Lot O-E2-B5 (§9-11) — club/feature/permission revérifiés au MOMENT exact de l'enregistrement
+      // (le dialogue a pu rester ouvert pendant un changement de club/feature/droit).
+      if (activeClubId() !== openedClubId) { ui.saveMessage = "Opération annulée : le club actif a changé."; return false; }
       if (!ensureFeatureEnabledForMutation("shop")) return false;
+      if (!ensureUserPermission("shop.write", openedClubId)) return false;
       // VALIDER avant MUTER (Lot Undo/Redo transactionnel) : la validation des tailles doit se
-      // terminer AVANT toute écriture sur l'objet article réel, pour qu'un return false ci-dessous
-      // laisse l'article strictement inchangé (sinon aucun checkpoint Undo ne capture la mutation).
+      // terminer AVANT toute écriture, pour qu'un return false ci-dessous laisse l'article
+      // strictement inchangé (sinon aucun checkpoint Undo ne capture la mutation).
       const parsed = readSizeStockForm(form);
       const sizeMsg = validateSizeStockForm(form, parsed, hasSizes);
       if (sizeMsg) { alert(sizeMsg); return false; }
+      // Lot O-E2-B5R2 (§33-37) — TOUT est calculé sur un CANDIDAT LOCAL (nextArticle), jamais sur
+      // liveArticle/article directement : aucune mutation de state.tariffs.articles avant la fin des
+      // conversions d'images asynchrones. articleImages()/saveArticleSizeStock() opèrent sans
+      // problème sur ce clone (elles ne lisent que son id/sizeStock, jamais sa présence dans state).
+      const nextArticle = { ...article };
       const nextName = data.get("name") || "Article";
-      article.name = nextName;
-      article.reference = data.get("reference") || makeArticleReference(nextName, index);
-      article.referenceAuto = !asText(data.get("reference"));
-      article.priceOptions = article.priceOptions || [];
-      article.priceOptions[0] = asNumber(data.get("priceSale"));
-      article.priceOptions[1] = asNumber(data.get("priceBuy"));
-      article.defaultPrice = article.priceOptions[0] || 0;
-      if (asText(data.get("taxRate"))) article.taxRate = Math.max(0, asNumber(data.get("taxRate")));
-      else delete article.taxRate;
-      article.stockAlert = asNumber(data.get("stockAlert"));
+      nextArticle.name = nextName;
+      nextArticle.reference = data.get("reference") || makeArticleReference(nextName, index);
+      nextArticle.referenceAuto = !asText(data.get("reference"));
+      nextArticle.priceOptions = [...(nextArticle.priceOptions || [])];
+      nextArticle.priceOptions[0] = asNumber(data.get("priceSale"));
+      nextArticle.priceOptions[1] = asNumber(data.get("priceBuy"));
+      nextArticle.defaultPrice = nextArticle.priceOptions[0] || 0;
+      if (asText(data.get("taxRate"))) nextArticle.taxRate = Math.max(0, asNumber(data.get("taxRate")));
+      else delete nextArticle.taxRate;
+      nextArticle.stockAlert = asNumber(data.get("stockAlert"));
       if (parsed.sizes.length) {
-        saveArticleSizeStock(article, parsed);
+        saveArticleSizeStock(nextArticle, parsed);
       } else {
-        article.sizes = [];
-        article.sizeStock = {};
-        const sold = articleSalesById().get(article.id)?.quantity || 0;
-        article.stockInitial = asNumber(data.get("stockInitial")) + sold;
+        nextArticle.sizes = [];
+        nextArticle.sizeStock = {};
+        const sold = articleSalesById().get(nextArticle.id)?.quantity || 0;
+        nextArticle.stockInitial = asNumber(data.get("stockInitial")) + sold;
       }
-      const currentImages = articleImages(article);
+      const currentImages = articleImages(nextArticle);
       const nextImages = [...currentImages];
       const nextCaptions = currentImages.map((_, imageIndex) => asText(data.get(`articleImageCaption_${imageIndex}`)));
       const files = [...(form.elements.articleImageFile?.files || [])].filter((file) => file.type.startsWith("image/"));
@@ -13370,26 +13966,48 @@ ${esc(bodyText)}</pre>
           nextCaptions.push(asText(data.get(`articleNewImageCaption_${fileIndex}`)));
         }
       }
-      setArticleImages(article, nextImages, nextCaptions);
-      syncArticlePriceToOrders(article);
-      // Mode création : l'article n'est ajouté au catalogue qu'ICI, à l'enregistrement validé.
-      // (showDialog a déjà appelé recordHistory() avant onSave et appellera persist() après.)
-      if (isCreate && !state.tariffs.articles.includes(article)) {
+      setArticleImages(nextArticle, nextImages, nextCaptions);
+      // Lot O-E2-B5R2 (§35-37) — APRÈS tous les await : revalidation complète (club/feature/
+      // shop.write) puis, en édition, résolution LIVE de l'Article par id STABLE (jamais la référence
+      // capturée avant les conversions, potentiellement supprimée entre-temps -> aucune résurrection).
+      if (activeClubId() !== openedClubId) { ui.saveMessage = "Opération annulée : le club actif a changé."; return false; }
+      if (!ensureFeatureEnabledForMutation("shop")) return false;
+      if (!ensureUserPermission("shop.write", openedClubId)) return false;
+      if (isCreate) {
+        // Lot O-E2-B5R2 (§36) — création : le draft est simplement abandonné si une garde a échoué
+        // ci-dessus (aucun push, déjà return false plus haut) ; ici, toutes les gardes ont réussi.
         ui.stockArticleDraft = null;
-        state.tariffs.articles.push(article);
-        audit.shopItemCreated(article);
+        state.tariffs.articles.push(nextArticle);
+        syncArticlePriceToOrders(nextArticle);
+        audit.shopItemCreated(nextArticle);
         return "Article créé";
       }
-      // Édition : un seul événement, uniquement si une différence métier suivie existe réellement
-      // (voir shopItemAuditChanges — jamais pour une sauvegarde sans changement réel).
-      if (!isCreate) {
-        const changes = shopItemAuditChanges(beforeSnapshot, shopItemSnapshot(article));
-        audit.shopItemUpdated(article, changes);
-      }
+      const liveArticle = state.tariffs.articles.find((a) => a.id === articleId);
+      if (!liveArticle) { ui.saveMessage = "Cet article n'existe plus."; return false; }
+      // Copie ATOMIQUE des champs calculés sur le candidat local vers l'objet LIVE réel (jamais un
+      // remplacement de référence dans le tableau, pour préserver toute autre référence externe).
+      liveArticle.name = nextArticle.name;
+      liveArticle.reference = nextArticle.reference;
+      liveArticle.referenceAuto = nextArticle.referenceAuto;
+      liveArticle.priceOptions = nextArticle.priceOptions;
+      liveArticle.defaultPrice = nextArticle.defaultPrice;
+      if (Object.prototype.hasOwnProperty.call(nextArticle, "taxRate")) liveArticle.taxRate = nextArticle.taxRate;
+      else delete liveArticle.taxRate;
+      liveArticle.stockAlert = nextArticle.stockAlert;
+      liveArticle.sizes = nextArticle.sizes;
+      liveArticle.sizeStock = nextArticle.sizeStock;
+      liveArticle.stockInitial = nextArticle.stockInitial;
+      liveArticle.images = nextArticle.images;
+      liveArticle.imageCaptions = nextArticle.imageCaptions;
+      syncArticlePriceToOrders(liveArticle);
+      // Un seul événement, uniquement si une différence métier suivie existe réellement (voir
+      // shopItemAuditChanges — jamais pour une sauvegarde sans changement réel).
+      const changes = shopItemAuditChanges(beforeSnapshot, shopItemSnapshot(liveArticle));
+      audit.shopItemUpdated(liveArticle, changes);
     }, setupSizeStockDialogTotal, "", () => {
       // Annulation/fermeture sans enregistrement : on jette le brouillon, rien n'est persisté.
       if (isCreate) ui.stockArticleDraft = null;
-    });
+    }, "Enregistrer", { readOnly });
   }
 
   // Rafraîchit en place uniquement l'éditeur d'images du dialogue de CRÉATION, sans toucher au
@@ -13420,7 +14038,18 @@ ${esc(bodyText)}</pre>
     refreshDraftArticleImageEditor(form, article);
   }
 
-  function openArticleSizeDialog(index) {
+  function openArticleSizeDialog(articleId, openedClubId = "") {
+    // Lot O-E2-B5 (§10/§42-46) — openedClubId EXPLICITE ; identité par id STABLE, jamais l'index seul.
+    if (!openedClubId) return;
+    if (activeClubId() !== openedClubId) return;
+    // Lot O-E2-B5R (§48) — cet outil ne sert QU'À muter le stock par taille : aucune UI de consultation
+    // dégradée n'existe ici (contrairement à openStockArticleDialog, qui a un mode lecture seule réel).
+    // shop.read seul ne suffit donc jamais à l'ouvrir : feature ET shop.write sont exigés dès l'ouverture,
+    // pas seulement au save. La consultation des tailles reste disponible via renderStock (lecture seule).
+    if (!currentUserHasPermission("shop.read", openedClubId)) return;
+    if (!hasFeature("shop") || !currentUserHasPermission("shop.write", openedClubId)) return;
+    const index = state.tariffs.articles.findIndex((a) => a.id === articleId);
+    if (index < 0) return;
     const article = state.tariffs.articles[index];
     if (!article) return;
     const row = stockRows()[index] || {};
@@ -13442,13 +14071,18 @@ ${esc(bodyText)}</pre>
     showDialog("Stock par taille", body, (data, form) => {
       // Dialogue périmé (K-B) : la fonctionnalité a pu être désactivée pendant que le dialogue
       // restait ouvert -> aucune mutation, aucun persist, aucun Journal (return false, avant toute
-      // écriture réelle).
+      // écriture réelle). Lot O-E2-B5 : club + shop.write revérifiés au même moment.
+      if (activeClubId() !== openedClubId) { ui.saveMessage = "Opération annulée : le club actif a changé."; return false; }
       if (!ensureFeatureEnabledForMutation("shop")) return false;
+      if (!ensureUserPermission("shop.write", openedClubId)) return false;
+      // Lot O-E2-B5 (§42-46) — résolution FRAÎCHE par id STABLE avant toute mutation.
+      const liveArticle = state.tariffs.articles.find((a) => a.id === articleId);
+      if (!liveArticle) { ui.saveMessage = "Cet article n'existe plus."; return false; }
       const next = readSizeStockForm(form);
       const msg = validateSizeStockForm(form, next, hasSizes);
       if (msg) { alert(msg); return false; }
-      saveArticleSizeStock(article, next);
-      audit.shopItemUpdated(article, shopItemAuditChanges(beforeSnapshot, shopItemSnapshot(article)));
+      saveArticleSizeStock(liveArticle, next);
+      audit.shopItemUpdated(liveArticle, shopItemAuditChanges(beforeSnapshot, shopItemSnapshot(liveArticle)));
     }, setupSizeStockDialogTotal);
   }
 
@@ -13460,13 +14094,14 @@ ${esc(bodyText)}</pre>
     return `sizeQty_${articleId}_${size}`;
   }
 
-  function orderSizeEditor(article, item = {}, stock = {}) {
+  function orderSizeEditor(article, item = {}, stock = {}, disabled = false) {
     const sizes = orderSizeKeys(article, item);
+    const disabledAttr = disabled ? "disabled" : "";
     if (!sizes.length) {
       const current = asNumber(item.quantity);
       const available = asNumber(stock?.available) + current;
       return `<div class="order-stock-control">
-        <input name="qty_${esc(article.id)}" data-order-summary-input data-order-stock-input data-stock-available="${esc(available)}" data-stock-threshold="${esc(article.stockAlert || 0)}" data-order-qty="${esc(article.id)}" type="number" step="1" min="0" value="${esc(current || "")}" />
+        <input name="qty_${esc(article.id)}" data-order-summary-input data-order-stock-input data-stock-available="${esc(available)}" data-stock-threshold="${esc(article.stockAlert || 0)}" data-order-qty="${esc(article.id)}" type="number" step="1" min="0" value="${esc(current || "")}" ${disabledAttr} />
         <small data-order-stock-message></small>
       </div>`;
     }
@@ -13479,7 +14114,7 @@ ${esc(bodyText)}</pre>
       const availableText = available === undefined ? "stock ?" : `reste ${intValue(availableForSize)}`;
       return `<label class="order-size-pill">
         <span>${esc(size)}</span>
-        <input name="${esc(sizeQtyFieldName(article.id, size))}" data-order-summary-input data-order-stock-input data-stock-available="${esc(availableForSize)}" data-stock-threshold="${esc(article.stockAlert || 0)}" data-order-size-qty="${esc(article.id)}" type="number" step="1" min="0" value="${esc(current || "")}" />
+        <input name="${esc(sizeQtyFieldName(article.id, size))}" data-order-summary-input data-order-stock-input data-stock-available="${esc(availableForSize)}" data-stock-threshold="${esc(article.stockAlert || 0)}" data-order-size-qty="${esc(article.id)}" type="number" step="1" min="0" value="${esc(current || "")}" ${disabledAttr} />
         <small>${esc(availableText)}</small>
         <small data-order-stock-message></small>
       </label>`;
@@ -13559,9 +14194,13 @@ ${esc(bodyText)}</pre>
     if (!state.tariffs.stages.length) {
       return `<div class="band pad">${emptyStateHtml("stages")}</div>`;
     }
+    // Lot O-E2-B3B-1R2 (§2-3/§6) — même doctrine que Disciplines/Boutique : le filtre "Reste dû" est
+    // une surface Payment, ignoré sans payments.read + stages.read (jamais réécrit silencieusement).
+    const canReadStagePayments = currentUserCanReadEmbeddedPayment("registration", activeClubId());
+    const stageDueOnly = canReadStagePayments && ui.stageDueOnly;
     const rows = (state.stageRegistrations[stage.id] || [])
       .filter((row) => includesQuery(row, ui.query))
-      .filter((row) => !ui.stageDueOnly || calcRegistration(row, stage.id).restDue > 0)
+      .filter((row) => !stageDueOnly || calcRegistration(row, stage.id).restDue > 0)
       .sort((a, b) => personKey(a).localeCompare(personKey(b)));
     const total = rows.reduce((sum, row) => sum + calcRegistration(row, stage.id).total, 0);
     const paid = rows.reduce((sum, row) => sum + calcRegistration(row, stage.id).paid, 0);
@@ -13569,26 +14208,35 @@ ${esc(bodyText)}</pre>
     const stageButtons = `<div class="segmented stage-tabs">${state.tariffs.stages.map((item) => `<button data-stage-id="${item.id}" class="${stage.id === item.id ? "active" : ""} ${stageStatusClass(item)}" title="${esc(`${stageStatusLabel(item)} - ${stageDateRangeLabel(item)}`)}"><span>${esc(item.name)}</span><small>${esc(stageStatusLabel(item))}</small></button>`).join("")}</div>`;
     const registrationsClosed = stageRegistrationClosed(stage);
     const canToggleRegistration = stageNaturallyClosed(stage) || stage.registrationReopened;
+    // Lot O-E2-B4R (§34) — stages.read seul (déjà exigé pour voir cette page, VIEW_PERMISSION_MAP)
+    // rend la page consultable ; toute mutation pure exige en plus stages.write, masquée réellement
+    // (jamais un simple blocage au clic) : Créer/Relancer/Réactiver/Fermer/Supprimer/Nouvelle inscription.
+    const canWriteStages = currentUserHasPermission("stages.write", activeClubId());
+    const stageClubIdAttr = ` data-stage-club-id="${esc(activeClubId())}"`;
+    // Lot O-E2-B3B-1R (§19) — "Participants"/"Total" restent CONTRACTUELS (stages.read seul, page déjà
+    // accessible) ; "Réglé"/"Reste dû" exigent payments.read.
     return `
       ${overviewBand("stages", "Stages en un coup d'oeil", [
         { label: "Participants", value: rows.length },
         { label: "Total", value: money(total) },
-        { label: "Réglé", value: money(paid) },
-        { label: "Reste dû", value: money(due), action: "show-overview-due", scope: "stages", stageId: stage.id, title: "Voir les participants avec un reste dû" },
+        ...(canReadStagePayments ? [
+          { label: "Réglé", value: money(paid) },
+          { label: "Reste dû", value: money(due), action: "show-overview-due", scope: "stages", stageId: stage.id, title: "Voir les participants avec un reste dû" },
+        ] : []),
       ])}
       <div class="toolbar stage-toolbar">
         <div class="left">
           <input class="search" data-focus="query" data-filter="query" placeholder="Rechercher" value="${esc(ui.query)}" />
           ${stageButtons}
-          <div class="segmented">${dueFilterButton("stageDueOnly", ui.stageDueOnly)}</div>
+          <div class="segmented">${canReadStagePayments ? dueFilterButton("stageDueOnly", ui.stageDueOnly) : ""}</div>
         </div>
         <div class="right">
-          <button data-action="add-stage">Nouveau stage</button>
-          <button data-action="duplicate-stage" data-stage-id="${esc(stage.id)}">Relancer ce stage</button>
-          <button data-action="edit-stage" data-stage-id="${esc(stage.id)}">Modifier le stage</button>
-          ${canToggleRegistration ? `<button data-action="${stage.registrationReopened ? "close-stage-registration" : "reactivate-stage"}" data-stage-id="${esc(stage.id)}">${stage.registrationReopened ? "Refermer inscriptions" : "Réactiver inscriptions"}</button>` : ""}
-          <button class="danger" data-action="delete-stage" data-stage-id="${esc(stage.id)}" ${stageParticipantCount(stage.id) ? "disabled" : ""}>Supprimer stage vide</button>
-          <button class="primary" data-action="add-registration" data-stage-id="${esc(stage.id)}" ${registrationsClosed ? "disabled" : ""} title="${registrationsClosed ? "Les inscriptions de ce stage sont fermées." : "Ajouter un participant"}">Nouvelle inscription</button>
+          ${canWriteStages ? `<button data-action="add-stage"${stageClubIdAttr}>Nouveau stage</button>` : ""}
+          ${canWriteStages ? `<button data-action="duplicate-stage" data-stage-id="${esc(stage.id)}"${stageClubIdAttr}>Relancer ce stage</button>` : ""}
+          <button data-action="edit-stage" data-stage-id="${esc(stage.id)}"${stageClubIdAttr}>${canWriteStages ? "Modifier le stage" : "Consulter le stage"}</button>
+          ${(canWriteStages && canToggleRegistration) ? `<button data-action="${stage.registrationReopened ? "close-stage-registration" : "reactivate-stage"}" data-stage-id="${esc(stage.id)}"${stageClubIdAttr}>${stage.registrationReopened ? "Refermer inscriptions" : "Réactiver inscriptions"}</button>` : ""}
+          ${canWriteStages ? `<button class="danger" data-action="delete-stage" data-stage-id="${esc(stage.id)}"${stageClubIdAttr} ${stageParticipantCount(stage.id) ? "disabled" : ""}>Supprimer stage vide</button>` : ""}
+          ${canWriteStages ? `<button class="primary" data-action="add-registration" data-stage-id="${esc(stage.id)}"${stageClubIdAttr} ${registrationsClosed ? "disabled" : ""} title="${registrationsClosed ? "Les inscriptions de ce stage sont fermées." : "Ajouter un participant"}">Nouvelle inscription</button>` : ""}
         </div>
       </div>
       ${stageInfoCardHtml(stage)}
@@ -13607,6 +14255,13 @@ ${esc(bodyText)}</pre>
     const event = calcStageSegment(row.event || {});
     const lodging = calcStageSegment(row.lodging || {});
     const calc = calcRegistration(row, stageId);
+    // Lot O-E2-B3B-1R (§19) — Stage/Hébergement (tarif) et Total restent CONTRACTUELS ; Reste dû exige
+    // payments.read (même doctrine que paymentControls, déjà gardée dans cette même ligne).
+    const canReadPayments = currentUserCanReadEmbeddedPayment("registration", activeClubId());
+    // Lot O-E2-B4R (§34/§38) — "Modifier" reste accessible en lecture seule avec stages.read seul
+    // (openRegistrationDialog masque les champs mutants en interne) ; "Supprimer" exige stages.write.
+    const canWriteStages = currentUserHasPermission("stages.write", activeClubId());
+    const stageClubIdAttr = ` data-stage-club-id="${esc(activeClubId())}"`;
     return `<tr>
       <td>${personCell(row)}</td><td>
         <div class="payment-stack">
@@ -13617,8 +14272,8 @@ ${esc(bodyText)}</pre>
         </div>
       </td>
       <td class="money">${money(event.subtotal)}</td><td class="money">${money(lodging.subtotal)}</td>
-      <td class="money">${money(calc.total)}</td><td class="money">${money(calc.restDue)}</td>
-      <td><div class="actions"><button class="icon" title="Modifier" data-action="edit-registration" data-stage-id="${stageId}" data-id="${row.id}">✎</button><button class="icon danger" title="Supprimer" data-action="delete-registration" data-stage-id="${stageId}" data-id="${row.id}">×</button></div></td>
+      <td class="money">${money(calc.total)}</td><td class="money">${canReadPayments ? money(calc.restDue) : "—"}</td>
+      <td><div class="actions"><button class="icon" title="${canWriteStages ? "Modifier" : "Consulter"}" data-action="edit-registration" data-stage-id="${stageId}" data-id="${row.id}"${stageClubIdAttr}>✎</button>${canWriteStages ? `<button class="icon danger" title="Supprimer" data-action="delete-registration" data-stage-id="${stageId}" data-id="${row.id}"${stageClubIdAttr}>×</button>` : ""}</div></td>
     </tr>`;
   }
 
@@ -13636,15 +14291,18 @@ ${esc(bodyText)}</pre>
     const event = calcStageSegment(row.event || {});
     const lodging = calcStageSegment(row.lodging || {});
     const calc = calcRegistration(row, stageId);
-    const tone = registrationPaymentTone(row, calc);
-    return `<article class="membership-card registration-line payment-${tone}" data-action="edit-registration" data-stage-id="${esc(stageId)}" data-id="${esc(row.id)}">
+    // Lot O-E2-B3B-1R (§19) — Stage/Hébergement (tarif) restent CONTRACTUELS ; Reste dû/tone
+    // (statut d'encaissement) exigent payments.read.
+    const canReadPayments = currentUserCanReadEmbeddedPayment("registration", activeClubId());
+    const tone = canReadPayments ? registrationPaymentTone(row, calc) : "unknown";
+    return `<article class="membership-card registration-line payment-${tone}" data-action="edit-registration" data-stage-id="${esc(stageId)}" data-id="${esc(row.id)}" data-stage-club-id="${esc(activeClubId())}">
       <div class="membership-card-head">
         ${personCell(row)}
       </div>
       <div class="membership-card-totals">
         <div><span>Stage</span><strong>${money(event.subtotal)}</strong></div>
         <div><span>Hébergement</span><strong>${money(lodging.subtotal)}</strong></div>
-        <div class="${calc.restDue > 0 ? "due" : ""}"><span>Reste dû</span><strong>${money(calc.restDue)}</strong></div>
+        ${canReadPayments ? `<div class="${calc.restDue > 0 ? "due" : ""}"><span>Reste dû</span><strong>${money(calc.restDue)}</strong></div>` : ""}
       </div>
       <div class="payment-stack registration-payments">
         <strong>Stage</strong>
@@ -14321,7 +14979,24 @@ ${esc(bodyText)}</pre>
       return true;
     });
   }
-  function openExpenseDialog(expense = {}) {
+  function openExpenseDialog(expense = {}, openedClubId = "") {
+    // Lot O-E2-B3B-3R (§13) — openedClubId doit désormais être fourni EXPLICITEMENT par l'appelant
+    // (club constaté au rendu du bouton/à l'ouverture du flux qui a mené ici) : plus aucun repli
+    // implicite sur activeClubId() à l'intérieur de cette fonction (fail closed si vide/absent).
+    // Revérifié explicitement à la sauvegarde (jamais une redécouverte implicite d'activeClubId()
+    // côté onSave sans comparaison à openedClubId, même doctrine que openInvoiceEditor pour la
+    // Facturation).
+    if (!openedClubId || !currentUserHasPermission("accounting.read", openedClubId)) {
+      if (typeof alert === "function") alert("Vous n'avez pas l'autorisation nécessaire.");
+      return;
+    }
+    // §21 — créer une dépense exige accounting.read + accounting.write ; §22 — ouvrir une dépense
+    // EXISTANTE ne demande que accounting.read (consultation en lecture seule via options.readOnly).
+    const canWrite = currentUserHasPermission("accounting.write", openedClubId);
+    if (!expense.id && !canWrite) {
+      if (typeof alert === "function") alert("Vous n'avez pas l'autorisation nécessaire.");
+      return;
+    }
     const boutiqueHelpText = "Le prix d'achat saisi dans la boutique sert au calcul de la marge et du stock. Cette dépense sert uniquement à enregistrer une sortie réelle de caisse. Ne cumulez pas mentalement les deux comme s'il s'agissait du même calcul.";
     const boutiqueHelpVisible = (expense.category || "Autre dépense") === "Achat boutique / stock";
     const body = [
@@ -14335,9 +15010,23 @@ ${esc(bodyText)}</pre>
       field("beneficiary", "Bénéficiaire / fournisseur", expense.beneficiary || ""),
       textareaField("note", "Note", expense.note || ""),
     ].join("");
-    const footer = expense.id ? `<button type="button" class="danger" data-action="delete-expense" data-id="${esc(expense.id)}">Supprimer</button>` : "";
+    // §17/§38 — le bouton Supprimer transporte le club d'autorité constaté à l'ouverture, et n'est
+    // rendu que si l'écriture est effective (readOnly masque de toute façon Enregistrer, mais un
+    // footerLeft n'est PAS neutralisé par options.readOnly : voir applyReadOnlyToForm, .dialog-footer).
+    const footer = (expense.id && canWrite) ? `<button type="button" class="danger" data-action="delete-expense" data-id="${esc(expense.id)}" data-accounting-club-id="${esc(openedClubId)}">Supprimer</button>` : "";
     setNextWindowKey(expense.id ? `expense:${expense.id}` : null);
     showDialog(expense.id ? "Modifier la dépense" : "Nouvelle dépense", body, (data) => {
+      // §23-24 — revérification complète à la sauvegarde, jamais une simple confiance dans l'état du
+      // bouton/handler qui a ouvert ce dialogue : club inchangé, écriture toujours effective, et (en
+      // édition) la dépense existe toujours — fail closed plutôt qu'une recréation silencieuse.
+      if (activeClubId() !== openedClubId || !currentUserHasPermission("accounting.write", openedClubId)) {
+        alert("Vous n'avez pas l'autorisation nécessaire.");
+        return false;
+      }
+      if (expense.id && !(state.expenses || []).some((e) => e.id === expense.id)) {
+        alert("Cette dépense n'existe plus.");
+        return false;
+      }
       const label = asText(data.get("label"));
       const amount = asNumber(data.get("amount"));
       if (!label) { alert("Le libellé est obligatoire."); return false; }
@@ -14369,17 +15058,23 @@ ${esc(bodyText)}</pre>
       const sync = () => { help.style.display = select.value === "Achat boutique / stock" ? "" : "none"; };
       select.addEventListener("change", sync);
       sync();
-    }, footer);
+    }, footer, () => {}, "Enregistrer", canWrite ? {} : { readOnly: true });
   }
   function expensesBandHtml() {
     const list = filteredExpenses();
     const grandTotal = expensesTotal(clubExpenses());
     const filtered = Boolean(ui.expenseCategory || ui.expenseYear);
     const years = expenseYears();
+    const clubId = activeClubId();
+    // Lot O-E2-B3B-3R (§17-18) — sans accounting.write, la Comptabilité reste intégralement
+    // consultable, mais AUCUN contrôle mutant ne doit apparaître (le backend refusait déjà, l'UI ne
+    // l'affichait pas assez fidèlement). « Modifier » devient « Consulter » (même action edit-expense,
+    // le dialogue lui-même applique options.readOnly), Supprimer/Nouvelle dépense disparaissent.
+    const canWrite = currentUserHasPermission("accounting.write", clubId);
     return `<section class="band accounting-expenses">
       <div class="band-title"><h2>Dépenses</h2><strong>-${money(grandTotal)}</strong></div>
       <div class="coach-toolbar">
-        <button class="primary" type="button" data-action="add-expense">+ Nouvelle dépense</button>
+        ${canWrite ? `<button class="primary" type="button" data-action="add-expense" data-accounting-club-id="${esc(clubId)}">+ Nouvelle dépense</button>` : ""}
         <label>Catégorie <select data-filter="expenseCategory"><option value="">Toutes</option>${EXPENSE_CATEGORIES.map((c) => `<option value="${esc(c)}" ${ui.expenseCategory === c ? "selected" : ""}>${esc(c)}</option>`).join("")}</select></label>
         ${years.length ? `<label>Année <select data-filter="expenseYear"><option value="">Toutes</option>${years.map((y) => `<option value="${esc(y)}" ${ui.expenseYear === y ? "selected" : ""}>${esc(y)}</option>`).join("")}</select></label>` : ""}
       </div>
@@ -14392,7 +15087,7 @@ ${esc(bodyText)}</pre>
         <td>${asText(e.beneficiary) ? esc(e.beneficiary) : `<span class="muted">—</span>`}</td>
         <td>${e.paymentMethod ? esc(paymentModeLabel(e.paymentMethod)) : `<span class="muted">—</span>`}</td>
         <td class="money">${money(e.amount)}</td>
-        <td><div class="actions"><button type="button" class="icon" data-action="edit-expense" data-id="${esc(e.id)}" title="Modifier">✎</button><button type="button" class="icon danger" data-action="delete-expense" data-id="${esc(e.id)}" title="Supprimer">×</button></div></td>
+        <td><div class="actions"><button type="button" class="icon" data-action="edit-expense" data-id="${esc(e.id)}" data-accounting-club-id="${esc(clubId)}" title="${canWrite ? "Modifier" : "Consulter"}">${canWrite ? "✎" : "👁"}</button>${canWrite ? `<button type="button" class="icon danger" data-action="delete-expense" data-id="${esc(e.id)}" data-accounting-club-id="${esc(clubId)}" title="Supprimer">×</button>` : ""}</div></td>
       </tr>`), "Aucune dépense saisie. Clique sur « Nouvelle dépense » pour en ajouter.",
         `<tr><td colspan="5">Total${filtered ? " (filtré)" : ""}</td><td class="money">${money(expensesTotal(list))}</td><td></td></tr>`)}
     </section>`;
@@ -14470,7 +15165,18 @@ ${esc(bodyText)}</pre>
     if (!invoice) return "";
     return [invoice.number || "Facture", invoiceContactDisplay(invoice)].filter((part) => part && part !== "—").join(" · ");
   }
-  function openCreditNoteDialog(creditNote = {}) {
+  function openCreditNoteDialog(creditNote = {}, openedClubId = "") {
+    // Lot O-E2-B3B-3R (§13) — même doctrine que openExpenseDialog : openedClubId fourni EXPLICITEMENT
+    // par l'appelant, aucun repli implicite sur activeClubId() ici (fail closed si vide).
+    if (!openedClubId || !currentUserHasPermission("accounting.read", openedClubId)) {
+      if (typeof alert === "function") alert("Vous n'avez pas l'autorisation nécessaire.");
+      return;
+    }
+    const canWrite = currentUserHasPermission("accounting.write", openedClubId);
+    if (!creditNote.id && !canWrite) {
+      if (typeof alert === "function") alert("Vous n'avez pas l'autorisation nécessaire.");
+      return;
+    }
     const types = [["réduction", "Avoir / crédit"], ["crédit", "Crédit à valoir"], ["annulation", "Annulation"]];
     const statuses = [["actif", "Actif"], ["utilisé", "Utilisé"], ["annulé", "Annulé"]];
     const invoiceOptions = (state.invoices || [])
@@ -14489,13 +15195,26 @@ ${esc(bodyText)}</pre>
     ].join("");
     // Lot V1 Avoirs — Imprimer/PDF uniquement sur un avoir déjà enregistré (id existant), comme
     // Supprimer juste à côté ; rien sur un formulaire de création pas encore validé.
+    // §33-34/§38 — Imprimer/PDF restent des LECTURES (accounting.read suffit, déjà acquis pour
+    // ouvrir ce dialogue) : toujours affichés sur un avoir existant. Supprimer exige accounting.write
+    // et n'est rendu que si canWrite (footerLeft non neutralisé par options.readOnly, cf. openExpenseDialog).
     const footer = creditNote.id
-      ? `<button type="button" data-action="print-credit-note" data-id="${esc(creditNote.id)}">Imprimer</button>
-         <button type="button" data-action="export-credit-note-pdf" data-id="${esc(creditNote.id)}">PDF</button>
-         <button type="button" class="danger" data-action="delete-credit-note" data-id="${esc(creditNote.id)}">Supprimer</button>`
+      ? `<button type="button" data-action="print-credit-note" data-id="${esc(creditNote.id)}" data-accounting-club-id="${esc(openedClubId)}">Imprimer</button>
+         <button type="button" data-action="export-credit-note-pdf" data-id="${esc(creditNote.id)}" data-accounting-club-id="${esc(openedClubId)}">PDF</button>
+         ${canWrite ? `<button type="button" class="danger" data-action="delete-credit-note" data-id="${esc(creditNote.id)}" data-accounting-club-id="${esc(openedClubId)}">Supprimer</button>` : ""}`
       : "";
     setNextWindowKey(creditNote.id ? `credit-note:${creditNote.id}` : null);
     showDialog(creditNote.id ? "Modifier l'avoir" : "Nouvel avoir", body, (data) => {
+      // §23-25 — même revérification qu'openExpenseDialog : club inchangé, écriture toujours
+      // effective, avoir toujours existant en édition (fail closed, jamais une recréation silencieuse).
+      if (activeClubId() !== openedClubId || !currentUserHasPermission("accounting.write", openedClubId)) {
+        alert("Vous n'avez pas l'autorisation nécessaire.");
+        return false;
+      }
+      if (creditNote.id && !(state.creditNotes || []).some((c) => c.id === creditNote.id)) {
+        alert("Cet avoir n'existe plus.");
+        return false;
+      }
       const reason = asText(data.get("reason"));
       const amount = asNumber(data.get("amount"));
       if (!reason) { alert("Le motif est obligatoire."); return false; }
@@ -14519,7 +15238,7 @@ ${esc(bodyText)}</pre>
       state.creditNotes = state.creditNotes || [];
       upsert(state.creditNotes, next);
       return `${creditNote.id ? "Modification" : "Ajout"} de l'avoir ${reason} (${money(next.amount)})`;
-    }, () => {}, footer);
+    }, () => {}, footer, () => {}, "Enregistrer", canWrite ? {} : { readOnly: true });
   }
 
   // Lot V1 Avoirs — document imprimable/PDF dédié. UNE SEULE fonction de payload, réutilisée par
@@ -14601,18 +15320,29 @@ ${esc(bodyText)}</pre>
     };
   }
 
-  function printCreditNote(creditNote = {}) {
-    if (!creditNote?.id) return;
-    showPagePrintPreview(creditNoteDocumentPayload(creditNote));
+  // Lot O-E2-B3B-3R2 (§8-11) — printCreditNote/exportCreditNotePdf sont elles-mêmes des opérations
+  // protégées (accounting.read), pas seulement leurs handlers : openedClubId est OBLIGATOIRE (aucun
+  // repli interne sur activeClubId()), et l'avoir est TOUJOURS relu en direct dans state.creditNotes
+  // (jamais l'objet fourni tel quel, qui peut être un ancien snapshot détenu par un dialogue déjà
+  // fermé/périmé) — un avoir supprimé entre-temps ne doit jamais rester imprimable.
+  function printCreditNote(creditNote = {}, openedClubId = "") {
+    if (!openedClubId || activeClubId() !== openedClubId) return;
+    if (!currentUserHasPermission("accounting.read", openedClubId)) return;
+    const liveCreditNote = (state.creditNotes || []).find((row) => row.id === creditNote?.id);
+    if (!liveCreditNote) return;
+    showPagePrintPreview(creditNoteDocumentPayload(liveCreditNote));
   }
 
   // Correctif "PDF honnête" (même principe que exportInvoicePdf) : hors Electron, ce bouton ouvre
   // désormais l'aperçu partagé en mode "pdf" (libellé « Enregistrer en PDF » + aide dédiée) au lieu
   // de réutiliser tel quel printCreditNote (qui affichait un bouton « Imprimer » trompeur sous une
   // action nommée PDF). Jamais de téléchargement HTML, jamais de faux fichier renommé.
-  async function exportCreditNotePdf(creditNote = {}) {
-    if (!creditNote?.id) return;
-    const payload = creditNoteDocumentPayload(creditNote);
+  async function exportCreditNotePdf(creditNote = {}, openedClubId = "") {
+    if (!openedClubId || activeClubId() !== openedClubId) return;
+    if (!currentUserHasPermission("accounting.read", openedClubId)) return;
+    const liveCreditNote = (state.creditNotes || []).find((row) => row.id === creditNote?.id);
+    if (!liveCreditNote) return;
+    const payload = creditNoteDocumentPayload(liveCreditNote);
     if (window.monGestaClubShell?.exportPdf) {
       ui.saveMessage = "Création du PDF avoir...";
       render();
@@ -14648,6 +15378,11 @@ ${esc(bodyText)}</pre>
     const totalEncaisse = data.totals.cashPaid + customTotal;
     const typeLabels = { "réduction": "Avoir / crédit", "crédit": "Crédit à valoir", "annulation": "Annulation" };
     const statusLabels = { "actif": "Actif", "utilisé": "Utilisé", "annulé": "Annulé" };
+    const clubId = activeClubId();
+    // Lot O-E2-B3B-3R (§17-19) — même doctrine que expensesBandHtml : sans accounting.write, tout
+    // contrôle mutant disparaît (Nouvel avoir/Remboursement/Supprimer), mais l'avoir reste consultable
+    // (« Modifier » -> « Consulter », dialogue en lecture seule).
+    const canWrite = currentUserHasPermission("accounting.write", clubId);
     return `<section class="band accounting-corrections">
       <div class="band-title"><h2>Autres recettes / corrections</h2><strong>${money(correctedBalance)}</strong></div>
       <div class="accounting-metrics">
@@ -14658,10 +15393,10 @@ ${esc(bodyText)}</pre>
         ${accountingMetric("Avoirs actifs", money(avoirTotal), "Crédits / avoirs accordés", avoirTotal ? "is-due" : "")}
         ${accountingMetric("Solde corrigé", money(correctedBalance), "Encaissé + custom - dépenses - avoirs", correctedBalance >= 0 ? "is-paid" : "is-danger")}
       </div>
-      <div class="coach-toolbar">
-        <button class="primary" type="button" data-action="add-credit-note">+ Nouvel avoir</button>
-        <button type="button" data-action="add-refund">+ Remboursement</button>
-      </div>
+      ${canWrite ? `<div class="coach-toolbar">
+        <button class="primary" type="button" data-action="add-credit-note" data-accounting-club-id="${esc(clubId)}">+ Nouvel avoir</button>
+        <button type="button" data-action="add-refund" data-accounting-club-id="${esc(clubId)}">+ Remboursement</button>
+      </div>` : ""}
       <h3 class="accounting-subtitle">Recettes custom encaissées</h3>
       ${statsTable([
         { label: "Date" }, { label: "Facture" }, { label: "Contact" }, { label: "Catégorie" }, { label: "Encaissé", className: "money" }, { label: "Reste dû", className: "money" },
@@ -14684,7 +15419,7 @@ ${esc(bodyText)}</pre>
         <td>${esc(typeLabels[cn.type] || cn.type)}</td>
         <td>${esc(statusLabels[cn.status] || cn.status)}</td>
         <td class="money">${money(cn.amount)}</td>
-        <td><div class="actions"><button type="button" class="icon" data-action="edit-credit-note" data-id="${esc(cn.id)}" title="Modifier">✎</button><button type="button" class="icon danger" data-action="delete-credit-note" data-id="${esc(cn.id)}" title="Supprimer">×</button></div></td>
+        <td><div class="actions"><button type="button" class="icon" data-action="edit-credit-note" data-id="${esc(cn.id)}" data-accounting-club-id="${esc(clubId)}" title="${canWrite ? "Modifier" : "Consulter"}">${canWrite ? "✎" : "👁"}</button>${canWrite ? `<button type="button" class="icon danger" data-action="delete-credit-note" data-id="${esc(cn.id)}" data-accounting-club-id="${esc(clubId)}" title="Supprimer">×</button>` : ""}</div></td>
       </tr>`), "Aucun avoir enregistré.",
         `<tr><td colspan="5">Total avoirs actifs</td><td class="money">${money(avoirTotal)}</td><td></td></tr>`)}
     </section>`;
@@ -14706,6 +15441,11 @@ ${esc(bodyText)}</pre>
   }
 
   function renderAccounting() {
+    // Lot O-E2-B3B-3 (§42) — renderView() gate déjà cette vue via VIEW_PERMISSION_MAP (accounting.read),
+    // mais un appel direct (architecture de test, code futur) doit rester fail-closed lui-même. Défense
+    // légère UNIQUEMENT ici (jamais dans accountingData()/statsAccountingKpis(), moteur de calcul
+    // partagé avec Stats, §6-7).
+    if (!currentUserHasPermission("accounting.read", activeClubId())) return unauthorizedViewHtml();
     // Lot 2D/K-C2A — les rubriques Stages ET Boutique (rapport historique) suivent les DONNÉES, jamais
     // la fonctionnalité ni l'affichage : jamais absentes uniquement parce que le module est
     // désactivé/masqué. Les totaux, eux, sont déjà inconditionnels (accountingData / taxDeclarationRows
@@ -14887,6 +15627,21 @@ ${esc(bodyText)}</pre>
       </div>`;
   }
 
+  // Lot O-E2-B1 — écran homogène de refus par permission (jamais une clé technique du type
+  // "contacts.read", jamais de redirection silencieuse, §7-8). Distinct de renderLockedView
+  // ci-dessus (mot de passe partagé de l'installation) : ici, c'est l'identité/le profil de droits
+  // de l'utilisateur qui est en cause, pas un secret à saisir — donc aucun bouton de déverrouillage.
+  function unauthorizedViewHtml() {
+    return `
+      <div class="tarifs-locked">
+        <div class="tarifs-locked-card paper">
+          <div class="tarifs-locked-icon" aria-hidden="true">🚫</div>
+          <h2>Accès non autorisé</h2>
+          <p class="muted">Vous n'avez pas accès à cette rubrique.</p>
+        </div>
+      </div>`;
+  }
+
   function renderTarifs() {
     return `
       ${tariffCollapsibleBand("vat", "TVA actuelle", isClubVatExempt() ? "—" : `${intValue(settings.defaultVatRate || 0)}%`, `
@@ -14899,7 +15654,7 @@ ${esc(bodyText)}</pre>
           </label>
         </div>
       `)}
-      ${hasFeature("shop") ? tariffCollapsibleBand("articles", "Articles", intValue(state.tariffs.articles.length), editableArticles(), "add-tariff-article") : ""}
+      ${(hasFeature("shop") && currentUserHasPermission("shop.read", activeClubId())) ? tariffCollapsibleBand("articles", "Articles", intValue(state.tariffs.articles.length), editableArticles(), currentUserHasPermission("shop.write", activeClubId()) ? "add-tariff-article" : "") : ""}
       ${tariffCollapsibleBand("disciplines", "Disciplines", intValue(state.tariffs.disciplines.length), editableDisciplines(), "add-tariff-discipline")}
       ${hasFeature("stages") ? tariffCollapsibleBand("stages", "Stages", intValue(state.tariffs.stages.length), editableStages(), "add-tariff-stage") : ""}
       ${tariffCollapsibleBand("insurance", "Assurances", intValue(state.tariffs.insurance.length), editableInsurance(), "add-tariff-insurance")}`;
@@ -14946,11 +15701,16 @@ ${esc(bodyText)}</pre>
 
   function tariffCollapsibleBand(idValue, title, summary, body, addAction = "") {
     const open = Boolean(ui.tariffPanels?.[idValue]);
+    // Lot O-E2-B4R2 (§17/§22) — club du DOM sur le bouton « + » de création : add-tariff-stage exige
+    // le même binding club anti-stale-DOM que les autres actions persistantes Stage.
+    // Lot O-E2-B5 (§53-55) — même doctrine pour add-tariff-article (Boutique).
+    const addAttrs = addAction === "add-tariff-stage" ? ` data-stage-club-id="${esc(activeClubId())}"`
+      : addAction === "add-tariff-article" ? ` data-shop-club-id="${esc(activeClubId())}"` : "";
     return `<div class="band collapsible-band tariff-collapsible-band ${open ? "open" : ""}" data-tariff-panel="${esc(idValue)}">
       <div class="band-title collapsible-title-row" data-action="toggle-tariff-panel" data-panel="${esc(idValue)}" role="button" tabindex="0" aria-expanded="${open ? "true" : "false"}">
         <h2>${esc(title)}</h2>
         <span class="collapsible-meta">${esc(summary)}</span>
-        ${addAction ? `<button class="icon" title="${esc(addAction === "add-tariff-discipline" ? "Nouvelle discipline" : "Ajouter")}" data-action="${esc(addAction)}" ${addAction === "add-tariff-discipline" ? `data-origin="tarifs"` : ""}>+</button>` : ""}
+        ${addAction ? `<button class="icon" title="${esc(addAction === "add-tariff-discipline" ? "Nouvelle discipline" : "Ajouter")}" data-action="${esc(addAction)}" ${addAction === "add-tariff-discipline" ? `data-origin="tarifs"` : ""}${addAttrs}>+</button>` : ""}
         <span class="collapsible-arrow">›</span>
       </div>
       <div class="collapsible-content">
@@ -14967,29 +15727,74 @@ ${esc(bodyText)}</pre>
     return ui.tariffEditKey === tariffKey(kind, index);
   }
 
-  function tariffActions(kind, index, deleteAction) {
+  function tariffActions(kind, index, deleteAction, extraAttrs = "") {
     const editing = isTariffEditing(kind, index);
     return `<div class="actions">
       ${editing
         ? `<button class="icon tariff-check" title="Valider la modification" data-action="close-tariff-row">✓</button>`
         : ""}
-      <button class="icon danger" title="Supprimer" data-action="${esc(deleteAction)}" data-index="${index}">×</button>
+      <button class="icon danger" title="Supprimer" data-action="${esc(deleteAction)}" data-index="${index}"${extraAttrs}>×</button>
     </div>`;
+  }
+
+  // Lot O-E2-B5R2 (§15) — sortie du mode édition Article : nettoie systématiquement les TROIS clés
+  // (tariffEditKey/tariffEditClubId/tariffEditArticleId), quelle que soit la raison de la sortie
+  // (save réussi, refus stale, article disparu, permission retirée, feature OFF).
+  function clearTariffEditState() {
+    ui.tariffEditKey = "";
+    ui.tariffEditClubId = "";
+    ui.tariffEditArticleId = "";
   }
 
   function commitTariffRow(source) {
     const row = source.closest(".tariff-row.editing");
     if (!row) {
-      ui.tariffEditKey = "";
+      clearTariffEditState();
       render();
       return;
     }
     // Garde de MUTATION (Lot 2B, complétée K-B) — chemin hors handleAction (validation d'une ligne
     // Tarifs au clavier). Une ligne ARTICLE dépend de Shop, une ligne STAGE dépend de Stages ; les
     // autres tarifs (disciplines, assurances) restent hors de ces deux fonctionnalités et libres.
-    const [editKind, editIndexRaw] = asText(ui.tariffEditKey).split(":");
-    if (editKind === "article" && !ensureFeatureEnabledForMutation("shop")) {
-      ui.tariffEditKey = "";
+    const [editKind] = asText(ui.tariffEditKey).split(":");
+    // Lot O-E2-B5R2 (§14) — une ligne ARTICLE est traitée à PART : club D'ORIGINE figé revalidé EN
+    // PREMIER (jamais activeClubId() seul comme contexte d'autorité), PUIS id d'origine figé revalidé,
+    // PUIS feature+shop.write, PUIS résolution LIVE de l'Article par id STABLE. Les data-index des
+    // inputs sont réalignés sur l'index LIVE avant d'appeler updateTariff (inchangé pour les 3 autres
+    // kinds).
+    if (editKind === "article") {
+      const shopClubId = row.dataset.shopClubId || "";
+      if (!shopClubId || activeClubId() !== shopClubId || ui.tariffEditClubId !== shopClubId) {
+        clearTariffEditState();
+        render();
+        return;
+      }
+      const articleId = row.dataset.articleId || "";
+      if (!articleId || ui.tariffEditArticleId !== articleId) {
+        clearTariffEditState();
+        render();
+        return;
+      }
+      if (!ensureFeatureEnabledForMutation("shop") || !ensureUserPermission("shop.write", shopClubId)) {
+        clearTariffEditState();
+        render();
+        return;
+      }
+      const liveArticle = state.tariffs.articles.find((a) => a.id === articleId);
+      if (!liveArticle) {
+        ui.saveMessage = "Cet article n'existe plus.";
+        clearTariffEditState();
+        render();
+        return;
+      }
+      const liveIndex = state.tariffs.articles.indexOf(liveArticle);
+      row.querySelectorAll("[data-tariff]").forEach((input) => { input.dataset.index = String(liveIndex); });
+      recordHistory();
+      const beforeSnapshot = shopItemSnapshot(liveArticle);
+      row.querySelectorAll("[data-tariff]").forEach(updateTariff);
+      clearTariffEditState();
+      persist("Tarif enregistré");
+      audit.shopItemUpdated(liveArticle, shopItemAuditChanges(beforeSnapshot, shopItemSnapshot(liveArticle)));
       render();
       return;
     }
@@ -14999,39 +15804,51 @@ ${esc(bodyText)}</pre>
       return;
     }
     recordHistory();
-    // Lot 5B : la page Tarifs modifie le MÊME state.tariffs.articles[] que le dialogue Boutique
-    // (nom, prix de vente/achat, TVA) — un seul type d'événement (shop.item.updated), jamais un
-    // "tariff.updated" séparé pour ces mêmes champs. Snapshot capturé avant que ui.tariffEditKey
-    // (format "kind:index") ne soit effacé, uniquement si la ligne éditée est un article.
-    const [editingKind, editingIndexRaw] = asText(ui.tariffEditKey).split(":");
-    const editingArticle = editingKind === "article" ? state.tariffs.articles[Number(editingIndexRaw)] : null;
-    const beforeSnapshot = editingArticle ? shopItemSnapshot(editingArticle) : null;
     row.querySelectorAll("[data-tariff]").forEach(updateTariff);
     ui.tariffEditKey = "";
     persist("Tarif enregistré");
-    if (editingArticle) {
-      audit.shopItemUpdated(editingArticle, shopItemAuditChanges(beforeSnapshot, shopItemSnapshot(editingArticle)));
-    }
     render();
   }
 
   function tariffArticleRow(article, index) {
-    const editing = isTariffEditing("article", index);
+    // Lot O-E2-B5R (§42) — le mode édition d'une ligne Article reste conditionné à hasFeature("shop")
+    // ET shop.write, même si ui.tariffEditKey pointait déjà dessus (permission retirée PENDANT que la
+    // ligne était en édition -> le prochain render doit revenir à une ligne CONSULTATIVE, jamais des
+    // inputs éditables résiduels).
+    const canWriteShop = hasFeature("shop") && currentUserHasPermission("shop.write", activeClubId());
+    // Lot O-E2-B5R2 (§9-12) — l'édition ne reste active que si le club ET l'article mémorisés à
+    // l'ENTRÉE en édition (ui.tariffEditClubId/tariffEditArticleId) correspondent ENCORE à l'état
+    // courant : un switch de club (même si l'index 0 pointe désormais sur un autre Article) ne doit
+    // jamais laisser une ligne apparaître éditable sous l'intention née dans un autre club.
+    const editing = isTariffEditing("article", index) && canWriteShop
+      && ui.tariffEditClubId === activeClubId() && ui.tariffEditArticleId === article.id;
+    // Lot O-E2-B5 (§53-55) — suppression masquée sans shop.write (ou feature shop OFF) ; la ligne
+    // reste consultable (shop.read seul, bande déjà gardée par renderTarifs).
+    const actionsCell = canWriteShop ? tariffActions("article", index, "delete-tariff-article", ` data-article-id="${esc(article.id)}" data-shop-club-id="${esc(activeClubId())}"`) : "";
     if (editing) {
-      return `<tr class="tariff-row editing">
+      // Lot O-E2-B5R2 (§13) — data-article-id ET data-shop-club-id portés par la ligne EN ÉDITION
+      // elle-même : commitTariffRow doit résoudre l'Article live par cet id ET revalider ce club,
+      // jamais par l'index de ui.tariffEditKey seul ni activeClubId() implicite au moment du save.
+      return `<tr class="tariff-row editing" data-article-id="${esc(article.id)}" data-shop-club-id="${esc(activeClubId())}">
         <td><input data-tariff="article-name" data-index="${index}" value="${esc(article.name)}" /></td>
         <td><input type="number" step="0.01" data-tariff="article-price" data-index="${index}" data-price-index="0" value="${esc(article.priceOptions?.[0] ?? article.defaultPrice ?? 0)}" /></td>
         <td><input type="number" step="0.01" data-tariff="article-price" data-index="${index}" data-price-index="1" value="${esc(article.priceOptions?.[1] ?? "")}" /></td>
         <td class="tariff-tax-cell"><input type="number" step="0.01" min="0" placeholder="${esc(intValue(effectiveDefaultVatRate()))}" data-tariff="article-tax" data-index="${index}" value="${esc(hasSpecificTaxRate(article) ? tariffTaxRate(article) : "")}" /></td>
-        <td>${tariffActions("article", index, "delete-tariff-article")}</td>
+        <td>${actionsCell}</td>
       </tr>`;
     }
-    return `<tr class="tariff-row" data-action="edit-tariff-row" data-kind="article" data-index="${index}">
+    // Lot O-E2-B5R (§40/§43-44) — sans shop.write, la ligne reste STRICTEMENT consultative : ni
+    // data-action (aucune entrée en édition possible, même par un clic), ni identité club/article
+    // exposée inutilement (rien à sécuriser sur une ligne qui ne déclenche plus aucune mutation).
+    const rowAttrs = canWriteShop
+      ? ` data-action="edit-tariff-row" data-kind="article" data-index="${index}" data-article-id="${esc(article.id)}" data-shop-club-id="${esc(activeClubId())}"`
+      : "";
+    return `<tr class="tariff-row"${rowAttrs}>
       <td><strong>${esc(article.name)}</strong></td>
       <td class="money">${money(article.priceOptions?.[0] ?? article.defaultPrice ?? 0)}</td>
       <td class="money">${money(article.priceOptions?.[1] ?? 0)}</td>
       <td class="tariff-tax-cell">${esc(taxRateLabel(article))}</td>
-      <td>${tariffActions("article", index, "delete-tariff-article")}</td>
+      <td>${actionsCell}</td>
     </tr>`;
   }
 
@@ -15075,7 +15892,7 @@ ${esc(bodyText)}</pre>
         <td><input data-tariff="stage-lodging-name" data-index="${index}" value="${esc(stage.lodgingName)}" /></td>
         <td><input type="number" step="0.01" data-tariff="stage-lodging-price" data-index="${index}" value="${esc(stage.lodgingUnitPrice)}" /></td>
         <td class="tariff-tax-cell"><input type="number" step="0.01" min="0" placeholder="${esc(intValue(effectiveDefaultVatRate()))}" data-tariff="stage-lodging-tax" data-index="${index}" value="${esc(hasSpecificLodgingTaxRate(stage) ? lodgingTaxRate(stage) : "")}" /></td>
-        <td>${tariffActions("stage", index, "delete-tariff-stage")}</td>
+        <td>${tariffActions("stage", index, "delete-tariff-stage", ` data-stage-id="${esc(stage.id)}" data-stage-club-id="${esc(activeClubId())}"`)}</td>
       </tr>`;
     }
     return `<tr class="tariff-row" data-action="edit-tariff-row" data-kind="stage" data-index="${index}">
@@ -15086,7 +15903,7 @@ ${esc(bodyText)}</pre>
       <td>${esc(stage.lodgingName) || `<span class="muted">-</span>`}</td>
       <td class="money">${money(stage.lodgingUnitPrice)}</td>
       <td class="tariff-tax-cell">${esc(lodgingTaxRateLabel(stage))}</td>
-      <td>${tariffActions("stage", index, "delete-tariff-stage")}</td>
+      <td>${tariffActions("stage", index, "delete-tariff-stage", ` data-stage-id="${esc(stage.id)}" data-stage-club-id="${esc(activeClubId())}"`)}</td>
     </tr>`;
   }
 
@@ -15175,8 +15992,11 @@ ${esc(bodyText)}</pre>
     return `<span class="muted">Normale</span>`;
   }
 
-  function quickNoteRow(row) {
-    const editing = ui.quickNoteEditId === row.id;
+  // Lot O-E2-B2 — canWrite:false : jamais de mode édition (aucun champ modifiable ne doit être
+  // atteignable), boutons Modifier/Supprimer masqués. La note reste lisible (notes.read déjà garanti
+  // par l'appelant, page Notes ou bloc contextuel).
+  function quickNoteRow(row, canWrite = true) {
+    const editing = canWrite && ui.quickNoteEditId === row.id;
     if (editing) {
       return `<tr class="memo-row editing">
         <td>${quickNoteFieldHtml("targetView", row)}</td>
@@ -15191,11 +16011,11 @@ ${esc(bodyText)}</pre>
       <td><strong>${esc(row.title) || `<span class="muted">-</span>`}</strong></td>
       <td class="memo-note">${esc(row.note) || `<span class="muted">-</span>`}</td>
       <td>${statusPill(row.priority || "Normale")}</td>
-      <td><div class="actions"><button class="icon" title="Modifier cette note" data-action="edit-quick-note" data-id="${esc(row.id)}">✎</button><button class="icon danger" title="Supprimer" data-action="delete-quick-note" data-id="${esc(row.id)}">×</button></div></td>
+      <td>${canWrite ? `<div class="actions"><button class="icon" title="Modifier cette note" data-action="edit-quick-note" data-id="${esc(row.id)}">✎</button><button class="icon danger" title="Supprimer" data-action="delete-quick-note" data-id="${esc(row.id)}">×</button></div>` : ""}</td>
     </tr>`;
   }
 
-  function quickNotesSection() {
+  function quickNotesSection(canWrite = true) {
     const rows = state.memoRows || [];
     return `
       <div class="band quick-notes-band">
@@ -15204,13 +16024,13 @@ ${esc(bodyText)}</pre>
             <h2>Notes personnalisées</h2>
             <p class="muted">Créez vos notes et choisissez où les afficher dans le logiciel. Elles restent toutes accessibles et modifiables ici.</p>
           </div>
-          <button data-action="add-quick-note">+ Nouvelle note</button>
+          ${canWrite ? `<button data-action="add-quick-note">+ Nouvelle note</button>` : ""}
         </div>
         <div class="table-wrap">
           <table class="editable-table memo-table">
             <thead><tr><th>Afficher dans</th><th>Sujet</th><th>Note</th><th>Priorité</th><th></th></tr></thead>
             <tbody>
-              ${rows.length ? rows.map(quickNoteRow).join("") : `<tr><td colspan="5"><div class="empty compact">Aucune note personnalisée. Utilisez + Nouvelle note pour en ajouter une.</div></td></tr>`}
+              ${rows.length ? rows.map((row) => quickNoteRow(row, canWrite)).join("") : `<tr><td colspan="5"><div class="empty compact">Aucune note personnalisée. Utilisez + Nouvelle note pour en ajouter une.</div></td></tr>`}
             </tbody>
           </table>
         </div>
@@ -15236,8 +16056,8 @@ ${esc(bodyText)}</pre>
 
   // Une ligne compacte du bloc contextuel : mêmes actions (edit-quick-note/delete-quick-note) et
   // mêmes champs (quickNoteFieldHtml) que la page Notes — aucun second moteur d'édition/suppression.
-  function contextualNoteRowHtml(row) {
-    const editing = ui.quickNoteEditId === row.id;
+  function contextualNoteRowHtml(row, canWrite = true) {
+    const editing = canWrite && ui.quickNoteEditId === row.id;
     if (editing) {
       return `<div class="contextual-note-row editing" data-id="${esc(row.id)}">
         <div class="contextual-note-edit-fields">
@@ -15253,7 +16073,7 @@ ${esc(bodyText)}</pre>
       <strong>${esc(row.title) || `<span class="muted">-</span>`}</strong>
       <span class="contextual-note-text">${esc(row.note)}</span>
       ${quickNotePriorityBadge(row.priority)}
-      <div class="actions"><button class="icon" title="Modifier cette note" data-action="edit-quick-note" data-id="${esc(row.id)}">✎</button><button class="icon danger" title="Supprimer" data-action="delete-quick-note" data-id="${esc(row.id)}">×</button></div>
+      ${canWrite ? `<div class="actions"><button class="icon" title="Modifier cette note" data-action="edit-quick-note" data-id="${esc(row.id)}">✎</button><button class="icon danger" title="Supprimer" data-action="delete-quick-note" data-id="${esc(row.id)}">×</button></div>` : ""}
     </div>`;
   }
 
@@ -15261,13 +16081,22 @@ ${esc(bodyText)}</pre>
   // depuis render() (src/10-calcs-shell.js). "" si aucune note active ne cible viewId : AUCUN DOM
   // supplémentaire (pas de cadre/titre/placeholder vide) — jamais un renderer de page individuel à
   // modifier.
+  // Correction O-E2-B2 — faille fermée : ce bloc est injecté AVANT renderView() (src/10-calcs-shell.js
+  // : `contextualNotesBlockHtml(ui.view) + renderView()`), donc en dehors de la garde de lecture
+  // posée dans renderView() (Lot O-E2-B1) — une note ciblant une vue protégée restait visible même
+  // sans la permission de lecture de CETTE vue. notes.read protège le mécanisme lui-même (domaine de
+  // ce lot) ; currentUserCanAccessView(viewId) réutilise TEL QUEL le socle B1 déjà approuvé (aucune
+  // nouvelle permission de domaine écrite ici, y compris pour des vues hors périmètre B2).
   function contextualNotesBlockHtml(viewId) {
+    if (!currentUserHasPermission("notes.read", activeClubId())) return "";
+    if (typeof currentUserCanAccessView === "function" && !currentUserCanAccessView(viewId)) return "";
     const rows = notesForView(viewId);
     if (!rows.length) return "";
+    const canWrite = currentUserHasPermission("notes.write", activeClubId());
     return `<div class="band contextual-notes-band">
       <div class="band-title compact"><h3>📌 Notes</h3></div>
       <div class="contextual-notes-list">
-        ${rows.map(contextualNoteRowHtml).join("")}
+        ${rows.map((row) => contextualNoteRowHtml(row, canWrite)).join("")}
       </div>
     </div>`;
   }
@@ -15284,11 +16113,16 @@ ${esc(bodyText)}</pre>
 
   function renderNotes() {
     const note = activeNote();
+    // Lot O-E2-B2 — notes.read est déjà garanti pour atteindre cette fonction (garde de vue B1,
+    // "notes" -> notes.read) : seule notes.write conditionne ici les contrôles de mutation
+    // (§21-22). Champs readonly/contenteditable="false" pour l'UX ; la garde RÉELLE reste dans les
+    // listeners eux-mêmes (§22 : jamais de confiance dans le seul attribut HTML).
+    const canWrite = currentUserHasPermission("notes.write", activeClubId());
     return `<div class="notes-page">
       <div class="band notes-tabs-band">
         <div class="band-title">
           <h2>Notes</h2>
-          <button data-action="add-note">+ Note</button>
+          ${canWrite ? `<button data-action="add-note">+ Note</button>` : ""}
         </div>
         <div class="note-tabs">
           ${state.notes.map((item) => `<button class="note-tab ${item.id === note.id ? "active" : ""}" data-action="select-note" data-id="${esc(item.id)}" title="${esc(item.title || "Note")}">${esc(item.title || "Note")}</button>`).join("")}
@@ -15296,13 +16130,13 @@ ${esc(bodyText)}</pre>
       </div>
       <div class="band note-editor-band">
         <div class="band-title note-title-row">
-          <input class="note-title-input" data-note-title value="${esc(note.title)}" />
-          <div class="actions">
+          <input class="note-title-input" data-note-title value="${esc(note.title)}" ${canWrite ? "" : "readonly"} />
+          ${canWrite ? `<div class="actions">
             <button data-action="save-note">Enregistrer</button>
             <button class="danger" data-action="delete-note">Supprimer l'onglet</button>
-          </div>
+          </div>` : ""}
         </div>
-        <div class="note-toolbar">
+        ${canWrite ? `<div class="note-toolbar">
           <select data-note-command="fontName" title="Police">
             ${FONT_OPTIONS.map((font) => `<option value="${esc(font.label)}">${esc(font.label)}</option>`).join("")}
           </select>
@@ -15324,10 +16158,10 @@ ${esc(bodyText)}</pre>
           <button class="icon" data-note-command="insertUnorderedList" title="Liste">•</button>
           <button class="icon" data-note-command="insertOrderedList" title="Liste numérotée">1.</button>
           <button data-note-command="removeFormat">Effacer style</button>
-        </div>
-        <div class="note-editor" contenteditable="true" spellcheck="true" data-note-editor>${sanitizeNoteHtml(note.content || "")}</div>
+        </div>` : ""}
+        <div class="note-editor" contenteditable="${canWrite ? "true" : "false"}" spellcheck="true" data-note-editor>${sanitizeNoteHtml(note.content || "")}</div>
       </div>
-      ${quickNotesSection()}
+      ${quickNotesSection(canWrite)}
     </div>`;
   }
 
@@ -16163,6 +16997,11 @@ ${esc(bodyText)}</pre>
 
   function renderSettings() {
     const macIconAvailable = canInstallMacAppIcon();
+    // Lot O-E2-B7R (§9-10) — la vue "settings" reste volontairement MIXTE (jamais dans
+    // VIEW_PERMISSION_MAP, doctrine B6), mais les bandes Newsletter (Messages e-mail / SMTP)
+    // exposaient jusqu'ici modèles/hôte SMTP/statut sans aucune garde : sans newsletter.read, ces
+    // deux bandes ne sont plus rendues DU TOUT (préférence explicite Pix, pas un placeholder).
+    const canReadNewsletter = currentUserHasPermission("newsletter.read", activeClubId());
     return `<div class="settings-stack">
       ${settingsCollapsibleBand("themes", "Thèmes", activeTheme().name, `
         <div class="theme-anim-row">
@@ -16297,15 +17136,15 @@ ${esc(bodyText)}</pre>
             </div>
           </div>
         </div>`)}
-      ${settingsCollapsibleBand("emails", "Messages e-mail", "Relances et modèles", `<div class="settings-panel email-template-settings">
+      ${canReadNewsletter ? settingsCollapsibleBand("emails", "Messages e-mail", "Relances et modèles", `<div class="settings-panel email-template-settings">
           <p class="muted">Modifie ici les textes préparés automatiquement par le logiciel. Les variables entre accolades sont remplacées au moment de l'envoi.</p>
           <div class="email-template-list">
             ${emailTemplateSettingsHtml()}
           </div>
-        </div>`)}
-      ${settingsCollapsibleBand("smtp", "Envoi d'e-mails (SMTP)", smtpStatusLabel().label, `<div class="settings-panel smtp-settings">
+        </div>`) : ""}
+      ${canReadNewsletter ? settingsCollapsibleBand("smtp", "Envoi d'e-mails (SMTP)", smtpStatusLabel().label, `<div class="settings-panel smtp-settings">
           ${smtpSettingsHtml()}
-        </div>`)}
+        </div>`) : ""}
       ${settingsCollapsibleBand("users", "Utilisateurs", activeUserDisplayName() || "Profils locaux", `<div class="settings-panel users-settings-panel">
           ${usersSettingsHtml()}
         </div>`)}
@@ -16370,7 +17209,13 @@ ${esc(bodyText)}</pre>
   function renderClubs() {
     const store = clubStore || normalizeClubStore(rawClubStoreFromStorage());
     const clubs = store.clubs.filter((club) => ui.showArchivedClubs || !club.archived);
-    const demoExists = store.clubs.some((club) => club.id === DEMO_CLUB_ID || club.name === DEMO_CLUB_NAME);
+    const demoClub = store.clubs.find((club) => club.id === DEMO_CLUB_ID || club.name === DEMO_CLUB_NAME);
+    const demoExists = Boolean(demoClub);
+    // Lot O-E2-B6R (§37) — actions structurelles masquées pour un non-Admin strict (navigation/
+    // consultation restent accessibles à tous). "Créer" dépend du club actif d'autorité ; "Réinitialiser"
+    // dépend du club démo cible s'il existe déjà.
+    const canCreateClub = currentUserIsAdminForClub(activeClubId());
+    const canResetDemo = demoExists ? currentUserIsAdminForClub(demoClub.id) : canCreateClub;
     return `<div class="settings-stack">
       <div class="band">
         <div class="band-title">
@@ -16379,8 +17224,8 @@ ${esc(bodyText)}</pre>
             <p class="muted">Crée un club séparé avec des données fictives pour tester MonGestaClub sans toucher à tes vrais clubs.</p>
           </div>
           <div class="inline-actions">
-            <button class="primary" type="button" data-action="create-demo-club">Créer un club démo</button>
-            ${demoExists ? `<button class="danger" type="button" data-action="reset-demo-club">Réinitialiser le club démo</button>` : ""}
+            ${canCreateClub ? `<button class="primary" type="button" data-action="create-demo-club">Créer un club démo</button>` : ""}
+            ${demoExists && canResetDemo ? `<button class="danger" type="button" data-action="reset-demo-club">Réinitialiser le club démo</button>` : ""}
           </div>
         </div>
       </div>
@@ -16389,7 +17234,7 @@ ${esc(bodyText)}</pre>
           <h2>Mes clubs</h2>
           <div class="inline-actions">
             <label class="settings-check compact-check"><input type="checkbox" data-toggle-archived-clubs ${ui.showArchivedClubs ? "checked" : ""} /><span>Afficher archivés</span></label>
-            <button class="primary" type="button" data-action="new-club">Nouveau club</button>
+            ${canCreateClub ? `<button class="primary" type="button" data-action="new-club">Nouveau club</button>` : ""}
           </div>
         </div>
         <div class="club-cards">
@@ -16400,6 +17245,10 @@ ${esc(bodyText)}</pre>
   }
 
   function clubCardHtml(club, active = false) {
+    // Lot O-E2-B6R (§37) — Dupliquer/Archiver/Désarchiver/Supprimer/Peupler avec la démo exigent
+    // l'Admin strict DE CE CLUB précis (jamais du club actif) : masqués sinon. Modifier (clubSettings.
+    // manage/managers.manage, gardé séparément) et Activer (navigation pure) restent inchangés.
+    const isAdminHere = currentUserIsAdminForClub(club.id);
     return `<article class="club-card ${active ? "active" : ""} ${club.archived ? "archived" : ""}">
       <div class="club-card-head">
         <img src="${esc(club.logoDataUrl || DEFAULT_LOGO)}" alt="${esc(club.name)}" />
@@ -16418,12 +17267,12 @@ ${esc(bodyText)}</pre>
       <div class="inline-actions">
         <button type="button" data-action="switch-club" data-club-id="${esc(club.id)}" ${active || club.archived ? "disabled" : ""}>Activer</button>
         <button type="button" data-action="edit-club" data-club-id="${esc(club.id)}">Modifier</button>
-        <button type="button" data-action="duplicate-club" data-club-id="${esc(club.id)}">Dupliquer</button>
-        ${club.archived ? "" : `<button type="button" data-action="populate-club-demo" data-club-id="${esc(club.id)}" title="Remplir ce club avec des données de démonstration">Peupler avec la démo</button>`}
-        ${club.archived
+        ${isAdminHere ? `<button type="button" data-action="duplicate-club" data-club-id="${esc(club.id)}">Dupliquer</button>` : ""}
+        ${club.archived || !isAdminHere ? "" : `<button type="button" data-action="populate-club-demo" data-club-id="${esc(club.id)}" title="Remplir ce club avec des données de démonstration">Peupler avec la démo</button>`}
+        ${!isAdminHere ? "" : club.archived
           ? `<button type="button" class="primary" data-action="unarchive-club" data-club-id="${esc(club.id)}">Réactiver</button>`
           : `<button type="button" class="danger" data-action="archive-club" data-club-id="${esc(club.id)}">Archiver</button>`}
-        <button type="button" class="danger" data-action="delete-club" data-club-id="${esc(club.id)}">Supprimer</button>
+        ${isAdminHere ? `<button type="button" class="danger" data-action="delete-club" data-club-id="${esc(club.id)}">Supprimer</button>` : ""}
       </div>
     </article>`;
   }
@@ -16441,7 +17290,7 @@ ${esc(bodyText)}</pre>
         </div>
         <p class="muted">Ces informations ne modifient que le club actif. Elles serviront aussi plus tard aux documents et factures, sans créer la facturation maintenant.</p>
       </div>
-      ${clubFormSectionsHtml(club)}
+      ${clubFormSectionsHtml(club, { clubId: club.id })}
       <div class="form-actions-sticky">
         <button type="button" data-action="club-assistant" data-club-id="${esc(club.id)}">Assistant complet</button>
         <button type="button" class="primary" data-action="save-club-settings">Enregistrer les paramètres du club</button>
@@ -16449,104 +17298,155 @@ ${esc(bodyText)}</pre>
     </form>`;
   }
 
-  function clubFormSectionsHtml(club) {
+  // Lot O-B — Responsables dynamiques : une carte par entrée RÉELLE de club.managers (jamais par
+  // role fixe). Identité de la carte = manager.id (data-manager-id), jamais le role. Le sélecteur
+  // "Fonction prédéfinie" et le texte libre "Fonction" restent deux champs INDÉPENDANTS : changer
+  // le rôle prédéfini ne réécrit jamais le texte affiché (doctrine anti-écrasement §12 du lot —
+  // "Présidente" saisi historiquement ne redevient jamais "Président" silencieusement).
+  // Lot O-E2-B6 — `locked` (managers.manage absent pour un club EXISTANT, jamais en création/
+  // duplication) désactive la carte ENTIÈRE : select/inputs/textarea/bouton Supprimer. Sans risque de
+  // corruption au submit — managersFromForm() lit exclusivement via `.value`/`.checked` en DOM direct
+  // (jamais FormData), qui reste lisible sur un contrôle disabled (seule la SOUMISSION FormData est
+  // affectée par disabled, jamais la propriété .value elle-même).
+  function clubManagerCardHtml(manager, locked = false) {
+    const options = clubManagerFunctionOptions();
+    const rawRole = asText(manager.role);
+    const isKnownRole = options.some(([role]) => role === rawRole);
+    const roleValue = rawRole || "custom";
+    // Correction Pix (O-B) — un role IMPORTÉ INCONNU (ni un des 7 prédéfinis, ni "custom") doit être
+    // PRÉSERVÉ tant que l'utilisateur ne le change pas explicitement : on lui ajoute une option de
+    // compatibilité TEMPORAIRE portant sa valeur réelle et sélectionnée, en tête de liste. Jamais
+    // ajoutée à clubManagerLabels() : ce n'est pas une nouvelle fonction prédéfinie durable, juste
+    // un affichage ponctuel pour la donnée déjà présente (ex. role:"webmaster" importé).
+    const optionsHtml = (rawRole && !isKnownRole) ? [[rawRole, asText(manager.function) || rawRole], ...options] : options;
+    const lockedAttr = locked ? "disabled" : "";
+    return `<div class="club-manager-card" data-manager-card data-manager-id="${esc(manager.id)}">
+      <div class="club-manager-card-header">
+        <label>Fonction prédéfinie<select name="role" ${lockedAttr}>
+          ${optionsHtml.map(([role, label]) => `<option value="${esc(role)}" ${role === roleValue ? "selected" : ""}>${esc(label)}</option>`).join("")}
+        </select></label>
+        ${locked ? "" : `<button class="icon danger" type="button" title="Supprimer ce responsable" data-action="delete-manager-card">Supprimer</button>`}
+      </div>
+      <div class="form-grid compact">
+        ${field("lastName", "Nom", manager.lastName, "text", `placeholder="Ex : Dupont" ${lockedAttr}`)}
+        ${field("firstName", "Prénom", manager.firstName, "text", `placeholder="Ex : Marie" ${lockedAttr}`)}
+        ${field("email", "Email", manager.email, "email", `placeholder="Ex : marie.dupont@monclub.fr" ${lockedAttr}`)}
+        ${field("phone", "Téléphone", manager.phone, "text", `placeholder="Ex : 06 12 34 56 78" ${lockedAttr}`)}
+        ${field("function", "Fonction (libellé affiché)", manager.function, "text", `placeholder="Ex : Présidente" ${lockedAttr}`)}
+      </div>
+      ${textareaField("notes", "Notes", manager.notes, "Ex : Disponible en soirée et le week-end", lockedAttr)}
+    </div>`;
+  }
+
+  // Lot O-E2-B6 — `options.clubId` distingue édition d'un club EXISTANT (gating actif, verrouillage
+  // indépendant des deux domaines) de création/duplication (clubId="", hors périmètre §36 : ces
+  // actions structurelles ne relèvent d'aucune permission de ce lot, formulaire pleinement éditable
+  // comme avant). `settingsRO`/`settingsLocked` verrouillent EXCLUSIVEMENT les champs Paramètres
+  // (jamais Responsables, section indépendante ci-dessous). readonly est utilisé partout où
+  // clubFromForm() lit via FormData (formValue) pour garantir un round-trip fidèle de la valeur
+  // actuelle au submit ; disabled+mirrorField() est réservé aux 3 <select> lus eux aussi via
+  // FormData (theme/legalStatus/vatRegime) — les checkboxes paymentMode_* sont lues en direct
+  // (`.checked`), disabled seul suffit, aucun mirror nécessaire.
+  function mirrorField(name, value) {
+    return `<input type="hidden" name="${esc(name)}" value="${esc(value ?? "")}" />`;
+  }
+
+  function clubFormSectionsHtml(club, options = {}) {
+    const clubId = options.clubId || "";
+    const canEditSettings = !clubId || currentUserHasPermission("clubSettings.manage", clubId);
+    const canEditManagers = !clubId || currentUserHasPermission("managers.manage", clubId);
+    const settingsRO = canEditSettings ? "" : "readonly";
+    const settingsLocked = canEditSettings ? "" : "disabled";
     const modeOptions = paymentModeDefinitions();
-    const managerLabels = clubManagerLabels();
     return `
       <section class="band club-form-section">
         <div class="band-title"><h2>Identité visuelle</h2><span>Nom, logo, couleurs, saison</span></div>
         <div class="form-grid compact">
-          ${field("clubName", "Nom complet du club*", club.name, "text", 'placeholder="Ex : Budo Club de Lédat"')}
-          ${field("shortName", "Nom court / sigle", club.shortName, "text", 'placeholder="Ex : BCL"')}
-          ${field("subtitle", "Sous-titre", club.subtitle, "text", 'placeholder="Ex : Arts martiaux & self-défense"')}
-          ${field("mainDiscipline", "Discipline principale", club.mainDiscipline, "text", 'placeholder="Ex : Judo"')}
-          ${field("disciplines", "Disciplines proposées", club.disciplines.join(", "), "text", 'placeholder="Séparez par une virgule : Judo, Karaté, Boxe, Taïso, Self-défense"')}
-          ${field("seasonStartDate", "Début saison", club.season.startDate, "date")}
-          ${field("seasonEndDate", "Fin saison", club.season.endDate, "date")}
-          <label>Logo<input type="file" accept="image/*" data-club-logo-file /></label>
+          ${field("clubName", "Nom complet du club*", club.name, "text", `placeholder="Ex : Budo Club de Lédat" ${settingsRO}`)}
+          ${field("shortName", "Nom court / sigle", club.shortName, "text", `placeholder="Ex : BCL" ${settingsRO}`)}
+          ${field("subtitle", "Sous-titre", club.subtitle, "text", `placeholder="Ex : Arts martiaux & self-défense" ${settingsRO}`)}
+          ${field("mainDiscipline", "Discipline principale", club.mainDiscipline, "text", `placeholder="Ex : Judo" ${settingsRO}`)}
+          ${field("disciplines", "Disciplines proposées", club.disciplines.join(", "), "text", `placeholder="Séparez par une virgule : Judo, Karaté, Boxe, Taïso, Self-défense" ${settingsRO}`)}
+          ${field("seasonStartDate", "Début saison", club.season.startDate, "date", settingsRO)}
+          ${field("seasonEndDate", "Fin saison", club.season.endDate, "date", settingsRO)}
+          <label>Logo<input type="file" accept="image/*" data-club-logo-file ${settingsLocked} /></label>
           <input type="hidden" name="logoDataUrl" value="${esc(club.logoDataUrl)}" data-club-logo-value />
           <div class="club-logo-preview"><img src="${esc(club.logoDataUrl || DEFAULT_LOGO)}" alt="Logo du club" data-club-logo-preview /></div>
-          <label>Thème par défaut<select name="theme">${themes.map((theme) => `<option value="${esc(theme.id)}" ${theme.id === club.theme ? "selected" : ""}>${esc(theme.name)}</option>`).join("")}</select></label>
+          <label>Thème par défaut<select name="theme" ${settingsLocked}>${themes.map((theme) => `<option value="${esc(theme.id)}" ${theme.id === club.theme ? "selected" : ""}>${esc(theme.name)}</option>`).join("")}</select></label>
+          ${canEditSettings ? "" : mirrorField("theme", club.theme)}
         </div>
       </section>
       <section class="band club-form-section">
         <div class="band-title"><h2>Informations administratives</h2><span>Facultatif quand le club ne les possède pas encore</span></div>
         <div class="form-grid compact">
-          <label>Statut juridique<select name="legalStatus">
+          <label>Statut juridique<select name="legalStatus" ${settingsLocked}>
             ${["", "Association loi 1901", "Entreprise", "Autre"].map((option) => `<option value="${esc(option)}" ${option === club.admin.legalStatus ? "selected" : ""}>${esc(option || "Non renseigné")}</option>`).join("")}
           </select></label>
-          ${field("rna", "Numéro RNA", club.admin.rna, "text", 'placeholder="Ex : W471001234"')}
-          ${field("siret", "SIRET", club.admin.siret, "text", 'placeholder="Ex : 123 456 789 00012"')}
-          ${field("siren", "SIREN", club.admin.siren, "text", 'placeholder="Ex : 123 456 789"')}
-          ${field("apeNaf", "Code APE / NAF", club.admin.apeNaf, "text", 'placeholder="Ex : 9312Z"')}
-          ${field("vatNumber", "TVA intracommunautaire", club.admin.vatNumber, "text", 'placeholder="Ex : FR12 123456789"')}
-          <label>Régime TVA<select name="vatRegime">
+          ${canEditSettings ? "" : mirrorField("legalStatus", club.admin.legalStatus)}
+          ${field("rna", "Numéro RNA", club.admin.rna, "text", `placeholder="Ex : W471001234" ${settingsRO}`)}
+          ${field("siret", "SIRET", club.admin.siret, "text", `placeholder="Ex : 123 456 789 00012" ${settingsRO}`)}
+          ${field("siren", "SIREN", club.admin.siren, "text", `placeholder="Ex : 123 456 789" ${settingsRO}`)}
+          ${field("apeNaf", "Code APE / NAF", club.admin.apeNaf, "text", `placeholder="Ex : 9312Z" ${settingsRO}`)}
+          ${field("vatNumber", "TVA intracommunautaire", club.admin.vatNumber, "text", `placeholder="Ex : FR12 123456789" ${settingsRO}`)}
+          <label>Régime TVA<select name="vatRegime" ${settingsLocked}>
             ${["", "soumis", "non", "franchise"].map((option) => `<option value="${esc(option)}" ${option === club.admin.vatRegime ? "selected" : ""}>${esc({ "": "Non renseigné", soumis: "Soumis à TVA", non: "Non soumis", franchise: "Franchise en base" }[option])}</option>`).join("")}
           </select></label>
-          ${field("vatMention", "Mention TVA", club.admin.vatMention || "TVA non applicable, art. 293 B du CGI")}
-          ${field("creationDate", "Date de création", club.admin.creationDate, "date")}
-          ${field("federation", "Fédération sportive", club.admin.federation, "text", 'placeholder="Ex : FFJDA (Fédération de Judo)"')}
-          ${field("federationNumber", "N° affiliation fédération", club.admin.federationNumber, "text", 'placeholder="Ex : 47-0123"')}
-          ${field("approvalNumber", "N° agrément éventuel", club.admin.approvalNumber, "text", 'placeholder="Ex : 47S123"')}
+          ${canEditSettings ? "" : mirrorField("vatRegime", club.admin.vatRegime)}
+          ${field("vatMention", "Mention TVA", club.admin.vatMention || "TVA non applicable, art. 293 B du CGI", "text", settingsRO)}
+          ${field("creationDate", "Date de création", club.admin.creationDate, "date", settingsRO)}
+          ${field("federation", "Fédération sportive", club.admin.federation, "text", `placeholder="Ex : FFJDA (Fédération de Judo)" ${settingsRO}`)}
+          ${field("federationNumber", "N° affiliation fédération", club.admin.federationNumber, "text", `placeholder="Ex : 47-0123" ${settingsRO}`)}
+          ${field("approvalNumber", "N° agrément éventuel", club.admin.approvalNumber, "text", `placeholder="Ex : 47S123" ${settingsRO}`)}
         </div>
       </section>
       <section class="band club-form-section">
         <div class="band-title"><h2>Adresse et contact</h2><span>Coordonnées officielles</span></div>
         <div class="form-grid compact">
-          ${field("address", "Adresse du siège", club.contact.address, "text", 'placeholder="Ex : 12 rue du Dojo"')}
-          ${field("address2", "Complément d'adresse", club.contact.address2, "text", 'placeholder="Ex : Gymnase municipal, salle 2"')}
-          ${field("postalCode", "Code postal", club.contact.postalCode, "text", 'placeholder="Ex : 47300"')}
-          ${field("city", "Ville", club.contact.city, "text", 'placeholder="Ex : Villeneuve-sur-Lot"')}
-          ${field("country", "Pays", club.contact.country, "text", 'placeholder="Ex : France"')}
-          ${field("phone", "Téléphone", club.contact.phone, "text", 'placeholder="Ex : 06 12 34 56 78"')}
-          ${field("email", "Email officiel", club.contact.email, "email", 'placeholder="Ex : contact@monclub.fr"')}
-          ${field("website", "Site web", club.contact.website, "text", 'placeholder="Ex : www.monclub.fr"')}
-          ${textareaField("social", "Réseaux sociaux", club.contact.social, "Ex : facebook.com/monclub, instagram.com/monclub")}
+          ${field("address", "Adresse du siège", club.contact.address, "text", `placeholder="Ex : 12 rue du Dojo" ${settingsRO}`)}
+          ${field("address2", "Complément d'adresse", club.contact.address2, "text", `placeholder="Ex : Gymnase municipal, salle 2" ${settingsRO}`)}
+          ${field("postalCode", "Code postal", club.contact.postalCode, "text", `placeholder="Ex : 47300" ${settingsRO}`)}
+          ${field("city", "Ville", club.contact.city, "text", `placeholder="Ex : Villeneuve-sur-Lot" ${settingsRO}`)}
+          ${field("country", "Pays", club.contact.country, "text", `placeholder="Ex : France" ${settingsRO}`)}
+          ${field("phone", "Téléphone", club.contact.phone, "text", `placeholder="Ex : 06 12 34 56 78" ${settingsRO}`)}
+          ${field("email", "Email officiel", club.contact.email, "email", `placeholder="Ex : contact@monclub.fr" ${settingsRO}`)}
+          ${field("website", "Site web", club.contact.website, "text", `placeholder="Ex : www.monclub.fr" ${settingsRO}`)}
+          ${textareaField("social", "Réseaux sociaux", club.contact.social, "Ex : facebook.com/monclub, instagram.com/monclub", settingsRO)}
         </div>
       </section>
       <section class="band club-form-section">
-        <div class="band-title"><h2>Responsables</h2><span>Modifiables après création</span></div>
-        <div class="club-manager-grid">
-          ${Object.entries(managerLabels).map(([role, label]) => {
-            const manager = club.managers.find((row) => row.role === role) || { role, function: label };
-            return `<div class="club-manager-card">
-              <h3>${esc(label)}</h3>
-              <input type="hidden" name="manager_${esc(role)}_role" value="${esc(role)}" />
-              ${field(`manager_${role}_lastName`, "Nom", manager.lastName, "text", 'placeholder="Ex : Dupont"')}
-              ${field(`manager_${role}_firstName`, "Prénom", manager.firstName, "text", 'placeholder="Ex : Marie"')}
-              ${field(`manager_${role}_email`, "Email", manager.email, "email", 'placeholder="Ex : marie.dupont@monclub.fr"')}
-              ${field(`manager_${role}_phone`, "Téléphone", manager.phone, "text", 'placeholder="Ex : 06 12 34 56 78"')}
-              ${field(`manager_${role}_function`, "Fonction", manager.function || label, "text", 'placeholder="Ex : Présidente"')}
-              ${textareaField(`manager_${role}_notes`, "Notes", manager.notes, "Ex : Disponible en soirée et le week-end")}
-            </div>`;
-          }).join("")}
+        <div class="band-title"><h2>Responsables</h2><span>Ajoutez, modifiez ou supprimez librement les responsables du club</span></div>
+        <div class="club-manager-grid" data-manager-list data-club-id="${esc(club.id)}">
+          ${club.managers.length
+            ? club.managers.map((manager) => clubManagerCardHtml(manager, !canEditManagers)).join("")
+            : `<p class="muted" data-manager-empty>Aucun responsable enregistré pour ce club.</p>`}
         </div>
+        ${canEditManagers ? `<button type="button" data-action="add-manager-card">Ajouter un responsable</button>` : ""}
       </section>
       <section class="band club-form-section">
         <div class="band-title"><h2>Paiements</h2><span>Modes acceptés et échéanciers</span></div>
         <div class="settings-check-grid">
-          ${modeOptions.map(([key, label]) => `<label class="settings-check"><input type="checkbox" name="paymentMode_${esc(key)}" ${acceptedPaymentModes(club).includes(key) ? "checked" : ""} /><span><strong>${esc(label)}</strong></span></label>`).join("")}
+          ${modeOptions.map(([key, label]) => `<label class="settings-check"><input type="checkbox" name="paymentMode_${esc(key)}" ${acceptedPaymentModes(club).includes(key) ? "checked" : ""} ${settingsLocked} /><span><strong>${esc(label)}</strong></span></label>`).join("")}
         </div>
         <div class="form-grid compact">
-          ${field("maxSplitPayments", "Paiements fractionnés maximum", club.payments.maxSplitPayments, "number", 'min="1" max="5"')}
-          ${field("maxChecks", "Chèques maximum", club.payments.maxChecks, "number", 'min="1" max="5"')}
-          ${field("checkOrder", "Ordre des chèques", club.payments.checkOrder, "text", 'placeholder="Ex : Budo Club de Lédat (à l\'ordre de qui rédiger le chèque)"')}
-          ${field("iban", "IBAN", club.payments.iban, "text", 'placeholder="Ex : FR76 1234 5678 9012 3456 7890 123"')}
-          ${field("bic", "BIC", club.payments.bic, "text", 'placeholder="Ex : AGRIFRPP847"')}
-          ${field("bankName", "Nom de la banque", club.payments.bankName, "text", 'placeholder="Ex : Crédit Agricole"')}
-          ${textareaField("defaultConditions", "Conditions de paiement par défaut", club.payments.defaultConditions, "Ex : Règlement à l'inscription. Possibilité de payer en 3 chèques encaissés en octobre, décembre et février.")}
-          ${textareaField("scheduleMessage", "Message par défaut pour les échéanciers", club.payments.scheduleMessage, "Ex : Merci d'indiquer le nom de l'adhérent au dos de chaque chèque.")}
+          ${field("maxSplitPayments", "Paiements fractionnés maximum", club.payments.maxSplitPayments, "number", `min="1" max="5" ${settingsRO}`)}
+          ${field("maxChecks", "Chèques maximum", club.payments.maxChecks, "number", `min="1" max="5" ${settingsRO}`)}
+          ${field("checkOrder", "Ordre des chèques", club.payments.checkOrder, "text", `placeholder="Ex : Budo Club de Lédat (à l'ordre de qui rédiger le chèque)" ${settingsRO}`)}
+          ${field("iban", "IBAN", club.payments.iban, "text", `placeholder="Ex : FR76 1234 5678 9012 3456 7890 123" ${settingsRO}`)}
+          ${field("bic", "BIC", club.payments.bic, "text", `placeholder="Ex : AGRIFRPP847" ${settingsRO}`)}
+          ${field("bankName", "Nom de la banque", club.payments.bankName, "text", `placeholder="Ex : Crédit Agricole" ${settingsRO}`)}
+          ${textareaField("defaultConditions", "Conditions de paiement par défaut", club.payments.defaultConditions, "Ex : Règlement à l'inscription. Possibilité de payer en 3 chèques encaissés en octobre, décembre et février.", settingsRO)}
+          ${textareaField("scheduleMessage", "Message par défaut pour les échéanciers", club.payments.scheduleMessage, "Ex : Merci d'indiquer le nom de l'adhérent au dos de chaque chèque.", settingsRO)}
         </div>
       </section>
       <section class="band club-form-section">
         <div class="band-title"><h2>Futurs documents</h2><span>Préparation seulement, pas de facturation ici</span></div>
         <div class="form-grid compact">
-          ${field("documentPrefix", "Préfixe document", club.documents.prefix, "text", 'placeholder="Ex : BCL"')}
-          ${field("numberingFormat", "Format de numérotation prévu", club.documents.numberingFormat, "text", 'placeholder="Ex : BCL-2026-0001"')}
-          ${textareaField("documentFooter", "Pied de page", club.documents.footer, "Ex : Association loi 1901 — SIRET 123 456 789 00012 — contact@monclub.fr")}
-          ${textareaField("legalMentions", "Mentions légales personnalisables", club.documents.legalMentions, "Ex : TVA non applicable, art. 293 B du CGI")}
-          ${textareaField("paymentTerms", "Conditions générales de règlement", club.documents.paymentTerms, "Ex : Règlement à réception. Aucun remboursement après le début de la saison sauf certificat médical.")}
-          ${textareaField("documentDefaultMessage", "Message par défaut pour futurs documents", club.documents.defaultMessage, "Ex : Merci de votre confiance et belle saison sportive !")}
+          ${field("documentPrefix", "Préfixe document", club.documents.prefix, "text", `placeholder="Ex : BCL" ${settingsRO}`)}
+          ${field("numberingFormat", "Format de numérotation prévu", club.documents.numberingFormat, "text", `placeholder="Ex : BCL-2026-0001" ${settingsRO}`)}
+          ${textareaField("documentFooter", "Pied de page", club.documents.footer, "Ex : Association loi 1901 — SIRET 123 456 789 00012 — contact@monclub.fr", settingsRO)}
+          ${textareaField("legalMentions", "Mentions légales personnalisables", club.documents.legalMentions, "Ex : TVA non applicable, art. 293 B du CGI", settingsRO)}
+          ${textareaField("paymentTerms", "Conditions générales de règlement", club.documents.paymentTerms, "Ex : Règlement à réception. Aucun remboursement après le début de la saison sauf certificat médical.", settingsRO)}
+          ${textareaField("documentDefaultMessage", "Message par défaut pour futurs documents", club.documents.defaultMessage, "Ex : Merci de votre confiance et belle saison sportive !", settingsRO)}
         </div>
       </section>`;
   }
@@ -16575,9 +17475,27 @@ ${esc(bodyText)}</pre>
     return asText(new FormData(form).get(name));
   }
 
+  // Lot O-B — lecture réelle des cartes Responsables PRÉSENTES dans le formulaire (ajoutées/
+  // supprimées librement côté DOM par addManagerCard/deleteManagerCard, sans passer par render()).
+  // Aucune reconstruction depuis une liste de rôles fixes : une carte présente, même vide, est
+  // conservée telle quelle (aucun filtrage silencieux). L'identité de chaque carte est
+  // EXCLUSIVEMENT data-manager-id, jamais son role ni sa position. Extraite en fonction dédiée
+  // (jamais de FormData ici, contrairement au reste de clubFromForm) : testable indépendamment.
+  function managersFromForm(form) {
+    return [...form.querySelectorAll("[data-manager-card]")].map((card) => ({
+      id: asText(card.dataset.managerId),
+      role: asText(card.querySelector('[name="role"]')?.value),
+      function: asText(card.querySelector('[name="function"]')?.value),
+      lastName: asText(card.querySelector('[name="lastName"]')?.value),
+      firstName: asText(card.querySelector('[name="firstName"]')?.value),
+      email: asText(card.querySelector('[name="email"]')?.value),
+      phone: asText(card.querySelector('[name="phone"]')?.value),
+      notes: asText(card.querySelector('[name="notes"]')?.value),
+    }));
+  }
+
   function clubFromForm(form, baseClub = {}) {
     const base = normalizeClubIdentity(baseClub);
-    const managerLabels = clubManagerLabels();
     const paymentModes = paymentModeDefinitions().map(([mode]) => mode).filter((mode) => form.querySelector(`[name="paymentMode_${CSS.escape(mode)}"]`)?.checked);
     const club = normalizeClubIdentity({
       ...base,
@@ -16619,16 +17537,7 @@ ${esc(bodyText)}</pre>
         website: formValue(form, "website"),
         social: formValue(form, "social"),
       },
-      managers: Object.entries(managerLabels).map(([role, label]) => ({
-        id: base.managers?.find((manager) => manager.role === role)?.id || id("manager"),
-        role,
-        function: formValue(form, `manager_${role}_function`) || label,
-        lastName: formValue(form, `manager_${role}_lastName`),
-        firstName: formValue(form, `manager_${role}_firstName`),
-        email: formValue(form, `manager_${role}_email`),
-        phone: formValue(form, `manager_${role}_phone`),
-        notes: formValue(form, `manager_${role}_notes`),
-      })),
+      managers: managersFromForm(form),
       payments: {
         acceptedModes: paymentModes.length ? paymentModes : ["cash", "check", "card"],
         maxSplitPayments: normalizePaymentCheckCount(formValue(form, "maxSplitPayments")),
@@ -16651,6 +17560,199 @@ ${esc(bodyText)}</pre>
       updatedAt: new Date().toISOString(),
     });
     return club;
+  }
+
+  // Correction Pix (O-B) — synchronise l'état vide de la section Responsables : retire le message
+  // [data-manager-empty] dès qu'au moins une carte existe, le (re)crée (exactement un) dès qu'il
+  // n'en reste plus aucune. Centralisé pour qu'addManagerCard/deleteManagerCard ne divergent
+  // jamais. Aucun persist, aucun render().
+  function syncManagerEmptyState(list) {
+    if (!list) return;
+    const hasCards = list.querySelectorAll("[data-manager-card]").length > 0;
+    const empty = list.querySelector("[data-manager-empty]");
+    if (hasCards) { empty?.remove(); return; }
+    if (!empty) list.insertAdjacentHTML("beforeend", `<p class="muted" data-manager-empty>Aucun responsable enregistré pour ce club.</p>`);
+  }
+
+  // Lot O-B — manipulation DOM PURE (comme addSizeStockRow/removeSizeStockRow, 19-contact-dialogs.js) :
+  // aucun persist, aucun render(). Fonctionne identiquement dans la page Paramètres du club (dans
+  // le render() global) et dans les dialogues (Assistant complet, duplication) : la carte insérée
+  // survit jusqu'au clic sur Enregistrer, où clubFromForm() la lira comme n'importe quelle autre.
+  function addManagerCard(button) {
+    const list = button.closest("form")?.querySelector("[data-manager-list]");
+    if (!list) return;
+    const manager = { id: id("manager"), role: "custom", function: "", lastName: "", firstName: "", email: "", phone: "", notes: "" };
+    list.insertAdjacentHTML("beforeend", clubManagerCardHtml(manager));
+    syncManagerEmptyState(list);
+  }
+
+  // Suppression PURE (DOM uniquement, avant tout Enregistrer) : demande confirmation, puis retire
+  // exclusivement la carte ciblée par l'utilisateur (jamais une autre carte de même role), en
+  // s'appuyant uniquement sur la fermeture du bouton — jamais sur le role/l'index/le nom.
+  async function deleteManagerCard(button) {
+    const card = button.closest("[data-manager-card]");
+    if (!card) return;
+    const list = card.closest("[data-manager-list]");
+    // Lot O-C — un Responsable référencé par une Membership (compte utilisateur) DANS CE CLUB ne
+    // peut plus être supprimé silencieusement : il faut d'abord dissocier son compte. Garde
+    // SCOPÉE par clubId (jamais une recherche globale par manager.id seul, cf. clubs dupliqués
+    // avant O-B) — le clubId vient de data-club-id, jamais du club actif implicite (fonctionne
+    // aussi dans l'Assistant complet et le dialogue de duplication/création).
+    const clubId = asText(list?.dataset?.clubId);
+    const managerId = asText(card.dataset.managerId);
+    if (clubId && managerId && typeof managerAlreadyLinked === "function" && managerAlreadyLinked(clubId, managerId)) {
+      alert("Ce responsable possède encore un accès utilisateur.\n\nDissociez d'abord son compte dans Paramètres > Utilisateurs avant de supprimer ce responsable.");
+      return;
+    }
+    const label = asText(card.querySelector('[name="function"]')?.value) || asText(card.querySelector('[name="lastName"]')?.value) || "ce responsable";
+    const confirmed = await requestConfirm({
+      title: "Supprimer ce responsable",
+      message: `Supprimer « ${label} » de la liste des responsables ?\n\nCette suppression ne sera définitive qu'après avoir cliqué sur « Enregistrer les paramètres du club ».`,
+      confirmLabel: "Supprimer",
+      danger: true,
+    });
+    if (!confirmed) return;
+    card.remove();
+    syncManagerEmptyState(list);
+  }
+
+  // Lot O-E2-B6R (§12-13) — chemins FEUILLE réellement possédés par clubFormSectionsHtml/
+  // clubFromForm. Exclusions volontaires : `colors` (jamais modifié par ce formulaire),
+  // `season.autoBackup`/`season.lastAutoBackupKey` (métadonnées techniques du système de sauvegarde
+  // automatique, jamais des champs de formulaire), `id`/`archived`/`createdAt`/`updatedAt`
+  // (bookkeeping structurel) et `managers` (domaine indépendant, patché séparément ci-dessous).
+  const CLUB_SETTINGS_LEAF_PATHS = [
+    ["name"], ["shortName"], ["subtitle"], ["logoDataUrl"], ["theme"], ["mainDiscipline"], ["disciplines"],
+    ["season", "startDate"], ["season", "endDate"],
+    ["admin", "legalStatus"], ["admin", "rna"], ["admin", "siret"], ["admin", "siren"], ["admin", "apeNaf"],
+    ["admin", "vatNumber"], ["admin", "vatRegime"], ["admin", "vatMention"], ["admin", "creationDate"],
+    ["admin", "federation"], ["admin", "federationNumber"], ["admin", "approvalNumber"],
+    ["contact", "address"], ["contact", "address2"], ["contact", "postalCode"], ["contact", "city"],
+    ["contact", "country"], ["contact", "phone"], ["contact", "email"], ["contact", "website"], ["contact", "social"],
+    ["payments", "acceptedModes"], ["payments", "maxSplitPayments"], ["payments", "maxChecks"], ["payments", "checkOrder"],
+    ["payments", "iban"], ["payments", "bic"], ["payments", "bankName"], ["payments", "defaultConditions"], ["payments", "scheduleMessage"],
+    ["documents", "prefix"], ["documents", "numberingFormat"], ["documents", "footer"], ["documents", "legalMentions"],
+    ["documents", "paymentTerms"], ["documents", "defaultMessage"],
+  ];
+
+  function readClubLeafPath(club, path) {
+    return path.reduce((node, key) => (node == null ? undefined : node[key]), club);
+  }
+
+  // Clone chaque nœud intermédiaire AVANT d'écrire (§18) : ne jamais muter en place un objet
+  // potentiellement partagé (club LIVE issu de normalizeClubStore, éventuellement le même objet que
+  // clubStore en mémoire si rawClubStoreFromStorage() retombe sur ce fallback).
+  function writeClubLeafPath(target, path, value) {
+    let node = target;
+    for (let i = 0; i < path.length - 1; i++) {
+      const key = path[i];
+      node[key] = (node[key] && typeof node[key] === "object") ? { ...node[key] } : {};
+      node = node[key];
+    }
+    const lastKey = path[path.length - 1];
+    node[lastKey] = (value && typeof value === "object") ? (Array.isArray(value) ? [...value] : { ...value }) : value;
+  }
+
+  // Diffs calculés contre le snapshot D'OUVERTURE (openClub = `base`/`club` capturé avant édition),
+  // JAMAIS contre le live : un domaine verrouillé (formulaire lu en DOM direct ou readonly, jamais
+  // modifié par CET utilisateur) doit rester "non changé" ici même si le live a dérivé entretemps
+  // par un autre chemin/session (§20-21, préservation) — sinon la dérive externe d'un domaine que
+  // l'utilisateur n'a jamais touché provoquerait un refus total illégitime (§49/§50). À l'inverse,
+  // un draft qui modifie RÉELLEMENT les deux domaines (soumission légitime OU appel direct forgé,
+  // §26/§27) est correctement détecté ici, quel que soit le live (§19, delta mixte). Uniquement sur
+  // les chemins FEUILLE (§14) : jamais sur le domaine complet (colors/lastAutoBackupKey/updatedAt
+  // n'y participent jamais, aucun faux positif possible).
+  function clubSettingsChangedFrom(openClub, draftClub) {
+    return CLUB_SETTINGS_LEAF_PATHS.some((path) => JSON.stringify(readClubLeafPath(openClub, path)) !== JSON.stringify(readClubLeafPath(draftClub, path)));
+  }
+
+  function clubManagersChangedFrom(openClub, draftClub) {
+    return JSON.stringify(openClub.managers || []) !== JSON.stringify(draftClub.managers || []);
+  }
+
+  function liveClubById(clubId) {
+    const store = normalizeClubStore(rawClubStoreFromStorage() || clubStore);
+    return store.clubs.find((row) => row.id === clubId) || null;
+  }
+
+  // Écrit UNIQUEMENT, chemin par chemin, les feuilles Paramètres RÉELLEMENT modifiées par CET
+  // utilisateur (draft ≠ open sur ce chemin précis) — jamais un Object.assign/recopie de domaine
+  // complet (§15/§17) : un champ non touché par ce formulaire reste EXACTEMENT à sa valeur LIVE
+  // actuelle, même si le reste du domaine Settings a changé par ailleurs (§9-11, §19-22).
+  function applyClubSettingsPatch(target, openClub, draftClub) {
+    CLUB_SETTINGS_LEAF_PATHS.forEach((path) => {
+      const openValue = readClubLeafPath(openClub, path);
+      const draftValue = readClubLeafPath(draftClub, path);
+      if (JSON.stringify(openValue) === JSON.stringify(draftValue)) return;
+      writeClubLeafPath(target, path, draftValue);
+    });
+    target.updatedAt = new Date().toISOString();
+    return target;
+  }
+
+  // Réconciliation à 3 (open/draft/live) PAR manager.id — jamais un remplacement brut du tableau
+  // (§20) : un Responsable ajouté/modifié EN LIVE par un autre chemin pendant que ce formulaire était
+  // ouvert ne doit jamais être perdu ni écrasé par le vieux snapshot de CET utilisateur s'il ne l'a
+  // pas lui-même touché. Seules les entrées RÉELLEMENT ajoutées/modifiées/supprimées par CETTE
+  // soumission (comparée à openClub) sont rejouées sur le tableau live ; tout le reste du live est
+  // préservé tel quel. §33 (O-C) : un Responsable lié n'est jamais retiré silencieusement, même si le
+  // draft l'omet — rejoue la même protection que deleteManagerCard() au point d'écriture réel.
+  function applyClubManagersPatch(target, openClub, draftClub) {
+    const openById = new Map((openClub.managers || []).map((manager) => [manager.id, manager]));
+    const draftById = new Map((draftClub.managers || []).map((manager) => [manager.id, manager]));
+    const removedIds = new Set(
+      [...openById.keys()].filter((mid) => !draftById.has(mid) && !(typeof managerAlreadyLinked === "function" && managerAlreadyLinked(target.id, mid))),
+    );
+    const addedManagers = (draftClub.managers || []).filter((manager) => !openById.has(manager.id));
+    const editedById = new Map(
+      (draftClub.managers || [])
+        .filter((manager) => openById.has(manager.id) && JSON.stringify(openById.get(manager.id)) !== JSON.stringify(manager))
+        .map((manager) => [manager.id, manager]),
+    );
+    const liveManagers = (target.managers || []).filter((manager) => !removedIds.has(manager.id));
+    target.managers = liveManagers.map((manager) => editedById.get(manager.id) || manager).concat(addedManagers);
+    target.updatedAt = new Date().toISOString();
+    return target;
+  }
+
+  // Point d'écriture UNIQUE pour l'édition d'un club EXISTANT (jamais création/duplication, hors
+  // périmètre §36) — utilisé par la page Paramètres ET les dialogues Modifier/Assistant (§26/§27 :
+  // la primitive elle-même vérifie, jamais seulement les boutons UI). Résout le club LIVE juste avant
+  // toute mutation (§21), calcule séparément les deux deltas contre le snapshot d'ouverture, exige
+  // indépendamment les permissions correspondantes SANS union (§5/§17-19), refuse ATOMIQUEMENT dès
+  // qu'un domaine changé manque son autorisation — aucune sauvegarde partielle, aucun appel à
+  // saveClub() n'a lieu tant que les deux gardes n'ont pas été validées.
+  // Lot O-E2-B6R (§2) — l'activation n'est JAMAIS un effet de bord de l'édition d'un club existant :
+  // seul un appelant qui la demande EXPLICITEMENT (options.activate === true) la déclenche. Éditer un
+  // club non actif ne bascule plus jamais le club actif à son insu (régression B6 corrigée).
+  function saveExistingClubGuarded(draftClub, openClub, clubId, options = {}) {
+    if (!clubId) return false;
+    const liveClub = liveClubById(clubId);
+    if (!liveClub) {
+      alert("Ce club n'existe plus.");
+      return false;
+    }
+    const settingsChanged = clubSettingsChangedFrom(openClub, draftClub);
+    const managersChanged = clubManagersChangedFrom(openClub, draftClub);
+    if (!settingsChanged && !managersChanged) return "Aucune modification à enregistrer";
+    if (settingsChanged && !currentUserHasPermission("clubSettings.manage", clubId)) {
+      alert("Vous n'avez pas l'autorisation nécessaire.");
+      return false;
+    }
+    if (managersChanged && !currentUserHasPermission("managers.manage", clubId)) {
+      alert("Vous n'avez pas l'autorisation nécessaire.");
+      return false;
+    }
+    const target = { ...liveClub };
+    if (settingsChanged) applyClubSettingsPatch(target, openClub, draftClub);
+    if (managersChanged) applyClubManagersPatch(target, openClub, draftClub);
+    const activate = options.activate === true;
+    saveClub(target, { activate });
+    return settingsChanged && managersChanged
+      ? "Paramètres et responsables du club enregistrés"
+      : settingsChanged
+        ? "Paramètres du club enregistrés"
+        : "Responsables du club enregistrés";
   }
 
   function saveClub(club, options = {}) {
@@ -16768,6 +17870,14 @@ ${esc(bodyText)}</pre>
     const normalized = normalizeClubStore(store);
     const payload = normalized.data[normalized.activeClubId];
     if (!payload) return false;
+    // Lot O-E2-B7R (§1-3) — loadActiveClubFromStore() est aussi rappelé pour un simple save du club
+    // DÉJÀ actif (saveClub() le fait systématiquement quand savedStore.activeClubId === club sauvé) :
+    // un VRAI changement de club se détecte contre ui.loadedClubId (maintenu ICI, jamais déduit de
+    // clubStore après writeClubStore() qui peut déjà porter le nouvel id). previousLoadedClubId vide
+    // (premier chargement) ne compte jamais comme un switch — rien à contaminer.
+    const previousLoadedClubId = ui.loadedClubId || "";
+    const nextClubId = normalized.activeClubId || "";
+    const clubActuallyChanged = Boolean(previousLoadedClubId && nextClubId && previousLoadedClubId !== nextClubId);
     clubStore = normalized;
     settings = settingsForClub(payload.settings || {}, normalized.clubs.find((club) => club.id === normalized.activeClubId));
     state = scopeStateToClub(payload.state || {}, normalized.activeClubId);
@@ -16781,7 +17891,19 @@ ${esc(bodyText)}</pre>
     // import, restauration et retour dans un club déjà ouvert (tous passent par ici).
     ui.discipline = "";
     ui.disciplineDueOnly = false;
-    if (typeof invalidateSmtpUiStateForClubSwitch === "function") invalidateSmtpUiStateForClubSwitch();
+    if (clubActuallyChanged) {
+      if (typeof invalidateSmtpUiStateForClubSwitch === "function") invalidateSmtpUiStateForClubSwitch();
+      // Lot O-E2-B7 (§36-41) — état UI Newsletter (destinataires supplémentaires/exclus, audience,
+      // brouillon de message) et session d'édition de modèle e-mail : jamais club-bound avant ce lot,
+      // donc jamais reportés d'un club à l'autre à ce point commun (switch/création+activation/
+      // suppression du club actif, exactement comme les filtres discipline/query ci-dessus).
+      // Lot O-E2-B7R (§1-3) — UNIQUEMENT sur un VRAI changement de club : un simple save du club déjà
+      // actif ne doit jamais abandonner un brouillon Newsletter/SMTP/modèle en cours.
+      if (typeof resetNewsletterUiStateForClubSwitch === "function") resetNewsletterUiStateForClubSwitch();
+      ui.emailTemplateEditing = false;
+      ui.emailTemplateClubId = "";
+    }
+    ui.loadedClubId = nextClubId;
     // Mode permissif (Lot 1 utilisateurs) : garantit une appartenance de l'utilisateur actif
     // sur le club désormais actif, sans jamais bloquer si elle n'existait pas encore.
     if (typeof ensureActiveUserMembershipForActiveClub === "function") ensureActiveUserMembershipForActiveClub();
@@ -16806,17 +17928,68 @@ ${esc(bodyText)}</pre>
 
   function openClubEditorDialog(clubId = "", options = {}) {
     const store = normalizeClubStore(rawClubStoreFromStorage() || clubStore);
-    const existing = store.clubs.find((club) => club.id === clubId);
+    // Lot O-E2-B6R2 (§1-6) — un clubId EXPLICITEMENT fourni (édition OU duplication) cible CE club
+    // précis : s'il n'existe plus (id forgé/périmé/supprimé entretemps), REFUS FAIL-CLOSED, JAMAIS un
+    // repli création. Seul clubId="" (aucun club demandé — chemin "Nouveau club"/wizard, hors de
+    // cette primitive) autorise la branche de création ci-dessous.
+    const requestedClubId = asText(clubId);
+    const existing = requestedClubId ? store.clubs.find((club) => club.id === requestedClubId) : null;
     const isDuplicate = Boolean(options.duplicate);
+    if ((requestedClubId || isDuplicate) && !existing) {
+      alert("Ce club n'existe plus.");
+      return;
+    }
+    // Lot O-B (audit O-A §22) — un club dupliqué ne doit JAMAIS partager les mêmes id de responsable
+    // que le club source : manager.id devient une vraie identité référencable (O-C), donc chaque
+    // Responsable copié reçoit un id NEUF ici. Contenu humain (nom/prénom/fonction/etc.) inchangé.
     const base = isDuplicate && existing
-      ? normalizeClubIdentity({ ...existing, id: id("club"), name: `${existing.name} copie`, archived: false, createdAt: new Date().toISOString() })
+      ? normalizeClubIdentity({
+          ...existing,
+          id: id("club"),
+          name: `${existing.name} copie`,
+          archived: false,
+          createdAt: new Date().toISOString(),
+          managers: (existing.managers || []).map((manager) => ({ ...manager, id: id("manager") })),
+        })
       : existing || defaultClubIdentity({ clubName: "Mon club", clubSubtitle: "Gestion de club", theme: settings.theme }, {});
     const title = existing && !isDuplicate ? "Modifier le club" : "Assistant de création du club";
+    // Lot O-E2-B6 (§36) — création/duplication restent des actions STRUCTURELLES hors périmètre de ce
+    // lot (aucune règle existante ne les couvre, aucune autorisation inventée) : clubId="" laisse le
+    // formulaire pleinement éditable. Seule une édition RÉELLE (existing && !isDuplicate) est gouvernée
+    // par clubSettings.manage/managers.manage.
+    //
+    // Lot O-E2-B6R (§24/§30-31) — duplication et création restent des opérations STRUCTURELLES :
+    // Admin strict du club SOURCE pour une duplication (jamais clubSettings.manage/managers.manage),
+    // Admin strict du club actif d'autorité pour une création RÉELLE (clubId="", cf. garde §1-6
+    // ci-dessus qui a déjà exclu tout repli création sur un id demandé mais introuvable). Vérifié à
+    // l'OUVERTURE et revérifié au SUBMIT (§28).
+    const lifecycleAuthorityClubId = isDuplicate && existing ? existing.id : (!existing ? activeClubId() : "");
+    if (lifecycleAuthorityClubId && !requireAdminForClub(lifecycleAuthorityClubId)) {
+      alert(isDuplicate ? "Seul un administrateur du club source peut le dupliquer." : "Seul un administrateur du club actif peut créer un nouveau club.");
+      return;
+    }
     setNextWindowKey(existing && !isDuplicate ? `club:${existing.id}` : null);
-    showDialog(title, clubFormSectionsHtml(base), async (_data, form) => {
+    showDialog(title, clubFormSectionsHtml(base, { clubId: existing && !isDuplicate ? existing.id : "" }), async (_data, form) => {
       const club = clubFromForm(form, base);
       if (!asText(club.name)) {
         alert("Le nom du club est obligatoire.");
+        return false;
+      }
+      if (existing && !isDuplicate) {
+        // Lot O-E2-B6R (§4) — sémantique historique : modifier un club EXISTANT n'active jamais ce
+        // club par effet de bord. Seul un appelant l'ayant explicitement demandé (options.activate)
+        // bascule le club actif.
+        const message = saveExistingClubGuarded(club, base, existing.id, { activate: options.activate === true });
+        return message || false;
+      }
+      if (lifecycleAuthorityClubId && !requireAdminForClub(lifecycleAuthorityClubId)) {
+        alert(isDuplicate ? "Seul un administrateur du club source peut le dupliquer." : "Seul un administrateur du club actif peut créer un nouveau club.");
+        return false;
+      }
+      // Lot O-E2-B6R2 — revalidation LIVE au submit : la source a pu être supprimée pendant que ce
+      // dialogue était ouvert. Jamais de duplication à partir d'une source disparue entretemps.
+      if (isDuplicate && !normalizeClubStore(rawClubStoreFromStorage() || clubStore).clubs.some((row) => row.id === existing.id)) {
+        alert("Ce club n'existe plus.");
         return false;
       }
       try {
@@ -16825,15 +17998,13 @@ ${esc(bodyText)}</pre>
         // copie des données ("Identité seulement"), pour que la journalisation (club.duplicated
         // vs club.created) reste correcte indépendamment du clonage effectif du state.
         const duplicateSourceId = isDuplicate && existing ? existing.id : "";
-        saveClub(club, { activate: !existing || isDuplicate || options.activate, create: !existing || isDuplicate, cloneFromClubId, duplicateSourceId, seedMainDiscipline: !existing && !isDuplicate });
+        saveClub(club, { activate: isDuplicate || options.activate || !existing, create: true, cloneFromClubId, duplicateSourceId, seedMainDiscipline: !existing && !isDuplicate });
       } catch (error) {
         console.error(error);
         alert(error.message || "Impossible d'enregistrer le club sans conserver les clubs existants.");
         return false;
       }
-      return existing && !isDuplicate
-        ? `Modification du club ${club.name}`
-        : (isDuplicate && options.withData ? `Duplication complète du club ${club.name}` : `Création du club ${club.name}`);
+      return isDuplicate && options.withData ? `Duplication complète du club ${club.name}` : `Création du club ${club.name}`;
     }, (form) => {
       setupClubLogoPreview(form);
       setupThemePreview(form);
@@ -16841,10 +18012,19 @@ ${esc(bodyText)}</pre>
     });
   }
 
+  // Lot O-E2-B6R2 (§7) — "Assistant complet" n'est JAMAIS un chemin de création (celui-ci est
+  // exclusivement "Nouveau club"/startClubWizard, §19) : un clubId non vide et introuvable (id
+  // forgé/périmé/supprimé entretemps) est un REFUS FAIL-CLOSED, jamais defaultClubIdentity.
   function openClubAssistantDialog(clubId = "", options = {}) {
+    const requestedClubId = asText(clubId);
+    if (!requestedClubId) return;
     const store = normalizeClubStore(rawClubStoreFromStorage() || clubStore);
-    const existing = store.clubs.find((club) => club.id === clubId);
-    const base = existing || defaultClubIdentity({ clubName: "Mon club", clubSubtitle: "Gestion de club", theme: settings.theme }, {});
+    const existing = store.clubs.find((club) => club.id === requestedClubId);
+    if (!existing) {
+      alert("Ce club n'existe plus.");
+      return;
+    }
+    const base = existing;
     const steps = [
       ["Identité", "Nom, logo, couleurs, saison"],
       ["Administratif", "Statut, TVA, affiliation"],
@@ -16861,7 +18041,7 @@ ${esc(bodyText)}</pre>
       <div class="club-wizard-steps" data-club-wizard-steps>
         ${steps.map(([label], index) => `<button type="button" data-club-wizard-step="${index}">${esc(index + 1)}. ${esc(label)}</button>`).join("")}
       </div>
-      ${clubFormSectionsHtml(base)}
+      ${clubFormSectionsHtml(base, { clubId: existing ? existing.id : "" })}
       <div class="club-wizard-actions">
         <button type="button" data-club-wizard-prev>Précédent</button>
         <span data-club-wizard-caption></span>
@@ -16874,14 +18054,19 @@ ${esc(bodyText)}</pre>
         alert("Le nom du club est obligatoire.");
         return false;
       }
+      if (existing) {
+        // Lot O-E2-B6R (§5) — même règle que openClubEditorDialog : pas d'activation implicite.
+        const message = saveExistingClubGuarded(club, base, existing.id, { activate: options.activate === true });
+        return message || false;
+      }
       try {
-        saveClub(club, { activate: !existing || options.activate, create: !existing, seedMainDiscipline: !existing });
+        saveClub(club, { activate: true, create: true, seedMainDiscipline: true });
       } catch (error) {
         console.error(error);
         alert(error.message || "Impossible d'enregistrer le club sans conserver les clubs existants.");
         return false;
       }
-      return existing ? `Modification du club ${club.name}` : `Création du club ${club.name}`;
+      return `Création du club ${club.name}`;
     }, (form) => {
       setupClubLogoPreview(form);
       setupThemePreview(form);
@@ -16933,7 +18118,14 @@ ${esc(bodyText)}</pre>
     update();
   }
 
+  // Lot O-E2-B6R (§24/§32/§35) — opération structurelle Club : Admin strict DU CLUB CIBLE, jamais
+  // clubSettings.manage/managers.manage. Capturé AVANT l'await (confirmation), revérifié APRÈS
+  // (l'admin ou le club a pu changer pendant l'attente).
   async function archiveClub(clubId) {
+    if (!clubId || !requireAdminForClub(clubId)) {
+      alert("Seul un administrateur de ce club peut l'archiver.");
+      return;
+    }
     const store = normalizeClubStore(clubStore || rawClubStoreFromStorage());
     const club = store.clubs.find((row) => row.id === clubId);
     if (!club) return;
@@ -16949,6 +18141,10 @@ ${esc(bodyText)}</pre>
       true,
     );
     if (!confirmed) return;
+    if (!requireAdminForClub(clubId)) {
+      alert("Seul un administrateur de ce club peut l'archiver.");
+      return;
+    }
     saveCurrentClubPayload({ reloadActive: false });
     const latest = normalizeClubStore(rawClubStoreFromStorage());
     const latestClub = latest.clubs.find((row) => row.id === clubId);
@@ -16968,6 +18164,10 @@ ${esc(bodyText)}</pre>
   }
 
   function unarchiveClub(clubId) {
+    if (!clubId || !requireAdminForClub(clubId)) {
+      alert("Seul un administrateur de ce club peut le réactiver.");
+      return;
+    }
     const store = normalizeClubStore(clubStore || rawClubStoreFromStorage());
     const club = store.clubs.find((row) => row.id === clubId);
     if (!club) return;
@@ -16980,6 +18180,10 @@ ${esc(bodyText)}</pre>
   }
 
   async function deleteClub(clubId) {
+    if (!clubId || !requireAdminForClub(clubId)) {
+      alert("Seul un administrateur de ce club peut le supprimer.");
+      return;
+    }
     saveCurrentClubPayload({ reloadActive: false });
     const store = normalizeClubStore(rawClubStoreFromStorage() || clubStore);
     const club = store.clubs.find((row) => row.id === clubId);
@@ -16992,6 +18196,10 @@ ${esc(bodyText)}</pre>
     const message = `Supprimer définitivement le club "${club.name}" ?\n\nCette action supprime le club et toutes ses données dans le logiciel : contacts, inscriptions, paiements, boutique, stocks, notes, historique et factures.\n\nCette suppression est définitive. Exporte une sauvegarde JSON avant si tu veux pouvoir revenir en arrière.`;
     const confirmed = await requestProtectedDangerAction("Supprimer le club", message, "Supprimer définitivement");
     if (!confirmed) return;
+    if (!requireAdminForClub(clubId)) {
+      alert("Seul un administrateur de ce club peut le supprimer.");
+      return;
+    }
     const latest = normalizeClubStore(rawClubStoreFromStorage() || store);
     const latestClub = latest.clubs.find((row) => row.id === club.id);
     if (!latestClub) return;
@@ -17605,8 +18813,8 @@ ${esc(bodyText)}</pre>
     const club = activeClub();
     if (!form || !club) return;
     const updated = clubFromForm(form, club);
-    saveClub(updated, { activate: true });
-    ui.saveMessage = "Paramètres du club enregistrés";
+    const message = saveExistingClubGuarded(updated, club, club.id);
+    if (message) ui.saveMessage = message;
     render();
   }
 
@@ -17679,8 +18887,15 @@ ${esc(bodyText)}</pre>
     const selected = selectedEmailTemplateKey();
     const def = defs[selected];
     const draft = activeEmailTemplateDraft(selected);
-    const locked = !ui.emailTemplateEditing;
     const isCustom = !emailTemplateDefinitions()[selected];
+    // Lot O-E2-B7 (§12/§21/§24) — consultation (lecture seule, `locked`) toujours accessible avec
+    // newsletter.read ; Nouveau/Modifier/Enregistrer/Supprimer exigent newsletter.write, masqués
+    // sinon. Sans newsletter.write, `locked` reste vrai même si une session d'édition était restée
+    // ouverte (droit retiré entretemps) : jamais de champs éditables sans le droit. clubId explicite
+    // estampillé sur chaque bouton mutant/déclencheur d'édition.
+    const emailTemplateClubId = activeClubId();
+    const canWriteNewsletter = currentUserHasPermission("newsletter.write", emailTemplateClubId);
+    const locked = !ui.emailTemplateEditing || !canWriteNewsletter;
     return `<section class="email-template-card">
       <div class="email-template-toolbar">
         <label>Modèle
@@ -17689,11 +18904,11 @@ ${esc(bodyText)}</pre>
           </select>
         </label>
         <div class="inline-actions">
-          <button type="button" data-action="new-email-template">Nouveau modèle</button>
-          ${locked
-            ? `<button type="button" class="primary" data-action="edit-email-template">✏️ Modifier ce modèle</button>`
-            : `<button type="button" class="primary" data-action="save-email-template">Enregistrer</button><button type="button" data-action="cancel-email-template">Annuler les modifications</button>`}
-          ${isCustom ? `<button type="button" class="danger" data-action="delete-email-template">Supprimer</button>` : ""}
+          ${canWriteNewsletter ? `<button type="button" data-action="new-email-template" data-newsletter-club-id="${esc(emailTemplateClubId)}">Nouveau modèle</button>` : ""}
+          ${canWriteNewsletter ? (locked
+            ? `<button type="button" class="primary" data-action="edit-email-template" data-newsletter-club-id="${esc(emailTemplateClubId)}">✏️ Modifier ce modèle</button>`
+            : `<button type="button" class="primary" data-action="save-email-template" data-newsletter-club-id="${esc(emailTemplateClubId)}">Enregistrer</button><button type="button" data-action="cancel-email-template">Annuler les modifications</button>`) : ""}
+          ${isCustom && canWriteNewsletter ? `<button type="button" class="danger" data-action="delete-email-template" data-newsletter-club-id="${esc(emailTemplateClubId)}">Supprimer</button>` : ""}
         </div>
       </div>
       <div class="email-template-head">
@@ -17742,51 +18957,58 @@ ${esc(bodyText)}</pre>
     const status = smtpStatusLabel();
     const secretPresent = Boolean(ui.smtpSecretStatus?.present);
     const secretSecure = Boolean(ui.smtpSecretStatus?.secure);
+    // Lot O-E2-B7 (§14/§30) — consultation (statut, champs) accessible avec newsletter.read seul ;
+    // toute modification exige newsletter.write. clubId explicite estampillé sur les 3 boutons
+    // d'action (jamais activeClubId() relu tardivement dans le handler).
+    const smtpClubId = activeClubId();
+    const canWriteSmtp = currentUserHasPermission("newsletter.write", smtpClubId);
+    const smtpRO = canWriteSmtp ? "" : "readonly";
+    const smtpLocked = canWriteSmtp ? "" : "disabled";
     return `
       <p class="muted">MonGestaClub peut envoyer vos e-mails directement, en se connectant au serveur SMTP de l'adresse mail du club (Gmail, Outlook, OVH…). Gmail et Outlook demandent souvent un <strong>mot de passe d'application</strong> plutôt que votre mot de passe habituel. Si rien n'est configuré ici, MonGestaClub continue d'ouvrir votre messagerie externe comme avant.</p>
       <div class="smtp-status smtp-status-${esc(status.key)}"><strong>État :</strong> ${esc(status.label)}${draft.lastTestMessage ? ` — <span class="muted">${esc(draft.lastTestMessage)}</span>` : ""}</div>
       <div class="form-grid compact">
         <label>Envoi intégré
-          <select data-smtp-field="enabled">
+          <select data-smtp-field="enabled" ${smtpLocked}>
             <option value="0" ${!draft.enabled ? "selected" : ""}>Désactivé</option>
             <option value="1" ${draft.enabled ? "selected" : ""}>Activé</option>
           </select>
         </label>
         <label>Nom d'expéditeur
-          <input type="text" data-smtp-field="senderName" value="${esc(draft.senderName)}" placeholder="${esc(settings.clubName || "Mon club")}" />
+          <input type="text" data-smtp-field="senderName" value="${esc(draft.senderName)}" placeholder="${esc(settings.clubName || "Mon club")}" ${smtpRO} />
         </label>
         <label>Adresse d'expéditeur
-          <input type="email" data-smtp-field="senderEmail" value="${esc(draft.senderEmail)}" placeholder="club@example.com" />
+          <input type="email" data-smtp-field="senderEmail" value="${esc(draft.senderEmail)}" placeholder="club@example.com" ${smtpRO} />
         </label>
         <label>Serveur SMTP
-          <input type="text" data-smtp-field="host" value="${esc(draft.host)}" placeholder="smtp.gmail.com" />
+          <input type="text" data-smtp-field="host" value="${esc(draft.host)}" placeholder="smtp.gmail.com" ${smtpRO} />
         </label>
         <label>Port
-          <input type="number" min="1" max="65535" data-smtp-field="port" value="${esc(String(draft.port ?? 587))}" />
+          <input type="number" min="1" max="65535" data-smtp-field="port" value="${esc(String(draft.port ?? 587))}" ${smtpRO} />
         </label>
         <label>Sécurité
-          <select data-smtp-field="security">
+          <select data-smtp-field="security" ${smtpLocked}>
             <option value="starttls" ${draft.security === "starttls" ? "selected" : ""}>STARTTLS (recommandé, port 587)</option>
             <option value="ssl" ${draft.security === "ssl" ? "selected" : ""}>SSL/TLS (port 465)</option>
             <option value="none" ${draft.security === "none" ? "selected" : ""}>Aucune</option>
           </select>
         </label>
         <label>Identifiant
-          <input type="text" data-smtp-field="username" value="${esc(draft.username)}" placeholder="${esc(draft.senderEmail || "identifiant")}" />
+          <input type="text" data-smtp-field="username" value="${esc(draft.username)}" placeholder="${esc(draft.senderEmail || "identifiant")}" ${smtpRO} />
         </label>
         <label>Mot de passe ${secretPresent ? `<small class="muted">— déjà enregistré${secretSecure ? "" : ", non chiffré sur ce système"}</small>` : ""}
-          <input type="password" data-smtp-field="password" value="" autocomplete="new-password" placeholder="${secretPresent ? "•••••••• (laisser vide pour ne pas changer)" : "Mot de passe ou mot de passe d'application"}" />
+          <input type="password" data-smtp-field="password" value="" autocomplete="new-password" placeholder="${secretPresent ? "•••••••• (laisser vide pour ne pas changer)" : "Mot de passe ou mot de passe d'application"}" ${smtpRO} />
         </label>
         <label>Adresse de test
-          <input type="email" data-smtp-field="testAddress" value="${esc(draft.testAddress)}" placeholder="toi@example.com" />
+          <input type="email" data-smtp-field="testAddress" value="${esc(draft.testAddress)}" placeholder="toi@example.com" ${smtpRO} />
         </label>
       </div>
       ${secretPresent && !secretSecure ? `<p class="muted smtp-warning">⚠ Le chiffrement sécurisé du système (trousseau) n'est pas disponible ici : le mot de passe est stocké hors des sauvegardes JSON, mais sans chiffrement fort. Évitez un mot de passe sensible si possible sur cette machine.</p>` : ""}
-      <div class="inline-actions">
-        <button type="button" class="primary" data-action="save-smtp-settings">Enregistrer</button>
-        <button type="button" data-action="test-smtp-settings" ${ui.smtpTesting ? "disabled" : ""}>${ui.smtpTesting ? "Test en cours…" : "Tester l'envoi"}</button>
-        <button type="button" class="danger" data-action="clear-smtp-settings" ${(draft.host || secretPresent) ? "" : "disabled"}>Supprimer la configuration SMTP</button>
-      </div>
+      ${canWriteSmtp ? `<div class="inline-actions">
+        <button type="button" class="primary" data-action="save-smtp-settings" data-smtp-club-id="${esc(smtpClubId)}">Enregistrer</button>
+        <button type="button" data-action="test-smtp-settings" data-smtp-club-id="${esc(smtpClubId)}" ${ui.smtpTesting ? "disabled" : ""}>${ui.smtpTesting ? "Test en cours…" : "Tester l'envoi"}</button>
+        <button type="button" class="danger" data-action="clear-smtp-settings" data-smtp-club-id="${esc(smtpClubId)}" ${(draft.host || secretPresent) ? "" : "disabled"}>Supprimer la configuration SMTP</button>
+      </div>` : ""}
     `;
   }
 
@@ -19733,11 +20955,19 @@ ${esc(bodyText)}</pre>
     // le club devenu actif — la promesse « Seul le club actif est concerné » est celle affichée à
     // l'ouverture. Un club différent au moment de valider = annulation, sans recordHistory ni persist.
     const targetClubId = activeClubId();
+    // Lot O-E2-B3B-3R (§25-31) — les scopes CIBLÉS touchant Comptabilité/Paiements embarqués (expenses/
+    // creditNotes/accounting/comptabilite) exigent en plus les permissions métier pertinentes, vérifiées
+    // AVANT la confirmation protégée par mot de passe (qui reste, elle, requise pour TOUS les scopes,
+    // y compris "all"). resetScopeRequiredPermissions retourne [] pour tous les autres scopes : aucun
+    // changement de comportement pour eux. Named helper dans 28-users.js (STRUCT-PAY-01/02 inchangés).
+    if (!ensureUserPermissionsForClub(resetScopeRequiredPermissions(scope), targetClubId)) return;
     if (!(await requestProtectedDangerAction(`Vider : ${info.label}`, message, `Vider ${info.label.toLowerCase()}`))) return;
     if (activeClubId() !== targetClubId) { ui.saveMessage = "Opération annulée : le club actif a changé."; render(); return; }
     // Lot K-D1 — revalidation : requestProtectedDangerAction est asynchrone (saisie du mot de passe),
     // la fonctionnalité a pu être désactivée pendant l'attente. Uniquement pour le scope memberships.
     if (scope === "memberships" && !ensureFeatureEnabledForMutation("memberships")) return;
+    // §31 — revérifier après l'attente (mot de passe) : la permission a pu changer pendant la saisie.
+    if (!ensureUserPermissionsForClub(resetScopeRequiredPermissions(scope), targetClubId)) return;
     recordHistory();
     applyResetScope(scope);
     persist(`Vidage : ${info.label}`);
@@ -20074,8 +21304,8 @@ ${esc(bodyText)}</pre>
     );
   }
 
-  function textareaField(name, label, value = "", placeholder = "") {
-    return `<label class="wide">${labelHtml(label)}<textarea name="${esc(name)}"${placeholder ? ` placeholder="${esc(placeholder)}"` : ""}>${esc(value ?? "")}</textarea></label>`;
+  function textareaField(name, label, value = "", placeholder = "", extra = "") {
+    return `<label class="wide">${labelHtml(label)}<textarea name="${esc(name)}"${placeholder ? ` placeholder="${esc(placeholder)}"` : ""} ${extra}>${esc(value ?? "")}</textarea></label>`;
   }
 
   function labelHtml(label) {
@@ -20350,10 +21580,20 @@ ${esc(bodyText)}</pre>
   // créée (aucun claim n'existe tant que la ligne n'a pas d'id). Posé sur chaque bouton « Payer » du
   // tiroir pour que validateFormPayment (21-handlers.js) puisse consulter le même moteur claim-aware
   // que le tiroir live, sans dupliquer la logique anti-surpaiement.
-  function paymentFields(prefix, payments = [], total = 0, defaultTaxRate = effectiveDefaultVatRate(), claimKey = "") {
+  // Lot O-E2-B3B-1 — module/clubId/canRead/canWrite : contexte de permission du paiement embarqué,
+  // capturé par le dialogue APPELANT à l'ouverture (openMembershipDialog/openOrderDialog/
+  // openRegistrationDialog), jamais recalculé ici. Si canRead=false, la section entière est masquée
+  // (§10/§29, même doctrine que contactDocumentsSection en B2) : ni montant, ni moyen, ni numéro de
+  // chèque, ni statut, ni date, ni TVA. data-payment-module/data-payment-club-id sont posés sur le
+  // conteneur englobant pour que validateFormPayment (21-handlers.js) puisse résoudre son contexte via
+  // closest("[data-payment-module]") — ce bouton "form" ne porte pas ces attributs lui-même.
+  function paymentFields(prefix, payments = [], total = 0, defaultTaxRate = effectiveDefaultVatRate(), claimKey = "", module = "", clubId = "", canRead = true, canWrite = true) {
+    if (!canRead) {
+      return `<div class="dialog-section payment-form-compact"><h3>Paiements</h3><p class="muted">Vous n'avez pas accès à cette section.</p></div>`;
+    }
     const count = effectivePaymentCount(payments, total);
     const paymentRows = paymentIndexes(count).map((index) => (payments || [])[index] || {});
-    return `<div class="dialog-section payment-form-compact" data-payment-prefix="${esc(prefix)}" data-payment-total="${esc(asNumber(total))}" data-payment-count="${esc(count)}">
+    return `<div class="dialog-section payment-form-compact" data-payment-prefix="${esc(prefix)}" data-payment-total="${esc(asNumber(total))}" data-payment-count="${esc(count)}" data-payment-module="${esc(module)}" data-payment-club-id="${esc(clubId)}">
       ${paymentBalanceFields(prefix, total, paymentRows)}
       <div class="payment-overpay-warning" data-payment-overpay hidden></div>
       ${paymentDrawer(paymentRows, {
@@ -20364,6 +21604,7 @@ ${esc(bodyText)}</pre>
         maxChecks: count,
         title: "Paiements",
         claimKey,
+        canWrite,
       })}
     </div>`;
   }
@@ -21802,6 +23043,15 @@ ${esc(bodyText)}</pre>
     }
     const existing = invoiceForShopOrder(order.id);
     if (existing && existing.status !== "draft") return existing;
+    // Lot O-E2-B3B-2 (§20) — à partir d'ici, on LIT la commande pour CONSTRUIRE de nouvelles lignes de
+    // facture (prix/quantités boutique) : billing.write + shop.read (jamais shop.write, la commande
+    // n'est pas modifiée). Une facture DÉJÀ émise (branche ci-dessus) reste un document Billing figé,
+    // consultable via billing.read seul, sans exiger shop.read à nouveau.
+    // Lot O-E2-B3B-2R (§20) — club figé EXPLICITEMENT ici (avant toute construction), plutôt que
+    // reposer sur le fallback implicite de normalizeInvoice : la nouvelle facture reçoit ce clubId,
+    // qui reste son autorité jusqu'à sa persistance réelle, même si activeClubId() change ensuite.
+    const targetClubId = activeClubId();
+    if (!ensureAttachedWritePermission("billing.write", "shop.read", targetClubId)) return null;
     const billables = billableItemsForContact(linked.contact, linked.kind);
     // La remise commande a la clé "boutique-discount:<id>" (hors préfixe article "boutique:<id>:").
     // Sans cette inclusion, elle était filtrée -> facture sans remise -> total et reste dû faux.
@@ -21819,6 +23069,7 @@ ${esc(bodyText)}</pre>
       contactId: linked.contact.id,
       contactKind: linked.kind,
       status: "draft",
+      clubId: targetClubId,
     });
     const existingKeys = new Set((invoice.lines || []).map((line) => line.sourceKey).filter(Boolean));
     const existingIds = existingInvoiceLineIdsBySourceKey(invoice);
@@ -21860,11 +23111,19 @@ ${esc(bodyText)}</pre>
     if (!contact) { alert("Associe d'abord cette inscription à un contact avant de créer ou imprimer sa facture."); return null; }
     const existing = invoiceForRegistration(stageId, registrationId);
     if (existing && existing.status !== "draft") return existing; // déjà facturée -> pas de doublon
+    // Lot O-E2-B3B-2 (§22) — même doctrine que ensureDraftInvoiceForShopOrder : billing.write +
+    // stages.read pour construire de nouvelles lignes depuis l'inscription (jamais stages.write, elle
+    // n'est pas modifiée). Une facture déjà émise reste consultable via billing.read seul (branche
+    // ci-dessus).
+    // Lot O-E2-B3B-2R (§20) — club figé EXPLICITEMENT ici, même doctrine que
+    // ensureDraftInvoiceForShopOrder.
+    const targetClubId = activeClubId();
+    if (!ensureAttachedWritePermission("billing.write", "stages.read", targetClubId)) return null;
     const billables = billableItemsForContact(contact, kind);
     const prefix = `stage:${asText(stageId)}:${asText(registrationId)}:`;
     const registrationBillables = billables.filter((item) => asText(item.sourceKey).startsWith(prefix));
     if (!registrationBillables.length) { alert("Aucune ligne facturable n'a été trouvée pour cette inscription."); return null; }
-    const invoice = existing || draftInvoiceForContact(contact, kind) || normalizeInvoice({ contactId: contact.id, contactKind: kind, status: "draft" });
+    const invoice = existing || draftInvoiceForContact(contact, kind) || normalizeInvoice({ contactId: contact.id, contactKind: kind, status: "draft", clubId: targetClubId });
     const existingKeys = new Set((invoice.lines || []).map((line) => line.sourceKey).filter(Boolean));
     const existingIds = existingInvoiceLineIdsBySourceKey(invoice);
     const nextLines = [
@@ -21964,9 +23223,9 @@ ${esc(bodyText)}</pre>
       </div>
       <p class="muted">${invoice ? "Une facture existe déjà pour cette commande." : "Un brouillon de facture peut être créé automatiquement avec les articles de cette commande."}</p>
       <div class="inline-actions">
-        <button type="button" data-action="open-order-invoice" data-id="${esc(order.id)}">${invoice ? "Ouvrir la facture" : "Créer / éditer la facture"}</button>
-        <button type="button" data-action="print-order-invoice" data-id="${esc(order.id)}">Imprimer la facture</button>
-        <button type="button" data-action="export-order-invoice-pdf" data-id="${esc(order.id)}">PDF facture</button>
+        <button type="button" data-action="open-order-invoice" data-id="${esc(order.id)}" data-shop-club-id="${esc(activeClubId())}">${invoice ? "Ouvrir la facture" : "Créer / éditer la facture"}</button>
+        <button type="button" data-action="print-order-invoice" data-id="${esc(order.id)}" data-shop-club-id="${esc(activeClubId())}">Imprimer la facture</button>
+        <button type="button" data-action="export-order-invoice-pdf" data-id="${esc(order.id)}" data-shop-club-id="${esc(activeClubId())}">PDF facture</button>
       </div>
     </div>`);
   }
@@ -22957,6 +24216,25 @@ ${esc(bodyText)}</pre>
     return (state.invoices || []).find((invoice) => invoice.status === "draft" && invoice.contactId === contact.id && invoice.contactKind === contactInvoiceKind(kind)) || null;
   }
 
+  // Lot O-E2-B3B-2R (§13) — résout le club d'AUTORITÉ d'une facture pour les permissions Billing.
+  // JAMAIS de fallback implicite vers activeClubId() : une nouvelle facture non encore persistée doit
+  // porter son propre clubId, figé UNE SEULE FOIS au moment de son ouverture/création (§12). Ordre :
+  //   A. facture déjà persistée (son id existe dans state.invoices) -> SON PROPRE clubId réel, fail
+  //      closed si absent/invalide (jamais recalculé depuis l'objet reçu, qui a pu être silencieusement
+  //      redéfault par un normalizeInvoice() intermédiaire en amont) ;
+  //   B. facture non persistée mais portant déjà un clubId explicite (déjà figé par son créateur,
+  //      ex. openInvoiceEditor/ensureDraftInvoiceForShopOrder) -> ce clubId ;
+  //   C. fallbackClubId : n'est utilisé QUE si l'appelant le fournit EXPLICITEMENT (réservé au SEUL
+  //      point d'ouverture initiale d'une nouvelle facture, openInvoiceEditor — §14) ;
+  //   D. sinon "" (fail closed).
+  function invoiceTargetClubId(invoice, fallbackClubId = "") {
+    if (!invoice) return "";
+    const stored = invoice.id ? state.invoices.find((item) => item.id === invoice.id) : null;
+    if (stored) return asText(stored.clubId) || "";
+    if (asText(invoice.clubId)) return asText(invoice.clubId);
+    return asText(fallbackClubId) || "";
+  }
+
   function upsertInvoice(invoice) {
     stampRecordClubId(invoice);
     const index = state.invoices.findIndex((item) => item.id === invoice.id);
@@ -22974,6 +24252,16 @@ ${esc(bodyText)}</pre>
 
   async function issueDraftInvoice(invoice = {}, options = {}) {
     if (!invoice?.id || invoice.status !== "draft") return invoice;
+    // Lot O-E2-B3B-2 (§6/§14) — primitive bas niveau qui ÉMET réellement (upsertInvoice plus bas) :
+    // gardée elle-même, jamais seulement son unique appelant actuel (validateDraftInvoiceForOutput,
+    // chemin "impression directe d'un brouillon" depuis Boutique/Stage — §21, print d'un brouillon =
+    // émission = billing.write, pas une simple lecture).
+    const issueClubId = invoiceTargetClubId(invoice);
+    if (!issueClubId || activeClubId() !== issueClubId) {
+      alert("Vous n'avez pas l'autorisation nécessaire.");
+      return null;
+    }
+    if (!ensureUserPermission("billing.write", issueClubId)) return null;
     if (!(invoice.lines || []).length) {
       alert("Ajoute au moins une ligne à la facture avant de la valider.");
       return null;
@@ -22993,6 +24281,13 @@ ${esc(bodyText)}</pre>
       }
     }
     if (!options.skipIssueConfirmation && !(await confirmInvoiceIssue())) return null;
+    // Lot O-E2-B3B-2 (§11) — après l'await (confirmation), revérifier club + permission avant toute
+    // mutation : un changement de club ou un retrait de droit pendant la confirmation ne doit jamais
+    // aboutir à une émission.
+    if (activeClubId() !== issueClubId || !currentUserHasPermission("billing.write", issueClubId)) {
+      alert("Vous n'avez pas l'autorisation nécessaire.");
+      return null;
+    }
     const now = new Date().toISOString();
     const next = normalizeInvoice({
       ...invoice,
@@ -23053,11 +24348,20 @@ ${esc(bodyText)}</pre>
     return rows.find((item) => asNumber(item.calc.restDue) > 0) || rows[0] || null;
   }
 
+  const CONTACT_MODULE_PAYMENT_MODULE = Object.freeze({ disciplines: "membership", boutique: "order", stages: "registration" });
   function contactModuleButton(contactLink, contact, module, label) {
     const summary = contactModuleSummary(contact, module);
-    const tone = `is-${summary.tone || "empty"}`;
+    // Lot O-E2-B3B-1R2 (§22-23) — la couleur (tone) et le "reste dû X €" de ce bouton sont des valeurs
+    // DÉRIVÉES des paiements réels d'un seul domaine (celui de `module`) : masquées sans payments.read
+    // + lecture du parent de CE module précis (même doctrine que currentUserCanReadEmbeddedPayment).
+    // Le nombre de lignes seul reste contractuel/factuel et reste visible dans tous les cas.
+    const paymentModule = CONTACT_MODULE_PAYMENT_MODULE[module] || "";
+    const canReadPayments = Boolean(paymentModule) && currentUserCanReadEmbeddedPayment(paymentModule, activeClubId());
+    const tone = canReadPayments ? `is-${summary.tone || "empty"}` : "is-empty";
     const title = summary.count
-      ? `${label} : ${summary.restDue > 0 ? `reste dû ${money(summary.restDue)}` : "tout est réglé"}`
+      ? (canReadPayments
+          ? `${label} : ${summary.restDue > 0 ? `reste dû ${money(summary.restDue)}` : "tout est réglé"}`
+          : `${label} : ${summary.count} ligne${summary.count > 1 ? "s" : ""}`)
       : `${label} : aucune ligne`;
     return `<button type="button" class="${tone}" title="${esc(title)}" data-action="open-contact-module" data-module="${esc(module)}" data-contact-link="${esc(contactLink)}">${esc(label)}</button>`;
   }
@@ -23070,6 +24374,10 @@ ${esc(bodyText)}</pre>
   // seulement le prédicat existant. Aucune donnée supprimée : un contact garde son historique
   // (inscriptions, commandes, stages passés) même si le module correspondant est ensuite masqué ;
   // seule l'action de création/raccourci disparaît du bas de fiche.
+  // Lot O-E2-B3B-2 (§16/§18) — le bouton Facture est en plus conditionné à billing.read (jamais
+  // billing.write : ouvrir en lecture seule reste possible sans écrire, openInvoiceEditor gère la
+  // suite). La fonction déclenchée derrière (openContactInvoiceFromLink/openInvoiceEditor) revérifie
+  // elle-même ses propres permissions : ce bouton n'est jamais la seule protection.
   function contactModuleLinks(kind, row = {}) {
     const contactLinkKind = kind === "members" ? "member" : "prospect";
     // Création : le contact n'a pas encore d'id. On affiche quand même les actions ; data-contact-new
@@ -23080,7 +24388,7 @@ ${esc(bodyText)}</pre>
       const newModuleBtn = (module, label) => `<button type="button" class="is-empty" data-action="open-contact-module" data-module="${module}" data-contact-new="1" title="${esc(label)} — le contact sera enregistré d'abord">${esc(label)}</button>`;
       return `<div class="contact-module-links" aria-label="Accès direct du contact" data-tour="contact-modules">
         ${isViewVisible("newsletter") ? `<button type="button" class="is-empty" disabled title="Enregistre d'abord le contact pour pouvoir lui envoyer un e-mail">Envoyer un mail</button>` : ""}
-        ${isViewVisible("invoices") ? `<button type="button" class="is-paid" data-action="open-contact-invoice" data-contact-new="1" data-tour="invoice-create" title="Créer une facture — le contact sera enregistré d'abord">Créer / éditer une facture</button>` : ""}
+        ${isViewVisible("invoices") && currentUserHasPermission("billing.read", activeClubId()) ? `<button type="button" class="is-paid" data-action="open-contact-invoice" data-contact-new="1" data-tour="invoice-create" title="Créer une facture — le contact sera enregistré d'abord">Créer / éditer une facture</button>` : ""}
         ${isViewVisible("boutique") ? newModuleBtn("boutique", "Boutique") : ""}
         ${kind === "members" && isViewVisible("disciplines") ? newModuleBtn("disciplines", "Disciplines") : ""}
         ${isViewVisible("stages") ? newModuleBtn("stages", "Stages") : ""}
@@ -23092,8 +24400,8 @@ ${esc(bodyText)}</pre>
     ` : "";
     const stageLink = isViewVisible("stages") ? contactModuleButton(contactLink, row, "stages", "Stages") : "";
     return `<div class="contact-module-links" aria-label="Accès direct du contact" data-tour="contact-modules">
-      ${isViewVisible("newsletter") ? `<button type="button" class="${asText(row.email) ? "is-paid" : "is-empty"}" title="${asText(row.email) ? "Préparer un e-mail au contact" : "Adresse e-mail manquante"}" data-action="send-contact-email" data-contact-link="${esc(contactLink)}">Envoyer un mail</button>` : ""}
-      ${isViewVisible("invoices") ? `<button type="button" class="is-paid" title="Créer ou éditer une facture centralisée pour ce contact" data-action="open-contact-invoice" data-contact-link="${esc(contactLink)}" data-tour="invoice-create">Créer / éditer une facture</button>` : ""}
+      ${isViewVisible("newsletter") ? `<button type="button" class="${asText(row.email) ? "is-paid" : "is-empty"}" title="${asText(row.email) ? "Préparer un e-mail au contact" : "Adresse e-mail manquante"}" data-action="send-contact-email" data-contact-link="${esc(contactLink)}" data-email-club-id="${esc(activeClubId())}">Envoyer un mail</button>` : ""}
+      ${isViewVisible("invoices") && currentUserHasPermission("billing.read", activeClubId()) ? `<button type="button" class="is-paid" title="Créer ou éditer une facture centralisée pour ce contact" data-action="open-contact-invoice" data-contact-link="${esc(contactLink)}" data-tour="invoice-create">Créer / éditer une facture</button>` : ""}
       ${isViewVisible("boutique") ? contactModuleButton(contactLink, row, "boutique", "Boutique") : ""}
       ${memberLinks}
       ${stageLink}
@@ -23183,7 +24491,7 @@ ${esc(bodyText)}</pre>
     if (payWrap) payWrap.innerHTML = `<h3>Paiements et échéances</h3>${invoicePaymentsHtml(displayPayments.payments, displayPayments.historicalIndexes)}${invoice.status !== "draft" ? invoicePaymentActionHtml(invoice) : ""}`;
     // Lot 5d-1 : rafraîchir le bloc « Avoirs liés » en place (avoir créé visible immédiatement).
     const cnWrap = host.querySelector("[data-invoice-credit-notes]");
-    if (cnWrap) cnWrap.outerHTML = invoiceLinkedCreditNotesHtml(invoice);
+    if (cnWrap) cnWrap.outerHTML = currentUserHasPermission("accounting.read", invoice.clubId) ? invoiceLinkedCreditNotesHtml(invoice) : "";
     applyClickableTooltips(host);
   }
 
@@ -23226,6 +24534,18 @@ ${esc(bodyText)}</pre>
       return acc;
     }, { total: 0, paid: 0, due: 0 });
     const empty = !all.length ? `<div class="contact-recap-empty">Aucune activité enregistrée pour ce contact.</div>` : "";
+    // Lot O-E2-B2 (§12) — vue mixte : ce récapitulatif reste accessible avec la seule contacts.read
+    // (garde d'ouverture du dialogue), mais la sous-section Disciplines expose des données du domaine
+    // Adhésions et exige donc memberships.read pour elle-même.
+    // Lot O-E2-B3B-2 (§16) — même doctrine pour la sous-section Factures : contacts.read (déjà acquis
+    // pour ouvrir la fiche) + billing.read pour CETTE sous-section précise. Les KPI agrégés ci-dessus
+    // (totals) restent des Adhésions/Boutique/Stages, hors Factures — non concernés.
+    // Lot O-E2-B3B-3 (§36) — même doctrine pour « Avoirs disponibles » : contacts.read (déjà acquis)
+    // + accounting.read pour CETTE sous-section précise (contactAvailableCreditNotesHtml n'a aucune
+    // garde interne, elle dépend entièrement de ce point d'appel unique).
+    const canReadMemberships = currentUserHasPermission("memberships.read", activeClubId());
+    const canReadBilling = currentUserHasPermission("billing.read", activeClubId());
+    const canReadAccounting = currentUserHasPermission("accounting.read", activeClubId());
     return `<div class="dialog-section contact-recap" data-tour="contact-recap">
       <div class="contact-recap-head">
         <div>
@@ -23244,25 +24564,29 @@ ${esc(bodyText)}</pre>
       </div>
       ${empty}
       ${contactMinorGuardianHtml(contact, kind)}
-      ${kind === "members" && isViewVisible("disciplines")
-        // Disciplines sort ici du mécanisme générique contactRecapSection (qui masque toute la
-        // section, bouton d'ajout compris, dès que la liste est vide) : un adhérent sans discipline
-        // doit quand même voir le bouton d'ajout et comprendre comment en ajouter une,
-        // Lot 3B-3 — ce bouton crée une INSCRIPTION, pas une discipline du catalogue : il portait
-        // exactement le même libellé que l'action de Tarifs/Paramètres qui, elle, crée une
-        // discipline. Seul ce libellé change ; l'action, le dialogue et la donnée sont identiques.
-        // au lieu que la section disparaisse silencieusement (c'était la cause probable du "je ne
-        // trouve pas où ajouter une discipline" remonté par Thierry).
-        ? `<section class="contact-recap-section">
-            <div class="dialog-mini-title"><h4>Disciplines</h4>${(contact.id && hasFeature("memberships")) ? `<button type="button" data-action="add-contact-membership" data-contact-link="${esc(`member:${contact.id}`)}" title="Ajouter une nouvelle inscription discipline/groupe pour ce contact">+ Ajouter une inscription</button>` : ""}</div>
-            ${memberships.length
-              ? `<p class="muted">Un adhérent peut avoir plusieurs disciplines, tant que les horaires ne se chevauchent pas.</p><div class="contact-recap-list">${memberships.map(contactRecapMembership).join("")}</div>`
-              : `<p class="contact-recap-empty">Aucune discipline enregistrée pour le moment.</p>`}
-          </section>`
-        : contactRecapSection("Disciplines", memberships, contactRecapMembership)}
+      ${!canReadMemberships
+        ? `<section class="contact-recap-section"><div class="dialog-mini-title"><h4>Disciplines</h4></div><p class="muted">Vous n'avez pas accès à cette section.</p></section>`
+        : kind === "members" && isViewVisible("disciplines")
+          // Disciplines sort ici du mécanisme générique contactRecapSection (qui masque toute la
+          // section, bouton d'ajout compris, dès que la liste est vide) : un adhérent sans discipline
+          // doit quand même voir le bouton d'ajout et comprendre comment en ajouter une,
+          // Lot 3B-3 — ce bouton crée une INSCRIPTION, pas une discipline du catalogue : il portait
+          // exactement le même libellé que l'action de Tarifs/Paramètres qui, elle, crée une
+          // discipline. Seul ce libellé change ; l'action, le dialogue et la donnée sont identiques.
+          // au lieu que la section disparaisse silencieusement (c'était la cause probable du "je ne
+          // trouve pas où ajouter une discipline" remonté par Thierry).
+          ? `<section class="contact-recap-section">
+              <div class="dialog-mini-title"><h4>Disciplines</h4>${(contact.id && hasFeature("memberships")) ? `<button type="button" data-action="add-contact-membership" data-contact-link="${esc(`member:${contact.id}`)}" title="Ajouter une nouvelle inscription discipline/groupe pour ce contact">+ Ajouter une inscription</button>` : ""}</div>
+              ${memberships.length
+                ? `<p class="muted">Un adhérent peut avoir plusieurs disciplines, tant que les horaires ne se chevauchent pas.</p><div class="contact-recap-list">${memberships.map(contactRecapMembership).join("")}</div>`
+                : `<p class="contact-recap-empty">Aucune discipline enregistrée pour le moment.</p>`}
+            </section>`
+          : contactRecapSection("Disciplines", memberships, contactRecapMembership)}
       ${contactRecapSection("Boutique", orders, contactRecapOrder, hasFeature("shop") ? "" : "Module désactivé — historique conservé. Réactivez le module pour ajouter de nouvelles données.")}
       ${contactRecapSection("Stages", registrations, contactRecapRegistration, hasFeature("stages") ? "" : "Module désactivé — historique conservé. Réactivez le module pour ajouter de nouvelles données.")}
-      ${invoiceRows.length ? `<section class="contact-recap-section">
+      ${!canReadBilling
+        ? `<section class="contact-recap-section"><h4>Factures</h4><p class="muted">Vous n'avez pas accès à cette section.</p></section>`
+        : (invoiceRows.length ? `<section class="contact-recap-section">
         <h4>Factures</h4>
         <div class="contact-recap-kpis">
           <div><span>Facturé</span><strong>${money(invoiceTotals.total)}</strong></div>
@@ -23270,8 +24594,10 @@ ${esc(bodyText)}</pre>
           <div><span>Reste à payer</span><strong class="${invoiceTotals.due > 0 ? "due" : ""}">${money(invoiceTotals.due)}</strong></div>
         </div>
         <div class="contact-recap-list">${invoiceRows.map(contactRecapInvoice).join("")}</div>
-      </section>` : ""}
-      ${contactAvailableCreditNotesHtml(contact)}
+      </section>` : "")}
+      ${!canReadAccounting
+        ? `<section class="contact-recap-section"><h4>Avoirs disponibles</h4><p class="muted">Vous n'avez pas accès à cette section.</p></section>`
+        : contactAvailableCreditNotesHtml(contact)}
     </div>`;
   }
 
@@ -23723,6 +25049,19 @@ ${esc(bodyText)}</pre>
     // aucune logique de calcul dupliquée, juste un raccourci d'affichage.
     const liveTotals = invoiceLiveTotals(invoice);
     const restDue = asNumber(liveTotals.restDue);
+    // Lot O-E2-B3B-2R2 (§9-10) — le club d'AUTORITÉ de la facture au moment du RENDU est transporté
+    // explicitement sur le bouton (data-invoice-club-id) : le handler ne le redécouvre jamais depuis
+    // le seul state courant (fail closed sur vieux DOM / collision d'id inter-clubs, §11). Si le club
+    // est introuvable, l'action mutante n'est simplement pas rendue.
+    const buttonClubId = invoiceTargetClubId(invoice);
+    // Lot O-E2-B3B-3 (§37-38) — Créer/Modifier/Supprimer un avoir et « Utiliser au paiement » exigent
+    // accounting.write (ce bloc entier n'est déjà rendu que si accounting.read, voir les deux
+    // appelants) ; l'utilisation au paiement reste en plus une mutation cross-domain (billing.write).
+    // Masquer ces contrôles quand l'écriture manque, plutôt que de compter uniquement sur le refus du
+    // handler (§38 : « masquer/désactiver »). L'ouverture en consultation (edit-credit-note) reste
+    // possible sans accounting.write — le dialogue lui-même applique alors options.readOnly.
+    const canWriteAccounting = Boolean(buttonClubId) && currentUserHasPermission("accounting.write", buttonClubId);
+    const canUseCreditNotePayment = canWriteAccounting && currentUserHasPermission("billing.write", buttonClubId);
     const rows = notes.map((cn) => {
       const amt = asNumber(cn.amount);
       // Lot B3b — un avoir supérieur au reste dû n'est plus bloqué : il est utilisable jusqu'à
@@ -23736,10 +25075,10 @@ ${esc(bodyText)}</pre>
       const actionBtn = remainder > 0.005
         ? `Utiliser ${money(usedAmount)} et garder ${money(remainder)} d'avoir`
         : "Utiliser au paiement";
-      const action = usable
-        ? `<button type="button" class="secondary small" data-action="use-credit-note-payment" data-credit-note-id="${esc(cn.id)}" data-invoice-id="${esc(invoice.id)}">${esc(actionBtn)}</button>`
+      const action = (usable && buttonClubId && canUseCreditNotePayment)
+        ? `<button type="button" class="secondary small" data-action="use-credit-note-payment" data-credit-note-id="${esc(cn.id)}" data-invoice-id="${esc(invoice.id)}" data-invoice-club-id="${esc(buttonClubId)}">${esc(actionBtn)}</button>`
         : "";
-      return `<div class="contact-invoice-row" data-action="edit-credit-note" data-id="${esc(cn.id)}" title="Ouvrir l'avoir" style="cursor:pointer">
+      return `<div class="contact-invoice-row" data-action="edit-credit-note" data-id="${esc(cn.id)}" data-accounting-club-id="${esc(buttonClubId)}" title="Ouvrir l'avoir" style="cursor:pointer">
       <span class="contact-invoice-num"><strong>${money(cn.amount)}</strong><small>${esc(dateDisplay(cn.date))}</small></span>
       <span>${esc(cn.reason || typeLabels[cn.type] || "Avoir")}</span>
       <span class="muted">${esc(typeLabels[cn.type] || cn.type)}</span>
@@ -23747,7 +25086,7 @@ ${esc(bodyText)}</pre>
       ${action}
     </div>`;
     }).join("");
-    const createBtn = cancelled ? "" : `<button type="button" data-action="add-credit-note" data-invoice-id="${esc(invoice.id)}" data-contact-id="${esc(invoice.contactId)}">Créer un avoir</button>`;
+    const createBtn = (cancelled || !canWriteAccounting) ? "" : `<button type="button" data-action="add-credit-note" data-invoice-id="${esc(invoice.id)}" data-contact-id="${esc(invoice.contactId)}" data-accounting-club-id="${esc(buttonClubId)}">Créer un avoir</button>`;
     return `<div class="dialog-section invoice-editor" data-invoice-credit-notes>
       <div class="band-title compact"><h3>Avoirs liés à cette facture</h3>${createBtn}</div>
       <p class="muted">Un avoir peut être utilisé comme règlement pour réduire le reste à payer de cette facture.</p>
@@ -23773,7 +25112,7 @@ ${esc(bodyText)}</pre>
     const rows = notes.map((cn) => {
       const inv = asText(cn.invoiceId) ? (state.invoices || []).find((i) => i.id === cn.invoiceId) : null;
       const invLabel = inv ? `Facture ${inv.number || "—"}` : "";
-      return `<div class="contact-invoice-row" data-action="edit-credit-note" data-id="${esc(cn.id)}" title="Ouvrir l'avoir" style="cursor:pointer">
+      return `<div class="contact-invoice-row" data-action="edit-credit-note" data-id="${esc(cn.id)}" data-accounting-club-id="${esc(activeClubId())}" title="Ouvrir l'avoir" style="cursor:pointer">
       <span class="contact-invoice-num"><strong>${money(cn.amount)}</strong><small>${esc(dateDisplay(cn.date))}</small></span>
       <span>${esc(cn.reason || typeLabels[cn.type] || "Avoir")}${invLabel ? ` <small class="muted">· ${esc(invLabel)}</small>` : ""}</span>
       <span class="muted">${esc(typeLabels[cn.type] || cn.type)}</span>
@@ -24164,8 +25503,22 @@ ${esc(bodyText)}</pre>
     render();
   }
 
-  async function validateDraftInvoiceForOutput(invoice = {}, sourceButton = null) {
-    invoice = normalizeInvoice(invoice);
+  async function validateDraftInvoiceForOutput(rawInvoice = {}, sourceButton = null) {
+    // Lot O-E2-B3B-2 (§23-24) — point d'entrée COMMUN à print-invoice/export-invoice-pdf/
+    // print-order-invoice/export-order-invoice-pdf/printRegistrationInvoice : imprimer/exporter une
+    // facture DÉJÀ lisible reste une opération de LECTURE (billing.read suffit, jamais billing.write,
+    // jamais data.export). Gardé ICI une seule fois pour couvrir tous les appelants, plutôt que
+    // dupliqué dans chaque handler. Le cas "brouillon -> émission implicite" reste couvert séparément
+    // par saveInvoiceFromForm/issueDraftInvoice (billing.write), plus bas dans cette même fonction.
+    // rawInvoice absent (ex. ensureDraftInvoiceForShopOrder a déjà refusé/alerté plus haut dans la
+    // chaîne) : sortie silencieuse, sans une seconde alerte redondante.
+    if (!rawInvoice) return null;
+    const targetClubId = invoiceTargetClubId(rawInvoice);
+    if (!targetClubId || !currentUserHasPermission("billing.read", targetClubId)) {
+      if (typeof alert === "function") alert("Vous n'avez pas l'autorisation nécessaire.");
+      return null;
+    }
+    const invoice = normalizeInvoice(rawInvoice);
     if (!invoice?.id) return null;
     if (invoice.status !== "draft") return invoice;
     const form = sourceButton?.closest?.("form");
@@ -24177,7 +25530,7 @@ ${esc(bodyText)}</pre>
       // ici, engagé dans Undo/purge de Redo uniquement après un succès confirmé ci-dessous.
       const beforeSnapshot = beginHistoryCheckpoint();
       try {
-        result = await saveInvoiceFromForm(invoice, new FormData(form), form);
+        result = await saveInvoiceFromForm(invoice, new FormData(form), form, targetClubId);
       } catch (error) {
         // Lot correctif régressions : voir la doctrine dans showDialog (même fichier, wrapper
         // générique) — une exception après mutation garde son checkpoint de récupération.
@@ -24216,6 +25569,13 @@ ${esc(bodyText)}</pre>
     const kind = link.kind === "prospect" ? "prospects" : "members";
     const contact = state.contacts[kind]?.find((row) => row.id === link.contactId);
     if (!contact) return;
+    // Lot O-E2-B3B-2 (§18) — point d'entrée CONTACT : contacts.read exigé ICI (domaine Contact,
+    // jamais vérifié par openInvoiceEditor lui-même) ; billing.read est revérifié indépendamment par
+    // openInvoiceEditor (jamais dupliqué ici, appel direct/forcé de ce dernier déjà couvert §5/§12).
+    if (!currentUserHasPermission("contacts.read", activeClubId())) {
+      if (typeof alert === "function") alert("Vous n'avez pas l'autorisation nécessaire.");
+      return;
+    }
     openInvoiceEditor(draftInvoiceForContact(contact, kind) || { contactId: contact.id, contactKind: kind, status: "draft" });
   }
 
@@ -24367,8 +25727,26 @@ ${esc(bodyText)}</pre>
       .filter((row) => !membershipTariffValues(row).hasGrossTotal);
   }
 
-  function openInvoiceEditor(invoice = {}) {
-    invoice = normalizeInvoice(invoice);
+  function openInvoiceEditor(rawInvoice = {}) {
+    // Lot O-E2-B3B-2R (§14) — SEUL point de tout le code où activeClubId() peut servir de fallback
+    // EXPLICITE : au moment initial de l'ouverture. Une facture déjà persistée ignore ce fallback
+    // (invoiceTargetClubId retourne alors son propre clubId réel, fail closed si absent/invalide,
+    // §12) ; une facture neuve (jamais encore dans state.invoices) est rattachée UNE SEULE FOIS au
+    // club actif de CET instant, qui devient ensuite IMMUTABLE pour toute la durée du dialogue —
+    // jamais recalculé plus tard sur un activeClubId() qui aurait changé (§12, "club figé").
+    const targetClubId = invoiceTargetClubId(rawInvoice, activeClubId());
+    if (!targetClubId || !currentUserHasPermission("billing.read", targetClubId)) {
+      if (typeof alert === "function") alert("Vous n'avez pas l'autorisation nécessaire.");
+      return;
+    }
+    // §13 — billing.read=true/billing.write=false : la facture reste consultable (options.readOnly
+    // plus bas neutralise les champs et le bouton Émettre), mais la sécurité RÉELLE reste sur
+    // saveInvoiceFromForm lui-même (§14), jamais sur ce seul affichage.
+    const canWrite = currentUserHasPermission("billing.write", targetClubId);
+    // clubId explicitement figé sur l'objet lui-même (§12/§16) : saveInvoiceFromForm/issueDraftInvoice
+    // le retrouveront ensuite via invoiceTargetClubId SANS fallback, y compris après un await, y
+    // compris si l'objet est réutilisé (closure onSave) après un changement de club actif.
+    const invoice = normalizeInvoice({ ...rawInvoice, clubId: targetClubId });
     const contact = invoice.contactSnapshot || invoiceContact(invoice.contactKind, invoice.contactId);
     if (!contact) {
       alert("Contact introuvable pour cette facture.");
@@ -24438,7 +25816,7 @@ ${esc(bodyText)}</pre>
         ${invoicePaymentsHtml(previewPayments, locked ? displayPayments.historicalIndexes : null)}
         ${locked ? invoicePaymentActionHtml(invoice) : ""}
       </div>
-      ${invoiceLinkedCreditNotesHtml(invoice)}
+      ${currentUserHasPermission("accounting.read", targetClubId) ? invoiceLinkedCreditNotesHtml(invoice) : ""}
       ${locked
         ? (asText(invoice.notes) ? `<div class="dialog-section invoice-editor"><h3>Notes</h3><p>${esc(invoice.notes).replaceAll("\n", "<br>")}</p></div>` : "")
         : textareaField("notes", "Notes facture", invoice.notes || "")}
@@ -24447,10 +25825,10 @@ ${esc(bodyText)}</pre>
       <input type="hidden" name="contactKind" value="${esc(invoice.contactKind)}" />`;
     const footer = [
       invoicePrintActionsHtml(invoice),
-      allowed.emit ? `<button class="primary" type="submit" data-submit-action="issue" data-tour="invoice-issue">Émettre / valider la facture</button>` : "",
+      allowed.emit && canWrite ? `<button class="primary" type="submit" data-submit-action="issue" data-tour="invoice-issue">Émettre / valider la facture</button>` : "",
     ].filter(Boolean).join("");
     setNextWindowKey(invoice.id ? `invoice:${invoice.id}` : null);
-    const invoiceDialog = showDialog(title, body, (data, form) => saveInvoiceFromForm(invoice, data, form), (form) => {
+    const invoiceDialog = showDialog(title, body, (data, form) => saveInvoiceFromForm(invoice, data, form, targetClubId), (form) => {
       form.addEventListener("change", (event) => {
         if (event.target.matches("input[name='billableKeys']")) {
           // PAY-P0-2/F2 — P2 (claim atomique) : cocher/décocher UNE ligne d'un claim entraîne
@@ -24473,11 +25851,14 @@ ${esc(bodyText)}</pre>
       form.addEventListener("input", (event) => {
         if (event.target.closest("[data-invoice-custom-row]")) updateInvoiceEditorPreview(form, invoice, billables);
       });
-    }, footer);
-    // Facture verrouillée = vue lecture seule : on retire le bouton submit par défaut
-    // (« Enregistrer ») de showDialog et on renomme « Annuler » en « Fermer » pour ne laisser
-    // que des actions cohérentes (Imprimer / PDF / Fermer). Aucune édition possible.
-    if (locked && invoiceDialog) {
+    }, footer, undefined, undefined, canWrite ? {} : { readOnly: true });
+    // Facture verrouillée OU billing.write absent = vue lecture seule : on retire le bouton submit
+    // par défaut (« Enregistrer ») de showDialog et on renomme « Annuler » en « Fermer » pour ne
+    // laisser que des actions cohérentes (Imprimer / PDF / Fermer). Aucune édition possible.
+    // Lot O-E2-B3B-2 (§13) — sans billing.write, options.readOnly a déjà neutralisé les champs/
+    // boutons du corps ET remplacé nativement le pied de page par un simple « Fermer » (showDialog) ;
+    // ce bloc reste un no-op inoffensif dans ce cas (rien à retirer/renommer une seconde fois).
+    if ((locked || !canWrite) && invoiceDialog) {
       const submit = invoiceDialog.querySelector(".dialog-footer-actions button.primary[type='submit']");
       if (submit) submit.remove();
       const closeBtn = invoiceDialog.querySelector(".dialog-footer-actions button[data-dialog-close]");
@@ -24520,8 +25901,20 @@ ${esc(bodyText)}</pre>
     return completeClaimLines(invoice, lines, billables);
   }
 
-  async function saveInvoiceFromForm(sourceInvoice, data, form) {
+  async function saveInvoiceFromForm(sourceInvoice, data, form, openedClubId = "") {
     if (sourceInvoice.status !== "draft") return false;
+    // Lot O-E2-B3B-2R (§15-17) — openedClubId est désormais TRANSMIS EXPLICITEMENT par l'appelant
+    // (capturé une seule fois à l'ouverture de la facture, jamais redécouvert ici). Refus fail closed
+    // si absent, OU si l'autorité réelle de la facture (invoiceTargetClubId, SANS fallback) ne
+    // correspond pas à ce contexte — couvre à la fois une facture déjà stockée (son clubId réel doit
+    // correspondre) et une facture neuve (son clubId, figé par son créateur, doit déjà être non vide
+    // et correspondre : jamais un retour silencieux vers activeClubId() ici, §17).
+    const authorityClubId = invoiceTargetClubId(sourceInvoice);
+    if (!openedClubId || !authorityClubId || authorityClubId !== openedClubId || activeClubId() !== openedClubId) {
+      alert("Vous n'avez pas l'autorisation nécessaire.");
+      return false;
+    }
+    if (!ensureUserPermission("billing.write", openedClubId)) return false;
     const contact = invoiceContact(data.get("contactKind"), data.get("contactId"));
     if (!contact) {
       alert("Contact introuvable.");
@@ -24545,6 +25938,12 @@ ${esc(bodyText)}</pre>
       }
     }
     if (issue && !(await confirmInvoiceIssue())) return { cancel: true };
+    // Lot O-E2-B3B-2 (§11) — revérifier après l'await : club/permission ont pu changer pendant la
+    // confirmation d'émission.
+    if (activeClubId() !== openedClubId || !currentUserHasPermission("billing.write", openedClubId)) {
+      alert("Vous n'avez pas l'autorisation nécessaire.");
+      return false;
+    }
     // Note : sourceInvoice.id est TOUJOURS renseigné ici (openInvoiceEditor passe la facture par
     // normalizeInvoice(), qui attribue un id même à un brouillon jamais persisté). Le seul signal
     // fiable de « facture réellement nouvelle » est son absence de state.invoices à cet instant.
@@ -24586,8 +25985,15 @@ ${esc(bodyText)}</pre>
       : `Brouillon de facture enregistré pour ${personLabel(contact)}`;
   }
 
-  function openInvoicePaymentDialog(invoice = {}) {
-    invoice = normalizeInvoice(invoice);
+  function openInvoicePaymentDialog(rawInvoice = {}) {
+    // Lot O-E2-B3B-2 (§5) — ouvrir ce dialogue révèle totaux/lignes/avoirs de la facture : billing.read
+    // obligatoire avant tout (même doctrine que openInvoiceEditor, calculée AVANT normalizeInvoice()).
+    const openedClubId = invoiceTargetClubId(rawInvoice);
+    if (!openedClubId || !currentUserHasPermission("billing.read", openedClubId)) {
+      if (typeof alert === "function") alert("Vous n'avez pas l'autorisation nécessaire.");
+      return;
+    }
+    const invoice = normalizeInvoice(rawInvoice);
     if (invoice.status === "draft" || invoice.status === "cancelled") return;
     // Défense en profondeur (audit UX « figer visuellement les paiements impossibles ») : le bouton
     // n'affiche déjà jamais cette action pour une facture soldée (invoicePaymentActionHtml), mais rien
@@ -24644,7 +26050,10 @@ ${esc(bodyText)}</pre>
         </label>`;
       }).join("")}
     </div>` : "";
-    const availableAvoirs = creditNotesAvailableForContact(invoice.contactId);
+    // Lot O-E2-B3B-2 (§30) — le détail d'un avoir (montant, motif) provient de state.creditNotes en
+    // direct (creditNotesAvailableForContact) : exige accounting.read, jamais billing.read seul.
+    const canReadCreditNotes = currentUserHasPermission("accounting.read", openedClubId);
+    const availableAvoirs = canReadCreditNotes ? creditNotesAvailableForContact(invoice.contactId) : [];
     const avoirSection = (!totals.readOnly && availableAvoirs.length) ? `<div class="dialog-section invoice-credit-note-section">
       <h4>Utiliser un avoir</h4>
       <p class="muted">Un avoir réduit le reste à payer, sans créer d'encaissement bancaire.</p>
@@ -24662,9 +26071,20 @@ ${esc(bodyText)}</pre>
           const actionBtn = remainder > 0.005
             ? `Utiliser ${money(usedAmount)} et garder ${money(remainder)} d'avoir`
             : "Utiliser cet avoir";
+          // Lot O-E2-B3B-2R2 (§9-10) — même contexte de club explicite que
+          // invoiceLinkedCreditNotesHtml : openedClubId est déjà le club d'AUTORITÉ de CETTE facture
+          // (invoiceTargetClubId, calculé à l'ouverture du dialogue, sans fallback).
+          // Lot O-E2-B3B-3 (§38) — masquer ce contrôle quand l'écriture manque (billing.write et/ou
+          // accounting.write), plutôt que de compter uniquement sur le refus du handler.
+          if (!currentUserHasPermission("accounting.write", openedClubId) || !currentUserHasPermission("billing.write", openedClubId)) {
+            return `<div class="credit-note-use-row credit-note-use-row--disabled">
+              <span class="credit-note-use-info">${info}</span>
+              <span class="muted small">Action non autorisée</span>
+            </div>`;
+          }
           return `<div class="credit-note-use-row">
             <span class="credit-note-use-info">${info}</span>
-            <button type="button" class="secondary small" data-action="use-credit-note-payment" data-credit-note-id="${esc(cn.id)}" data-invoice-id="${esc(invoice.id)}">${esc(actionBtn)}</button>
+            <button type="button" class="secondary small" data-action="use-credit-note-payment" data-credit-note-id="${esc(cn.id)}" data-invoice-id="${esc(invoice.id)}" data-invoice-club-id="${esc(openedClubId)}">${esc(actionBtn)}</button>
           </div>`;
         }
         return `<div class="credit-note-use-row credit-note-use-row--disabled">
@@ -24703,6 +26123,10 @@ ${esc(bodyText)}</pre>
       // lui-même (un seul checkpoint Undo/Redo, purgé seulement en cas de succès confirmé).
       const target = state.invoices.find((item) => item.id === invoice.id);
       if (!target || target.status === "draft" || target.status === "cancelled") return false;
+      // Lot O-E2-B3B-2 (§6/§14/§11) — primitive qui mute réellement paymentsAfterIssue (plus bas) :
+      // gardée elle-même, avec revérification de fraîcheur de club + permission (le dialogue a pu
+      // rester ouvert après un changement de club actif ou un retrait de droit).
+      if (activeClubId() !== openedClubId || !ensureUserPermission("billing.write", openedClubId)) return false;
       const freshTotals = invoiceLiveTotals(target);
       if (freshTotals.readOnly) {
         alert("Cette facture concerne une créance en attente de vérification : aucun nouveau règlement n'est accepté pour le moment.");
@@ -24830,7 +26254,11 @@ ${esc(bodyText)}</pre>
       // Ouverture d'une commande EXISTANTE depuis la fiche contact = consultation : lecture seule si
       // la commande n'est pas modifiable (cohérent avec toutes les autres surfaces d'ouverture — cf.
       // openOrderForConsult). Sans cela, cette surface contournait le verrou d'intégrité.
-      if (entry) openOrderForConsult(entry.row);
+      // Lot O-E2-B5 (§10-11) — dispatch programmatique depuis la fiche contact déjà ouverte : le
+      // contact affiché appartient nécessairement au club actif (state.contacts est scopé par club),
+      // donc activeClubId() est ici le club d'autorité légitime, transmis explicitement (même
+      // doctrine que la branche "stages" ci-dessous).
+      if (entry) openOrderForConsult(entry.row, activeClubId());
       else openOrderDialog({
         contactId: link.kind === "member" ? link.contactId : "",
         prospectContactId: link.kind === "prospect" ? link.contactId : "",
@@ -24841,14 +26269,17 @@ ${esc(bodyText)}</pre>
         address: contact.address || "",
         postalCode: contact.postalCode || "",
         city: contact.city || "",
-      });
+      }, {}, activeClubId());
       return;
     }
     if (module === "stages") {
+      // Lot O-E2-B4R2 (§11) — dispatch programmatique depuis la fiche contact déjà ouverte : le
+      // contact affiché appartient nécessairement au club actif (state.contacts est scopé par club),
+      // donc activeClubId() est ici le club d'autorité légitime, transmis explicitement.
       const entry = firstContactModuleEntry(contact, module);
       const stageId = entry?.stageId || firstStageIdForContact(contact);
-      if (entry) openRegistrationDialog(stageId, entry.row);
-      else openRegistrationStageChoiceDialog({ contactLink: source.dataset.contactLink });
+      if (entry) openRegistrationDialog(stageId, entry.row, activeClubId());
+      else openRegistrationStageChoiceDialog({ contactLink: source.dataset.contactLink }, activeClubId());
     }
   }
 
@@ -24868,7 +26299,7 @@ ${esc(bodyText)}</pre>
     };
   }
 
-  function customerSelectField(row = {}, label = "Client enregistré", freeLabel = "Vente libre / créer un non-membre") {
+  function customerSelectField(row = {}, label = "Client enregistré", freeLabel = "Vente libre / créer un non-membre", disabled = false) {
     const selected = contactLinkForRow(row);
     const memberOptions = state.contacts.members
       .slice()
@@ -24878,11 +26309,16 @@ ${esc(bodyText)}</pre>
       .slice()
       .sort((a, b) => personKey(a).localeCompare(personKey(b)))
       .map((contact) => contactOption("prospect", contact, selected));
-    return `<label class="wide shop-member-select">${esc(label)}<select name="contactLink" data-contact-link>
+    // Lot O-E2-B5R (§15) — lecture seule réelle : le <select> désactivé n'est jamais soumis par le
+    // navigateur (FormData l'exclut), donc un champ caché PORTE la valeur actuelle sous le MÊME nom
+    // (name="contactLink") pour que le submit reconduise le lien tel quel, jamais une valeur vidée par
+    // erreur (même doctrine que les listes déroulantes désactivées ailleurs dans l'app, cf. __keep__).
+    const keepInput = disabled ? `<input type="hidden" name="contactLink" value="${esc(selected)}" />` : "";
+    return `<label class="wide shop-member-select">${esc(label)}<select name="contactLink" data-contact-link ${disabled ? "disabled" : ""}>
       <option value="">${esc(freeLabel)}</option>
       ${memberOptions.length ? `<optgroup label="Adhérents">${memberOptions.join("")}</optgroup>` : ""}
       ${prospectOptions.length ? `<optgroup label="Non adhérents">${prospectOptions.join("")}</optgroup>` : ""}
-    </select></label>`;
+    </select></label>${keepInput}`;
   }
 
   function contactOption(kind, contact, selected) {
@@ -24937,13 +26373,17 @@ ${esc(bodyText)}</pre>
     // (déjà utilisé juste en dessous pour "Ouvrir la fiche contact / facture") résout le
     // membre/prospect réel derrière cette ligne fusionnée (adhésion/commande/inscription) :
     // réutilisé ici pour retrouver le contact complet et ouvrir le même dialogue e-mail que
-    // partout ailleurs. Repli sur le mailto direct seulement si la résolution échoue (cas
-    // très rare : ligne sans contact lié), pour ne jamais rendre l'adresse totalement inerte.
+    // partout ailleurs.
+    // Lot O-E2-B7R3 (§1-5) — quand contactLinkForRow échoue, contactBody() n'a aucune autorité
+    // métier fiable (ni club explicite, ni source domain) à transmettre à send-minimal-email/
+    // openContactEmailDialog : plutôt que d'ouvrir un <a href="mailto:..."> brut (aucun club, aucune
+    // permission, jamais gardé), l'adresse reste affichée mais NON cliquable. Sécurité > repli
+    // historique — ce widget est réutilisé dans trop de contextes pour garantir un contexte fiable.
     const contactLink = contactLinkForRow(row);
     const emailAction = row.email
       ? (contactLink
-        ? `<button type="button" class="contact-action-link" data-action="send-contact-email" data-contact-link="${esc(contactLink)}" title="Ouvrir la messagerie MonGestaClub"><span>${esc(row.email)}</span><strong>Envoyer un mail</strong></button>`
-        : `<a class="contact-action-link" href="${esc(contactEmailHref(row))}" title="Ouvrir la messagerie"><span>${esc(row.email)}</span><strong>Envoyer un mail</strong></a>`)
+        ? `<button type="button" class="contact-action-link" data-action="send-contact-email" data-contact-link="${esc(contactLink)}" data-email-club-id="${esc(activeClubId())}" title="Ouvrir la messagerie MonGestaClub"><span>${esc(row.email)}</span><strong>Envoyer un mail</strong></button>`
+        : `<span class="contact-action-link contact-action-link-inert"><span>${esc(row.email)}</span></span>`)
       : `<span class="muted">Non renseigné</span>`;
     return `<div class="contact-card">
       <div class="contact-card-head">
@@ -25195,8 +26635,31 @@ ${esc(bodyText)}</pre>
   // incomplet : une fois la fiche ouverte, scrolle et focus ce champ précis plutôt que de laisser
   // l'utilisateur chercher le bon bloc dans un long formulaire. "" (défaut) : comportement identique
   // à avant ce lot pour tous les appelants existants, qui n'en fournissent jamais.
+  // Lot O-E2-B2 — champs mutables d'un Contact (hors documents/documentsText, gérés séparément par
+  // ensureAttachedWritePermission) : sert à détecter si une sauvegarde exige réellement
+  // contacts.write, indépendamment d'un éventuel changement de document seul (§17-18).
+  const CONTACT_FIELD_KEYS = [
+    "lastName", "firstName", "email", "mobile", "phone", "city", "postalCode", "address", "birthDate",
+    "category", "identityAvatarChoice", "birthPlace", "nationality", "identityPhotoDataUrl",
+    "legalGuardianName", "legalGuardianPhone", "legalGuardianEmail", "parentalAuthorization",
+    "imageRights", "rulesSigned",
+  ];
+
   function openContactDialog(kind, row = {}, focusField = "") {
     const isMember = kind === "members";
+    // Lot O-E2-B2 — club ciblé mémorisé à l'ouverture, revérifié au save (dialogue asynchrone, §5/§29).
+    const openedClubId = activeClubId();
+    // Ouvrir un contact EXISTANT révèle ses données : exige contacts.read (§8). Une CRÉATION ne
+    // révèle rien ; la garde réelle vit au save (contacts.write), même si ce dialogue est appelé
+    // directement (§8 — la sécurité principale reste au save).
+    if (row.id && !ensureUserPermission("contacts.read", openedClubId)) return;
+    // Lot O-E2-B2R — figé À L'OUVERTURE : contactDocumentsSection() ne rend NI noms de fichiers NI
+    // contrôles (existingDocuments/pendingDocuments) quand documents.read est faux, donc le formulaire
+    // soumis ne peut plus reconstruire fidèlement la liste existante. Sans ce garde-fou, un save
+    // ordinaire du Contact (nom, téléphone...) serait interprété comme une suppression totale des
+    // documents invisibles. write n'implique jamais read (§7) : même documents.write=true ne permet
+    // pas de reconstruire depuis un formulaire qui ne les a jamais montrés.
+    const documentsReadableAtOpen = currentUserHasPermission("documents.read", openedClubId);
     const body = [
       row.id ? `<div hidden data-contact-dialog-kind="${esc(kind)}" data-contact-dialog-id="${esc(row.id)}"></div>` : "",
       identityPhotoSection(row),
@@ -25226,11 +26689,17 @@ ${esc(bodyText)}</pre>
       if (!validateRequiredContactLike(form, ["lastName", "firstName", "contactMethod"], "Renseignez le nom, le prénom et au moins un moyen de contact (téléphone ou e-mail).")) return false;
       const target = state.contacts[kind];
       const birthDate = form.get("birthDate") || "";
-      const keptDocumentIds = new Set([...formElement.querySelectorAll('input[name="existingDocuments"]')].map((input) => input.value));
-      const documents = [
-        ...normalizeContactDocuments(row.documents).filter((doc) => keptDocumentIds.has(doc.id)),
-        ...pendingContactDocuments(formElement),
-      ];
+      // Lot O-E2-B2R — documents non lisibles à l'ouverture : reconduits TELS QUELS, jamais
+      // reconstruits depuis un formulaire qui ne les a jamais exposés (§4).
+      const documents = documentsReadableAtOpen
+        ? (() => {
+          const keptDocumentIds = new Set([...formElement.querySelectorAll('input[name="existingDocuments"]')].map((input) => input.value));
+          return [
+            ...normalizeContactDocuments(row.documents).filter((doc) => keptDocumentIds.has(doc.id)),
+            ...pendingContactDocuments(formElement),
+          ];
+        })()
+        : normalizeContactDocuments(row.documents);
       const next = {
         ...row,
         id: row.id || id(kind === "members" ? "member" : "prospect"),
@@ -25249,7 +26718,9 @@ ${esc(bodyText)}</pre>
         nationality: form.get("nationality") || "",
         identityPhotoDataUrl: isImageDataUrl(form.get("identityPhotoDataUrl")) ? form.get("identityPhotoDataUrl") : "",
         documents,
-        documentsText: form.get("documentsText") || "",
+        // Lot O-E2-B2R — même doctrine que documents ci-dessus : la note documentaire n'a jamais été
+        // montrée, donc jamais reconstruite depuis le formulaire si elle était invisible.
+        documentsText: documentsReadableAtOpen ? (form.get("documentsText") || "") : asText(row.documentsText),
         // Lot Contact V2 — préserve les valeurs existantes quand la section est masquée (majeur),
         // même pattern que le dossier sportif de la membership.
         legalGuardianName: form.get("guardianFieldsEditable") ? asText(form.get("legalGuardianName")) : asText(row.legalGuardianName),
@@ -25262,6 +26733,16 @@ ${esc(bodyText)}</pre>
         // Lot Contact/Dossier V2 (règlement) — jamais masqué, comme le droit à l'image.
         rulesSigned: Boolean(form.get("rulesSigned")),
       };
+      // Lot O-E2-B2 — club ciblé revérifié (dialogue asynchrone, §5/§29) : jamais de mutation dans un
+      // autre club que celui ouvert.
+      if (activeClubId() !== openedClubId) { ui.saveMessage = "Opération annulée : le club actif a changé."; return false; }
+      // Delta AVANT toute mutation (§17-18) : deux catégories de changement distinctes, chacune sa
+      // propre permission write, jamais de sauvegarde partielle si l'une des deux est refusée.
+      const contactFieldsChanged = !row.id || anyFieldDiffers(row, next, CONTACT_FIELD_KEYS);
+      const documentsChanged = JSON.stringify(normalizeContactDocuments(row.documents)) !== JSON.stringify(documents)
+        || asText(row.documentsText) !== asText(next.documentsText);
+      if (contactFieldsChanged && !ensureUserPermission("contacts.write", openedClubId)) return false;
+      if (documentsChanged && !ensureAttachedWritePermission("documents.write", "contacts.read", openedClubId)) return false;
       upsert(target, next);
       // Mécanisme central de synchronisation (pas une exception pour un seul badge) : la date de
       // naissance est un fait unique de la personne, contrairement aux coordonnées (téléphone,
@@ -25292,26 +26773,44 @@ ${esc(bodyText)}</pre>
     }, contactModuleLinks(kind, row), () => {}, "Enregistrer", { focusSelector: focusField ? `[name="${focusField}"]` : "" });
   }
 
-  function contactDocumentsSection(row = {}) {
+  // Lot O-E2-B2 — partagée par openContactDialog et openMembershipDialog : la permission de LECTURE
+  // du domaine parent (contacts.read/memberships.read) est déjà garantie par la garde d'ouverture du
+  // dialogue appelant (§8) pour un enregistrement EXISTANT ; documents.read est donc la seule
+  // vérification propre à cette section (§19). clubId par défaut = club actif (même club que le
+  // dialogue parent, jamais un autre).
+  function contactDocumentsSection(row = {}, clubId = activeClubId()) {
+    if (!currentUserHasPermission("documents.read", clubId)) {
+      return `<div class="dialog-section contact-documents">
+        <h3>Documents</h3>
+        <p class="muted">Vous n'avez pas accès à cette section.</p>
+      </div>`;
+    }
+    const canWrite = currentUserHasPermission("documents.write", clubId);
     const documents = normalizeContactDocuments(row.documents);
     return `<div class="dialog-section contact-documents">
       <h3>Documents</h3>
       <p class="muted">Certificat, licence, autorisation parentale, justificatif ou autre document utile.</p>
       <div class="contact-doc-list" data-contact-doc-list>
-        ${documents.length ? documents.map(contactDocumentItemHtml).join("") : `<div class="empty compact" data-empty-documents>Aucun document joint.</div>`}
+        ${documents.length ? documents.map((doc) => contactDocumentItemHtml(doc, false, canWrite)).join("") : `<div class="empty compact" data-empty-documents>Aucun document joint.</div>`}
       </div>
-      <label>Ajouter des documents<input type="file" name="contactDocuments" multiple /></label>
-      ${textareaField("documentsText", "Notes documents", row.documentsText || "")}
+      ${canWrite ? `<label>Ajouter des documents<input type="file" name="contactDocuments" multiple /></label>` : ""}
+      ${canWrite
+        ? textareaField("documentsText", "Notes documents", row.documentsText || "")
+        : `<label>Notes documents<textarea name="documentsText" readonly>${esc(row.documentsText || "")}</textarea></label>`}
     </div>`;
   }
 
-  function contactDocumentItemHtml(doc, pending = false) {
+  // Lot O-E2-B2 — l'entrée hidden (existingDocuments/pendingDocuments) reste TOUJOURS présente, même
+  // en lecture seule (canWrite:false) : elle garantit que ce document reste "conservé" au save (le
+  // filtrage keptDocumentIds ci-dessous ne le retire jamais silencieusement faute de bouton
+  // "Retirer") — seul le CONTRÔLE visuel de suppression/lecture est conditionné par canWrite.
+  function contactDocumentItemHtml(doc, pending = false, canWrite = true) {
     const payload = pending ? `<input type="hidden" name="pendingDocuments" value="${esc(JSON.stringify(doc))}" />` : `<input type="hidden" name="existingDocuments" value="${esc(doc.id)}" />`;
     return `<div class="contact-doc-item" data-contact-document>
       ${payload}
       <a href="${esc(doc.dataUrl)}" target="_blank" rel="noopener" title="Ouvrir le document">${esc(doc.name)}<span>${esc(dateDisplay(doc.addedAt))}</span></a>
       <button type="button" data-action="open-contact-document">Lire</button>
-      <button type="button" class="danger" data-action="remove-contact-document">Retirer</button>
+      ${canWrite ? `<button type="button" class="danger" data-action="remove-contact-document">Retirer</button>` : ""}
     </div>`;
   }
 
@@ -25403,7 +26902,38 @@ ${esc(bodyText)}</pre>
       ${linkBtn}`;
   }
 
+  // Lot O-E2-B2 — champs mutables d'une Adhésion (hors documents/documentsText, gérés séparément) :
+  // sert à détecter si une sauvegarde exige réellement memberships.write.
+  // EXCLU DÉLIBÉRÉMENT : "payments" (state.memberships[].payments) relève du domaine payments.*,
+  // hors périmètre B2 (§14/§45 — STOP, ne pas élargir silencieusement). Un changement de paiement
+  // SEUL, sans autre champ d'adhésion modifié, n'est donc pas gardé par ce lot : comportement
+  // strictement inchangé par rapport à avant B2 (aucune régression, la garde payments.write reste à
+  // construire dans un lot dédié). Voir le rapport final, point cross-domain.
+  const MEMBERSHIP_FIELD_KEYS = [
+    "lastName", "firstName", "email", "mobile", "phone", "address", "postalCode", "city", "birthDate",
+    "category", "identityAvatarChoice", "identityPhotoDataUrl", "contactId",
+    "discipline", "disciplineId", "disciplinePrice", "disciplineLicense", "sportCategoryId",
+    "medicalCertificate", "discount", "pathologies", "insuranceChoice", "insuranceCategory",
+    "insuranceLabel", "insurancePrice", "insurance",
+    "groupId", "level", "practiceType", "licenseNumber", "licenseFederation", "licenseStartDate",
+    "licenseEndDate", "medicalCertificateDate", "medicalCertificateEndDate", "emergencyName",
+    "emergencyPhone", "emergencyRelation", "legalGuardianName", "legalGuardianPhone",
+    "legalGuardianEmail", "parentalAuthorization", "imageRights", "rulesSigned",
+  ];
+
   function openMembershipDialog(row = {}) {
+    // Lot O-E2-B2 — club ciblé mémorisé à l'ouverture, revérifié au save (dialogue asynchrone, §5/§29).
+    const openedClubId = activeClubId();
+    // Ouvrir une inscription EXISTANTE révèle ses données : exige memberships.read (§8). Une
+    // CRÉATION ne révèle rien ; la garde réelle vit au save (memberships.write, §8).
+    if (row.id && !ensureUserPermission("memberships.read", openedClubId)) return;
+    // Lot O-E2-B2R — même doctrine que openContactDialog (§4) : figé À L'OUVERTURE, avant même que
+    // contactDocumentsSection() ne masque les contrôles documentaires du formulaire.
+    const documentsReadableAtOpen = currentUserHasPermission("documents.read", openedClubId);
+    // Lot O-E2-B3B-1 — même doctrine, appliquée au paiement embarqué de l'Adhésion (§12/§29) : figé À
+    // L'OUVERTURE, avant que paymentFields() ne masque/désactive les contrôles.
+    const paymentsReadableAtOpen = currentUserCanReadEmbeddedPayment("membership", openedClubId);
+    const paymentsWritableAtOpen = currentUserCanWriteEmbeddedPayment("membership", openedClubId);
     // Snapshot des paiements AVANT ouverture (copie profonde, jamais une référence vers state) —
     // même principe que openOrderDialog : vide si l'inscription est neuve.
     const originalMembershipId = row.id || "";
@@ -25504,7 +27034,7 @@ ${esc(bodyText)}</pre>
       field("discount", "Remise", row.discount || "", "number", 'step="0.01"'),
       `<div class="dialog-alert-list" data-membership-alerts></div>`,
       membershipTariffSummary(row),
-      paymentFields("payment", row.payments || [], membershipTariffValues(row).total, membershipDefaultTaxRate(row), row.id ? `membership:${row.id}` : ""),
+      paymentFields("payment", row.payments || [], membershipTariffValues(row).total, membershipDefaultTaxRate(row), row.id ? `membership:${row.id}` : "", "membership", openedClubId, paymentsReadableAtOpen, paymentsWritableAtOpen),
     ].join("");
     const footer = contactLinkAction(row);
     setNextWindowKey(row.id ? `membership:${row.id}` : null);
@@ -25517,11 +27047,16 @@ ${esc(bodyText)}</pre>
       // même la validation des champs requis.
       if (!ensureFeatureEnabledForMutation("memberships")) return false;
       if (!validateRequiredContactLike(form, ["discipline", "lastName", "firstName", "email", "mobile", "address", "postalCode", "city", "birthDate"], "Veuillez remplir tous les champs obligatoires avant d'enregistrer l'inscription.")) return false;
-      const keptDocumentIds = new Set([...formElement.querySelectorAll('input[name="existingDocuments"]')].map((input) => input.value));
-      const documents = [
-        ...normalizeContactDocuments(row.documents).filter((doc) => keptDocumentIds.has(doc.id)),
-        ...pendingContactDocuments(formElement),
-      ];
+      // Lot O-E2-B2R — documents non lisibles à l'ouverture : reconduits TELS QUELS (§4/§6).
+      const documents = documentsReadableAtOpen
+        ? (() => {
+          const keptDocumentIds = new Set([...formElement.querySelectorAll('input[name="existingDocuments"]')].map((input) => input.value));
+          return [
+            ...normalizeContactDocuments(row.documents).filter((doc) => keptDocumentIds.has(doc.id)),
+            ...pendingContactDocuments(formElement),
+          ];
+        })()
+        : normalizeContactDocuments(row.documents);
       const insuranceChoice = insuranceChoiceByKey(form.get("insuranceChoice"));
       const contactLink = parseContactLink(form.get("contactLink"));
       const birthDate = form.get("birthDate") || "";
@@ -25593,7 +27128,12 @@ ${esc(bodyText)}</pre>
         insuranceCategory: insuranceChoice?.category || "",
         insuranceLabel: insuranceChoice?.label || "",
         insurancePrice: asNumber(insuranceChoice?.price),
-        payments: stampClaimIdentity(readPayments(form, "payment", formElement), `membership:${membershipId}`),
+        // Lot O-E2-B3B-1 (§12/§29) — paiement non lisible à l'ouverture : reconduit TEL QUEL, jamais
+        // reconstruit depuis un formulaire qui ne l'a jamais exposé (même doctrine que les documents
+        // invisibles, B2R §4).
+        payments: paymentsReadableAtOpen
+          ? stampClaimIdentity(readPayments(form, "payment", formElement), `membership:${membershipId}`)
+          : normalizePayments(row.payments || []),
         // Dossier sportif
         groupId: form.get("groupId") || "",
         level: asText(form.get("level")),
@@ -25623,8 +27163,28 @@ ${esc(bodyText)}</pre>
         rulesSigned: Boolean(row.rulesSigned),
         insurance: Boolean(form.get("insurance")),
         documents,
-        documentsText: asText(form.get("documentsText")),
+        // Lot O-E2-B2R — même doctrine que documents ci-dessus (§4/§6).
+        documentsText: documentsReadableAtOpen ? asText(form.get("documentsText")) : asText(row.documentsText),
       };
+      // Lot O-E2-B2 — club ciblé revérifié (dialogue asynchrone, §5/§29) AVANT toute mutation, y
+      // compris la branche "non-adhérent" (démotion) ci-dessous.
+      if (activeClubId() !== openedClubId) { ui.saveMessage = "Opération annulée : le club actif a changé."; return false; }
+      // Delta AVANT toute mutation (§17-18). "payments" est délibérément EXCLU de
+      // MEMBERSHIP_FIELD_KEYS (domaine payments.*, hors périmètre B2, §14/§45) : un changement de
+      // paiement seul reste, comme avant ce lot, non gardé ici.
+      const membershipFieldsChanged = !row.id || anyFieldDiffers(row, next, MEMBERSHIP_FIELD_KEYS);
+      const membershipDocumentsChanged = JSON.stringify(normalizeContactDocuments(row.documents)) !== JSON.stringify(documents)
+        || asText(row.documentsText) !== asText(next.documentsText);
+      // Lot O-E2-B3B-1 (§13-14) — la frontière MEMBERSHIPS-BOUNDARY-01 est désormais fermée : un
+      // changement de paiement seul exige payments.write + memberships.read (jamais memberships.write).
+      // normalizePayments() sur les DEUX côtés (jamais next.payments brut) : readPayments()/
+      // stampClaimIdentity() ne passent pas par normalizePayment(), donc l'ordre des clés JSON diffère
+      // sinon (même valeurs, comparaison de chaînes pourtant fausse) — canonicaliser les deux évite ce
+      // faux positif, même patron que documentsChanged (normalizeContactDocuments des deux côtés).
+      const paymentsChanged = JSON.stringify(normalizePayments(row.payments || [])) !== JSON.stringify(normalizePayments(next.payments));
+      if (membershipFieldsChanged && !ensureUserPermission("memberships.write", openedClubId)) return false;
+      if (membershipDocumentsChanged && !ensureAttachedWritePermission("documents.write", "memberships.read", openedClubId)) return false;
+      if (paymentsChanged && !ensureEmbeddedPaymentWritePermission("membership", openedClubId)) return false;
       if (!asText(next.discipline)) {
         const prospect = {
           ...next,
@@ -25782,15 +27342,15 @@ ${esc(bodyText)}</pre>
     box.innerHTML = rows.map((text) => `<div class="form-warning">${esc(text)}</div>`).join("");
   }
 
-  function orderArticleEditorRow(article, item = {}, stock = {}) {
+  function orderArticleEditorRow(article, item = {}, stock = {}, disabled = false) {
     const currentQuantity = asNumber(item.quantity);
     const availableForOrder = asNumber(stock?.available) + currentQuantity;
     return `<tr data-order-line="${esc(article.id)}" data-order-had-quantity="${currentQuantity > 0 ? "true" : "false"}">
       <td><div class="shop-editor-article">${articleImage(article, "tiny")}<div><strong>${esc(article.name || "Article")}</strong><span>${esc(article.reference || "")}</span></div></div></td>
       <td class="money">${intValue(availableForOrder)}</td>
-      <td>${orderSizeEditor(article, item, stock)}</td>
+      <td>${orderSizeEditor(article, item, stock, disabled)}</td>
       <td><input name="price_${esc(article.id)}" data-order-summary-input data-order-price="${esc(article.id)}" class="locked-price" type="number" step="0.01" value="${esc(item.unitPrice ?? article.priceOptions?.[0] ?? article.defaultPrice ?? "")}" readonly title="Prix défini dans la page Tarifs" /></td>
-      <td><button class="icon danger" type="button" title="Retirer cet article" data-clear-order-line="${esc(article.id)}">×</button></td>
+      <td>${disabled ? "" : `<button class="icon danger" type="button" title="Retirer cet article" data-clear-order-line="${esc(article.id)}">×</button>`}</td>
     </tr>`;
   }
 
@@ -25870,7 +27430,11 @@ ${esc(bodyText)}</pre>
     target?.scrollIntoView({ behavior: "smooth", block: "start" });
   }
 
-  function openArticleSaleDialog(articleId) {
+  function openArticleSaleDialog(articleId, openedClubId = "") {
+    // Lot O-E2-B5 (§10/§52) — openedClubId EXPLICITE, aucun fallback interne vers activeClubId().
+    if (!openedClubId) return;
+    if (activeClubId() !== openedClubId) return;
+    if (!currentUserHasPermission("shop.read", openedClubId)) return;
     const article = articleById(articleId);
     if (!article.id) return;
     const sizes = article.sizes || [];
@@ -25881,20 +27445,61 @@ ${esc(bodyText)}</pre>
       sizes: sizes.length === 1 ? { [sizes[0]]: 1 } : {},
     };
     if (sizes.length === 1) item.quantity = 1;
-    openOrderDialog({ items: [item] });
+    openOrderDialog({ items: [item] }, {}, openedClubId);
   }
 
   // Consultation d'une commande : toujours autorisée, quel que soit l'état du paiement. Lecture
   // seule si la commande n'est pas modifiable (facture émise, paiement validé / en cours / à
   // encaisser) ; sinon formulaire d'édition normal. En lecture seule : aucune mutation, aucun
   // historique, aucune facturation — seulement l'affichage.
-  function openOrderForConsult(order = {}) {
-    if (!order || !order.id) return openOrderDialog(order);
-    return openOrderDialog(order, { readOnly: shopOrderIntegrityState(order).editBlocked });
+  function openOrderForConsult(order = {}, openedClubId = "") {
+    // Lot O-E2-B5 (§10) — openedClubId EXPLICITE, aucun fallback interne vers activeClubId().
+    if (!openedClubId) return;
+    if (activeClubId() !== openedClubId) return;
+    // Lot O-E2-B5R (§23-24) — une CONSULTATION exige un objet EXISTANT : jamais de dégénérescence
+    // silencieuse en création via le paramètre par défaut order={} (openOrderForConsult n'est jamais
+    // un point d'entrée de création, contrairement à openOrderDialog appelé directement par add-order).
+    if (!order || !order.id) return;
+    // Lot O-E2-B5R (§25) — résolution LIVE ici, jamais le snapshot fourni par le caller (qui peut être
+    // périmé) : openOrderDialog effectue de toute façon sa propre résolution live (§26), mais le calcul
+    // de shopOrderIntegrityState() ci-dessous doit lui aussi porter sur l'état RÉEL, pas un vieux clone.
+    const liveOrder = state.shopOrders.find((row) => row.id === order.id);
+    if (!liveOrder) return;
+    return openOrderDialog(liveOrder, { readOnly: shopOrderIntegrityState(liveOrder).editBlocked }, openedClubId);
   }
 
-  function openOrderDialog(row = {}, opts = {}) {
+  function openOrderDialog(row = {}, opts = {}, openedClubId = "") {
     const readOnly = Boolean(opts.readOnly);
+    // Lot O-E2-B5 (§10) — openedClubId EXPLICITE, AUCUN fallback interne vers activeClubId() : même
+    // doctrine que les autres primitives durcies (openRegistrationDialog, openStageDialog...).
+    if (!openedClubId) return;
+    if (activeClubId() !== openedClubId) return;
+    // Lot O-E2-B5 (§8-9) — la feature Shop OFF n'interdit plus la CONSULTATION ni la régularisation
+    // du paiement d'une commande EXISTANTE (B3B-1 réaffirmé, même doctrine que Stage B4R3). Seule la
+    // CRÉATION d'une commande est une mutation métier Shop réelle : elle seule exige la feature ON.
+    if (!row.id && !ensureFeatureEnabledForMutation("shop")) return;
+    // Lot O-E2-B5 (§11) — une commande EXISTANTE exige shop.read pour être seulement consultée ; une
+    // NOUVELLE commande exige en plus shop.write (création = mutation).
+    if (!currentUserHasPermission("shop.read", openedClubId)) return;
+    if (!row.id && !currentUserHasPermission("shop.write", openedClubId)) return;
+    // Lot O-E2-B5R (§26-27) — résolution LIVE à l'OUVERTURE, AVANT toute construction du corps du
+    // dialogue (client, articles, paiements, totaux, HTML) : un appelant direct peut fournir un
+    // snapshot périmé (ancien nom, ancien montant...) — jamais construit le dialogue à partir de ce
+    // snapshot, toujours l'objet réel de state.shopOrders. Une commande existante introuvable en LIVE
+    // (supprimée entre-temps) est un refus, jamais une dégénérescence en création silencieuse.
+    if (row.id) {
+      const liveRow = state.shopOrders.find((o) => o.id === row.id);
+      if (!liveRow) return;
+      row = liveRow;
+    }
+    // Lot O-E2-B5 (§12) — frontière MIXTE Shop/Paiement : shop.write ET hasFeature("shop") gouvernent
+    // ENSEMBLE les champs d'identité client / remise (readonly visuel si l'une des deux manque, garde
+    // réelle au save via shopDataChanged plus bas) ; les champs de paiement suivent leur propre
+    // gouvernance B3B-1 (paymentsWritableAtOpen), jamais liée à shop.write NI à la feature Shop.
+    const canWriteShopData = hasFeature("shop") && currentUserHasPermission("shop.write", openedClubId);
+    const shopFieldAttrs = canWriteShopData ? "" : "readonly";
+    const paymentsReadableAtOpen = currentUserCanReadEmbeddedPayment("order", openedClubId);
+    const paymentsWritableAtOpen = currentUserCanWriteEmbeddedPayment("order", openedClubId);
     // Snapshot des paiements AVANT ouverture, pour journaliser (payment.validated/cancelled) les
     // seules transitions réellement persistées à la sauvegarde finale — jamais le clic Payer/Annuler
     // local. Copie profonde (jamais une référence vers state) ; vide si la commande est neuve
@@ -25920,17 +27525,21 @@ ${esc(bodyText)}</pre>
     const stockByArticle = new Map(stockRows().map((item) => [item.article.id, item]));
     const articleRows = state.tariffs.articles
       .filter((article) => itemByArticle.has(article.id))
-      .map((article) => orderArticleEditorRow(article, itemByArticle.get(article.id) || {}, stockByArticle.get(article.id) || {}))
+      .map((article) => orderArticleEditorRow(article, itemByArticle.get(article.id) || {}, stockByArticle.get(article.id) || {}, !canWriteShopData))
       .join("");
     const calc = calcOrder(row);
     const quantity = orderItemDetails(row).reduce((sum, item) => sum + item.quantity, 0);
+    // Lot O-E2-B3B-1R (§16/§18) — "Articles"/"Total à payer" restent CONTRACTUELS (visibles via
+    // shop.read seul, déjà garanti pour atteindre ce dialogue) ; "Réglé"/"Reste dû" sont CALCULÉS
+    // depuis les paiements réels et exigent payments.read, exactement comme le tiroir de paiement
+    // plus bas (paymentFields, déjà gardé) — jamais affichés sans lui.
     const orderSummary = `<div class="dialog-section tariff-summary order-dialog-summary" data-order-dialog-summary>
       <h3>Total commande</h3>
       <div class="tariff-summary-grid">
         <div><span>Articles</span><strong data-order-summary-value="quantity">${intValue(quantity)}</strong></div>
         <div><span>Total à payer</span><strong data-order-summary-value="total">${money(calc.total)}</strong></div>
-        <div><span>Réglé</span><strong data-order-summary-value="paid">${money(calc.paid)}</strong></div>
-        <div><span>Reste dû</span><strong data-order-summary-value="due">${money(calc.restDue)}</strong></div>
+        ${paymentsReadableAtOpen ? `<div><span>Réglé</span><strong data-order-summary-value="paid">${money(calc.paid)}</strong></div>
+        <div><span>Reste dû</span><strong data-order-summary-value="due">${money(calc.restDue)}</strong></div>` : ""}
       </div>
       <div class="order-summary-items" data-order-summary-items>${orderSummaryItemsPreview(row)}</div>
     </div>`;
@@ -25954,7 +27563,7 @@ ${esc(bodyText)}</pre>
     // historique inchangé au bit près : paymentFields() ("form").
     const paymentSectionHtml = readOnly
       ? orderConsultPaymentZoneHtml(row)
-      : paymentFields("payment", row.payments || [], calc.total, orderDefaultTaxRate(row), row.id ? `order:${row.id}` : "");
+      : paymentFields("payment", row.payments || [], calc.total, orderDefaultTaxRate(row), row.id ? `order:${row.id}` : "", "order", openedClubId, paymentsReadableAtOpen, paymentsWritableAtOpen);
     const body = [
       readOnlyNote,
       `<div class="dialog-section shop-sale-steps">
@@ -25965,10 +27574,10 @@ ${esc(bodyText)}</pre>
       orderSummary,
       `<div class="dialog-section shop-order-editor" data-sale-step="articles">
         <h3>1 · Choisir l'article, la taille et la quantité</h3>
-        <div class="order-add-line">
+        ${canWriteShopData ? `<div class="order-add-line">
           <label>Vendre un article<select name="addOrderArticle" data-order-article-select></select></label>
           <button type="button" data-action="add-order-article-row">Ajouter</button>
-        </div>
+        </div>` : ""}
         <div class="dialog-table-wrap"><div class="dialog-table-scroll"><table class="editable-table order-editor-table">
           <thead><tr><th>Article</th><th class="money">Stock</th><th>Quantités par taille</th><th class="money">Prix vente</th><th></th></tr></thead>
           <tbody data-order-article-body>${articleRows || orderArticlePlaceholderRow()}</tbody>
@@ -25976,17 +27585,17 @@ ${esc(bodyText)}</pre>
         <div class="sale-step-actions"><button type="button" class="primary" data-action="scroll-sale-step" data-target-step="client">Suivant : client</button></div>
       </div>`,
       `<div class="dialog-section" data-sale-step="client"><h3>2 · Choisir le client</h3>`,
-      customerSelectField(row, "Client enregistré", "Vente libre / créer un non-membre"),
-      field("lastName", "Nom", row.lastName),
-      field("firstName", "Prénom", row.firstName),
-      field("email", "E-mail", row.email, "email"),
-      field("phone", "Téléphone", row.phone),
-      `<label class="wide">Adresse<input name="address" type="text" value="${esc(row.address || "")}" /></label>`,
-      field("postalCode", "CP", row.postalCode),
-      field("city", "Ville", row.city),
+      customerSelectField(row, "Client enregistré", "Vente libre / créer un non-membre", !canWriteShopData),
+      field("lastName", "Nom", row.lastName, "text", shopFieldAttrs),
+      field("firstName", "Prénom", row.firstName, "text", shopFieldAttrs),
+      field("email", "E-mail", row.email, "email", shopFieldAttrs),
+      field("phone", "Téléphone", row.phone, "text", shopFieldAttrs),
+      `<label class="wide">Adresse<input name="address" type="text" value="${esc(row.address || "")}" ${shopFieldAttrs} /></label>`,
+      field("postalCode", "CP", row.postalCode, "text", shopFieldAttrs),
+      field("city", "Ville", row.city, "text", shopFieldAttrs),
       `<div class="sale-step-actions"><button type="button" class="primary" data-action="scroll-sale-step" data-target-step="payment">Suivant : paiement</button></div></div>`,
       `<div class="dialog-section" data-sale-step="payment"><h3>3 · Valider le paiement</h3>
-        <div class="form-grid compact">${field("orderDiscount", "Remise commande", row.discount || "", "number", 'step="0.01" min="0" data-order-summary-input')}</div>
+        <div class="form-grid compact">${field("orderDiscount", "Remise commande", row.discount || "", "number", `step="0.01" min="0" data-order-summary-input ${shopFieldAttrs}`)}</div>
       </div>`,
       paymentSectionHtml,
     ].join("");
@@ -25998,10 +27607,18 @@ ${esc(bodyText)}</pre>
     const dialogTitle = readOnly ? "Commande — consultation" : (row.id ? "Modifier la commande" : "Nouvelle commande");
     showDialog(dialogTitle, body, (data, form) => {
       if (readOnly) return false; // sécurité : aucune écriture depuis une consultation.
-      // Garde de MUTATION (Lot 2B) au MOMENT exact de l'enregistrement : bloque toute écriture de
-      // commande (et de ses paiements) si la Boutique a été désactivée pendant que ce dialogue
-      // restait ouvert, ou après un changement de club. return false -> aucune mutation, aucun persist.
-      if (!ensureFeatureEnabledForMutation("shop")) return false;
+      // Lot O-E2-B5 (§9) — plus de garde feature/permission GLOBALE ici : un delta PAYMENT SEUL reste
+      // sauvegardable même feature Shop OFF ou shop.write=false (B3B-1). Les gardes Shop portent
+      // désormais UNIQUEMENT sur shopDataChanged, plus bas, exactement comme stages.write/Registration.
+      // Club ciblé : ne jamais écrire dans un autre club si le club actif a changé depuis l'ouverture.
+      if (activeClubId() !== openedClubId) { ui.saveMessage = "Opération annulée : le club actif a changé."; return false; }
+      // Lot O-E2-B5 (§6) — la commande elle-même doit toujours exister au moment du save (jamais
+      // resurgir via le paramètre par défaut row={} si elle a été supprimée pendant que le dialogue
+      // restait ouvert), même doctrine que le Stage pour openRegistrationDialog.
+      if (row.id && !state.shopOrders.some((o) => o.id === row.id)) {
+        ui.saveMessage = "Cette commande n'existe plus.";
+        return false;
+      }
       const items = state.tariffs.articles
         .map((article) => {
           const sizes = readOrderSizeQuantities(form, article);
@@ -26027,11 +27644,60 @@ ${esc(bodyText)}</pre>
         city: data.get("city"),
         items,
         discount: asNumber(data.get("orderDiscount")),
-        payments: stampClaimIdentity(readPayments(data, "payment", form), `order:${orderId}`),
+        // Lot O-E2-B3B-1 (§12/§15/§29) — paiement non lisible à l'ouverture : reconduit TEL QUEL.
+        payments: paymentsReadableAtOpen
+          ? stampClaimIdentity(readPayments(data, "payment", form), `order:${orderId}`)
+          : normalizePayments(row.payments || []),
       };
+      // Lot O-E2-B5R (§2-12) — CALCUL PUR uniquement ici : sélectionner un contact/prospect déjà
+      // EXISTANT ne mute que l'Order (contactId/prospectContactId lui appartiennent), jamais Contacts.
+      // La création automatique d'un nouveau Prospect (syncProspectContact) et la synchronisation des
+      // coordonnées (updateLinkedContactCoordinates) sont de VRAIES mutations state.contacts : elles
+      // sont différées après TOUTES les gardes Shop/Payments, et conditionnées à contacts.write —
+      // jamais avant, jamais implicitement via shop.write/payments.write (frontière B2 stricte).
       if (contactLink.kind === "prospect") next.prospectContactId = contactLink.contactId;
-      else next.prospectContactId = next.contactId ? "" : syncProspectContact(next, row);
-      if (next.contactId || next.prospectContactId) updateLinkedContactCoordinates(next);
+      else next.prospectContactId = next.contactId ? "" : (row.prospectContactId || "");
+      // Lot O-E2-B3B-1 (§15/§16/§29) — UNIQUEMENT le tableau payments : payments.write + shop.read,
+      // jamais shop.write pour un paiement seul. normalizePayments() sur les deux côtés (jamais
+      // next.payments brut) : même raison que la membership/registration ci-dessus.
+      const paymentsChanged = JSON.stringify(normalizePayments(row.payments || [])) !== JSON.stringify(normalizePayments(next.payments));
+      if (paymentsChanged && !ensureEmbeddedPaymentWritePermission("order", openedClubId)) return false;
+      // Lot O-E2-B5 (§8-19) — shop.write protège la donnée de commande ELLE-MÊME (client, articles,
+      // remise), strictement INDÉPENDANT de payments.write ci-dessus (frontière B3B-1, jamais dupliquée) :
+      // une commande NOUVELLE, ou toute modification hors paiement, exige la feature Shop ET shop.write ;
+      // un simple encaissement sur une commande existante reste possible avec payments.write+shop.read seul.
+      // Comparaison par PROJECTION CANONIQUE des items (jamais le JSON brut stocké) : un item persisté
+      // sans clé `sizes` (anciennes commandes, ventes libres) ne doit jamais déclencher un faux positif
+      // face à `items` toujours construit avec les 4 clés par readOrderSizeQuantities/orderQuantityFromForm.
+      const canonicalOrderItems = (list) => (list || [])
+        .map((item) => ({ articleId: item.articleId, quantity: asNumber(item.quantity), unitPrice: asNumber(item.unitPrice), sizes: item.sizes || {} }))
+        .sort((a, b) => (a.articleId || "").localeCompare(b.articleId || ""));
+      // prospectContactId n'entre dans ce delta QUE si l'utilisateur a explicitement choisi un lien
+      // non-adhérent (contactLink.kind === "prospect") : sinon sa valeur est un pur effet de bord de
+      // syncProspectContact (auto-création/rattachement Contacts, doctrine §21/§57), jamais un signal
+      // d'intention Shop — l'inclure sans condition ferait exiger shop.write pour un simple paiement.
+      const prospectLinkChanged = contactLink.kind === "prospect" && (row.prospectContactId || "") !== next.prospectContactId;
+      const shopDataChanged = !row.id
+        || row.contactId !== next.contactId || prospectLinkChanged
+        || row.lastName !== next.lastName || row.firstName !== next.firstName || row.email !== next.email
+        || row.phone !== next.phone || row.address !== next.address || row.postalCode !== next.postalCode
+        || row.city !== next.city
+        || JSON.stringify(canonicalOrderItems(row.items)) !== JSON.stringify(canonicalOrderItems(next.items))
+        || asNumber(row.discount) !== next.discount;
+      // Lot O-E2-B5 (§9) — delta MIXTE (paiement + donnée Shop) refusé atomiquement ICI, AVANT tout
+      // upsert : aucune sauvegarde partielle du paiement seul dans ce cas (la garde payments.write
+      // ci-dessus n'a encore muté aucun état).
+      if (shopDataChanged && !ensureFeatureEnabledForMutation("shop")) return false;
+      if (shopDataChanged && !ensureUserPermission("shop.write", openedClubId)) return false;
+      // Lot O-E2-B5R2 (§2-8) — l'effet de bord Contacts (auto-création Prospect + synchronisation des
+      // coordonnées) n'est appliqué QUE si une mutation Shop RÉELLE a été autorisée (shopDataChanged),
+      // JAMAIS pour un Payment-only : même avec contacts.write=true, régulariser un simple encaissement
+      // ne doit jamais muter state.contacts ni next.prospectContactId. shopDataChanged=false laisse
+      // ce dernier strictement tel que calculé plus haut (valeur canonique pré-gardes, jamais synchée).
+      if (shopDataChanged && currentUserHasPermission("contacts.write", openedClubId)) {
+        if (contactLink.kind !== "prospect" && !next.contactId) next.prospectContactId = syncProspectContact(next, row);
+        if (next.contactId || next.prospectContactId) updateLinkedContactCoordinates(next);
+      }
       upsert(state.shopOrders, next);
       // Journalisation UNIQUEMENT si la commande existait déjà avant l'ouverture (jamais pour une
       // création) et uniquement pour les transitions réellement persistées par cette sauvegarde.
@@ -26243,14 +27909,17 @@ ${esc(bodyText)}</pre>
     return source?.elements?.[name]?.value || "";
   }
 
-  function openStageDialog(row = {}, options = {}) {
-    // Lot 2D — garde de mutation à l'ouverture : créer/modifier un stage est une mutation métier,
-    // bloquée quand la fonctionnalité stages est désactivée pour le club (jamais un simple masquage).
-    if (!ensureFeatureEnabledForMutation("stages")) return;
-    // Club ciblé (étape 12) : mémorisé à l'ouverture, re-vérifié au submit (dialogue asynchrone).
-    const openedClubId = activeClubId();
-    const stage = row.id ? row : createStageDefaults();
+  // Lot O-E2-B4R (§20-23/§35) — openedClubId n'a plus de repli implicite sur activeClubId() : le
+  // caller (handler/assistant) doit le transmettre explicitement, déjà validé contre le club du rendu
+  // (doctrine "binding club dans le DOM"). stages.read suffit à CONSULTER un stage existant (dialogue
+  // readOnly) ; création/duplication ET écriture exigent en plus stages.write + la fonctionnalité.
+  function openStageDialog(row = {}, options = {}, openedClubId = "") {
+    if (!openedClubId || activeClubId() !== openedClubId) return;
     const isNewStage = !row.id || options.duplicate;
+    if (!currentUserHasPermission("stages.read", openedClubId)) return;
+    if (isNewStage && (!hasFeature("stages") || !currentUserHasPermission("stages.write", openedClubId))) return;
+    const readOnly = !isNewStage && (!hasFeature("stages") || !currentUserHasPermission("stages.write", openedClubId));
+    const stage = row.id ? row : createStageDefaults();
     const body = [
       field("name", "Nom du stage", stage.name),
       field("startDate", "Date de début", stage.startDate || "", "date"),
@@ -26271,12 +27940,17 @@ ${esc(bodyText)}</pre>
       field("lodgingTaxRate", "TVA hébergement %", hasSpecificLodgingTaxRate(stage) ? lodgingTaxRate(stage) : "", "number", `step="0.01" min="0" placeholder="${esc(intValue(effectiveDefaultVatRate()))}"`),
     ].join("");
     setNextWindowKey(isNewStage ? null : `stage:${stage.id}`);
-    showDialog(isNewStage ? "Nouveau stage" : "Modifier le stage", body, (form) => {
+    showDialog(readOnly ? "Consulter le stage" : (isNewStage ? "Nouveau stage" : "Modifier le stage"), body, (form) => {
       // Dialogue périmé (Lot 2D) : la fonctionnalité a pu être désactivée pendant que le dialogue
       // restait ouvert -> aucune mutation, aucun persist, aucun Journal (return false, avant recordHistory
       // effectif). Le club a pu changer -> ne jamais écrire dans un autre club.
       if (!ensureFeatureEnabledForMutation("stages")) return false;
       if (activeClubId() !== openedClubId) { ui.saveMessage = "Opération annulée : le club actif a changé."; return false; }
+      if (!ensureUserPermission("stages.write", openedClubId)) return false;
+      if (stage.id && !(state.tariffs.stages || []).some((s) => s.id === stage.id)) {
+        ui.saveMessage = "Ce stage n'existe plus.";
+        return false;
+      }
       const startDate = dateInputValue(form.get("startDate"));
       const endDate = dateInputValue(form.get("endDate"));
       const registrationDeadline = dateInputValue(form.get("registrationDeadline"));
@@ -26321,14 +27995,20 @@ ${esc(bodyText)}</pre>
         const changes = stageAuditChanges(stage, next);
         if (changes.length) audit.stageUpdated(next, changes);
       }
-    });
+    }, () => {}, "", () => {}, "Enregistrer", { readOnly });
   }
 
-  function openRegistrationStageChoiceDialog(options = {}) {
+  function openRegistrationStageChoiceDialog(options = {}, openedClubId = "") {
+    // Lot O-E2-B4R2 (§12) — même doctrine que openRegistrationDialog : openedClubId EXPLICITE, aucun
+    // fallback interne vers activeClubId(). Cette primitive ouvre ensuite une inscription Stage : elle
+    // doit donc porter elle-même le club d'autorité et le propager tel quel.
+    if (!openedClubId) return;
+    if (activeClubId() !== openedClubId) return;
     // Lot 2D — garde de mutation : inscrire un participant est une mutation métier (bloquée quand la
     // fonctionnalité stages est désactivée). La régularisation financière d'une inscription EXISTANTE
     // reste possible par la facture de contact (billables historiques inconditionnels).
     if (!ensureFeatureEnabledForMutation("stages")) return;
+    if (!ensureUserPermission("stages.write", openedClubId)) return;
     const contactLink = asText(options.contactLink || "");
     const contact = contactLink ? contactByLink(contactLink) : null;
     const link = parseContactLink(contactLink);
@@ -26346,7 +28026,7 @@ ${esc(bodyText)}</pre>
     if (stages.length === 1) {
       ui.stageId = stages[0].id;
       navigateTo({ view: "stages", stageId: stages[0].id, stageLetter: "" });
-      openRegistrationDialog(stages[0].id, seed);
+      openRegistrationDialog(stages[0].id, seed, openedClubId);
       return;
     }
     const stageOptions = stages
@@ -26369,19 +28049,41 @@ ${esc(bodyText)}</pre>
       dialog.close();
       ui.stageId = stageId;
       navigateTo({ view: "stages", stageId, stageLetter: "" });
-      openRegistrationDialog(stageId, seed);
+      openRegistrationDialog(stageId, seed, openedClubId);
     });
     showFloatingDialog(dialog, "select[name='stageId']");
   }
 
-  function openRegistrationDialog(stageId, row = {}) {
-    // Lot 2D — garde de mutation à l'ouverture : créer/modifier une inscription est une mutation métier.
-    // Bloquée quand la fonctionnalité stages est désactivée (jamais un simple masquage d'affichage). La
-    // créance d'une inscription EXISTANTE reste facturable/soldable via la facture de contact générique
-    // (billableItemsForContact inconditionnel) et payable via le tiroir de paiement / la facture émise.
-    if (!ensureFeatureEnabledForMutation("stages")) return;
-    // Club ciblé (étape 12) : mémorisé à l'ouverture, re-vérifié au submit.
-    const openedClubId = activeClubId();
+  function openRegistrationDialog(stageId, row = {}, openedClubId = "") {
+    // Lot O-E2-B4R2 (§3-4) — openedClubId EXPLICITE, AUCUN fallback interne vers activeClubId() :
+    // même doctrine que les autres primitives durcies en B4R (openStageDialog, openGroupDialog...).
+    if (!openedClubId) return;
+    if (activeClubId() !== openedClubId) return;
+    // Lot O-E2-B4R2 (§4) — Stage existant obligatoire, vérifié AVANT toute autre garde/lecture.
+    const stageCheck = stageById(stageId);
+    if (!stageCheck.id) return;
+    // Lot O-E2-B4R3 (§3-5) — la feature Stages OFF n'interdit plus la CONSULTATION ni la régularisation
+    // du paiement d'une inscription EXISTANTE (B3B-1 : payment.write+stages.read restent seuls juges
+    // du paiement embarqué, indépendamment de la feature métier Stage). Seule la CRÉATION d'une
+    // inscription est une mutation métier Stage réelle : elle seule exige la feature ON.
+    if (!row.id && !ensureFeatureEnabledForMutation("stages")) return;
+    // Lot O-E2-B4R (§22-23) — une inscription EXISTANTE exige stages.read pour être seulement
+    // consultée ; une NOUVELLE inscription exige en plus stages.write (création = mutation).
+    if (!currentUserHasPermission("stages.read", openedClubId)) return;
+    if (!row.id && !currentUserHasPermission("stages.write", openedClubId)) return;
+    // Lot O-E2-B3B-1 — même doctrine (§12/§16/§29) pour les DEUX tableaux de paiement embarqués
+    // (event/lodging), regroupés sous un seul module "registration" : un delta sur l'un ou l'autre
+    // exige payments.write + stages.read, jamais un booléen distinct par sous-tableau, jamais lié à
+    // la feature Stage (B3B-1, réaffirmé B4R3 §3/§16).
+    const paymentsReadableAtOpen = currentUserCanReadEmbeddedPayment("registration", openedClubId);
+    const paymentsWritableAtOpen = currentUserCanWriteEmbeddedPayment("registration", openedClubId);
+    // Lot O-E2-B4R (§36) + B4R3 (§6) — frontière MIXTE Stage/Paiement : stages.write ET hasFeature
+    // ("stages") gouvernent ENSEMBLE les champs d'identité/quantités/tarifs (readonly visuel si l'une
+    // des deux manque, garde réelle au save via nonPaymentChanged ci-dessous) ; les champs de paiement
+    // suivent leur propre gouvernance B3B-1 (paymentsWritableAtOpen), jamais liée à stages.write NI à
+    // la feature Stage.
+    const canWriteStageIdentity = hasFeature("stages") && currentUserHasPermission("stages.write", openedClubId);
+    const identityFieldAttrs = canWriteStageIdentity ? "" : "readonly";
     // Lot 5A — capturée AVANT le merge d'affichage ci-dessous (qui complète les champs vides avec
     // le contact lié pour préremplir le formulaire) : sert de "before" fidèle pour le diff d'audit.
     const originalRegistration = row;
@@ -26426,45 +28128,54 @@ ${esc(bodyText)}</pre>
       identityPhotoSection(row),
       identityAvatarChoiceField(row),
       stageParticipantSelectField(row, stage),
-      field("lastName", "Nom *", row.lastName, "text", "required"),
-      field("firstName", "Prénom *", row.firstName, "text", "required"),
-      field("phone", "Téléphone *", row.phone, "text", "required"),
-      field("email", "E-mail *", row.email, "email", "required"),
-      `<label class="wide">${labelHtml("Adresse *")}<input name="address" type="text" value="${esc(row.address || "")}" required /></label>`,
-      field("postalCode", "CP *", row.postalCode, "text", "required"),
-      field("city", "Ville *", row.city, "text", "required"),
+      field("lastName", "Nom *", row.lastName, "text", `required ${identityFieldAttrs}`),
+      field("firstName", "Prénom *", row.firstName, "text", `required ${identityFieldAttrs}`),
+      field("phone", "Téléphone *", row.phone, "text", `required ${identityFieldAttrs}`),
+      field("email", "E-mail *", row.email, "email", `required ${identityFieldAttrs}`),
+      `<label class="wide">${labelHtml("Adresse *")}<input name="address" type="text" value="${esc(row.address || "")}" required ${identityFieldAttrs} /></label>`,
+      field("postalCode", "CP *", row.postalCode, "text", `required ${identityFieldAttrs}`),
+      field("city", "Ville *", row.city, "text", `required ${identityFieldAttrs}`),
       `<div class="dialog-section"><h3>${esc(stage.name)}</h3></div>`,
       `<div class="form-grid compact stage-price-line">
-        ${field("eventQty", "Nbr", event.quantity || (asNumber(stage.unitPrice) ? 1 : ""), "number", 'step="1" min="0"')}
+        ${field("eventQty", "Nbr", event.quantity || (asNumber(stage.unitPrice) ? 1 : ""), "number", `step="1" min="0" ${identityFieldAttrs}`)}
         ${field("eventUnit", "Prix U", event.unitPrice ?? stage.unitPrice, "number", 'step="0.01" class="locked-price" readonly title="Prix défini dans la page Tarifs"')}
-        ${field("eventDiscount", "Remise", event.discount || "", "number", 'step="0.01"')}
-        ${paymentDueField("eventPayment", eventTotal, event.payments || [])}
+        ${field("eventDiscount", "Remise", event.discount || "", "number", `step="0.01" ${identityFieldAttrs}`)}
+        ${paymentsReadableAtOpen ? paymentDueField("eventPayment", eventTotal, event.payments || []) : ""}
       </div>`,
-      paymentFields("eventPayment", event.payments || [], eventTotal, stageDefaultTaxRate(stage), row.id ? `stage:${stageId}:${row.id}:event` : ""),
+      paymentFields("eventPayment", event.payments || [], eventTotal, stageDefaultTaxRate(stage), row.id ? `stage:${stageId}:${row.id}:event` : "", "registration", openedClubId, paymentsReadableAtOpen, paymentsWritableAtOpen),
       `<div class="dialog-section"><h3>${esc(stage.lodgingName || "Hébergement")}</h3></div>`,
       `<div class="form-grid compact stage-price-line">
-        ${field("lodgingQty", "Nbr", lodging.quantity || (asNumber(stage.lodgingUnitPrice) ? 1 : ""), "number", 'step="1" min="0"')}
+        ${field("lodgingQty", "Nbr", lodging.quantity || (asNumber(stage.lodgingUnitPrice) ? 1 : ""), "number", `step="1" min="0" ${identityFieldAttrs}`)}
         ${field("lodgingUnit", "Prix U", lodging.unitPrice ?? stage.lodgingUnitPrice, "number", 'step="0.01" class="locked-price" readonly title="Prix défini dans la page Tarifs"')}
-        ${field("lodgingDiscount", "Remise", lodging.discount || "", "number", 'step="0.01"')}
-        ${paymentDueField("lodgingPayment", lodgingTotal, lodging.payments || [])}
+        ${field("lodgingDiscount", "Remise", lodging.discount || "", "number", `step="0.01" ${identityFieldAttrs}`)}
+        ${paymentsReadableAtOpen ? paymentDueField("lodgingPayment", lodgingTotal, lodging.payments || []) : ""}
       </div>`,
-      paymentFields("lodgingPayment", lodging.payments || [], lodgingTotal, lodgingDefaultTaxRate(stage), row.id ? `stage:${stageId}:${row.id}:lodging` : ""),
+      paymentFields("lodgingPayment", lodging.payments || [], lodgingTotal, lodgingDefaultTaxRate(stage), row.id ? `stage:${stageId}:${row.id}:lodging` : "", "registration", openedClubId, paymentsReadableAtOpen, paymentsWritableAtOpen),
       registrationTotalSummary(eventTotal, lodgingTotal, stage),
     ].join("");
     const footerButtons = [
-      row.id ? `<button type="button" class="danger" data-action="delete-current-registration" data-stage-id="${esc(stageId)}" data-id="${esc(row.id)}">Supprimer ce participant</button>` : "",
+      (row.id && canWriteStageIdentity) ? `<button type="button" class="danger" data-action="delete-current-registration" data-stage-id="${esc(stageId)}" data-id="${esc(row.id)}" data-stage-club-id="${esc(openedClubId)}">Supprimer ce participant</button>` : "",
       // Action secondaire : enregistre l'inscription, crée/récupère sa facture puis l'imprime.
       // type="button" (pas submit) pour ne PAS devenir le bouton par défaut (touche Entrée -> Enregistrer).
       `<button type="button" data-registration-print>Imprimer la facture</button>`,
       contactLinkAction(row),
     ].filter(Boolean).join("");
     setNextWindowKey(row.id ? `stage-registration:${row.id}` : null);
-    showDialog(row.id ? "Modifier l'inscription stage" : "Nouvelle inscription stage", body, (form, formElement) => {
-      // Dialogue périmé (Lot 2D) : re-vérifier au submit — la fonctionnalité a pu être désactivée
-      // pendant que le dialogue restait ouvert -> aucune mutation, aucun persist, aucun Journal. Club
-      // ciblé : ne jamais écrire dans un autre club si le club actif a changé depuis l'ouverture.
-      if (!ensureFeatureEnabledForMutation("stages")) return false;
+    showDialog(row.id ? (canWriteStageIdentity ? "Modifier l'inscription stage" : "Consulter l'inscription stage") : "Nouvelle inscription stage", body, (form, formElement) => {
+      // Lot O-E2-B4R3 (§3/§7) — plus de garde feature GLOBALE ici : un delta PAYMENT SEUL reste
+      // sauvegardable même feature Stages OFF (B3B-1). Le feature check porte désormais UNIQUEMENT
+      // sur nonPaymentChanged, plus bas, exactement comme stages.write.
+      // Club ciblé : ne jamais écrire dans un autre club si le club actif a changé depuis l'ouverture.
       if (activeClubId() !== openedClubId) { ui.saveMessage = "Opération annulée : le club actif a changé."; return false; }
+      // Lot O-E2-B4R2 (§6) — le Stage lui-même doit toujours exister au moment du save.
+      if (!stageById(stageId).id) {
+        ui.saveMessage = "Ce stage n'existe plus.";
+        return false;
+      }
+      if (row.id && !(state.stageRegistrations[stageId] || []).some((r) => r.id === row.id)) {
+        ui.saveMessage = "Cette inscription n'existe plus.";
+        return false;
+      }
       // Drapeau « Imprimer la facture » (posé par le bouton dédié) : lu puis effacé d'emblée, même si la
       // validation échoue, pour ne pas déclencher une impression au prochain Enregistrer normal.
       const wantsPrintInvoice = formElement.dataset.printRegistrationInvoice === "1";
@@ -26495,22 +28206,51 @@ ${esc(bodyText)}</pre>
         city: form.get("city"),
         identityPhotoDataUrl: isImageDataUrl(form.get("identityPhotoDataUrl")) ? form.get("identityPhotoDataUrl") : "",
         identityAvatarChoice: normalizeIdentityAvatarChoice(form.get("identityAvatarChoice")),
+        // Lot O-E2-B3B-1 (§12/§16/§29) — paiement non lisible à l'ouverture : reconduit TEL QUEL pour
+        // les DEUX segments (event/lodging), jamais reconstruit depuis un formulaire qui ne l'a jamais
+        // exposé.
         event: {
           quantity: asNumber(form.get("eventQty")),
           unitPrice: asNumber(form.get("eventUnit")),
           discount: asNumber(form.get("eventDiscount")),
-          payments: stampClaimIdentity(readPayments(form, "eventPayment", formElement), `stage:${stageId}:${registrationId}:event`),
+          payments: paymentsReadableAtOpen
+            ? stampClaimIdentity(readPayments(form, "eventPayment", formElement), `stage:${stageId}:${registrationId}:event`)
+            : normalizePayments(row.event?.payments || []),
         },
         lodging: {
           quantity: asNumber(form.get("lodgingQty")),
           unitPrice: asNumber(form.get("lodgingUnit")),
           discount: asNumber(form.get("lodgingDiscount")),
-          payments: stampClaimIdentity(readPayments(form, "lodgingPayment", formElement), `stage:${stageId}:${registrationId}:lodging`),
+          payments: paymentsReadableAtOpen
+            ? stampClaimIdentity(readPayments(form, "lodgingPayment", formElement), `stage:${stageId}:${registrationId}:lodging`)
+            : normalizePayments(row.lodging?.payments || []),
         },
       };
       if (contactLink.kind === "prospect") next.prospectContactId = contactLink.contactId;
       else next.prospectContactId = next.contactId ? "" : syncProspectContact(next, row);
       if (next.contactId || next.prospectContactId) updateLinkedContactCoordinates(next);
+      // Lot O-E2-B3B-1 (§16) — un seul booléen couvre les deux segments (event/lodging) : payments.write
+      // + stages.read, jamais stages.write pour un paiement seul. normalizePayments() sur les deux
+      // côtés (jamais next.event/lodging.payments bruts) : même raison que la membership ci-dessus.
+      const paymentsChanged = JSON.stringify(normalizePayments(row.event?.payments || [])) !== JSON.stringify(normalizePayments(next.event.payments))
+        || JSON.stringify(normalizePayments(row.lodging?.payments || [])) !== JSON.stringify(normalizePayments(next.lodging.payments));
+      if (paymentsChanged && !ensureEmbeddedPaymentWritePermission("registration", openedClubId)) return false;
+      // Lot O-E2-B4 (§45) — stages.write protège la donnée d'inscription ELLE-MÊME (identité, quantités,
+      // tarifs), strictement INDÉPENDANT de payments.write ci-dessus (frontière B3B-1, jamais dupliquée) :
+      // une inscription NOUVELLE, ou toute modification hors paiement, exige stages.write ; un simple
+      // encaissement sur une inscription existante reste possible avec payments.write+stages.read seul.
+      const nonPaymentChanged = !row.id
+        || row.lastName !== next.lastName || row.firstName !== next.firstName || row.phone !== next.phone
+        || row.email !== next.email || row.address !== next.address || row.postalCode !== next.postalCode
+        || row.city !== next.city
+        || asNumber(row.event?.quantity) !== next.event.quantity || asNumber(row.event?.unitPrice) !== next.event.unitPrice || asNumber(row.event?.discount) !== next.event.discount
+        || asNumber(row.lodging?.quantity) !== next.lodging.quantity || asNumber(row.lodging?.unitPrice) !== next.lodging.unitPrice || asNumber(row.lodging?.discount) !== next.lodging.discount;
+      // Lot O-E2-B4R3 (§6-8) — toute mutation hors paiement (identité, quantités, tarifs, ou création)
+      // exige la feature Stages ET stages.write. Un delta MIXTE (paiement + identité) avec feature OFF
+      // est refusé ICI, AVANT tout upsert : aucune sauvegarde partielle du paiement seul dans ce cas
+      // (refus atomique, la garde payments.write ci-dessus n'a déjà pas encore mutation d'état).
+      if (nonPaymentChanged && !ensureFeatureEnabledForMutation("stages")) return false;
+      if (nonPaymentChanged && !ensureUserPermission("stages.write", openedClubId)) return false;
       upsert(state.stageRegistrations[stageId], next);
       // Lot 5A — journalisation : uniquement après réussite de la sauvegarde (les "return false"
       // de validation ci-dessus ne descendent jamais jusqu'ici).
@@ -26863,17 +28603,45 @@ ${esc(bodyText)}</pre>
     Object.values(exportClubStore.data || {}).forEach((payload) => {
       if (payload && payload.settings) scrubSecuritySettingsForExport(payload.settings);
     });
+    // Lot O-E2-B9R (Partie E, §38-44) — le Journal d'activité est GLOBAL et append-only (voir
+    // l'en-tête de ce fichier plus haut : il survit délibérément à la suppression d'un club, pour
+    // rester consultable après coup). Un événement dont le clubId n'apparaît plus dans
+    // exportClubStore.clubs (club supprimé localement) n'a donc AUCUNE autorité data.export
+    // vérifiable pour CETTE sauvegarde : il ne doit jamais entrer dans la COPIE exportée, même si le
+    // Journal LOCAL, lui, le conserve intact (auditLogForExport() n'est lu qu'ICI, jamais réécrit).
+    // Même doctrine pour clubStore.data : normalizeClubStore ne filtre pas ses clés par rapport à
+    // clubs[] (delete latest.data[id] à la suppression d'un club couvre le cas courant, mais rien ne
+    // garantit l'absence d'une entrée orpheline) — on ne prend pas ce risque pour un export.
+    const allowedClubIds = new Set(exportClubStore.clubs.map((club) => club.id));
+    exportClubStore.data = Object.fromEntries(
+      Object.entries(exportClubStore.data || {}).filter(([clubId]) => allowedClubIds.has(clubId))
+    );
+    const exportedAuditLog = auditLogForExport();
+    const scopedAuditLog = {
+      ...exportedAuditLog,
+      events: (exportedAuditLog.events || []).filter((event) => allowedClubIds.has(event.clubId)),
+    };
+    // Même doctrine pour Utilisateurs/appartenances (§42-44) : une appartenance à un club absent de
+    // exportClubStore.clubs n'a pas plus d'autorité data.export vérifiable qu'un événement orphelin
+    // ci-dessus, et un utilisateur qui n'a plus AUCUNE appartenance exportée n'a pas sa place dans
+    // cette copie (userStoreForExport() exclut déjà isSystem/l'utilisateur actif de la machine).
+    const exportedUserStore = userStoreForExport();
+    const scopedMemberships = (exportedUserStore.memberships || []).filter((row) => allowedClubIds.has(row.clubId));
+    const referencedUserIds = new Set(scopedMemberships.map((row) => row.userId));
+    const scopedUsers = (exportedUserStore.users || []).filter((user) => referencedUserIds.has(user.id));
     return {
       kind: "mongestaclub-backup",
       version: 3,
       exportedAt: new Date().toISOString(),
       activeClubId: activeClubId(),
       clubStore: exportClubStore,
-      // Utilisateurs/appartenances : données métier sauvegardables (décision produit), mais
-      // jamais l'utilisateur actif de LA machine ni le système (recréé par normalisation).
-      userStore: userStoreForExport(),
-      // Journal d'activité : données métier exportées intégralement (aucune session locale à exclure ici).
-      auditLog: auditLogForExport(),
+      // Utilisateurs/appartenances : données métier sauvegardables (décision produit), mais jamais
+      // l'utilisateur actif de LA machine ni le système, et désormais scopées aux clubs réellement
+      // exportés (§42-44) — jamais l'intégralité de userStore indépendamment du contenu du backup.
+      userStore: { ...exportedUserStore, users: scopedUsers, memberships: scopedMemberships },
+      // Journal d'activité : scopé aux clubs réellement exportés (§38-41) — jamais le Journal complet
+      // de l'installation indépendamment du contenu du backup.
+      auditLog: scopedAuditLog,
       state: normalizeState(clone(state)),
       settings: normalizeSettings(backupSettings),
       assets: {
@@ -28006,6 +29774,7 @@ ${esc(bodyText)}</pre>
     const existingStore = normalizeClubStore(rawClubStoreFromStorage() || clubStore);
     const existingDemo = existingStore.clubs.find((club) => club.id === DEMO_CLUB_ID || club.name === DEMO_CLUB_NAME);
     if (existingDemo && !resetExisting) {
+      // Simple activation d'un club démo déjà existant : navigation pure (§50), aucun Admin requis.
       if (!await requestConfirm({ title: "Club démo existant", message: `Le club de démonstration existe déjà.\n\nVoulez-vous simplement l'activer ?\n\nPour supprimer puis recréer ses données, utilise "Réinitialiser le club démo".`, confirmLabel: "Activer le club démo" })) return;
       saveCurrentClubPayload({ reloadActive: false });
       switchActiveClub(existingDemo.id);
@@ -28015,6 +29784,14 @@ ${esc(bodyText)}</pre>
       return;
     }
 
+    // Lot O-E2-B6R (§45) — au-delà de ce point : soit CRÉATION d'un nouveau club démo (Admin strict
+    // du club actif d'autorité), soit ÉCRASEMENT d'un club démo déjà existant (Admin strict de CE
+    // club cible, jamais clubSettings.manage/managers.manage).
+    const authorityClubId = existingDemo ? existingDemo.id : activeClubId();
+    if (!requireAdminForClub(authorityClubId)) {
+      alert(existingDemo ? "Seul un administrateur du club démo peut le réinitialiser." : "Seul un administrateur du club actif peut créer un club démo.");
+      return;
+    }
     const message = source === "clubs"
       ? (resetExisting && existingDemo
         ? "Réinitialiser uniquement le club démo ? Les autres clubs ne seront pas modifiés."
@@ -28024,6 +29801,10 @@ ${esc(bodyText)}</pre>
         : `Cette action va télécharger une sauvegarde JSON puis créer un nouveau club "${DEMO_CLUB_NAME}" avec des données fictives. Vos autres clubs ne seront pas supprimés.`);
     if (!await requestConfirm({ title: "Données de démonstration", message: `${message}\n\nUne sauvegarde JSON complète sera téléchargée avant l'opération.`, confirmLabel: "Continuer" })) return;
     if (!(await downloadBackupBeforeDemoData())) return;
+    if (!requireAdminForClub(authorityClubId)) {
+      alert(existingDemo ? "Seul un administrateur du club démo peut le réinitialiser." : "Seul un administrateur du club actif peut créer un club démo.");
+      return;
+    }
 
     saveCurrentClubPayload({ reloadActive: false });
     const store = normalizeClubStore(rawClubStoreFromStorage() || clubStore);
@@ -28115,7 +29896,14 @@ ${esc(bodyText)}</pre>
 
   // Action "Peupler avec la démo" : remplit un club avec les données fictives.
   // Club vide -> confirmation simple. Club non vide -> Ajouter / Remplacer / Annuler.
+  // Lot O-E2-B6R (§45) — écrase potentiellement TOUTES les données métier d'un club existant :
+  // opération structurelle, Admin strict DU CLUB CIBLE (jamais clubSettings.manage/managers.manage).
+  // Revalidé après chaque await (le club actif et l'admin ont pu changer entretemps).
   async function populateClubWithDemo(clubId) {
+    if (!clubId || !requireAdminForClub(clubId)) {
+      alert("Seul un administrateur de ce club peut le peupler avec la démo.");
+      return;
+    }
     const store = normalizeClubStore(rawClubStoreFromStorage() || clubStore);
     const target = store.clubs.find((club) => club.id === clubId);
     if (!target) return;
@@ -28137,6 +29925,10 @@ ${esc(bodyText)}</pre>
       mode = choice;
     } else {
       if (!await requestConfirm({ title: "Peupler avec la démo", message: `Remplir le club « ${target.name} » avec des données de démonstration (contacts, disciplines, stages, boutique, factures, dépenses, coachs, salles, planning…) ?`, confirmLabel: "Peupler" })) return;
+    }
+    if (activeClubId() !== clubId || !requireAdminForClub(clubId)) {
+      alert("Seul un administrateur de ce club peut le peupler avec la démo.");
+      return;
     }
     const demo = buildDemoState(clubId, target);
     applyDemoToActiveState(demo, mode);
@@ -28204,8 +29996,31 @@ ${esc(bodyText)}</pre>
     downloadSeasonArchive("Sauvegarde automatique de saison créée");
   }
 
+  // Lot O-E2-B2R — archiveSeason() mute réellement Adhésions/Boutique/Stages (si clearAfter) en plus
+  // de produire un export structuré : elle ne peut pas rester hors permissions (§9). Fonction PURE,
+  // paramétrée par l'état plutôt que fermée sur `state` (§15) : data.export est TOUJOURS requis (export
+  // mono-club, distinct de l'export global backupPayload, §10) ; memberships.write/shop.write/
+  // stages.write ne sont exigés QUE si clearAfter ET que le domaine correspondant contient réellement
+  // des données à vider (§11) — un domaine déjà vide, ou une simple archive sans vidage, n'exige jamais
+  // sa permission write. Feature désactivée (Boutique/Stages) ne change rien : une fonctionnalité OFF
+  // ne donne jamais un droit de suppression supplémentaire sur des données historiques (§12).
+  function seasonArchiveRequiredPermissions(sourceState, clearAfter) {
+    const permissions = ["data.export"];
+    if (!clearAfter) return permissions;
+    if ((sourceState.memberships || []).length > 0) permissions.push("memberships.write");
+    if ((sourceState.shopOrders || []).length > 0) permissions.push("shop.write");
+    const hasStageRegistrations = Object.values(sourceState.stageRegistrations || {}).some((rows) => Array.isArray(rows) && rows.length > 0);
+    if (hasStageRegistrations) permissions.push("stages.write");
+    return permissions;
+  }
+
   async function archiveSeason(options = {}) {
     const clearAfter = Boolean(options.clearAfter);
+    // Lot O-E2-B2R — club ciblé figé AVANT tout (§14). Permissions requises vérifiées AVANT même la
+    // première confirmation : inutile de demander "es-tu sûr ?" pour une action de toute façon refusée
+    // (même patron que delete-contact/delete-membership).
+    const targetClubId = activeClubId();
+    if (!ensureUserPermissionsForClub(seasonArchiveRequiredPermissions(state, clearAfter), targetClubId)) return;
     const message = clearAfter
       ? "Archiver la saison et vider la saison active ?\n\nUne archive JSON de la période choisie va être téléchargée. Ensuite, les inscriptions, commandes boutique et participations aux stages seront vidées."
       : "Archiver la saison ?\n\nUne archive JSON de la période choisie va être téléchargée. Les données du logiciel ne seront pas supprimées.";
@@ -28213,11 +30028,19 @@ ${esc(bodyText)}</pre>
       ? await requestProtectedDangerAction("Archiver et vider", message, "Archiver et vider")
       : await requestDialogConfirmation("Archiver la saison", message, "Archiver", false);
     if (!confirmed) return;
+    // Lot O-E2-B2R (§14) — club revérifié après CHAQUE await de confirmation/mot de passe.
+    if (activeClubId() !== targetClubId) { ui.saveMessage = "Opération annulée : le club actif a changé."; return; }
     if (!clearAfter) {
       await waitForDialogClosed();
+      if (activeClubId() !== targetClubId) { ui.saveMessage = "Opération annulée : le club actif a changé."; return; }
       const allowed = await requestPasswordConfirmation("Archivage protégé", "Confirme avec le mot de passe du logiciel pour archiver la saison.");
       if (!allowed) return;
+      if (activeClubId() !== targetClubId) { ui.saveMessage = "Opération annulée : le club actif a changé."; return; }
     }
+    // Revalidation finale, juste avant le point de commit (§13/§14) : AUCUN effet visible (téléchargement
+    // compris) tant que l'ENSEMBLE des permissions requises n'est pas confirmé une dernière fois, avec
+    // l'état COURANT (pas celui capturé avant les confirmations asynchrones ci-dessus).
+    if (!ensureUserPermissionsForClub(seasonArchiveRequiredPermissions(state, clearAfter), targetClubId)) return;
     const archive = seasonArchivePayload(settings.season?.startDate || "", settings.season?.endDate || "");
     download(seasonArchiveFilename(), JSON.stringify(archive, null, 2), "application/json");
     recordHistory();
@@ -28300,21 +30123,136 @@ ${esc(bodyText)}</pre>
     return [headers, ...rows].map((row) => row.map(csvEscape).join(";")).join("\n");
   }
 
+  // Lot O-E2-B9 (§45), étendu B9R (§17) — mapping export MULTI-CONDITIONS (logique ET, jamais une
+  // seule clé simplifiée). Deux couches :
+  //  1. EXPORT_BASE_PERMISSION_OVERRIDES : la permission de CONTENU (pas de page). "disciplines" y
+  //     reste rattachée à memberships.read même si la PAGE elle-même est sport.read (héritage B9) :
+  //     l'export ne produit que des lignes d'ADHÉSION nominatives, jamais du sport.
+  //  2. EXPORT_CSV_EMBEDDED_PAYMENT_MODULE : Disciplines/Boutique/Stages exposent en CSV les montants
+  //     Total/Réglé/TVA réglée/Reste dû BRUTS, sans le masquage "—" que le rendu écran applique déjà
+  //     ligne par ligne (preuve : membershipRow/orderCard/registrationRow utilisent tous
+  //     `canReadPayments ? valeur : "—"`). currentUserCanReadEmbeddedPayment(module, clubId), déjà
+  //     défini dans 28-users.js pour cette exacte doctrine (paiements EMBARQUÉS), ANDe la lecture
+  //     paiements et celle du domaine parent — jamais la chaîne littérale ici (STRUCT-PAY-01 : cette
+  //     permission ne s'écrit qu'une fois, dans 28-users.js, tout le reste passe par ses helpers
+  //     nommés). Le PDF/print (repli DOM générique) scrape l'écran DÉJÀ masqué : aucune exigence
+  //     supplémentaire n'y est donc inventée (§18) — seul exportKind="csv" consulte ce mapping.
+  //     Stock reste hors mapping (§14) : aucune donnée de paiement dans stockRows().
+  //  3. EXPORT_EXTRA_CONTENT_PERMISSIONS (Lot O-E2-B9R3, §7) : permissions de CONTENU
+  //     supplémentaires exigées EN PLUS de la base, pour TOUT type d'export (csv ET pdf/print,
+  //     contrairement à la couche 2 ci-dessus qui ne vaut que pour le CSV). "documents" y est ajouté
+  //     après audit confirmé (renderSportDocuments, 23-sport-modules.js) : la page est intégralement
+  //     nominative (nom, licence, groupe…) alors que sa PAGE n'exige que documents.read — le repli
+  //     DOM générique du PDF/print scraperait donc les mêmes lignes nominatives que la page si
+  //     seul documents.read était vérifié ici.
+  const EXPORT_BASE_PERMISSION_OVERRIDES = Object.freeze({
+    disciplines: "memberships.read",
+  });
+  const EXPORT_CSV_EMBEDDED_PAYMENT_MODULE = Object.freeze({
+    disciplines: "membership",
+    boutique: "order",
+    stages: "registration",
+  });
+  const EXPORT_EXTRA_CONTENT_PERMISSIONS = Object.freeze({
+    documents: ["memberships.read"],
+  });
+  // Jamais une permission acceptée depuis le DOM : toujours dérivée de ce mapping interne fixe puis
+  // vérifiée via currentUserHasPermission/currentUserCanReadEmbeddedPayment (moteur Phase O).
+  function currentUserHasAllExportPermissions(view, clubId, exportKind = "csv") {
+    const requirement = (typeof permissionRequirementForView === "function") ? permissionRequirementForView(view) : { protected: false };
+    const base = EXPORT_BASE_PERMISSION_OVERRIDES[view] || (requirement.protected ? requirement.permissionKey : "");
+    if (base && !currentUserHasPermission(base, clubId)) return false;
+    const extras = EXPORT_EXTRA_CONTENT_PERMISSIONS[view] || [];
+    if (!extras.every((key) => currentUserHasPermission(key, clubId))) return false;
+    if (exportKind !== "csv") return true;
+    const embeddedModule = EXPORT_CSV_EMBEDDED_PAYMENT_MODULE[view];
+    return !embeddedModule || currentUserCanReadEmbeddedPayment(embeddedModule, clubId);
+  }
+
   function exportCurrentCsv() {
     // Le Centre des disponibilités est un outil d'aide à la décision : pas d'export
     // (sa grille interactive ne produirait qu'une sortie vide ou trompeuse).
     if (ui.view === "availability") { ui.saveMessage = "Le Centre des disponibilités ne s'exporte pas."; render(); return; }
     if (ui.view === "tasks") {
-      const rows = taskRows().map((row) => [row.category, row.title, row.detail]);
+      // Lot O-E2-B9 — même doctrine que renderTasks() (B8R) : la liste FILTRÉE par droits
+      // (visibleTaskRowsForCurrentUser), jamais le moteur brut taskRows() qui révélait toutes les
+      // lignes indépendamment des READ métier de leurs domaines sources.
+      const rows = visibleTaskRowsForCurrentUser().map((row) => [row.category, row.title, row.detail]);
       return download("a-faire-mongestaclub.csv", toCsv(["Type", "Sujet", "Détail"], rows), "text/csv;charset=utf-8");
     }
     if (ui.view === "search") {
       const rows = globalSearchRows().map((row) => [row.type, row.title, row.detail]);
       return download("recherche-mongestaclub.csv", toCsv(["Type", "Résultat", "Détail"], rows), "text/csv;charset=utf-8");
     }
+    // Lot O-E2-B9R (Partie A) — "Historique des actions" contient des traces NOMINATIVES (noms de
+    // contacts, ventes Boutique, numéros de facture — recordHistory() consigne le texte affiché à
+    // l'écran) : gouverné par audit.read comme le Journal, jamais un fil neutre (§1-5).
     if (ui.view === "history") {
+      if (!currentUserHasPermission("audit.read", activeClubId())) {
+        ui.saveMessage = "Vous n'avez pas l'autorisation nécessaire.";
+        render();
+        return;
+      }
       const rows = normalizeActivityLog(state.activityLog).map((row) => [formatDateTimeLocal(row.at), row.view, row.message]);
       return download("historique-mongestaclub.csv", toCsv(["Date", "Page", "Action"], rows), "text/csv;charset=utf-8");
+    }
+    // Lot O-E2-B9 (§28-41), étendu B9R (§9-17) — un export de VUE n'est pas un backup : chaque
+    // branche ci-dessous exige la LISTE COMPLÈTE (logique ET) des READ métier réels du contenu
+    // qu'elle exporte (jamais data.export), vérifiée directement ici (§47 "primitive guardée"), pas
+    // seulement via la visibilité de la page. "disciplines" utilise memberships.read (contenu
+    // nominatif d'adhésion) même si la PAGE est sport.read ; disciplines/boutique/stages exigent EN
+    // PLUS payments.read en CSV (montants Total/Réglé/Reste dû non masqués, cf. mapping ci-dessus).
+    if (ui.view === "contacts" && !currentUserHasAllExportPermissions("contacts", activeClubId())) {
+      ui.saveMessage = "Vous n'avez pas l'autorisation nécessaire.";
+      render();
+      return;
+    }
+    if (ui.view === "newsletter" && !currentUserHasAllExportPermissions("newsletter", activeClubId())) {
+      ui.saveMessage = "Vous n'avez pas l'autorisation nécessaire.";
+      render();
+      return;
+    }
+    if (ui.view === "disciplines" && !currentUserHasAllExportPermissions("disciplines", activeClubId())) {
+      ui.saveMessage = "Vous n'avez pas l'autorisation nécessaire.";
+      render();
+      return;
+    }
+    if (ui.view === "boutique" && !currentUserHasAllExportPermissions("boutique", activeClubId())) {
+      ui.saveMessage = "Vous n'avez pas l'autorisation nécessaire.";
+      render();
+      return;
+    }
+    // Stock reste shop.read SEUL (§14) : aucune extra payments.read (stockRows() ne contient aucun
+    // montant réglé/reste dû, contrairement à boutique).
+    if (ui.view === "stock" && !currentUserHasAllExportPermissions("stock", activeClubId())) {
+      ui.saveMessage = "Vous n'avez pas l'autorisation nécessaire.";
+      render();
+      return;
+    }
+    if (ui.view === "stages" && !currentUserHasAllExportPermissions("stages", activeClubId())) {
+      ui.saveMessage = "Vous n'avez pas l'autorisation nécessaire.";
+      render();
+      return;
+    }
+    if (ui.view === "notes" && !currentUserHasAllExportPermissions("notes", activeClubId())) {
+      ui.saveMessage = "Vous n'avez pas l'autorisation nécessaire.";
+      render();
+      return;
+    }
+    // Lot O-E2-B9 (Partie B) — Journal d'activité : audit.read suffit (jamais data.export). Branche
+    // absente jusqu'ici : le bouton CSV générique tombait silencieusement sur le repli dashboardStats()
+    // (aucune fuite, mais aucun export réel non plus). auditLogRows() est déjà scopé par le filtre
+    // actif/tous-clubs — le filtre "tous les clubs" est lui-même corrigé (29-audit-log.js) pour ne
+    // jamais révéler un club où l'utilisateur n'a pas audit.read, donc aucun filtrage supplémentaire
+    // n'est nécessaire ici.
+    if (ui.view === "audit-log") {
+      if (!currentUserHasPermission("audit.read", activeClubId())) {
+        ui.saveMessage = "Vous n'avez pas l'autorisation nécessaire.";
+        render();
+        return;
+      }
+      const rows = auditLogRows().map((event) => [formatDateTimeLocal(event.timestamp), event.actorNameSnapshot || "", auditLogClubLabel(event.clubId), auditEventText(event), event.entityLabel || ""]);
+      return download("journal-activite-mongestaclub.csv", toCsv(["Date", "Utilisateur", "Club", "Action", "Élément concerné"], rows), "text/csv;charset=utf-8");
     }
     if (ui.view === "contacts") {
       const rows = state.contacts[ui.contactKind].map((row) => [row.lastName, row.firstName, row.email, row.mobile || row.phone, row.city, dateDisplay(row.birthDate), memberAgeLabel(row), ui.contactKind === "members" ? memberCategory(row) : row.category]);
@@ -28383,6 +30321,15 @@ ${esc(bodyText)}</pre>
       return download("stages-mongestaclub.csv", toCsv(["Stage", "Nom", "Prénom", "Total TTC", "Réglé TTC", "TVA réglée", "Réglé HT", "Reste dû"], rows), "text/csv;charset=utf-8");
     }
     if (ui.view === "accounting") {
+      // Lot O-E2-B3B-3 (audit) — ce bouton d'export du bandeau outils dispatche sur ui.view SANS
+      // repasser par renderAccounting() (qui, lui, est déjà protégé) : un utilisateur sans
+      // accounting.read pouvait donc exporter le CSV Comptabilité complet. Gate ciblée sur CETTE
+      // branche uniquement — ne pas généraliser aux autres vues, hors périmètre de ce lot.
+      if (!currentUserHasPermission("accounting.read", activeClubId())) {
+        ui.saveMessage = "Vous n'avez pas l'autorisation nécessaire.";
+        render();
+        return;
+      }
       const data = accountingData();
       // F2-REAUDIT-006 — "Encaissé TTC/TVA encaissée/Encaissé HT" désignent un encaissement bancaire :
       // cashPaid/cashTax/cashPaidNet (avoirs utilisés exclus), même correctif que le tableau à l'écran.
@@ -28406,6 +30353,15 @@ ${esc(bodyText)}</pre>
       return download("tarifs-mongestaclub.csv", toCsv(["Type", "Nom", "Valeur 1", "Valeur 2", "TVA", "Détail"], rows), "text/csv;charset=utf-8");
     }
     if (ui.view === "stats") {
+      // Lot O-E2-B8 (§16, même précédent que l'export Comptabilité ci-dessus) — ce bouton dispatche
+      // sur ui.view SANS repasser par renderStats() (déjà protégée par VIEW_PERMISSION_MAP) : gate
+      // ciblée sur cette branche uniquement. stats.read seul suffit (agrégats, aucune donnée
+      // nominative dans cet export), jamais data.export.
+      if (!currentUserHasPermission("stats.read", activeClubId())) {
+        ui.saveMessage = "Vous n'avez pas l'autorisation nécessaire.";
+        render();
+        return;
+      }
       const rows = [
         ...disciplineUsageStats().map((row) => ["Discipline", row.name, row.count, row.total, row.paid, row.due]),
         // Lot 2D — export historique des statistiques Stages, inconditionnel (indépendant de showStages / hasFeature).
@@ -28426,12 +30382,37 @@ ${esc(bodyText)}</pre>
       ]);
       return download("aide-mongestaclub.csv", toCsv(["Rubrique", "Contenu"], rows), "text/csv;charset=utf-8");
     }
-    const stats = dashboardStats();
-    return download("synthese-mongestaclub.csv", toCsv(["Indicateur", "Valeur"], [["Total attendu", stats.total], ["Réglé", stats.paid], ["Reste dû", stats.restDue], ["Alertes", stats.alerts.length]]), "text/csv;charset=utf-8");
+    // Lot O-E2-B9R3 (Partie C, §22-27) — ancien repli : dashboardStats() pour TOUTE vue sans branche
+    // dédiée ci-dessus (dashboard/invoices/groups/teams/coaches/rooms/planning/attendance/documents/
+    // competitions/clubs/club-settings/due-payments/assistant, entre autres). Aucune de ces vues n'est
+    // "Stats" : produire un CSV de synthèse dashboard par simple absence de branche dédiée exportait un
+    // contenu SANS RAPPORT avec la page affichée, sans aucune garde de permission (stats.read n'était
+    // même pas vérifié). FAIL-CLOSED désormais : une vue sans branche d'export dédiée n'exporte rien,
+    // plutôt que de retomber silencieusement sur un contenu Dashboard non demandé. Un futur export
+    // Dashboard réel (payload filtré par widget) resterait un lot produit distinct (§27), jamais
+    // improvisé ici.
+    ui.saveMessage = "L'export CSV n'est pas disponible pour cette page.";
+    render();
   }
 
   async function exportCurrentPdf() {
     if (ui.view === "availability") { ui.saveMessage = "Le Centre des disponibilités ne s'exporte pas."; render(); return; }
+    // Lot O-E2-B3B-3/B8 (audit), généralisé Lot O-E2-B9 (§45/§47), affiné B9R (§17-18) — bloquer
+    // AVANT toute construction de payload (jamais dans un payload*() individuel, qui resterait un
+    // null silencieux pour d'autres appelants potentiels). currentUserHasAllExportPermissions(...,
+    // "pdf") couvre désormais TOUTES les branches dédiées de pdfReportPayload (notes/planning/
+    // accounting/contacts/groups/coaches/rooms/stock/stats/attendance) ET le repli DOM générique pour
+    // les autres vues mono-domaine du registre (newsletter/boutique/stages/documents/competitions/
+    // invoices/teams/due-payments/audit-log/history) — sûr dans les deux cas car le contenu scrappé
+    // par le repli est TOUJOURS celui de la vue déjà gardée au rendu (jamais un contenu hors-domaine,
+    // contrairement au repli dashboardStats() de exportCurrentCsv). "disciplines" utilise
+    // memberships.read (override documenté plus haut). exportKind="pdf" n'ajoute JAMAIS payments.read
+    // : le rendu écran masque déjà les montants (canReadPayments ? valeur : "—"), preuve B9R §18.
+    if (!currentUserHasAllExportPermissions(ui.view, activeClubId(), "pdf")) {
+      ui.saveMessage = "Vous n'avez pas l'autorisation nécessaire.";
+      render();
+      return;
+    }
     if (window.monGestaClubShell?.exportPdf) {
       ui.saveMessage = "Création du PDF...";
       render();
@@ -28449,6 +30430,14 @@ ${esc(bodyText)}</pre>
     }
     // Repli web (correctif "PDF honnête") : ouvre l'aperçu partagé du VRAI document formaté (pas la
     // fenêtre principale de l'app telle quelle, qui aurait imprimé la barre latérale et les menus).
+    // Lot O-E2-B9R4 (§6-9) — render() FRAIS avant pdfReportPayload() : son repli générique (vues sans
+    // branche dédiée — dashboard/tasks/search/assistant/help/settings) scrape le DOM ".view" en
+    // direct, qui peut dater d'un rendu antérieur à un retrait de permission si aucune action mutante
+    // n'est survenue entre-temps (même doctrine que print-page, B9R2 §21 — jamais une permission
+    // inventée pour ces vues mixtes, seulement une garantie de fraîcheur du contenu scrappé). Le
+    // repli Electron ci-dessus l'avait déjà (render() puis pdfReportPayload() en argument de l'appel
+    // suivant) : seul CE repli web en était dépourvu, corrigé ici pour la même garantie.
+    render();
     showPagePrintPreview(pdfReportPayload(), { mode: "pdf" });
     ui.saveMessage = "Aperçu ouvert : choisissez « Enregistrer en PDF » dans la nouvelle fenêtre.";
     render();
@@ -30336,9 +32325,11 @@ ${esc(bodyText)}</pre>
 
   // Appelé en tout début du handler "input", AVANT la mutation existante. Idempotent sur les
   // frappes suivantes du même élément : ne réécrit jamais un snapshot déjà capturé.
-  function beginShopItemInlineEdit(element, index, field) {
-    if (!element || shopItemInlineEditSessions.has(element)) return;
-    const article = state.tariffs.articles[Number(index)];
+  function beginShopItemInlineEdit(element, articleId, field) {
+    // Lot O-E2-B5R2 (§19-21) — identité par articleId STABLE, plus jamais par index (même comme
+    // simple résolution ponctuelle) : un index peut avoir dérivé entre le rendu et la première frappe.
+    if (!element || shopItemInlineEditSessions.has(element) || !articleId) return;
+    const article = state.tariffs.articles.find((row) => row.id === articleId);
     if (!article?.id) return;
     shopItemInlineEditSessions.set(element, { articleId: article.id, field, beforeSnapshot: shopItemSnapshot(article) });
   }
@@ -30476,22 +32467,29 @@ ${esc(bodyText)}</pre>
       // (voir "change" plus bas pour le même contrat), donc la garder seulement sur "change" laisserait
       // passer une première mutation.
       if (!ensureFeatureEnabledForMutation("shop")) return;
+      // Lot O-E2-B5R2 (§20) — club DOM + articleId OBLIGATOIRES + shop.write, silencieux (listener
+      // déclenché à chaque frappe, jamais une alerte technique ici, même doctrine que
+      // data-payment-field ci-dessus).
+      if (!target.dataset.articleId || activeClubId() !== (target.dataset.shopClubId || "")) return;
+      if (!ensureUserPermission("shop.write", target.dataset.shopClubId, { silent: true })) return;
+      // Lot O-E2-B5R3 (§9-14) — résolution LIVE (id STABLE + champ reconnu + Article existant) AVANT
+      // tout effet de bord : beginShopItemInlineEdit()/recordHistory() ne doivent jamais s'engager si
+      // la cible n'est pas valide. Aucun await entre cette résolution et la mutation (même tick) :
+      // l'Article ne peut pas disparaître entre les deux.
+      if (!boundShopStockMutationTarget(target)) return;
       // Session Journal (Lot 5B) : amorcée au premier "input" d'une édition, jamais journalisée ici
       // (une frappe n'est jamais un événement) — voir finalizeShopItemInlineEdit sur "change".
-      beginShopItemInlineEdit(target, target.dataset.index, target.dataset.stock);
+      beginShopItemInlineEdit(target, target.dataset.articleId, target.dataset.stock);
       recordHistory();
       updateStockArticle(target);
       persist();
     }
-    // data-stock-size : jamais rendu nulle part dans l'interface (vérifié, voir rapport) — aucune
-    // session amorcée ici, la mutation existante (updateArticleSizeStock) reste inchangée si ce
-    // chemin est reconnecté un jour.
-    if (target.dataset.stockSize !== undefined) {
-      recordHistory();
-      updateArticleSizeStock(target);
-      persist();
-    }
     if (target.dataset.noteTitle !== undefined) {
+      // Lot O-E2-B2 (§22) — garde SILENCIEUSE : ce listener se déclenche à CHAQUE frappe, une alerte
+      // ici serait un spam intempestible. Le champ est déjà "readonly" côté rendu (renderNotes) sans
+      // notes.write ; cette vérification est le véritable garde-fou (jamais une confiance dans le
+      // seul attribut HTML).
+      if (!requirePermissionForClub("notes.write", activeClubId())) return;
       recordHistory();
       const note = activeNote();
       note.title = target.value || "Note sans titre";
@@ -30500,6 +32498,7 @@ ${esc(bodyText)}</pre>
       return;
     }
     if (target.dataset.noteEditor !== undefined) {
+      if (!requirePermissionForClub("notes.write", activeClubId())) return;
       recordHistory();
       const note = activeNote();
       note.content = target.innerHTML;
@@ -30508,6 +32507,7 @@ ${esc(bodyText)}</pre>
       return;
     }
     if (target.dataset.quickNoteField && target.tagName !== "SELECT") {
+      if (!requirePermissionForClub("notes.write", activeClubId())) return;
       recordHistory();
       updateQuickNote(target);
       persist();
@@ -30555,6 +32555,20 @@ ${esc(bodyText)}</pre>
     }
     if (target.dataset.userRoleField !== undefined) {
       setUserMembershipRole(target.dataset.userId, target.dataset.clubId, target.value);
+      return;
+    }
+    // Lot O-C — liaison Responsable ↔ Utilisateur. setUserMembershipResponsible revérifie
+    // toujours l'appartenance au club et l'unicité (jamais une confiance aveugle au <select>,
+    // même si les options déjà indisponibles sont normalement désactivées côté rendu).
+    if (target.dataset.userResponsibleField !== undefined) {
+      setUserMembershipResponsible(target.dataset.userId, target.dataset.clubId, target.value);
+      return;
+    }
+    // Lot O-D1 — dérogation individuelle d'une permission (éditeur de droits, Paramètres >
+    // Utilisateurs). Purement déclaratif dans ce lot : aucune garde métier n'est encore activée
+    // (O-E). setUserMembershipPermissionOverride revérifie la permission et le booléen strict.
+    if (target.dataset.userPermissionField !== undefined) {
+      setUserMembershipPermissionOverride(target.dataset.userId, target.dataset.clubId, target.dataset.permissionKey, target.checked === true);
       return;
     }
     if (target.dataset.auditLogFilter !== undefined) {
@@ -30816,6 +32830,12 @@ ${esc(bodyText)}</pre>
       return;
     }
     if (target.dataset.paymentField) {
+      // Lot O-E2-B3B-1R — garde AVANT tout effet de bord (§2-3) : updatePaymentFromControl() est déjà
+      // gardée en interne (silencieuse, pour l'appel direct), mais un refus interne n'empêchait pas ce
+      // listener d'exécuter quand même recordHistory()/persist()/render() ci-dessous. Résolu ICI, avant
+      // le moindre effet de bord — un contrôle refusé ne doit produire ni entrée Undo inutile, ni
+      // sauvegarde, ni re-rendu.
+      if (!ensureEmbeddedPaymentMutationAllowed(paymentContextFrom(target), { silent: true })) return;
       // Lot 2G-C1 — la validation monétaire commune (normalizeSubmittedPaymentAmount) refuse toute saisie
       // invalide (vide, non numérique, arrondie à moins de 0,01 €, négative). Mais persist()+render()
       // régénère le tiroir et re-remplirait un champ « montant » laissé vide ou à 0 avec le reste dû
@@ -30837,9 +32857,23 @@ ${esc(bodyText)}</pre>
       }
     }
     if (target.dataset.stockImage !== undefined) {
+      // Lot O-E2-B5R/B5R2 (§23/§34-38) — AUCUNE exemption « dead code » : club + articleId + shop.write
+      // revalidés AVANT toute conversion de fichier, même sans surface de rendu actuelle émettant ce
+      // listener. Sans articleId : aucune conversion, aucun history, aucun persist.
+      const stockImageClubId = target.dataset.shopClubId || "";
+      if (!target.dataset.articleId || activeClubId() !== stockImageClubId) return;
       if (!ensureFeatureEnabledForMutation("shop")) return;
+      if (!ensureUserPermission("shop.write", stockImageClubId, { silent: true })) return;
+      // Lot O-E2-B5R3 (§5) — l'Article doit exister LIVE AVANT même de lancer la conversion : sans
+      // cette garde, un articleId périmé déclencherait quand même imageFileToDataUrl pour rien (aucun
+      // history/persist ensuite, mais un travail asynchrone inutile et une fausse impression d'action).
+      if (!state.tariffs.articles.some((row) => row.id === target.dataset.articleId)) return;
       const status = await updateArticleImage(target, () => {
+        // Lot O-E2-B5R2 (§26) — le callback revalide EXPLICITEMENT le club (pas seulement feature et
+        // permission) : le club actif a pu changer PENDANT la conversion asynchrone du fichier.
+        if (activeClubId() !== stockImageClubId) return false;
         if (!ensureFeatureEnabledForMutation("shop", { silent: true })) return false;
+        if (!currentUserHasPermission("shop.write", stockImageClubId)) return false;
         recordHistory();
         return true;
       });
@@ -30850,19 +32884,19 @@ ${esc(bodyText)}</pre>
       render();
       return;
     }
-    if (target.dataset.stockSize !== undefined) {
-      recordHistory();
-      updateArticleSizeStock(target);
-      persist();
-      render();
-      return;
-    }
     if (target.dataset.stock) {
       // K-B : garde AVANT toute écriture. Cas de bascule pendant l'édition (session ouverte sur
       // "input" quand Shop était ON, puis désactivé avant "change") volontairement traité comme les
       // autres chemins K-B : aucune mutation, aucun persist, aucune finalisation d'audit ici — la
       // session (WeakMap, clé = élément DOM) reste simplement non finalisée jusqu'au prochain render().
       if (!ensureFeatureEnabledForMutation("shop")) return;
+      // Lot O-E2-B5R2 (§20) — même garde silencieuse que le listener "input" ci-dessus (club +
+      // articleId obligatoires + shop.write).
+      if (!target.dataset.articleId || activeClubId() !== (target.dataset.shopClubId || "")) return;
+      if (!ensureUserPermission("shop.write", target.dataset.shopClubId, { silent: true })) return;
+      // Lot O-E2-B5R3 (§9-15) — même doctrine que le listener "input" ci-dessus : résolution LIVE
+      // AVANT recordHistory/persist/finalisation d'audit.
+      if (!boundShopStockMutationTarget(target)) return;
       recordHistory();
       updateStockArticle(target);
       persist();
@@ -30876,6 +32910,7 @@ ${esc(bodyText)}</pre>
       return;
     }
     if (target.dataset.quickNoteField && target.tagName === "SELECT") {
+      if (!requirePermissionForClub("notes.write", activeClubId())) return;
       recordHistory();
       updateQuickNote(target);
       persist();
@@ -30918,6 +32953,29 @@ ${esc(bodyText)}</pre>
     // absente ou désynchronisée, aucune action (donc aucune mutation) n'est traitée — on ramène à
     // l'écran d'authentification. En mono-utilisateur sans PIN et en démo web, la garde passe.
     if (!requireAuthenticatedSession()) return;
+    // Lot O-E2-B8R3 (§9-16) — garde centrale d'origine de club pour la Recherche globale : un
+    // résultat (donnée métier OU page/réglage/action) rendu sous un club puis cliqué APRÈS un
+    // switch vers un autre club ne doit jamais être réinterprété comme une navigation ou une
+    // mutation issue du club désormais actif — NO-OP inconditionnel, avant toute résolution métier
+    // (y compris avant run-search-command/runCommandEntryById, qui recalculerait sinon la
+    // disponibilité sous le mauvais club). Ne s'applique qu'aux boutons qui portent l'attribut
+    // (jamais de repli sur activeClubId() : un bouton métier normal hors Recherche, sans
+    // data-search-club-id, garde son comportement historique inchangé). Ferme uniquement A -> B ;
+    // les guards READ/WRITE des primitives métier restent intacts et s'appliquent en plus.
+    const searchClubId = asText(button.dataset?.searchClubId);
+    if (searchClubId && activeClubId() !== searchClubId) return;
+    // Lot O-E2-B9R (§20-29) — même doctrine que data-search-club-id ci-dessus, appliquée aux boutons
+    // génériques d'export/impression (export-json, print-page, export-pdf, export-csv) : ils sont
+    // liés au CONTEXTE (club + vue) qui les a produits, jamais recalculés au clic. Relire
+    // activeClubId()/ui.view au clic transformerait un vieux bouton "Export Contacts sous A" en
+    // export de "Boutique sous B" — un ancien bouton A cliqué après switch vers B ne doit JAMAIS
+    // réussir, même si B possède les mêmes droits que A (le refus vient de l'origine, pas d'un
+    // défaut de permission). data-export-view-id est absent pour export-json (le backup est global,
+    // non lié à une vue) : ne vérifié que s'il est présent, jamais un repli sur ui.view.
+    const exportClubId = asText(button.dataset?.exportClubId);
+    if (exportClubId && activeClubId() !== exportClubId) return;
+    const exportViewId = asText(button.dataset?.exportViewId);
+    if (exportViewId && ui.view !== exportViewId) return;
     if (action === "save-now") {
       persist("Enregistré dans le logiciel");
       render();
@@ -30942,12 +33000,43 @@ ${esc(bodyText)}</pre>
     }
     // Lot 2 — « Nouveau club » ouvre l'assistant multisports guidé (brouillon neuf, aucun choix du
     // club actif conservé). openClubAssistantDialog reste pour la modification d'un club existant.
-    if (action === "new-club") return startClubWizard({ fromMesClubs: true });
-    if (action === "club-assistant") return openClubAssistantDialog(button.dataset.clubId || activeClubId());
+    // Lot O-E2-B6R (§27) — application déjà initialisée : ouvrir "Nouveau club" exige l'Admin strict
+    // du club actif d'autorité (revalidé au submit du wizard, voir 31-club-wizard.js).
+    if (action === "new-club") {
+      if (!requireAdminForClub(activeClubId())) {
+        alert("Seul un administrateur du club actif peut créer un nouveau club.");
+        return;
+      }
+      return startClubWizard({ fromMesClubs: true });
+    }
+    // Lot O-E2-B6R2 (§8) — un clubId manquant ne se replie plus jamais sur activeClubId() : NO-OP
+    // fail-closed, jamais l'assistant du club actif à la place d'un club ciblé absent.
+    if (action === "club-assistant") {
+      const clubId = button.dataset.clubId || "";
+      if (!clubId) return;
+      return openClubAssistantDialog(clubId);
+    }
     if (action === "create-demo-club") return createDemoClub({ resetExisting: false });
     if (action === "reset-demo-club") return createDemoClub({ resetExisting: true });
-    if (action === "edit-club") return openClubEditorDialog(button.dataset.clubId || activeClubId());
+    // Lot O-E2-B6R2 (§9) — même doctrine : aucun repli activeClubId(), la primitive elle-même est
+    // fail-closed sur un clubId demandé mais introuvable (§3).
+    if (action === "edit-club") {
+      const clubId = button.dataset.clubId || "";
+      if (!clubId) return;
+      return openClubEditorDialog(clubId);
+    }
     if (action === "duplicate-club") {
+      // Lot O-E2-B6R2 (§10) — clubId non vide ET source live, Admin strict de la source, VÉRIFIÉS
+      // AVANT même d'ouvrir le choix "identité/données" (jamais après, pour ne pas exposer ce choix
+      // à un id périmé ou à un non-Admin) ; revalidation inchangée dans openClubEditorDialog au submit.
+      const clubId = button.dataset.clubId || "";
+      if (!clubId) return;
+      const sourceStore = normalizeClubStore(rawClubStoreFromStorage() || clubStore);
+      if (!sourceStore.clubs.some((row) => row.id === clubId)) return;
+      if (!requireAdminForClub(clubId)) {
+        alert("Seul un administrateur du club source peut le dupliquer.");
+        return;
+      }
       const choice = await requestChoice({
         title: "Dupliquer ce club",
         message: "Que voulez-vous dupliquer ?\nIdentité seulement : crée une copie vide (nom, logo, couleurs, adresse, responsables, paiements, modèles e-mail, thème) sans les données.\nAvec toutes les données : copie aussi les contacts, factures, paiements, stages, boutique, coachs, salles, planning, dépenses et avoirs.",
@@ -30957,7 +33046,7 @@ ${esc(bodyText)}</pre>
         ],
       });
       if (!choice) return;
-      return openClubEditorDialog(button.dataset.clubId, { duplicate: true, activate: true, withData: choice === "full" });
+      return openClubEditorDialog(clubId, { duplicate: true, activate: true, withData: choice === "full" });
     }
     if (action === "populate-club-demo") return populateClubWithDemo(button.dataset.clubId);
     if (action === "switch-club") {
@@ -30974,6 +33063,10 @@ ${esc(bodyText)}</pre>
     }
     if (action === "unarchive-club") return unarchiveClub(button.dataset.clubId);
     if (action === "save-club-settings") return saveClubSettingsFromPage();
+    // Lot O-B — Responsables dynamiques : manipulation DOM pure, aucun persist/render (même
+    // doctrine que add-size-stock-row/remove-size-stock-row ci-dessous).
+    if (action === "add-manager-card") return addManagerCard(button);
+    if (action === "delete-manager-card") return deleteManagerCard(button);
     if (action === "new-user") return createUserFromPrompt();
     if (action === "rename-user") return renameUserFromPrompt(button.dataset.userId);
     if (action === "deactivate-user") return deactivateUserWithChecks(button.dataset.userId);
@@ -30982,7 +33075,23 @@ ${esc(bodyText)}</pre>
     if (action === "change-user-pin") return changeOwnPinFlow(button.dataset.userId);
     if (action === "remove-user-pin") return removeOwnPinFlow(button.dataset.userId);
     if (action === "add-user-membership") return addUserMembershipFromButton(button.dataset.userId, button.dataset.clubId);
+    // Lot O-D1 — réinitialise les dérogations de droits d'une Membership vers son profil (éditeur
+    // de droits, Paramètres > Utilisateurs). Nécessité justifiée : toute action déclenchée par un
+    // bouton (data-action) passe par ce dispatcher unique dans tout le projet (même doctrine que
+    // add-manager-card/delete-manager-card, add-user-membership ci-dessus) — créer un second
+    // mécanisme de dispatch uniquement pour ce bouton aurait été moins cohérent que ces 2 lignes.
+    if (action === "reset-user-membership-permissions") return resetUserMembershipPermissionOverrides(button.dataset.userId, button.dataset.clubId);
+    // Lot O-E1R-B1 — récupération d'administration d'un club sans admin actif. runAdminRecoveryFlow
+    // revérifie lui-même l'authentification (requireAuthenticatedSession) : ne jamais faire confiance
+    // uniquement à la garde centrale ci-dessus, même doctrine que les mutations Utilisateurs.
+    if (action === "recover-club-administration") return runAdminRecoveryFlow(button.dataset.clubId);
     if (action === "clear-history") {
+      // Lot O-E2-B9R (§7) — garde directe sur le handler : un utilisateur qui ne peut même pas
+      // consulter "Historique" (audit.read) ne doit pas pouvoir l'effacer via un appel direct
+      // détourné de la vue. Ne crée aucun history.write : simple garde de surface sur ce handler,
+      // le rendu de la vue reste la protection principale (VIEW_PERMISSION_MAP), celle-ci n'est
+      // qu'une seconde barrière directe sur la primitive, jamais un mécanisme parallèle.
+      if (!currentUserHasPermission("audit.read", activeClubId())) return;
       if (!normalizeActivityLog(state.activityLog).length) return;
       if (!await requestConfirm({ title: "Effacer l'historique", message: "Effacer tout l'historique des actions ?", confirmLabel: "Effacer", danger: true })) return;
       state.activityLog = [];
@@ -31007,6 +33116,25 @@ ${esc(bodyText)}</pre>
     if (action === "edit-copy") return runEditCommand("copy");
     if (action === "edit-paste") return runEditCommand("paste");
     if (action === "print-page") {
+      // Lot O-E2-B9R2 (Partie C, §19-20) — print-page appelait showPagePrintPreview() SANS AUCUNE
+      // garde : son payload par défaut (pdfReportPayload(), 20-demo-export.js) est pourtant EXACTEMENT
+      // le même contenu que le repli web de exportCurrentPdf(), déjà gardé depuis B9R. print-page en
+      // était le seul chemin resté ouvert (imprimer une page entière, y compris Comptabilité/Contacts/
+      // etc., sans aucun READ). Même mapping que le PDF (exportKind="print" ⇒ base permission de
+      // contenu uniquement, jamais l'extra payments.read réservé au CSV — currentUserHasAllExportPermissions
+      // ne traite spécialement que "csv", tout le reste, dont "print", suit la même règle que "pdf").
+      if (!currentUserHasAllExportPermissions(ui.view, activeClubId(), "print")) {
+        ui.saveMessage = "Vous n'avez pas l'autorisation nécessaire.";
+        render();
+        return;
+      }
+      // §21 — re-rendu AVANT construction de l'aperçu : pdfReportPayload() scrape le DOM ".view" en
+      // direct (jamais un instantané mis en cache), mais ce DOM peut dater d'un rendu antérieur à un
+      // retrait de permission si aucune action mutante n'est survenue entre-temps. Un render() ici
+      // garantit que le contenu effectivement imprimé reflète TOUJOURS l'état de permission courant,
+      // y compris pour les vues mixtes (dashboard/tasks/...) sans permission mono-domaine dédiée —
+      // sans qu'il soit nécessaire d'inventer un droit pour elles (interdit §21).
+      render();
       ui.saveMessage = "Aperçu impression ouvert";
       showPagePrintPreview();
       render();
@@ -31029,7 +33157,14 @@ ${esc(bodyText)}</pre>
       openSearchView();
       return;
     }
+    // Lot O-E2-B7 (§14/§31/§42) — mailto EST une action d'envoi/exposition externe : newsletter.write,
+    // pas une simple lecture. clubId explicite lu depuis le bouton (jamais activeClubId() seul).
     if (action === "open-newsletter-mail") {
+      const newsletterClubId = button.dataset.newsletterClubId || "";
+      if (!newsletterClubId || activeClubId() !== newsletterClubId || !currentUserHasPermission("newsletter.write", newsletterClubId)) {
+        alert("Vous n'avez pas l'autorisation nécessaire.");
+        return;
+      }
       const href = newsletterMailtoHref();
       if (!href) {
         alert("Aucun destinataire avec e-mail pour ce public.");
@@ -31048,6 +33183,11 @@ ${esc(bodyText)}</pre>
       // messagerie" sur cette même page (texte identique pour tous, pas de personnalisation
       // par destinataire ici). nodemailer retourne malgré tout accepted/rejected PAR adresse
       // (réponses SMTP individuelles), donc le résultat affiché reste un vrai compte-rendu.
+      const newsletterClubId = button.dataset.newsletterClubId || "";
+      if (!newsletterClubId || activeClubId() !== newsletterClubId || !currentUserHasPermission("newsletter.write", newsletterClubId)) {
+        alert("Vous n'avez pas l'autorisation nécessaire.");
+        return;
+      }
       const recipients = newsletterRecipients().map((c) => asText(c.email)).filter(Boolean);
       if (!recipients.length) { alert("Aucun destinataire avec e-mail pour ce public."); return; }
       if (recipients.length > 1) {
@@ -31058,16 +33198,27 @@ ${esc(bodyText)}</pre>
         });
         if (!confirmed) return;
       }
+      // Lot O-E2-B7 (§33/§46) — revalidation club + permission + destinataires FRAIS immédiatement
+      // avant l'effet externe : la confirmation a pu durer, le club actif a pu changer entretemps.
+      if (activeClubId() !== newsletterClubId || !currentUserHasPermission("newsletter.write", newsletterClubId)) return;
+      const freshRecipients = newsletterRecipients().map((c) => asText(c.email)).filter(Boolean);
+      if (!freshRecipients.length) { alert("Aucun destinataire avec e-mail pour ce public."); return; }
       const subject = newsletterSubject();
       const text = newsletterBody();
       ui.smtpSending = true;
       render();
       const smtpPayload = await prepareEmailForSmtp(subject, text, { context: newsletterTemplateValues() });
-      const result = await sendEmailIntegrated({ bcc: recipients, subject: smtpPayload.subject, text: smtpPayload.text, html: smtpPayload.html, htmlWithoutLogo: smtpPayload.htmlWithoutLogo, logoDataUrl: smtpPayload.logoDataUrl });
+      // Nouvelle revalidation : prepareEmailForSmtp peut lui-même attendre (logo).
+      if (activeClubId() !== newsletterClubId || !currentUserHasPermission("newsletter.write", newsletterClubId)) {
+        ui.smtpSending = false;
+        render();
+        return;
+      }
+      const result = await sendEmailIntegrated({ clubId: newsletterClubId, bcc: freshRecipients, subject: smtpPayload.subject, text: smtpPayload.text, html: smtpPayload.html, htmlWithoutLogo: smtpPayload.htmlWithoutLogo, logoDataUrl: smtpPayload.logoDataUrl });
       ui.smtpSending = false;
       if (result.ok) {
         const rejectedCount = (result.rejected || []).length;
-        const acceptedCount = (result.accepted || []).length || Math.max(0, recipients.length - rejectedCount);
+        const acceptedCount = (result.accepted || []).length || Math.max(0, freshRecipients.length - rejectedCount);
         const missing = newsletterMissingEmailNames().length;
         ui.saveMessage = `E-mail envoyé : ${acceptedCount} réussi(s)${rejectedCount ? `, ${rejectedCount} échoué(s)` : ""}${missing ? `, ${missing} ignoré(s) (sans e-mail)` : ""}`;
       } else {
@@ -31097,8 +33248,15 @@ ${esc(bodyText)}</pre>
       // sur "✏️ Modifier ce modèle" une fois dans Paramètres) et fait défiler jusqu'à la
       // section "Messages e-mail" après le rendu — réutilise flashVigilanceTargets, déjà
       // utilisée par le routage Vigilance -> Planning, aucun nouveau mécanisme de scroll.
+      // Lot O-E2-B7 (§21/§24) — clubId explicite lu depuis le bouton, jamais activeClubId() seul.
+      const emailTemplateClubId = button.dataset.newsletterClubId || "";
+      if (!emailTemplateClubId || activeClubId() !== emailTemplateClubId || !currentUserHasPermission("newsletter.write", emailTemplateClubId)) {
+        alert("Vous n'avez pas l'autorisation nécessaire.");
+        return;
+      }
       ui.emailTemplateKey = selectedNewsletterTemplateKey();
       ui.emailTemplateEditing = true;
+      ui.emailTemplateClubId = emailTemplateClubId;
       resetEmailTemplateDraft(ui.emailTemplateKey);
       ui.settingsPanels = { ...(ui.settingsPanels || {}), emails: true };
       navigateTo({ view: "settings" });
@@ -31134,12 +33292,23 @@ ${esc(bodyText)}</pre>
       return;
     }
     if (action === "edit-email-template") {
+      const emailTemplateClubId = button.dataset.newsletterClubId || "";
+      if (!emailTemplateClubId || activeClubId() !== emailTemplateClubId || !currentUserHasPermission("newsletter.write", emailTemplateClubId)) {
+        alert("Vous n'avez pas l'autorisation nécessaire.");
+        return;
+      }
       ui.emailTemplateEditing = true;
+      ui.emailTemplateClubId = emailTemplateClubId;
       resetEmailTemplateDraft();
       render();
       return;
     }
     if (action === "new-email-template") {
+      const emailTemplateClubId = button.dataset.newsletterClubId || "";
+      if (!emailTemplateClubId || activeClubId() !== emailTemplateClubId || !currentUserHasPermission("newsletter.write", emailTemplateClubId)) {
+        alert("Vous n'avez pas l'autorisation nécessaire.");
+        return;
+      }
       const label = await requestTextInput({
         title: "Nouveau modèle d'e-mail",
         label: "Nom du modèle",
@@ -31149,6 +33318,8 @@ ${esc(bodyText)}</pre>
         help: "Ce nom apparaîtra dans la liste des modèles de la page E-mail.",
       });
       if (!label) return;
+      // Lot O-E2-B7 (§27) — revalidation post-confirmation avant toute mutation.
+      if (activeClubId() !== emailTemplateClubId || !currentUserHasPermission("newsletter.write", emailTemplateClubId)) return;
       const key = `custom-${Date.now()}`;
       recordHistory();
       settings.emailTemplates = emailTemplates();
@@ -31163,6 +33334,7 @@ ${esc(bodyText)}</pre>
       };
       ui.emailTemplateKey = key;
       ui.emailTemplateEditing = true;
+      ui.emailTemplateClubId = emailTemplateClubId;
       ui.settingsPanels = { ...(ui.settingsPanels || {}), emails: true };
       ui.view = "settings";
       resetEmailTemplateDraft(key);
@@ -31171,9 +33343,26 @@ ${esc(bodyText)}</pre>
       return;
     }
     if (action === "save-email-template") {
+      // Lot O-E2-B7 (§24-25) — la session d'édition (ui.emailTemplateClubId, capturée à l'entrée en
+      // mode édition) fait autorité, jamais activeClubId() seul : un switch de club pendant l'édition
+      // refuse l'enregistrement, même si le nouveau club accorderait aussi newsletter.write.
+      const emailTemplateClubId = ui.emailTemplateClubId || "";
+      if (!emailTemplateClubId || activeClubId() !== emailTemplateClubId || !currentUserHasPermission("newsletter.write", emailTemplateClubId)) {
+        alert("Vous n'avez pas l'autorisation nécessaire.");
+        return;
+      }
       const key = selectedEmailTemplateKey();
-      const draft = activeEmailTemplateDraft(key);
       const isCustom = !emailTemplateDefinitions()[key];
+      // Lot O-E2-B7 (§25) — un modèle personnalisé peut avoir été supprimé pendant que la session
+      // d'édition était ouverte : ne jamais le recréer silencieusement.
+      if (isCustom && !emailTemplates()[key]) {
+        alert("Ce modèle n'existe plus.");
+        ui.emailTemplateEditing = false;
+        ui.emailTemplateClubId = "";
+        render();
+        return;
+      }
+      const draft = activeEmailTemplateDraft(key);
       recordHistory();
       settings.emailTemplates = emailTemplates();
       settings.emailTemplates[key] = {
@@ -31193,6 +33382,7 @@ ${esc(bodyText)}</pre>
       persistSettings();
       resetEmailTemplateDraft(key);
       ui.emailTemplateEditing = false;
+      ui.emailTemplateClubId = "";
       ui.saveMessage = "Modèle e-mail enregistré";
       render();
       return;
@@ -31200,6 +33390,14 @@ ${esc(bodyText)}</pre>
     if (action === "delete-email-template") {
       const key = selectedEmailTemplateKey();
       if (emailTemplateDefinitions()[key]) return;
+      // Lot O-E2-B7 (§21/§26-27) — bouton "Supprimer" atteignable SANS entrer en édition d'abord :
+      // clubId lu depuis CE bouton, jamais ui.emailTemplateClubId (peut être vide) ni activeClubId()
+      // seul. Revalidé après confirmation (club + permission + modèle toujours live).
+      const emailTemplateClubId = button.dataset.newsletterClubId || "";
+      if (!emailTemplateClubId || activeClubId() !== emailTemplateClubId || !currentUserHasPermission("newsletter.write", emailTemplateClubId)) {
+        alert("Vous n'avez pas l'autorisation nécessaire.");
+        return;
+      }
       const defs = configurableEmailTemplateDefinitions();
       const label = defs[key]?.label || "ce modèle";
       const confirmed = await requestConfirm({
@@ -31209,11 +33407,13 @@ ${esc(bodyText)}</pre>
         danger: true,
       });
       if (!confirmed) return;
+      if (activeClubId() !== emailTemplateClubId || !currentUserHasPermission("newsletter.write", emailTemplateClubId) || !emailTemplates()[key]) return;
       recordHistory();
       settings.emailTemplates = emailTemplates();
       delete settings.emailTemplates[key];
       ui.emailTemplateKey = "contact";
       ui.emailTemplateEditing = false;
+      ui.emailTemplateClubId = "";
       resetEmailTemplateDraft("contact");
       persist(`Modèle « ${label} » supprimé`);
       render();
@@ -31222,13 +33422,23 @@ ${esc(bodyText)}</pre>
     if (action === "cancel-email-template") {
       resetEmailTemplateDraft();
       ui.emailTemplateEditing = false;
+      ui.emailTemplateClubId = "";
       ui.saveMessage = "Modifications du modèle annulées";
       render();
       return;
     }
+    // Lot O-E2-B7R2 (§4-5) — le club d'autorité vient du rendu (data-email-club-id), JAMAIS d'un
+    // repli sur activeClubId() : un vieux bouton conservé après un changement de club ne doit
+    // jamais emprunter le club actuellement affiché. contacts.read sur ce club est revalidé AVANT
+    // toute résolution du Contact (contactByLink) ; newsletter.read/write est revalidé ensuite par
+    // openContactEmailDialog elle-même.
     if (action === "send-contact-email") {
+      const emailClubId = asText(button.dataset.emailClubId);
+      if (!emailClubId) return;
+      if (activeClubId() !== emailClubId) return;
+      if (!currentUserHasPermission("contacts.read", emailClubId)) return;
       const contact = contactByLink(button.dataset.contactLink);
-      if (contact) openContactEmailDialog(contact);
+      if (contact) openContactEmailDialog(contact, "contact", {}, emailClubId);
       return;
     }
     // Lot H-B — repli « Paiements dus » quand la ligne (adhésion/commande/inscription fusionnée)
@@ -31236,7 +33446,17 @@ ${esc(bodyText)}</pre>
     // adresse e-mail : ouvre le MÊME compositeur MonGestaClub (openContactEmailDialog) à partir d'un
     // contact minimal reconstruit depuis les données déjà affichées, plutôt qu'un mailto: brut qui
     // ne garantirait jamais le logo/la mise en page. Aucun second éditeur e-mail créé.
+    // Lot O-E2-B7R2 (§10-12) — même doctrine club-source qu'au-dessus, plus data-email-source-domain
+    // : whitelist interne fixe vers la permission READ parent réelle (jamais une clé de permission
+    // brute issue du DOM). Seul le domaine "payments" existe actuellement (unique renderer, Paiements
+    // dus) ; un domaine non reconnu ou absent est un NO-OP, jamais un repli permissif.
     if (action === "send-minimal-email") {
+      const emailClubId = asText(button.dataset.emailClubId);
+      if (!emailClubId) return;
+      if (activeClubId() !== emailClubId) return;
+      const sourceDomain = asText(button.dataset.emailSourceDomain);
+      const sourceDomainReader = { payments: currentUserCanReadPaymentsAgenda }[sourceDomain];
+      if (!sourceDomainReader || !sourceDomainReader(emailClubId)) return;
       const email = asText(button.dataset.email);
       if (!email) return;
       // Lot H-B (correction étroite) — contexte de paiement transmis au compositeur (montant total
@@ -31250,7 +33470,7 @@ ${esc(bodyText)}</pre>
       if (asText(button.dataset.module)) extraContext.module = asText(button.dataset.module);
       if (asText(button.dataset.detail)) extraContext.detail = asText(button.dataset.detail);
       if (Object.keys(extraContext).length) extraContext.categorie = "paiement";
-      openContactEmailDialog({ email, lastName: asText(button.dataset.lastName), firstName: asText(button.dataset.firstName) }, "reminder", extraContext);
+      openContactEmailDialog({ email, lastName: asText(button.dataset.lastName), firstName: asText(button.dataset.firstName) }, "reminder", extraContext, emailClubId);
       return;
     }
     if (action === "open-linked-contact" || action === "open-contact-invoice") {
@@ -31271,6 +33491,12 @@ ${esc(bodyText)}</pre>
         : openContactInvoiceFromLink(button.dataset.contactLink);
     }
     if (action === "open-order-invoice") {
+      // Lot O-E2-B5R (§30-33) — protection stale-DOM OBLIGATOIRE (fail-closed) même sur les actions
+      // Facturation depuis une commande : club SEUL (aucun changement de permission, la gouvernance
+      // B3B-2 d'ensureDraftInvoiceForShopOrder reste inchangée, billing.write+shop.read via
+      // activeClubId()). Un bouton SANS club (ancien DOM/forgé) est désormais refusé, jamais toléré.
+      const shopClubIdOpenInvoice = button.dataset.shopClubId || "";
+      if (!shopClubIdOpenInvoice || activeClubId() !== shopClubIdOpenInvoice) return;
       const invoice = ensureDraftInvoiceForShopOrder(button.dataset.id);
       const targetDialog = button.closest("dialog");
       if (targetDialog?.open) targetDialog.close();
@@ -31278,6 +33504,8 @@ ${esc(bodyText)}</pre>
       return;
     }
     if (action === "print-order-invoice") {
+      const shopClubIdPrintInvoice = button.dataset.shopClubId || "";
+      if (!shopClubIdPrintInvoice || activeClubId() !== shopClubIdPrintInvoice) return;
       const invoice = ensureDraftInvoiceForShopOrder(button.dataset.id);
       // Capturé AVANT validateDraftInvoiceForOutput : cette fonction renvoie ensuite une NOUVELLE
       // référence (issued), donc invoice.status ne serait plus lisible après. Sert uniquement à
@@ -31305,6 +33533,8 @@ ${esc(bodyText)}</pre>
       return;
     }
     if (action === "export-order-invoice-pdf") {
+      const shopClubIdExportInvoice = button.dataset.shopClubId || "";
+      if (!shopClubIdExportInvoice || activeClubId() !== shopClubIdExportInvoice) return;
       const invoice = ensureDraftInvoiceForShopOrder(button.dataset.id);
       // Voir le commentaire équivalent sur print-order-invoice ci-dessus.
       const reopenAfterIssue = invoice?.status === "draft";
@@ -31341,6 +33571,26 @@ ${esc(bodyText)}</pre>
     if (action === "use-credit-note-payment") {
       const invoiceId = button.dataset.invoiceId;
       const creditNoteId = button.dataset.creditNoteId;
+      // Lot O-E2-B3B-2R (§3-7) — FRONTIÈRE Billing/Accounting : cette action mute RÉELLEMENT ET
+      // ATOMIQUEMENT state.invoices (règlement par avoir) ET state.creditNotes (statut "utilisé" +
+      // reliquat éventuel). Exception cross-domain étroite, analogue à archiveSeason (B2R) : exige
+      // billing.write + accounting.write DÈS MAINTENANT (accounting.read ne donne QUE le droit de
+      // CONSULTER un avoir, jamais de le MUTER — billing.write + accounting.read était insuffisant,
+      // corrigé ici). Ceci N'OUVRE PAS l'implémentation générale d'Accounting (B3B-3), qui protégera
+      // les AUTRES surfaces/mutations Accounting — accounting.write reste confiné à CETTE mutation
+      // précise (voir STRUCT-BILL-07).
+      // Lot O-E2-B3B-2R2 (§8-11) — le club n'est JAMAIS redécouvert depuis le seul state courant : le
+      // bouton transporte explicitement le club d'AUTORITÉ constaté AU RENDU (data-invoice-club-id,
+      // posé par invoiceLinkedCreditNotesHtml/openInvoicePaymentDialog). Un vieux DOM d'un autre club
+      // (ou une collision d'id entre deux clubs) ne peut donc jamais faire résoudre l'objet du MAUVAIS
+      // club : buttonClubId doit être non vide, correspondre au club ACTUELLEMENT actif, ET
+      // correspondre au club RÉEL actuel de la facture (invoiceTargetClubId sur le state courant) —
+      // AVANT même de vérifier une quelconque permission.
+      const buttonClubId = asText(button.dataset.invoiceClubId);
+      const actualInvoiceClubId = invoiceTargetClubId({ id: invoiceId });
+      if (!buttonClubId || activeClubId() !== buttonClubId || actualInvoiceClubId !== buttonClubId) return;
+      const openedClubId = buttonClubId;
+      if (!ensureUserPermissionsForClub(["billing.write", "accounting.write"], openedClubId)) return;
       // Lot B3b — lecture centralisée, appelée avant ET après la confirmation (montant utilisable
       // recalculé à chaud à chaque fois : jamais de valeur figée avant l'attente utilisateur).
       const readUsableCreditNote = () => {
@@ -31370,6 +33620,16 @@ ${esc(bodyText)}</pre>
         });
         if (!confirmed) return;
       }
+      // Lot O-E2-B3B-2R2 (§13) — revérifier TOUT après l'await (confirmation) : club actif, club réel
+      // actuel de la facture (jamais seulement le club actif — une collision d'id pourrait sinon
+      // résoudre un AUTRE enregistrement du même club actif), puis les deux permissions. Aucune
+      // mutation, aucun Undo, aucun persist, aucun audit.invoiceCreditApplied si l'un de ces éléments
+      // a changé pendant l'attente utilisateur.
+      if (
+        activeClubId() !== openedClubId
+        || invoiceTargetClubId({ id: invoiceId }) !== openedClubId
+        || !ensureUserPermissionsForClub(["billing.write", "accounting.write"], openedClubId)
+      ) return;
       // Relecture après l'attente utilisateur (le confirm est asynchrone) : l'avoir, la facture
       // ou le reste dû ont pu changer entre-temps (autre onglet, autre action, double-clic).
       const fresh = readUsableCreditNote();
@@ -31470,8 +33730,8 @@ ${esc(bodyText)}</pre>
       return;
     }
     if (action === "task-filter-show-all") { ui.taskHiddenGroups = []; render(); return; }
-    if (action === "open-reminder") return openReminderDialog(button.dataset.taskId);
-    if (action === "view-dossier-documents") return openDossierDocumentsDialog(button.dataset.contactLink);
+    if (action === "open-reminder") return openReminderDialog(button.dataset.taskId, asText(button.dataset.emailClubId));
+    if (action === "view-dossier-documents") return openDossierDocumentsDialog(button.dataset.contactLink, asText(button.dataset.taskClubId));
     if (action === "copy-reminder") return copyReminderText(button);
     if (action === "view-article-image") return openArticleImageDialog(button);
     if (action === "article-gallery-prev") return shiftArticleGallery(button, -1);
@@ -31500,7 +33760,13 @@ ${esc(bodyText)}</pre>
     }
     if (action === "toggle-due-filter") {
       const key = button.dataset.filterKey;
-      if (key && Object.prototype.hasOwnProperty.call(ui, key)) {
+      // Lot O-E2-B3B-1R2 (§7) — un filtre "Reste dû" est une surface Payment (§2-3) : vérifier la
+      // permission du scope AVANT de modifier la préférence. Clé inconnue -> fail closed (aucune
+      // permission devinée). Le rendu (§4-6) ignore de toute façon la préférence sans le droit
+      // correspondant : cette garde évite seulement d'enregistrer une préférence inutile sans droit.
+      const DUE_FILTER_MODULE = { disciplineDueOnly: "membership", shopDueOnly: "order", stageDueOnly: "registration" };
+      const module = DUE_FILTER_MODULE[key];
+      if (key && Object.prototype.hasOwnProperty.call(ui, key) && module && currentUserCanReadEmbeddedPayment(module, activeClubId())) {
         ui[key] = !ui[key];
         if (key === "disciplineDueOnly") ui.disciplineLetter = "";
         if (key === "stageDueOnly") ui.stageLetter = "";
@@ -31516,7 +33782,59 @@ ${esc(bodyText)}</pre>
       render();
       return;
     }
-    if (action === "export-json") return download("mongestaclub-sauvegarde.json", JSON.stringify(await backupPayload(), null, 2), "application/json");
+    // Lot O-E2-B9 (Partie C, §13-19) — sauvegarde structurée brute (backupPayload) : autorité UNIQUE
+    // = data.export, jamais role===admin/isAdmin/users.manage/clubSettings.manage, jamais un READ
+    // métier (posséder tous les READ ne donne pas data.export, et inversement). Le payload embarque
+    // clubStore ENTIER (§15) — TOUS les clubs locaux, pas seulement le club actif — donc l'exigence
+    // porte sur CHAQUE club effectivement inclus (§17), vérifié AVANT toute construction du payload
+    // (§47) : un seul club sans data.export => refus INTÉGRAL (§16), jamais un export partiel A+C
+    // silencieux qui omettrait B en le faisant passer pour complet.
+    if (action === "export-json") {
+      const exportClubs = normalizeClubStore(clubStore || rawClubStoreFromStorage()).clubs;
+      const missingClub = exportClubs.find((club) => !currentUserHasPermission("data.export", club.id));
+      if (missingClub) {
+        ui.saveMessage = "Vous n'avez pas l'autorisation nécessaire pour sauvegarder tous les clubs.";
+        render();
+        return;
+      }
+      // Lot O-E2-B9R (Partie D, §31-37), étendu B9R2 (Partie B, §11-18) — TOCTOU : backupPayload() est
+      // asynchrone (await réel dès que settings.logoDataUrl est vide, cf. imageSourceToDataUrl). La
+      // vérification ci-dessus ne prouve que l'état AVANT l'attente ; entre-temps un autre profil peut
+      // avoir pris la main (même doctrine que requireOrdinaryImportAuthorization, O-E1R-B1), le club
+      // actif peut avoir changé, un club peut avoir été ajouté sans data.export, ou data.export peut
+      // avoir été retiré à l'utilisateur courant sur un club existant. L'action appartient à
+      // l'utilisateur ET au club qui l'ont déclenchée (§15) : on capture les deux AVANT l'attente et on
+      // les revérifie juste avant l'effet de bord, jamais après coup.
+      const exportUserId = activeUserId();
+      // Jamais button.dataset.exportClubId || activeClubId() (§12) : le bouton shell porte l'attribut
+      // à chaque rendu (10-calcs-shell.js) et le chemin command registry le transmet désormais lui
+      // aussi explicitement au dispatch (11b-command-registry.js, §13) — un appel dépourvu de l'un ou
+      // l'autre n'a AUCUNE origine vérifiable et échoue la comparaison ci-dessous par construction
+      // (fail-closed), jamais un repli sur le club désormais actif.
+      const exportClubId = asText(button.dataset?.exportClubId);
+      const payload = await backupPayload();
+      if (activeUserId() !== exportUserId) return;
+      if (activeClubId() !== exportClubId) return;
+      // §14 — le payload lui-même doit porter le MÊME club actif que celui capturé à l'origine :
+      // backupPayload() relit activeClubId() en interne (activeClubId: activeClubId() dans son objet
+      // de retour) ; un switch pendant l'attente, même revenu sur exportClubId entre-temps (aller-
+      // retour A->B->A), doit être détectable via l'incohérence qu'il aurait laissée dans le payload
+      // si backupPayload() avait capturé B au passage — défense en profondeur, jamais redondante avec
+      // la ligne précédente qui ne voit que l'état FINAL de activeClubId().
+      if (asText(payload?.activeClubId) !== exportClubId) return;
+      // Revalidation sur le payload RÉEL (§33-34) : les clubs effectivement présents dans
+      // payload.clubStore.clubs peuvent différer de exportClubs capturé avant l'attente (club ajouté
+      // pendant l'attente) — un seul club sans data.export dans le résultat FINAL => refus intégral,
+      // jamais un export construit sur un instantané périmé.
+      const finalClubs = (payload?.clubStore?.clubs) || [];
+      const missingFinalClub = finalClubs.find((club) => !currentUserHasPermission("data.export", club.id));
+      if (missingFinalClub) {
+        ui.saveMessage = "Vous n'avez pas l'autorisation nécessaire pour sauvegarder tous les clubs.";
+        render();
+        return;
+      }
+      return download("mongestaclub-sauvegarde.json", JSON.stringify(payload, null, 2), "application/json");
+    }
     if (action === "import-json") {
       if (isDemoMode()) {
         alert("L'import d'une sauvegarde n'est possible que dans le logiciel installé. Téléchargez MonGestaClub pour importer vos données.");
@@ -31904,7 +34222,7 @@ ${esc(bodyText)}</pre>
       if (!ui.settingsPanels) ui.settingsPanels = {};
       ui.settingsPanels[panel] = !ui.settingsPanels[panel];
       if (panel === "smtp" && ui.settingsPanels[panel] && typeof refreshSmtpSecretStatus === "function") {
-        refreshSmtpSecretStatus().then(() => render());
+        refreshSmtpSecretStatus(activeClubId()).then(() => render());
       }
       render();
       return;
@@ -31993,14 +34311,35 @@ ${esc(bodyText)}</pre>
       afterSportCategoryMutation();
       return;
     }
+    // Lot O-E2-B7 (§14/§18-20/§23) — SMTP est gouverné par newsletter.write (jamais clubSettings.
+    // manage), clubId EXPLICITE lu depuis le bouton (jamais activeClubIdForSmtp() seul, qui ne fait
+    // plus jamais de repli "default" mais reste une lecture ambiante non vérifiée par elle-même).
     if (action === "save-smtp-settings") {
-      await commitSmtpDraftSettings();
+      const smtpClubId = button.dataset.smtpClubId || "";
+      if (!smtpClubId || activeClubId() !== smtpClubId || !currentUserHasPermission("newsletter.write", smtpClubId)) {
+        alert("Vous n'avez pas l'autorisation nécessaire.");
+        return;
+      }
+      await commitSmtpDraftSettings(smtpClubId);
+      // Lot O-E2-B7R2 (§28-29) — si l'utilisateur a basculé de club PENDANT l'attente, le message de
+      // confirmation ne doit jamais s'afficher sur l'écran du nouveau club (l'effet persistant, lui,
+      // reste correctement ciblé sur smtpClubId par commitSmtpDraftSettings/sendEmailIntegrated).
+      if (!smtpUiStillBoundToClub(smtpClubId)) return;
       ui.saveMessage = "Configuration e-mail enregistrée";
       render();
       return;
     }
     if (action === "test-smtp-settings") {
-      await commitSmtpDraftSettings();
+      const smtpClubId = button.dataset.smtpClubId || "";
+      if (!smtpClubId || activeClubId() !== smtpClubId || !currentUserHasPermission("newsletter.write", smtpClubId)) {
+        alert("Vous n'avez pas l'autorisation nécessaire.");
+        return;
+      }
+      await commitSmtpDraftSettings(smtpClubId);
+      // Lot O-E2-B7R2 (§34-37) — si le club a changé pendant commitSmtpDraftSettings, `settings` référence
+      // désormais l'objet du NOUVEAU club actif : le lire ici serait tester/afficher la config d'un club
+      // que l'utilisateur n'a jamais demandé à tester. NO-OP silencieux, aucun message sur l'écran B.
+      if (!smtpUiStillBoundToClub(smtpClubId)) return;
       const config = settings.smtp;
       if (!config.host || !config.senderEmail) {
         alert("Renseigne au minimum le serveur SMTP et l'adresse d'expéditeur avant de tester.");
@@ -32014,9 +34353,20 @@ ${esc(bodyText)}</pre>
       }
       ui.smtpTesting = true;
       render();
+      // Revalidation immédiatement avant l'effet externe (test SMTP réel).
+      if (!smtpUiStillBoundToClub(smtpClubId) || !currentUserHasPermission("newsletter.write", smtpClubId)) {
+        ui.smtpTesting = false;
+        render();
+        return;
+      }
       const result = smtpShellAvailable()
-        ? await window.monGestaClubShell.smtpTest(activeClubIdForSmtp(), config, config.testAddress)
+        ? await window.monGestaClubShell.smtpTest(smtpClubId, config, config.testAddress)
         : { ok: false, message: "Envoi intégré indisponible dans cette version." };
+      // Lot O-E2-B7R2 (§36-38) — le résultat réseau du test A ne doit JAMAIS être persisté dans
+      // settings B ni affiché dans l'UI B si l'utilisateur a basculé pendant l'attente réseau : ignoré
+      // pour cette session (persister le résultat A après coup exigerait une écriture explicitement
+      // ciblée A, hors périmètre de ce micro-lot — cf. doctrine §37).
+      if (!smtpUiStillBoundToClub(smtpClubId)) return;
       ui.smtpTesting = false;
       settings.smtp.lastTestOk = Boolean(result?.ok);
       settings.smtp.lastTestMessage = asText(result?.message || "");
@@ -32026,6 +34376,11 @@ ${esc(bodyText)}</pre>
       return;
     }
     if (action === "clear-smtp-settings") {
+      const smtpClubId = button.dataset.smtpClubId || "";
+      if (!smtpClubId || activeClubId() !== smtpClubId || !currentUserHasPermission("newsletter.write", smtpClubId)) {
+        alert("Vous n'avez pas l'autorisation nécessaire.");
+        return;
+      }
       const confirmed = await requestConfirm({
         title: "Supprimer la configuration SMTP",
         message: "Le mot de passe enregistré sera effacé et MonGestaClub reviendra à l'ouverture de votre messagerie habituelle pour les e-mails. Continuer ?",
@@ -32033,13 +34388,20 @@ ${esc(bodyText)}</pre>
         danger: true,
       });
       if (!confirmed) return;
+      // Lot O-E2-B7 (§28-29/§50) — revalidation post-confirmation : aucun faux persist/audit sur refus.
+      if (activeClubId() !== smtpClubId || !currentUserHasPermission("newsletter.write", smtpClubId)) return;
       settings.smtp = normalizeSmtpSettings({});
       persistSettings();
       ui.smtpDraft = null;
       if (smtpShellAvailable()) {
-        await window.monGestaClubShell.smtpClearSecret(activeClubIdForSmtp());
-        await refreshSmtpSecretStatus();
+        await window.monGestaClubShell.smtpClearSecret(smtpClubId);
+        await refreshSmtpSecretStatus(smtpClubId);
       }
+      // Lot O-E2-B7R2 (§31-33) — le secret A est bien supprimé côté main process quoi qu'il arrive ;
+      // mais si l'utilisateur a basculé vers B pendant l'attente, ni le message de confirmation ni un
+      // re-render ne doivent perturber l'écran B (B conserve son propre statut/configuration SMTP,
+      // déjà rafraîchis pour lui par son propre switch, jamais remplacés par ceux de A).
+      if (!smtpUiStillBoundToClub(smtpClubId)) return;
       ui.saveMessage = "Configuration SMTP supprimée";
       render();
       return;
@@ -32100,7 +34462,15 @@ ${esc(bodyText)}</pre>
     if (action === "add-contact") return openContactDialog(ui.contactKind);
     if (action === "edit-contact") return openContactDialog(button.dataset.kind, state.contacts[button.dataset.kind].find((row) => row.id === button.dataset.id));
     if (action === "delete-contact") {
+      // Lot O-E2-B2 — double garde (même patron que les suppressions déjà protégées ailleurs) :
+      // 1) avant toute confirmation, inutile de demander "es-tu sûr ?" pour une suppression de
+      // toute façon refusée ; 2) revalidation juste avant la mutation réelle (requestConfirm est
+      // ASYNCHRONE : la permission ou le club actif ont pu changer pendant l'attente).
+      const targetClubId = activeClubId();
+      if (!ensureUserPermission("contacts.write", targetClubId)) return;
       if (!await requestConfirm({ title: "Supprimer le contact", message: "Supprimer ce contact ?", confirmLabel: "Supprimer", danger: true })) return;
+      if (activeClubId() !== targetClubId) { ui.saveMessage = "Opération annulée : le club actif a changé."; render(); return; }
+      if (!ensureUserPermission("contacts.write", targetClubId)) return;
       recordHistory();
       removeById(state.contacts[button.dataset.kind], button.dataset.id);
       persist("Contact supprimé");
@@ -32124,10 +34494,32 @@ ${esc(bodyText)}</pre>
       return openMembershipDialog(registrationSeedFromContact(contact, button.dataset.contactLink));
     }
     // ---- Modules sport : Groupes / Planning / Présences / Documents ----
-    if (action === "add-group") return openGroupDialog();
-    if (action === "edit-group") return openGroupDialog(getGroupById(button.dataset.id));
-    if (action === "toggle-archive-group") return toggleArchiveGroup(button.dataset.id);
+    if (action === "add-group") {
+      const sportClubId = button.dataset.sportClubId || "";
+      if (!sportClubId || activeClubId() !== sportClubId) return;
+      return openGroupDialog({}, sportClubId);
+    }
+    if (action === "edit-group") {
+      // Lot O-E2-B4R (§13) — binding club DOM AVANT toute résolution d'objet : un vieux bouton A
+      // encore cliqué sous B est refusé avant même de tenter getGroupById.
+      const sportClubId = button.dataset.sportClubId || "";
+      if (!sportClubId || activeClubId() !== sportClubId) return;
+      if (!currentUserHasPermission("sport.read", sportClubId)) return;
+      // Lot O-E2-B4 (§44) — STALE EDIT INTERDIT : groupe introuvable = no-op propre, jamais un
+      // dialogue de création accidentel (même doctrine que edit-team/B3B-3R2 edit-expense).
+      const grpEdit = getGroupById(button.dataset.id);
+      if (!grpEdit) return;
+      return openGroupDialog(grpEdit, sportClubId);
+    }
+    if (action === "toggle-archive-group") {
+      const sportClubId = button.dataset.sportClubId || "";
+      if (!sportClubId || activeClubId() !== sportClubId) return;
+      return toggleArchiveGroup(button.dataset.id);
+    }
     if (action === "delete-group") {
+      const sportClubId = button.dataset.sportClubId || "";
+      if (!sportClubId || activeClubId() !== sportClubId) return;
+      if (!ensureUserPermission("sport.write", sportClubId)) return;
       const grp = getGroupById(button.dataset.id);
       if (!grp) return;
       // Lot 4 Dépendances — l'ancien blocage ne couvrait que les adhérents liés : un groupe
@@ -32145,31 +34537,50 @@ ${esc(bodyText)}</pre>
         alert(`Impossible de supprimer le groupe « ${grp.name} » : il est encore utilisé par ${impacts}. Archivez-le ou retirez-le d'abord des adhérents ou du planning.`);
         return;
       }
+      const groupTargetClubId = activeClubId();
       if (!await requestConfirm({ title: "Supprimer le groupe", message: `Supprimer définitivement le groupe « ${grp.name} » ?`, confirmLabel: "Supprimer", danger: true })) return;
+      if (activeClubId() !== groupTargetClubId) { alert("Le club actif a changé pendant la confirmation. Réessayez."); return; }
+      if (!ensureUserPermission("sport.write", groupTargetClubId)) return;
+      if (!getGroupById(button.dataset.id)) return;
       recordHistory(); removeById(state.groups, button.dataset.id); persist("Groupe supprimé"); render();
       return;
     }
     if (action === "view-group-members") {
-      openGroupMembersDialog(button.dataset.id);
+      const sportClubId = button.dataset.sportClubId || "";
+      if (!sportClubId || activeClubId() !== sportClubId) return;
+      openGroupMembersDialog(button.dataset.id, sportClubId);
       return;
     }
     // ---- Lot K-T2B — Équipes (moteur métier, aucune activation UI publique avant K-T3) ----
     if (action === "add-team") {
+      const sportClubId = button.dataset.sportClubId || "";
+      if (!sportClubId || activeClubId() !== sportClubId) return;
       if (!ensureFeatureEnabledForMutation("teams")) return;
-      return openTeamDialog();
+      if (!ensureUserPermission("sport.write", sportClubId)) return;
+      return openTeamDialog({}, sportClubId);
     }
     if (action === "edit-team") {
+      const sportClubId = button.dataset.sportClubId || "";
+      if (!sportClubId || activeClubId() !== sportClubId) return;
+      if (!currentUserHasPermission("sport.read", sportClubId)) return;
       // Lot K-T2B2 — openTeamDialog(team = {}) n'applique son défaut que pour `undefined`, jamais
       // pour `null` : passer directement getTeamById(...) (qui peut renvoyer null) lèverait une
       // exception au premier accès à team.id. Team introuvable = no-op propre, jamais un dialogue
       // de création accidentel (la création reste exclusivement la responsabilité de add-team).
       const team = getTeamById(button.dataset.id);
       if (!team) return;
-      return openTeamDialog(team);
+      return openTeamDialog(team, sportClubId);
     }
-    if (action === "toggle-archive-team") return toggleArchiveTeam(button.dataset.id);
+    if (action === "toggle-archive-team") {
+      const sportClubId = button.dataset.sportClubId || "";
+      if (!sportClubId || activeClubId() !== sportClubId) return;
+      return toggleArchiveTeam(button.dataset.id);
+    }
     if (action === "delete-team") {
+      const sportClubId = button.dataset.sportClubId || "";
+      if (!sportClubId || activeClubId() !== sportClubId) return;
       if (!ensureFeatureEnabledForMutation("teams")) return;
+      if (!ensureUserPermission("sport.write", sportClubId)) return;
       const tm = getTeamById(button.dataset.id);
       if (!tm) return;
       const members = membershipsReferencingTeam(button.dataset.id).length;
@@ -32184,6 +34595,7 @@ ${esc(bodyText)}</pre>
       // roster recompté par prudence (aucune référence stale jamais mutée).
       if (!ensureFeatureEnabledForMutation("teams")) return;
       if (activeClubId() !== targetClubId) { alert("Le club actif a changé pendant la confirmation. Réessayez."); return; }
+      if (!ensureUserPermission("sport.write", targetClubId)) return;
       const freshTeam = getTeamById(button.dataset.id);
       if (!freshTeam) return;
       const rosterAfter = membershipsReferencingTeam(button.dataset.id).length;
@@ -32193,7 +34605,10 @@ ${esc(bodyText)}</pre>
     }
     if (action === "add-member-to-team") {
       // Mutation cross-domain Teams (doctrine K-T1C, classe B) : jamais de garde memberships.
+      const sportClubId = button.dataset.sportClubId || "";
+      if (!sportClubId || activeClubId() !== sportClubId) return;
       if (!ensureFeatureEnabledForMutation("teams")) return;
+      if (!ensureUserPermission("sport.write", sportClubId)) return;
       const teamId = button.dataset.teamId;
       const team = getTeamById(teamId);
       if (!team || team.archived) return;
@@ -32216,7 +34631,10 @@ ${esc(bodyText)}</pre>
       // Mutation cross-domain Teams (doctrine K-T1C, classe B) : jamais de garde memberships.
       // Team archivée : le retrait reste autorisé (nettoyage/administration d'une ancienne
       // composition), seul l'AJOUT est bloqué sur une Team archivée.
+      const sportClubId = button.dataset.sportClubId || "";
+      if (!sportClubId || activeClubId() !== sportClubId) return;
       if (!ensureFeatureEnabledForMutation("teams")) return;
+      if (!ensureUserPermission("sport.write", sportClubId)) return;
       const teamId = button.dataset.teamId;
       const team = getTeamById(teamId);
       if (!team) return;
@@ -32232,24 +34650,39 @@ ${esc(bodyText)}</pre>
       return;
     }
     if (action === "view-team-members") {
-      openTeamMembersDialog(button.dataset.id);
+      const sportClubId = button.dataset.sportClubId || "";
+      if (!sportClubId || activeClubId() !== sportClubId) return;
+      openTeamMembersDialog(button.dataset.id, sportClubId);
       return;
     }
     // ---- Lot M-B2 — Rencontres (moteur métier, aucune activation UI publique avant M-B3) ----
     if (action === "add-competition") {
+      const competitionClubId = button.dataset.competitionClubId || "";
+      if (!competitionClubId || activeClubId() !== competitionClubId) return;
       if (!ensureFeatureEnabledForMutation("competitions")) return;
-      return openCompetitionDialog();
+      if (!ensureUserPermission("competitions.write", competitionClubId)) return;
+      return openCompetitionDialog({}, competitionClubId);
     }
     if (action === "edit-competition") {
+      const competitionClubId = button.dataset.competitionClubId || "";
+      if (!competitionClubId || activeClubId() !== competitionClubId) return;
+      if (!currentUserHasPermission("competitions.read", competitionClubId)) return;
       // Même doctrine que edit-team (K-T2B2) : Rencontre introuvable = no-op propre, jamais un
       // dialogue de création accidentel (la création reste exclusivement add-competition).
       const competition = getCompetitionById(button.dataset.id);
       if (!competition) return;
-      return openCompetitionDialog(competition);
+      return openCompetitionDialog(competition, competitionClubId);
     }
-    if (action === "toggle-archive-competition") return toggleArchiveCompetition(button.dataset.id);
+    if (action === "toggle-archive-competition") {
+      const competitionClubId = button.dataset.competitionClubId || "";
+      if (!competitionClubId || activeClubId() !== competitionClubId) return;
+      return toggleArchiveCompetition(button.dataset.id);
+    }
     if (action === "delete-competition") {
+      const competitionClubId = button.dataset.competitionClubId || "";
+      if (!competitionClubId || activeClubId() !== competitionClubId) return;
       if (!ensureFeatureEnabledForMutation("competitions")) return;
+      if (!ensureUserPermission("competitions.write", competitionClubId)) return;
       const competition = getCompetitionById(button.dataset.id);
       if (!competition) return;
       const targetClubId = activeClubId();
@@ -32257,6 +34690,7 @@ ${esc(bodyText)}</pre>
       // Double garde après confirmation asynchrone (précédent exact : delete-team K-T2B0B/K-T2B0C).
       if (!ensureFeatureEnabledForMutation("competitions")) return;
       if (activeClubId() !== targetClubId) { alert("Le club actif a changé pendant la confirmation. Réessayez."); return; }
+      if (!ensureUserPermission("competitions.write", targetClubId)) return;
       const fresh = getCompetitionById(button.dataset.id);
       if (!fresh) return;
       // Aucune cascade (doctrine M-B2 §15) : ni Team, ni Contact, ni Membership, ni Discipline, ni
@@ -32264,11 +34698,24 @@ ${esc(bodyText)}</pre>
       recordHistory(); removeById(state.competitions, button.dataset.id); persist("Rencontre supprimée"); render();
       return;
     }
+    // Lot O-E2-B7R2 (§19-21) — data-sport-club-id capture le club d'origine du rendu (même
+    // convention que edit-group/edit-coach/edit-room, B4) : un vieux bouton conservé après un
+    // changement de club ne doit jamais préparer un e-mail à une entité résolue sous le club
+    // désormais actif. sport.read est la lecture parent réelle (VIEW_PERMISSION_MAP des vues
+    // Groupes/Coachs/Salles) ; prepareEntityEmail (déjà appelée seulement après ces gardes) résout
+    // ensuite l'entité EN LIVE dans state, elle-même déjà scopée au club actif.
     if (action === "email-group") {
+      const sportClubId = asText(button.dataset.sportClubId);
+      if (!sportClubId || activeClubId() !== sportClubId || !currentUserHasPermission("sport.read", sportClubId)) return;
       prepareEntityEmail({ groupId: button.dataset.groupId, templateKey: "groupMessage" });
       return;
     }
     if (action === "remove-member-from-group") {
+      // Lot O-E2-B4 (§15) — sport.write couvre cette conséquence Membership (groupId), jamais
+      // memberships.write (même doctrine que Teams/teamIds).
+      const sportClubId = button.dataset.sportClubId || "";
+      if (!sportClubId || activeClubId() !== sportClubId) return;
+      if (!ensureUserPermission("sport.write", sportClubId)) return;
       const membership = (state.memberships || []).find((m) => m.id === button.dataset.membershipId);
       if (!membership) return;
       recordHistory();
@@ -32279,6 +34726,9 @@ ${esc(bodyText)}</pre>
       return;
     }
     if (action === "add-selected-to-group") {
+      const sportClubId = button.dataset.sportClubId || "";
+      if (!sportClubId || activeClubId() !== sportClubId) return;
+      if (!ensureUserPermission("sport.write", sportClubId)) return;
       const groupId = button.dataset.groupId;
       const group = getGroupById(groupId);
       if (!group) return;
@@ -32308,8 +34758,8 @@ ${esc(bodyText)}</pre>
     }
     if (action === "set-doc-filter") { ui.docFilter = button.dataset.filter || "all"; render(); return; }
     // ---- Centre de Vigilance : fenêtre de résolution (principe de continuité) ----
-    if (action === "vigilance-resolve-open") return openVigilanceResolver(button.dataset.fam, button.dataset.level);
-    if (action === "vigilance-doc-resolve-open") return openVigilanceDocResolver(button.dataset.level);
+    if (action === "vigilance-resolve-open") return openVigilanceResolver(button.dataset.fam, button.dataset.level, asText(button.dataset.vigClubId));
+    if (action === "vigilance-doc-resolve-open") return openVigilanceDocResolver(button.dataset.level, asText(button.dataset.vigClubId));
     // ---- Centre de Vigilance : navigation intelligente (vue + filtre + surbrillance) ----
     if (action === "vigilance-open") {
       const d = button.dataset;
@@ -32339,15 +34789,35 @@ ${esc(bodyText)}</pre>
       return;
     }
     if (action === "avail-slot-detail") return openAvailabilitySlotDialog(button.dataset.day, Number(button.dataset.start));
-    if (action === "avail-create-slot") return availOpenCourseForSlot(button.dataset.day, Number(button.dataset.start));
+    if (action === "avail-create-slot") {
+      const sportClubId = button.dataset.sportClubId || "";
+      if (!sportClubId || activeClubId() !== sportClubId) return;
+      return availOpenCourseForSlot(button.dataset.day, Number(button.dataset.start), sportClubId);
+    }
     // ---- Coachs ----
-    if (action === "add-coach") return openCoachDialog();
-    if (action === "edit-coach") return openCoachDialog(coachById(button.dataset.id));
+    if (action === "add-coach") {
+      const sportClubId = button.dataset.sportClubId || "";
+      if (!sportClubId || activeClubId() !== sportClubId) return;
+      return openCoachDialog({}, sportClubId);
+    }
+    if (action === "edit-coach") {
+      const sportClubId = button.dataset.sportClubId || "";
+      if (!sportClubId || activeClubId() !== sportClubId) return;
+      if (!currentUserHasPermission("sport.read", sportClubId)) return;
+      // Lot O-E2-B4 (§44) — STALE EDIT INTERDIT : coach introuvable = no-op propre (coachById renvoie
+      // null, jamais absorbé par le paramètre par défaut de openCoachDialog qui ne joue que sur undefined).
+      const coachEdit = coachById(button.dataset.id);
+      if (!coachEdit) return;
+      return openCoachDialog(coachEdit, sportClubId);
+    }
     if (action === "coach-photo-pick") return pickCoachPhoto(button);
     if (action === "coach-photo-recrop") return recropCoachPhoto(button);
     if (action === "coach-photo-remove") { setCoachPhotoInWidget(button.closest("[data-coach-photo-widget]"), ""); return; }
     if (action === "coach-avatar-choice") return setCoachAvatarChoice(button);
     if (action === "toggle-archive-coach") {
+      const sportClubId = button.dataset.sportClubId || "";
+      if (!sportClubId || activeClubId() !== sportClubId) return;
+      if (!ensureUserPermission("sport.write", sportClubId)) return;
       const c = coachById(button.dataset.id);
       if (!c) return;
       recordHistory(); c.archived = !c.archived;
@@ -32357,6 +34827,9 @@ ${esc(bodyText)}</pre>
       return;
     }
     if (action === "delete-coach") {
+      const sportClubId = button.dataset.sportClubId || "";
+      if (!sportClubId || activeClubId() !== sportClubId) return;
+      if (!ensureUserPermission("sport.write", sportClubId)) return;
       const c = coachById(button.dataset.id);
       if (!c) return;
       // Lot 2 Dépendances — l'ancien blocage ne couvrait que le Planning : un coach encadrant
@@ -32381,11 +34854,17 @@ ${esc(bodyText)}</pre>
         alert(`Impossible de supprimer ${coachFullName(c)} : il est encore utilisé par ${impacts}. Archivez-le ou retirez-le d'abord des créneaux, groupes, équipes ou stages concernés.`);
         return;
       }
+      const coachTargetClubId = activeClubId();
       if (!await requestConfirm({ title: "Supprimer le coach", message: `Supprimer définitivement ${coachFullName(c)} ?`, confirmLabel: "Supprimer", danger: true })) return;
+      if (activeClubId() !== coachTargetClubId) { alert("Le club actif a changé pendant la confirmation. Réessayez."); return; }
+      if (!ensureUserPermission("sport.write", coachTargetClubId)) return;
+      if (!coachById(button.dataset.id)) return;
       recordHistory(); removeById(state.coaches, button.dataset.id); persist("Coach supprimé"); render();
       return;
     }
     if (action === "email-coach") {
+      const sportClubId = asText(button.dataset.sportClubId);
+      if (!sportClubId || activeClubId() !== sportClubId || !currentUserHasPermission("sport.read", sportClubId)) return;
       prepareEntityEmail({ coachId: button.dataset.id, templateKey: button.dataset.template, courseId: button.dataset.courseId, periodStart: button.dataset.ps, periodEnd: button.dataset.pe, statut: button.dataset.statut });
       return;
     }
@@ -32394,6 +34873,8 @@ ${esc(bodyText)}</pre>
       // actuellement choisi dans le <select name="replacementCoachId"> du dialogue "Coach à
       // remplacer", lu au moment du clic (jamais le coach original indisponible, jamais une
       // sélection périmée si l'utilisateur a changé d'avis avant de cliquer).
+      const sportClubId = asText(button.dataset.sportClubId);
+      if (!sportClubId || activeClubId() !== sportClubId || !currentUserHasPermission("sport.read", sportClubId)) return;
       const dialog = button.closest("dialog");
       const select = dialog ? dialog.querySelector('select[name="replacementCoachId"]') : null;
       const coachId = asText(select && select.value);
@@ -32402,6 +34883,8 @@ ${esc(bodyText)}</pre>
       return;
     }
     if (action === "email-room") {
+      const sportClubId = asText(button.dataset.sportClubId);
+      if (!sportClubId || activeClubId() !== sportClubId || !currentUserHasPermission("sport.read", sportClubId)) return;
       prepareEntityEmail({ roomId: button.dataset.id, templateKey: button.dataset.template, courseId: button.dataset.courseId, periodStart: button.dataset.ps, periodEnd: button.dataset.pe, statut: button.dataset.statut });
       return;
     }
@@ -32410,11 +34893,15 @@ ${esc(bodyText)}</pre>
       return;
     }
     if (action === "replace-session") {
-      openReplaceSessionDialog(button.dataset.courseId, button.dataset.ps, button.dataset.pe);
+      const sportClubId = button.dataset.sportClubId || "";
+      if (!sportClubId || activeClubId() !== sportClubId) return;
+      openReplaceSessionDialog(button.dataset.courseId, button.dataset.ps, button.dataset.pe, sportClubId);
       return;
     }
     if (action === "replace-room-session") {
-      openReplaceRoomDialog(button.dataset.courseId, button.dataset.ps, button.dataset.pe);
+      const sportClubId = button.dataset.sportClubId || "";
+      if (!sportClubId || activeClubId() !== sportClubId) return;
+      openReplaceRoomDialog(button.dataset.courseId, button.dataset.ps, button.dataset.pe, sportClubId);
       return;
     }
     if (action === "add-coach-avail-row") {
@@ -32430,9 +34917,24 @@ ${esc(bodyText)}</pre>
       return;
     }
     // ---- Salles ----
-    if (action === "add-room") return openRoomDialog();
-    if (action === "edit-room") return openRoomDialog(roomById(button.dataset.id));
+    if (action === "add-room") {
+      const sportClubId = button.dataset.sportClubId || "";
+      if (!sportClubId || activeClubId() !== sportClubId) return;
+      return openRoomDialog({}, sportClubId);
+    }
+    if (action === "edit-room") {
+      const sportClubId = button.dataset.sportClubId || "";
+      if (!sportClubId || activeClubId() !== sportClubId) return;
+      if (!currentUserHasPermission("sport.read", sportClubId)) return;
+      // Lot O-E2-B4 (§44) — STALE EDIT INTERDIT : même doctrine que edit-coach.
+      const roomEdit = roomById(button.dataset.id);
+      if (!roomEdit) return;
+      return openRoomDialog(roomEdit, sportClubId);
+    }
     if (action === "toggle-archive-room") {
+      const sportClubId = button.dataset.sportClubId || "";
+      if (!sportClubId || activeClubId() !== sportClubId) return;
+      if (!ensureUserPermission("sport.write", sportClubId)) return;
       const r = roomById(button.dataset.id);
       if (!r) return;
       recordHistory(); r.archived = !r.archived;
@@ -32442,6 +34944,9 @@ ${esc(bodyText)}</pre>
       return;
     }
     if (action === "delete-room") {
+      const sportClubId = button.dataset.sportClubId || "";
+      if (!sportClubId || activeClubId() !== sportClubId) return;
+      if (!ensureUserPermission("sport.write", sportClubId)) return;
       const r = roomById(button.dataset.id);
       if (!r) return;
       // Lot 3 Dépendances — même complément que pour les coachs : l'ancien blocage ne
@@ -32458,13 +34963,24 @@ ${esc(bodyText)}</pre>
         alert(`Impossible de supprimer ${roomName(r)} : elle est encore utilisée par ${impacts}. Archivez-la ou retirez-la d'abord des créneaux ou stages concernés.`);
         return;
       }
+      const roomTargetClubId = activeClubId();
       if (!await requestConfirm({ title: "Supprimer la salle", message: `Supprimer définitivement ${roomName(r)} ?`, confirmLabel: "Supprimer", danger: true })) return;
+      if (activeClubId() !== roomTargetClubId) { alert("Le club actif a changé pendant la confirmation. Réessayez."); return; }
+      if (!ensureUserPermission("sport.write", roomTargetClubId)) return;
+      if (!roomById(button.dataset.id)) return;
       recordHistory(); removeById(state.rooms, button.dataset.id); persist("Salle supprimée"); render();
       return;
     }
     // ---- Dépenses (Comptabilité) ----
     if (action === "create-coach-expense" || action === "create-room-expense") {
       const isCoach = action === "create-coach-expense";
+      // Lot O-E2-B3B-3R (§3-4) — le club SOURCE doit être figé AVANT toute lecture de l'entité
+      // (coach/salle) : lu depuis le bouton (constaté à son rendu), jamais redécouvert via un simple
+      // activeClubId() après un await (une bascule de club pendant l'attente ne doit jamais faire
+      // résoudre l'entité/la dépense d'un AUTRE club, même homonyme par id).
+      const openedClubId = asText(button.dataset.accountingClubId);
+      if (!openedClubId || activeClubId() !== openedClubId) return;
+      if (!ensureUserPermissionsForClub(["accounting.read", "accounting.write"], openedClubId)) return;
       const entity = isCoach ? coachById(button.dataset.id) : roomById(button.dataset.id);
       if (!entity || !entity.expenseEnabled) return;
       if (!(asNumber(entity.expenseAmount) > 0)) {
@@ -32477,7 +34993,10 @@ ${esc(bodyText)}</pre>
       const existing = (state.expenses || []).find((e) => e.linkedType === type && e.linkedId === entity.id && e.date === today);
       if (existing) {
         const again = await requestConfirm({ title: "Dépense déjà existante", message: `Une dépense semble déjà exister pour cet élément aujourd'hui (« ${existing.label} », ${money(existing.amount)}).\nCréer quand même une nouvelle dépense ?`, confirmLabel: "Créer quand même", danger: false });
-        if (!again) { openExpenseDialog(existing); return; }
+        // §5 — revérifier le CLUB SOURCE figé (jamais un simple activeClubId() redécouvert) + les
+        // permissions après l'attente utilisateur, avant toute ouverture de dialogue.
+        if (activeClubId() !== openedClubId || !ensureUserPermissionsForClub(["accounting.read", "accounting.write"], openedClubId)) return;
+        if (!again) { openExpenseDialog(existing, openedClubId); return; }
       }
       const name = isCoach ? coachFullName(entity) : roomName(entity);
       const label = isCoach ? `Prestation coach : ${name}` : `Location salle : ${name}`;
@@ -32490,15 +35009,50 @@ ${esc(bodyText)}</pre>
         note,
         linkedType: type,
         linkedId: entity.id,
-      });
+      }, openedClubId);
       return;
     }
-    if (action === "add-expense") { openExpenseDialog(); return; }
-    if (action === "edit-expense") { openExpenseDialog((state.expenses || []).find((e) => e.id === button.dataset.id) || {}); return; }
+    // Lot O-E2-B3B-3/3R — dépenses/avoirs n'ont pas de clubId durable (§15) : chaque bouton persistant
+    // transporte le club constaté AU RENDU (data-accounting-club-id) ; le handler exige qu'il soit
+    // non vide ET égal au club actuellement actif AVANT toute lecture/mutation sensible (§18, fail
+    // closed sur vieux DOM/changement de club entre-temps), puis transmet ce MÊME club explicitement
+    // à openExpenseDialog/openCreditNoteDialog (§13 — plus aucun repli implicite sur activeClubId()
+    // à l'intérieur de ces deux fonctions).
+    if (action === "add-expense") {
+      const buttonClubId = asText(button.dataset.accountingClubId);
+      if (!buttonClubId || activeClubId() !== buttonClubId) return;
+      if (!ensureUserPermissionsForClub(["accounting.read", "accounting.write"], buttonClubId)) return;
+      openExpenseDialog({}, buttonClubId);
+      return;
+    }
+    if (action === "edit-expense") {
+      const buttonClubId = asText(button.dataset.accountingClubId);
+      if (!buttonClubId || activeClubId() !== buttonClubId) return;
+      if (!currentUserHasPermission("accounting.read", buttonClubId)) {
+        if (typeof alert === "function") alert("Vous n'avez pas l'autorisation nécessaire.");
+        return;
+      }
+      // Lot O-E2-B3B-3R2 (§2-3) — une action "edit" n'a jamais le droit de dégénérer en création
+      // silencieuse : si la dépense a disparu (vieux bouton, suppression concurrente), on refuse au
+      // lieu d'ouvrir openExpenseDialog({}, ...), qui serait interprété comme une NOUVELLE dépense.
+      const expense = (state.expenses || []).find((e) => e.id === button.dataset.id);
+      if (!expense) return;
+      openExpenseDialog(expense, buttonClubId);
+      return;
+    }
     if (action === "delete-expense") {
+      const buttonClubId = asText(button.dataset.accountingClubId);
+      if (!buttonClubId || activeClubId() !== buttonClubId) return;
+      const openedClubId = buttonClubId;
+      if (!ensureUserPermissionsForClub(["accounting.write"], openedClubId)) return;
       const exp = (state.expenses || []).find((x) => x.id === button.dataset.id);
       if (!exp) return;
       if (!await requestConfirm({ title: "Supprimer la dépense", message: `Supprimer « ${exp.label || "dépense"} » (${money(exp.amount)}) ?`, confirmLabel: "Supprimer", danger: true })) return;
+      // §28/§30 — revérifier après l'attente utilisateur : club, permission, ET l'existence même de
+      // la dépense (elle a pu être supprimée entre-temps par une autre action).
+      if (activeClubId() !== openedClubId || !ensureUserPermissionsForClub(["accounting.write"], openedClubId)) return;
+      const fresh = (state.expenses || []).find((x) => x.id === button.dataset.id);
+      if (!fresh) return;
       recordHistory();
       removeById(state.expenses, button.dataset.id);
       [...document.querySelectorAll("dialog[open]")].forEach((d) => d.close());
@@ -32506,22 +35060,63 @@ ${esc(bodyText)}</pre>
       render();
       return;
     }
-    if (action === "add-credit-note") { openCreditNoteDialog({ invoiceId: button.dataset.invoiceId || "", contactId: button.dataset.contactId || "" }); return; }
-    if (action === "edit-credit-note") { openCreditNoteDialog((state.creditNotes || []).find((c) => c.id === button.dataset.id) || {}); return; }
+    if (action === "add-credit-note") {
+      const buttonClubId = asText(button.dataset.accountingClubId);
+      if (!buttonClubId || activeClubId() !== buttonClubId) return;
+      if (!ensureUserPermissionsForClub(["accounting.read", "accounting.write"], buttonClubId)) return;
+      openCreditNoteDialog({ invoiceId: button.dataset.invoiceId || "", contactId: button.dataset.contactId || "" }, buttonClubId);
+      return;
+    }
+    if (action === "edit-credit-note") {
+      const buttonClubId = asText(button.dataset.accountingClubId);
+      if (!buttonClubId || activeClubId() !== buttonClubId) return;
+      if (!currentUserHasPermission("accounting.read", buttonClubId)) {
+        if (typeof alert === "function") alert("Vous n'avez pas l'autorisation nécessaire.");
+        return;
+      }
+      // Lot O-E2-B3B-3R2 (§4) — même doctrine que edit-expense : un avoir disparu ne doit jamais
+      // dégénérer en nouvelle création via openCreditNoteDialog({}, ...).
+      const creditNote = (state.creditNotes || []).find((c) => c.id === button.dataset.id);
+      if (!creditNote) return;
+      openCreditNoteDialog(creditNote, buttonClubId);
+      return;
+    }
     if (action === "print-credit-note") {
+      const buttonClubId = asText(button.dataset.accountingClubId);
+      if (!buttonClubId || activeClubId() !== buttonClubId) return;
+      // §33/§35 — impression = lecture pure : accounting.read suffit, jamais accounting.write/data.export.
+      if (!currentUserHasPermission("accounting.read", buttonClubId)) {
+        if (typeof alert === "function") alert("Vous n'avez pas l'autorisation nécessaire.");
+        return;
+      }
       const cn = (state.creditNotes || []).find((c) => c.id === button.dataset.id);
-      if (cn) printCreditNote(cn);
+      if (cn) printCreditNote(cn, buttonClubId);
       return;
     }
     if (action === "export-credit-note-pdf") {
+      const buttonClubId = asText(button.dataset.accountingClubId);
+      if (!buttonClubId || activeClubId() !== buttonClubId) return;
+      // §34/§35 — export PDF = lecture pure, même doctrine que l'impression.
+      if (!currentUserHasPermission("accounting.read", buttonClubId)) {
+        if (typeof alert === "function") alert("Vous n'avez pas l'autorisation nécessaire.");
+        return;
+      }
       const cn = (state.creditNotes || []).find((c) => c.id === button.dataset.id);
-      if (cn) await exportCreditNotePdf(cn);
+      if (cn) await exportCreditNotePdf(cn, buttonClubId);
       return;
     }
     if (action === "delete-credit-note") {
+      const buttonClubId = asText(button.dataset.accountingClubId);
+      if (!buttonClubId || activeClubId() !== buttonClubId) return;
+      const openedClubId = buttonClubId;
+      if (!ensureUserPermissionsForClub(["accounting.write"], openedClubId)) return;
       const cn = (state.creditNotes || []).find((x) => x.id === button.dataset.id);
       if (!cn) return;
       if (!await requestConfirm({ title: "Supprimer l'avoir", message: `Supprimer l'avoir « ${cn.reason || "avoir"} » (${money(cn.amount)}) ?`, confirmLabel: "Supprimer", danger: true })) return;
+      // §29/§30 — même doctrine post-await que delete-expense.
+      if (activeClubId() !== openedClubId || !ensureUserPermissionsForClub(["accounting.write"], openedClubId)) return;
+      const fresh = (state.creditNotes || []).find((x) => x.id === button.dataset.id);
+      if (!fresh) return;
       recordHistory();
       removeById(state.creditNotes, button.dataset.id);
       [...document.querySelectorAll("dialog[open]")].forEach((d) => d.close());
@@ -32530,7 +35125,13 @@ ${esc(bodyText)}</pre>
       return;
     }
     if (action === "add-refund") {
-      openExpenseDialog({ category: "Remboursement", label: "Remboursement" });
+      // §31 — remboursement : purement Accounting (openExpenseDialog gère aussi sa propre gate en
+      // interne), jamais payments.write/billing.write. Club figé au rendu (§10-12), même doctrine
+      // que add-expense/add-credit-note.
+      const buttonClubId = asText(button.dataset.accountingClubId);
+      if (!buttonClubId || activeClubId() !== buttonClubId) return;
+      if (!ensureUserPermissionsForClub(["accounting.read", "accounting.write"], buttonClubId)) return;
+      openExpenseDialog({ category: "Remboursement", label: "Remboursement" }, buttonClubId);
       return;
     }
     if (action === "add-room-avail-row") {
@@ -32654,12 +35255,40 @@ ${esc(bodyText)}</pre>
     }
     // Aide intelligente passive : fermeture de la carte « Besoin d'aide ? ».
     if (action === "assistant-idle-dismiss") { dismissAssistantIdleHint(); return; }
-    if (action === "add-course") return openCourseDialog();
-    if (action === "edit-course") return openCourseDialog(getCourseById(button.dataset.id), button.dataset.date || "");
-    if (action === "manage-course-date") return openCourseDateDialog(button.dataset.id, button.dataset.date);
-    if (action === "show-course-enrollment") return openCourseEnrollmentDialog(button.dataset.courseId, button.dataset.date);
+    if (action === "add-course") {
+      const sportClubId = button.dataset.sportClubId || "";
+      if (!sportClubId || activeClubId() !== sportClubId) return;
+      return openCourseDialog({}, "", sportClubId);
+    }
+    if (action === "edit-course") {
+      const sportClubId = button.dataset.sportClubId || "";
+      if (!sportClubId || activeClubId() !== sportClubId) return;
+      if (!currentUserHasPermission("sport.read", sportClubId)) return;
+      // Lot O-E2-B4 (§44) — STALE EDIT INTERDIT : créneau introuvable = no-op propre.
+      const courseEdit = getCourseById(button.dataset.id);
+      if (!courseEdit) return;
+      return openCourseDialog(courseEdit, button.dataset.date || "", sportClubId);
+    }
+    if (action === "manage-course-date") {
+      const sportClubId = button.dataset.sportClubId || "";
+      if (!sportClubId || activeClubId() !== sportClubId) return;
+      return openCourseDateDialog(button.dataset.id, button.dataset.date, sportClubId);
+    }
+    if (action === "show-course-enrollment") {
+      const sportClubId = button.dataset.sportClubId || "";
+      if (!sportClubId || activeClubId() !== sportClubId) return;
+      return openCourseEnrollmentDialog(button.dataset.courseId, button.dataset.date, sportClubId);
+    }
     if (action === "delete-course") {
+      const sportClubId = button.dataset.sportClubId || "";
+      if (!sportClubId || activeClubId() !== sportClubId) return;
+      if (!ensureUserPermission("sport.write", sportClubId)) return;
+      if (!getCourseById(button.dataset.id)) return;
+      const courseTargetClubId = activeClubId();
       if (!await requestConfirm({ title: "Supprimer le créneau", message: "Supprimer ce créneau du planning ?", confirmLabel: "Supprimer", danger: true })) return;
+      if (activeClubId() !== courseTargetClubId) { alert("Le club actif a changé pendant la confirmation. Réessayez."); return; }
+      if (!ensureUserPermission("sport.write", courseTargetClubId)) return;
+      if (!getCourseById(button.dataset.id)) return;
       recordHistory(); removeById(state.planningCourses, button.dataset.id); persist("Créneau supprimé"); render();
       return;
     }
@@ -32669,13 +35298,31 @@ ${esc(bodyText)}</pre>
     if (action === "planning-week-today") { ui.planningWeekOffset = 0; render(); return; }
     if (action === "set-planning-weeks") { ui.planningWeeksCount = Math.min(4, Math.max(1, Number(button.dataset.weeks) || 1)); render(); return; }
     if (action === "attendance-from-course") {
+      const sportClubId = button.dataset.sportClubId || "";
+      if (!sportClubId || activeClubId() !== sportClubId) return;
       const course = getCourseById(button.dataset.id);
-      if (course) openAttendanceDialog({ courseId: course.id, groupId: course.groupId, coach: course.coach });
+      if (course) openAttendanceDialog({ courseId: course.id, groupId: course.groupId, coach: course.coach }, sportClubId);
       return;
     }
-    if (action === "add-attendance") return openAttendanceDialog();
-    if (action === "edit-attendance") return openAttendanceDialog((state.attendanceSessions || []).find((s) => s.id === button.dataset.id));
+    if (action === "add-attendance") {
+      const sportClubId = button.dataset.sportClubId || "";
+      if (!sportClubId || activeClubId() !== sportClubId) return;
+      return openAttendanceDialog({}, sportClubId);
+    }
+    if (action === "edit-attendance") {
+      const sportClubId = button.dataset.sportClubId || "";
+      if (!sportClubId || activeClubId() !== sportClubId) return;
+      if (!currentUserHasPermission("sport.read", sportClubId)) return;
+      // Lot O-E2-B4 (§44) — STALE EDIT INTERDIT : feuille introuvable = no-op propre (jamais
+      // openAttendanceDialog(undefined), qui dégénérerait en création via le paramètre par défaut).
+      const sessionEdit = (state.attendanceSessions || []).find((s) => s.id === button.dataset.id);
+      if (!sessionEdit) return;
+      return openAttendanceDialog(sessionEdit, sportClubId);
+    }
     if (action === "print-attendance") {
+      const sportClubId = button.dataset.sportClubId || "";
+      if (!sportClubId || activeClubId() !== sportClubId) return;
+      if (!currentUserHasPermission("sport.read", sportClubId)) return;
       // Imprime l'ÉTAT COURANT du formulaire (statuts/notes visibles), sans sauvegarder ni fermer la
       // popup. Repli sur la version enregistrée si le bouton n'est pas dans un formulaire (sécurité).
       const form = button.closest("form");
@@ -32686,6 +35333,17 @@ ${esc(bodyText)}</pre>
       return;
     }
     if (action === "apply-attendance") {
+      const sportClubId = button.dataset.sportClubId || "";
+      if (!sportClubId || activeClubId() !== sportClubId) return;
+      if (!ensureUserPermission("sport.write", sportClubId)) return;
+      // Lot O-E2-B4 (§44) — la feuille a pu être supprimée pendant que le dialogue restait ouvert :
+      // attendanceSessionById() renvoie alors {} (jamais null), et attendanceSessionFromForm générerait
+      // un NOUVEL id — dégénérescence en création silencieuse. Refus explicite si l'id ciblé n'existe
+      // plus dans state.attendanceSessions.
+      if (!(state.attendanceSessions || []).some((s) => s.id === button.dataset.id)) {
+        alert("Cette feuille d'appel n'existe plus.");
+        return;
+      }
       // Enregistre la feuille d'appel SANS fermer la popup (les modifications deviennent persistantes).
       const form = button.closest("form");
       if (!form) return;
@@ -32702,7 +35360,15 @@ ${esc(bodyText)}</pre>
       return;
     }
     if (action === "delete-attendance") {
+      const sportClubId = button.dataset.sportClubId || "";
+      if (!sportClubId || activeClubId() !== sportClubId) return;
+      if (!ensureUserPermission("sport.write", sportClubId)) return;
+      if (!(state.attendanceSessions || []).some((s) => s.id === button.dataset.id)) return;
+      const attendanceTargetClubId = activeClubId();
       if (!await requestConfirm({ title: "Supprimer la feuille d'appel", message: "Supprimer cette feuille de présence ?", confirmLabel: "Supprimer", danger: true })) return;
+      if (activeClubId() !== attendanceTargetClubId) { alert("Le club actif a changé pendant la confirmation. Réessayez."); return; }
+      if (!ensureUserPermission("sport.write", attendanceTargetClubId)) return;
+      if (!(state.attendanceSessions || []).some((s) => s.id === button.dataset.id)) return;
       recordHistory(); removeById(state.attendanceSessions, button.dataset.id); persist("Feuille d'appel supprimée"); render();
       return;
     }
@@ -32719,6 +35385,12 @@ ${esc(bodyText)}</pre>
       if (!ensureFeatureEnabledForMutation("memberships")) return;
       const row = state.memberships.find((m) => m.id === button.dataset.id);
       if (!row) return;
+      // Lot O-E2-B2 — permission cumulative avec la garde de fonctionnalité ci-dessus (§13/§30),
+      // même double garde (avant/après confirmation asynchrone) + club ciblé revérifié (§29 : cette
+      // branche n'avait encore AUCUNE protection multi-club, contrairement aux suppressions
+      // stages/teams/competitions déjà auditées en O-E2A).
+      const targetClubId = activeClubId();
+      if (!ensureUserPermission("memberships.write", targetClubId)) return;
       const group = getGroupById(row.groupId);
       const label = [row.discipline || "Discipline non renseignée", group?.name || ""].filter(Boolean).join(" — ");
       const calc = calcMembership(row);
@@ -32729,6 +35401,8 @@ ${esc(bodyText)}</pre>
       if (asNumber(calc.paid) > 0) lines.push(`Des paiements déjà enregistrés sur cette inscription (${money(calc.paid)}) seront supprimés avec elle.`);
       if (!await requestConfirm({ title: "Retirer l'inscription", message: lines.join("\n"), confirmLabel: "Retirer", danger: true })) return;
       if (!ensureFeatureEnabledForMutation("memberships")) return;
+      if (activeClubId() !== targetClubId) { ui.saveMessage = "Opération annulée : le club actif a changé."; render(); return; }
+      if (!ensureUserPermission("memberships.write", targetClubId)) return;
       recordHistory();
       removeById(state.memberships, row.id);
       persist(`Inscription retirée : ${label}`);
@@ -32742,18 +35416,39 @@ ${esc(bodyText)}</pre>
       refreshOpenCourseEnrollmentDialogs();
       return;
     }
-    if (action === "add-order") return ensureFeatureEnabledForMutation("shop") ? openOrderDialog() : undefined;
-    if (action === "sell-article") return ensureFeatureEnabledForMutation("shop") ? openArticleSaleDialog(button.dataset.articleId) : undefined;
+    if (action === "add-order") {
+      // Lot O-E2-B5 (§10) — binding club DOM AVANT toute résolution/mutation, même doctrine que
+      // add-registration : jamais activeClubId() en repli implicite.
+      const shopClubId = button.dataset.shopClubId || "";
+      if (!shopClubId || activeClubId() !== shopClubId) return;
+      if (!ensureFeatureEnabledForMutation("shop")) return;
+      if (!ensureUserPermission("shop.write", shopClubId)) return;
+      return openOrderDialog({}, {}, shopClubId);
+    }
+    if (action === "sell-article") {
+      const shopClubId = button.dataset.shopClubId || "";
+      if (!shopClubId || activeClubId() !== shopClubId) return;
+      if (!ensureFeatureEnabledForMutation("shop")) return;
+      if (!ensureUserPermission("shop.write", shopClubId)) return;
+      return openArticleSaleDialog(button.dataset.articleId, shopClubId);
+    }
     if (action === "view-order") {
       // Consultation : TOUJOURS autorisée, quel que soit l'état du paiement/facture ou de la
       // fonctionnalité/affichage. Lecture seule si la commande n'est pas modifiable, sinon formulaire
-      // d'édition (cf. openOrderForConsult). Aucune garde ici (ni mutation, ni display, ni feature).
+      // d'édition (cf. openOrderForConsult). Aucune garde métier ici (ni mutation, ni display, ni
+      // feature) — seul le binding club DOM protège contre un bouton périmé (stale DOM).
+      const shopClubId = button.dataset.shopClubId || "";
+      if (!shopClubId || activeClubId() !== shopClubId) return;
       const order = state.shopOrders.find((row) => row.id === button.dataset.id);
       if (!order) return;
-      return openOrderForConsult(order);
+      return openOrderForConsult(order, shopClubId);
     }
     if (action === "edit-order") {
+      // Lot O-E2-B5 (§10/§22) — binding club DOM AVANT toute résolution d'objet.
+      const shopClubId = button.dataset.shopClubId || "";
+      if (!shopClubId || activeClubId() !== shopClubId) return;
       if (!ensureFeatureEnabledForMutation("shop")) return;
+      if (!ensureUserPermission("shop.write", shopClubId)) return;
       const order = state.shopOrders.find((row) => row.id === button.dataset.id);
       if (!order) return;
       // Garde-fou obligatoire au niveau handler (pas seulement visuel) : reste efficace même si
@@ -32765,10 +35460,14 @@ ${esc(bodyText)}</pre>
         alert(shopOrderIntegrityMessage(integrity.editReasons, "edit"));
         return;
       }
-      return openOrderDialog(order);
+      return openOrderDialog(order, {}, shopClubId);
     }
     if (action === "delete-order") {
+      // Lot O-E2-B5 (§10/§22) — binding club DOM AVANT toute résolution/mutation.
+      const shopClubId = button.dataset.shopClubId || "";
+      if (!shopClubId || activeClubId() !== shopClubId) return;
       if (!ensureFeatureEnabledForMutation("shop")) return;
+      if (!ensureUserPermission("shop.write", shopClubId)) return;
       const order = state.shopOrders.find((row) => row.id === button.dataset.id);
       if (!order) return;
       const integrity = shopOrderIntegrityState(order);
@@ -32776,14 +35475,35 @@ ${esc(bodyText)}</pre>
         alert(shopOrderIntegrityMessage(integrity.deleteReasons, "delete"));
         return;
       }
+      // Club ciblé (Lot 2D) : capturé AVANT la confirmation asynchrone ; si le club actif change
+      // pendant la confirmation, on annule sans recordHistory, sans persist, sans Journal.
+      const targetClubId = shopClubId;
+      const orderId = button.dataset.id;
       if (!await requestConfirm({ title: "Supprimer la commande", message: "Supprimer cette commande ?", confirmLabel: "Supprimer", danger: true })) return;
+      // Lot O-E2-B5 (§ post-await) — revalidation LIVE post-confirmation : club, feature, permission,
+      // PUIS résolution FRAÎCHE de la commande (jamais la référence capturée avant l'attente asynchrone).
+      if (activeClubId() !== targetClubId) { ui.saveMessage = "Opération annulée : le club actif a changé."; render(); return; }
+      if (!ensureFeatureEnabledForMutation("shop")) return;
+      if (!ensureUserPermission("shop.write", targetClubId)) return;
+      const freshOrder = state.shopOrders.find((row) => row.id === orderId);
+      if (!freshOrder) return;
+      const freshIntegrity = shopOrderIntegrityState(freshOrder);
+      if (freshIntegrity.deleteBlocked) {
+        alert(shopOrderIntegrityMessage(freshIntegrity.deleteReasons, "delete"));
+        return;
+      }
       recordHistory();
-      removeById(state.shopOrders, button.dataset.id);
+      removeById(state.shopOrders, orderId);
       persist("Commande supprimée");
       render();
       return;
     }
     if (action === "add-stock-article") {
+      // Lot O-E2-B5 (§10) — binding club DOM AVANT toute branche, même doctrine que add-order.
+      const shopClubId = button.dataset.shopClubId || "";
+      if (!shopClubId || activeClubId() !== shopClubId) return;
+      if (!ensureFeatureEnabledForMutation("shop")) return;
+      if (!ensureUserPermission("shop.write", shopClubId)) return;
       // Création propre : on prépare un brouillon qui N'EST PAS ajouté au state ici. L'article
       // n'est créé et persisté qu'au clic « Enregistrer » du dialogue (cf. openStockArticleDialog
       // en mode création). « Annuler »/fermeture ne laisse donc aucun article fantôme.
@@ -32803,14 +35523,21 @@ ${esc(bodyText)}</pre>
         stockAlert: 0,
         active: true,
       });
-      openStockArticleDialog(state.tariffs.articles.length, { create: true, draftArticle });
+      openStockArticleDialog(draftArticle.id, { create: true, draftArticle }, shopClubId);
       return;
     }
     if (action === "regenerate-reference") {
+      // Lot O-E2-B5R (§34-38) — AUCUNE exemption « dead code » : ce chemin reste invocable (listener/
+      // console/DOM forgé) même sans surface de rendu actuelle, donc gardé EXACTEMENT comme
+      // delete-stock-article : club DOM + identité par id STABLE + feature + shop.write, résolution
+      // live de l'Article AVANT toute mutation. Jamais data-index seul comme identité de sécurité.
+      const shopClubId = button.dataset.shopClubId || "";
+      if (!shopClubId || activeClubId() !== shopClubId) return;
       if (!ensureFeatureEnabledForMutation("shop")) return;
-      const index = Number(button.dataset.index);
-      const article = state.tariffs.articles[index];
+      if (!ensureUserPermission("shop.write", shopClubId)) return;
+      const article = state.tariffs.articles.find((a) => a.id === button.dataset.articleId);
       if (!article) return;
+      const index = state.tariffs.articles.indexOf(article);
       recordHistory();
       const beforeSnapshot = shopItemSnapshot(article);
       article.reference = makeArticleReference(article.name, index);
@@ -32823,31 +35550,63 @@ ${esc(bodyText)}</pre>
       return;
     }
     if (action === "delete-stock-article") {
+      // Lot O-E2-B5 (§10/§42-46) — binding club DOM + identité par id STABLE AVANT toute
+      // résolution/mutation (jamais data-index seul comme identité de sécurité).
+      const shopClubId = button.dataset.shopClubId || "";
+      if (!shopClubId || activeClubId() !== shopClubId) return;
       if (!ensureFeatureEnabledForMutation("shop")) return;
-      const index = Number(button.dataset.index);
-      const article = state.tariffs.articles[index];
+      if (!ensureUserPermission("shop.write", shopClubId)) return;
+      const articleId = button.dataset.articleId;
+      const article = state.tariffs.articles.find((a) => a.id === articleId);
       if (!article) return;
       if (!await requestConfirm({ title: "Supprimer l'article", message: `Supprimer l'article "${article.name}" ?`, confirmLabel: "Supprimer", danger: true })) return;
+      // Lot O-E2-B5 (§ post-await) — revalidation LIVE post-confirmation : club, feature, permission,
+      // PUIS résolution FRAÎCHE de l'article (jamais la référence capturée avant l'attente asynchrone),
+      // index recalculé UNIQUEMENT après cette résolution (jamais avant).
+      if (activeClubId() !== shopClubId) { ui.saveMessage = "Opération annulée : le club actif a changé."; render(); return; }
+      if (!ensureFeatureEnabledForMutation("shop")) return;
+      if (!ensureUserPermission("shop.write", shopClubId)) return;
+      const freshIndex = state.tariffs.articles.findIndex((a) => a.id === articleId);
+      if (freshIndex < 0) return;
+      const freshArticle = state.tariffs.articles[freshIndex];
       recordHistory();
       // Contexte AVANT suppression (Lot 5B) : purement informatif, aucun garde-fou ajouté, aucun
       // événement créé sur les commandes historiques elles-mêmes.
-      const referencingOrders = state.shopOrders.filter((order) => (order.items || []).some((item) => item.articleId === article.id));
+      const referencingOrders = state.shopOrders.filter((order) => (order.items || []).some((item) => item.articleId === freshArticle.id));
       const orderQuantity = referencingOrders.reduce((sum, order) => sum + (order.items || [])
-        .filter((item) => item.articleId === article.id)
+        .filter((item) => item.articleId === freshArticle.id)
         .reduce((lineSum, item) => lineSum + asNumber(item.quantity), 0), 0);
-      state.tariffs.articles.splice(index, 1);
+      state.tariffs.articles.splice(freshIndex, 1);
       persist("Article supprimé");
-      audit.shopItemDeleted(article, { orderCount: referencingOrders.length, orderQuantity });
+      audit.shopItemDeleted(freshArticle, { orderCount: referencingOrders.length, orderQuantity });
       render();
       return;
     }
-    if (action === "edit-stock-article") return ensureFeatureEnabledForMutation("shop") ? openStockArticleDialog(Number(button.dataset.index)) : undefined;
-    if (action === "edit-article-sizes") return ensureFeatureEnabledForMutation("shop") ? openArticleSizeDialog(Number(button.dataset.index)) : undefined;
+    if (action === "edit-stock-article") {
+      const shopClubId = button.dataset.shopClubId || "";
+      if (!shopClubId || activeClubId() !== shopClubId) return;
+      return openStockArticleDialog(button.dataset.articleId, {}, shopClubId);
+    }
+    if (action === "edit-article-sizes") {
+      const shopClubId = button.dataset.shopClubId || "";
+      if (!shopClubId || activeClubId() !== shopClubId) return;
+      return openArticleSizeDialog(button.dataset.articleId, shopClubId);
+    }
     if (action === "move-article-image") {
-      // En création, on agit sur le brouillon local (pas dans le state, pas de persist).
+      // En création, on agit sur le brouillon local (pas dans le state, pas de persist, pas de club/
+      // permission à vérifier : rien n'est persisté avant l'enregistrement du dialogue).
       const draftMode = button.dataset.articleDraft !== undefined;
-      const index = Number(button.dataset.index);
-      const article = draftMode ? ui.stockArticleDraft : state.tariffs.articles[index];
+      let article = draftMode ? ui.stockArticleDraft : null;
+      let shopClubId = "";
+      if (!draftMode) {
+        // Lot O-E2-B5 (§10/§42-46/§50) — binding club DOM + identité par id STABLE AVANT toute
+        // résolution/mutation, même doctrine que delete-tariff-stage.
+        shopClubId = button.dataset.shopClubId || "";
+        if (!shopClubId || activeClubId() !== shopClubId) return;
+        if (!ensureFeatureEnabledForMutation("shop")) return;
+        if (!ensureUserPermission("shop.write", shopClubId)) return;
+        article = state.tariffs.articles.find((a) => a.id === button.dataset.articleId);
+      }
       if (!article) return;
       const images = articleImages(article);
       const imageIndex = Number(button.dataset.imageIndex);
@@ -32866,24 +35625,33 @@ ${esc(bodyText)}</pre>
         refreshDraftArticleImageEditor(form, article);
         return;
       }
-      if (!ensureFeatureEnabledForMutation("shop")) return;
       recordHistory();
       setArticleImages(article, nextImages, nextCaptions);
       persist("Images article réordonnées");
       if (dialog.open) {
         dialog.close();
         render();
-        openStockArticleDialog(index);
+        openStockArticleDialog(article.id, {}, shopClubId);
       } else {
         render();
       }
       return;
     }
     if (action === "delete-article-image") {
-      // En création, on agit sur le brouillon local (pas dans le state, pas de persist).
+      // En création, on agit sur le brouillon local (pas dans le state, pas de persist, pas de club/
+      // permission à vérifier : rien n'est persisté avant l'enregistrement du dialogue).
       const draftMode = button.dataset.articleDraft !== undefined;
-      const index = Number(button.dataset.index);
-      const article = draftMode ? ui.stockArticleDraft : state.tariffs.articles[index];
+      let article = draftMode ? ui.stockArticleDraft : null;
+      let shopClubId = "";
+      if (!draftMode) {
+        // Lot O-E2-B5 (§10/§42-46/§50) — binding club DOM + identité par id STABLE AVANT toute
+        // résolution/mutation.
+        shopClubId = button.dataset.shopClubId || "";
+        if (!shopClubId || activeClubId() !== shopClubId) return;
+        if (!ensureFeatureEnabledForMutation("shop")) return;
+        if (!ensureUserPermission("shop.write", shopClubId)) return;
+        article = state.tariffs.articles.find((a) => a.id === button.dataset.articleId);
+      }
       if (!article) return;
       const imageIndex = button.dataset.imageIndex === undefined ? -1 : Number(button.dataset.imageIndex);
       const images = articleImages(article);
@@ -32898,22 +35666,38 @@ ${esc(bodyText)}</pre>
         refreshDraftArticleImageEditor(form, article);
         return;
       }
-      if (!ensureFeatureEnabledForMutation("shop")) return;
       recordHistory();
       setArticleImages(article, images, captions);
       persist("Image article supprimée");
       if (dialog.open) {
         dialog.close();
         render();
-        openStockArticleDialog(index);
+        openStockArticleDialog(article.id, {}, shopClubId);
       } else {
         render();
       }
       return;
     }
-    if (action === "add-stage") return openStageDialog();
-    if (action === "edit-stage") return openStageDialog(stageById(button.dataset.stageId || ui.stageId));
+    // Lot O-E2-B4R (§13) — ordre de garde obligatoire : A) lire le club du DOM, B) refuser si vide,
+    // C) refuser si le club actif a changé depuis le rendu, D) vérifier la permission, E) SEULEMENT
+    // ENSUITE résoudre l'objet par son id (jamais l'inverse).
+    if (action === "add-stage") {
+      const stageClubId = button.dataset.stageClubId || "";
+      if (!stageClubId || activeClubId() !== stageClubId) return;
+      return openStageDialog({}, {}, stageClubId);
+    }
+    if (action === "edit-stage") {
+      const stageClubId = button.dataset.stageClubId || "";
+      if (!stageClubId || activeClubId() !== stageClubId) return;
+      if (!currentUserHasPermission("stages.read", stageClubId)) return;
+      const stageEdit = stageById(button.dataset.stageId || ui.stageId);
+      if (!stageEdit.id) return;
+      return openStageDialog(stageEdit, {}, stageClubId);
+    }
     if (action === "duplicate-stage") {
+      const stageClubId = button.dataset.stageClubId || "";
+      if (!stageClubId || activeClubId() !== stageClubId) return;
+      if (!currentUserHasPermission("stages.read", stageClubId)) return;
       const source = stageById(button.dataset.stageId || ui.stageId);
       if (!source.id) return;
       const next = {
@@ -32925,11 +35709,15 @@ ${esc(bodyText)}</pre>
         registrationDeadline: "",
         registrationReopened: false,
       };
-      return openStageDialog(next, { duplicate: true });
+      return openStageDialog(next, { duplicate: true }, stageClubId);
     }
     if (action === "reactivate-stage" || action === "close-stage-registration") {
+      // Lot O-E2-B4R (§13) — binding club DOM AVANT toute résolution/mutation.
+      const stageClubId = button.dataset.stageClubId || "";
+      if (!stageClubId || activeClubId() !== stageClubId) return;
       // Lot 2D — mutation métier (ouverture/fermeture des inscriptions) : gardée avant recordHistory.
       if (!ensureFeatureEnabledForMutation("stages")) return;
+      if (!ensureUserPermission("stages.write", stageClubId)) return;
       const stage = stageById(button.dataset.stageId || ui.stageId);
       if (!stage.id) return;
       recordHistory();
@@ -32941,8 +35729,12 @@ ${esc(bodyText)}</pre>
       return;
     }
     if (action === "delete-stage") {
+      // Lot O-E2-B4R (§13) — binding club DOM AVANT toute résolution/mutation.
+      const stageClubId = button.dataset.stageClubId || "";
+      if (!stageClubId || activeClubId() !== stageClubId) return;
       // Lot 2D — suppression = mutation destructive ciblée : gardée avant toute lecture/mutation.
       if (!ensureFeatureEnabledForMutation("stages")) return;
+      if (!ensureUserPermission("stages.write", stageClubId)) return;
       const stage = stageById(button.dataset.stageId || ui.stageId);
       if (!stage.id) return;
       const count = stageParticipantCount(stage.id);
@@ -32952,71 +35744,123 @@ ${esc(bodyText)}</pre>
       }
       // Club ciblé (Lot 2D) : capturé AVANT la confirmation asynchrone ; si le club actif change
       // pendant la confirmation, on annule sans recordHistory, sans persist, sans Journal.
-      const targetClubId = activeClubId();
+      const targetClubId = stageClubId;
       if (!await requestConfirm({ title: "Supprimer le stage", message: `Supprimer le stage "${stage.name}" ?`, confirmLabel: "Supprimer", danger: true })) return;
+      // Lot O-E2-B4R (§39) — revalidation LIVE post-confirmation : club, feature, permission, PUIS
+      // résolution FRAÎCHE du Stage (jamais la référence capturée avant l'attente asynchrone) — si
+      // supprimé entre-temps, aucun nouvel audit, aucun persist trompeur.
       if (activeClubId() !== targetClubId) { ui.saveMessage = "Opération annulée : le club actif a changé."; render(); return; }
+      if (!ensureFeatureEnabledForMutation("stages")) return;
+      if (!ensureUserPermission("stages.write", targetClubId)) return;
+      const freshStage = stageById(stage.id);
+      if (!freshStage.id) return;
+      const freshCount = stageParticipantCount(freshStage.id);
+      if (freshCount) { alert("Ce stage contient désormais des participants. Il faut supprimer les inscriptions avant de supprimer le stage."); return; }
       recordHistory();
       // Capturé AVANT suppression : le Journal doit rester lisible même une fois le stage disparu.
-      const deletedStageSnapshot = { ...stage };
-      removeById(state.tariffs.stages, stage.id);
-      delete state.stageRegistrations[stage.id];
+      const deletedStageSnapshot = { ...freshStage };
+      removeById(state.tariffs.stages, freshStage.id);
+      delete state.stageRegistrations[freshStage.id];
       ui.stageId = state.tariffs.stages[0]?.id || "";
       persist("Stage supprimé");
-      audit.stageDeleted(deletedStageSnapshot, { registrationCount: count });
+      audit.stageDeleted(deletedStageSnapshot, { registrationCount: freshCount });
       render();
       return;
     }
     if (action === "add-registration") {
+      // Lot O-E2-B4R3 (§21) — binding club DOM AVANT toute branche (avec ou sans stageId) : un vieux
+      // bouton générique (sans stage ciblé) rendu sous A reste inerte après bascule vers B, exactement
+      // comme le bouton Stage-spécifique. Jamais activeClubId() en repli implicite ici.
+      const stageClubId = button.dataset.stageClubId || "";
+      if (!stageClubId) return;
+      if (activeClubId() !== stageClubId) return;
       // Lot 2D — inscrire = mutation métier. La garde est portée par les dialogues (open) ; on n'ouvre
       // même pas le sélecteur si la fonctionnalité est désactivée. showStages (affichage) n'entre pas ici.
       if (!ensureFeatureEnabledForMutation("stages")) return;
-      if (button.dataset.stageId) return openRegistrationDialog(button.dataset.stageId);
-      return openRegistrationStageChoiceDialog();
+      if (button.dataset.stageId) {
+        if (!ensureUserPermission("stages.write", stageClubId)) return;
+        return openRegistrationDialog(button.dataset.stageId, {}, stageClubId);
+      }
+      // Lot O-E2-B4R2 (§8) / B4R3 (§23) — bouton sans data-stage-id (choix du stage à venir) : le club
+      // d'autorité est CELUI DU BOUTON (stageClubId), jamais un recalcul via activeClubId().
+      return openRegistrationStageChoiceDialog({}, stageClubId);
     }
     if (action === "edit-registration") {
+      // Lot O-E2-B4R (§13) — binding club DOM AVANT toute résolution d'objet.
+      const stageClubId = button.dataset.stageClubId || "";
+      if (!stageClubId || activeClubId() !== stageClubId) return;
       // Lot 2D — modifier une inscription = mutation métier (jamais conditionnée par showStages).
       if (!ensureFeatureEnabledForMutation("stages")) return;
-      return openRegistrationDialog(button.dataset.stageId, (state.stageRegistrations[button.dataset.stageId] || []).find((row) => row.id === button.dataset.id));
+      if (!currentUserHasPermission("stages.read", stageClubId)) return;
+      // Lot O-E2-B4 (§44) — STALE EDIT INTERDIT : .find() renvoie undefined si l'inscription a
+      // disparu, ce qui déclencherait le paramètre par défaut row={} de openRegistrationDialog et
+      // dégénérerait en CRÉATION silencieuse (même doctrine que edit-group/edit-coach/edit-room).
+      const registrationEdit = (state.stageRegistrations[button.dataset.stageId] || []).find((row) => row.id === button.dataset.id);
+      if (!registrationEdit) return;
+      return openRegistrationDialog(button.dataset.stageId, registrationEdit, stageClubId);
     }
     if (action === "delete-current-registration") {
+      // Lot O-E2-B4R (§13) — binding club DOM AVANT toute résolution/mutation.
+      const stageClubId = button.dataset.stageClubId || "";
+      if (!stageClubId || activeClubId() !== stageClubId) return;
       // Lot 2D — suppression d'un participant = mutation destructive : gardée avant confirmation/mutation.
       if (!ensureFeatureEnabledForMutation("stages")) return;
+      if (!ensureUserPermission("stages.write", stageClubId)) return;
       const stageId = button.dataset.stageId;
       const registrationId = button.dataset.id;
       const registration = (state.stageRegistrations[stageId] || []).find((row) => row.id === registrationId);
       if (!registration) return;
       // Club ciblé (Lot 2D) : capturé AVANT la confirmation asynchrone ; si le club actif change
       // pendant la confirmation, on annule sans recordHistory, sans persist, sans Journal.
-      const targetClubId = activeClubId();
+      const targetClubId = stageClubId;
       if (!await requestConfirm({ title: "Supprimer le participant", message: `Supprimer le participant ${personLabel(registration)} ?`, confirmLabel: "Supprimer", danger: true })) return;
+      // Lot O-E2-B4R (§40) — revalidation LIVE post-confirmation : club, feature, permission, PUIS
+      // résolution FRAÎCHE de l'inscription (jamais la référence capturée avant l'attente asynchrone).
       if (activeClubId() !== targetClubId) { ui.saveMessage = "Opération annulée : le club actif a changé."; render(); return; }
+      if (!ensureFeatureEnabledForMutation("stages")) return;
+      if (!ensureUserPermission("stages.write", targetClubId)) return;
+      const freshRegistration = (state.stageRegistrations[stageId] || []).find((row) => row.id === registrationId);
+      if (!freshRegistration) return;
       recordHistory();
       removeById(state.stageRegistrations[stageId], registrationId);
-      persist(`Participant stage supprimé : ${personLabel(registration)}`);
-      audit.stageRegistrationDeleted(registration, stageById(stageId));
+      persist(`Participant stage supprimé : ${personLabel(freshRegistration)}`);
+      audit.stageRegistrationDeleted(freshRegistration, stageById(stageId));
       if (dialog.open) dialog.close();
       render();
       return;
     }
     if (action === "delete-registration") {
+      // Lot O-E2-B4R (§13) — binding club DOM AVANT toute résolution/mutation.
+      const stageClubId = button.dataset.stageClubId || "";
+      if (!stageClubId || activeClubId() !== stageClubId) return;
       // Lot 2D — suppression d'une inscription = mutation destructive : gardée avant confirmation/mutation.
       if (!ensureFeatureEnabledForMutation("stages")) return;
+      if (!ensureUserPermission("stages.write", stageClubId)) return;
       const stageId = button.dataset.stageId;
       const registrationId = button.dataset.id;
       const registration = (state.stageRegistrations[stageId] || []).find((row) => row.id === registrationId);
       // Club ciblé (Lot 2D) : capturé AVANT la confirmation asynchrone ; si le club actif change
       // pendant la confirmation, on annule sans recordHistory, sans persist, sans Journal.
-      const targetClubId = activeClubId();
+      const targetClubId = stageClubId;
       if (!await requestConfirm({ title: "Supprimer l'inscription", message: "Supprimer cette inscription stage ?", confirmLabel: "Supprimer", danger: true })) return;
+      // Lot O-E2-B4R (§40) — revalidation LIVE post-confirmation : club, feature, permission, PUIS
+      // résolution FRAÎCHE de l'inscription (jamais la référence capturée avant l'attente asynchrone).
       if (activeClubId() !== targetClubId) { ui.saveMessage = "Opération annulée : le club actif a changé."; render(); return; }
+      if (!ensureFeatureEnabledForMutation("stages")) return;
+      if (!ensureUserPermission("stages.write", targetClubId)) return;
+      const freshRegistration = (state.stageRegistrations[stageId] || []).find((row) => row.id === registrationId);
+      if (!freshRegistration) return;
       recordHistory();
       removeById(state.stageRegistrations[stageId], registrationId);
       persist("Inscription stage supprimée");
-      if (registration) audit.stageRegistrationDeleted(registration, stageById(stageId));
+      audit.stageRegistrationDeleted(freshRegistration, stageById(stageId));
       render();
       return;
     }
     if (action === "add-note") {
+      // Lot O-E2-B2 — permission vérifiée AVANT recordHistory() (§26) : aucun niveau Undo inutile
+      // pour une création refusée.
+      if (!ensureUserPermission("notes.write", activeClubId())) return;
       recordHistory();
       const note = { id: id("note"), title: `Note ${state.notes.length + 1}`, content: "", updatedAt: new Date().toISOString() };
       state.notes.push(stampRecordClubId(note));
@@ -33027,15 +35871,22 @@ ${esc(bodyText)}</pre>
       return;
     }
     if (action === "select-note") {
+      // Pure navigation entre onglets déjà lisibles (notes.read garanti par la vue B1) : aucune
+      // mutation de données, aucune garde write nécessaire.
       ui.noteId = button.dataset.id || state.notes[0]?.id || "";
       clearNoteEditorSelection();
       render();
       return;
     }
     if (action === "delete-note") {
+      // Lot O-E2-B2 — double garde (avant/après confirmation asynchrone), club ciblé revérifié.
+      const targetClubId = activeClubId();
+      if (!ensureUserPermission("notes.write", targetClubId)) return;
       const note = activeNote();
       const label = note.title || "note sans titre";
       if (!await requestConfirm({ title: "Supprimer la note", message: `Supprimer la note "${label}" ?`, confirmLabel: "Supprimer", danger: true })) return;
+      if (activeClubId() !== targetClubId) { ui.saveMessage = "Opération annulée : le club actif a changé."; render(); return; }
+      if (!ensureUserPermission("notes.write", targetClubId)) return;
       recordHistory();
       removeById(state.notes, note.id);
       if (!state.notes.length) {
@@ -33048,6 +35899,7 @@ ${esc(bodyText)}</pre>
       return;
     }
     if (action === "save-note") {
+      if (!ensureUserPermission("notes.write", activeClubId())) return;
       const editor = app.querySelector("[data-note-editor]");
       const title = app.querySelector("[data-note-title]");
       const note = activeNote();
@@ -33059,6 +35911,7 @@ ${esc(bodyText)}</pre>
       return;
     }
     if (action === "add-quick-note") {
+      if (!ensureUserPermission("notes.write", activeClubId())) return;
       recordHistory();
       addQuickNote();
       persist("Note personnalisée ajoutée");
@@ -33066,6 +35919,8 @@ ${esc(bodyText)}</pre>
       return;
     }
     if (action === "edit-quick-note") {
+      // Pure navigation UI (bascule en mode édition) : la garde réelle vit dans updateQuickNote et
+      // dans le rendu (bouton absent sans notes.write, quickNoteRow/contextualNoteRowHtml).
       ui.quickNoteEditId = button.dataset.id || "";
       render();
       return;
@@ -33078,7 +35933,11 @@ ${esc(bodyText)}</pre>
     if (action === "delete-quick-note") {
       const row = quickNoteById(button.dataset.id);
       if (!row) return;
+      const targetClubId = activeClubId();
+      if (!ensureUserPermission("notes.write", targetClubId)) return;
       if (!await requestConfirm({ title: "Supprimer", message: "Supprimer cette note personnalisée ?", confirmLabel: "Supprimer", danger: true })) return;
+      if (activeClubId() !== targetClubId) { ui.saveMessage = "Opération annulée : le club actif a changé."; render(); return; }
+      if (!ensureUserPermission("notes.write", targetClubId)) return;
       recordHistory();
       deleteQuickNote(row);
       if (ui.quickNoteEditId === row.id) ui.quickNoteEditId = "";
@@ -33087,6 +35946,26 @@ ${esc(bodyText)}</pre>
       return;
     }
     if (action === "edit-tariff-row") {
+      // Lot O-E2-B5R (§39-45) — une ligne ARTICLE exige le MÊME régime que toute autre mutation
+      // Boutique AVANT d'entrer en mode édition : club DOM, feature, shop.write, Article live par id
+      // (jamais data-index seul comme identité). Les autres kinds (discipline/stage/insurance)
+      // conservent le comportement historique inchangé (entrée en édition libre, gardée au save).
+      if (button.dataset.kind === "article") {
+        const shopClubId = button.dataset.shopClubId || "";
+        if (!shopClubId || activeClubId() !== shopClubId) return;
+        if (!ensureFeatureEnabledForMutation("shop")) return;
+        if (!ensureUserPermission("shop.write", shopClubId)) return;
+        const article = state.tariffs.articles.find((a) => a.id === button.dataset.articleId);
+        if (!article) return;
+        // Lot O-E2-B5R2 (§9-18) — club et id d'origine mémorisés EXPLICITEMENT : le rendu (§12) et
+        // commitTariffRow (§14) revérifient ces deux valeurs, jamais activeClubId() seul au moment
+        // du save (qui aurait déjà changé après un switch de club pendant l'édition).
+        ui.tariffEditKey = tariffKey("article", state.tariffs.articles.indexOf(article));
+        ui.tariffEditClubId = shopClubId;
+        ui.tariffEditArticleId = article.id;
+        render();
+        return;
+      }
       ui.tariffEditKey = tariffKey(button.dataset.kind, Number(button.dataset.index));
       render();
       return;
@@ -33095,7 +35974,11 @@ ${esc(bodyText)}</pre>
       return commitTariffRow(button);
     }
     if (action === "add-tariff-article") {
+      // Lot O-E2-B5 (§10/§53-55) — binding club DOM AVANT toute mutation, même doctrine que add-order.
+      const shopClubId = button.dataset.shopClubId || "";
+      if (!shopClubId || activeClubId() !== shopClubId) return;
       if (!ensureFeatureEnabledForMutation("shop")) return;
+      if (!ensureUserPermission("shop.write", shopClubId)) return;
       recordHistory();
       const newArticle = stampRecordClubId({
         id: id("article"),
@@ -33123,20 +36006,34 @@ ${esc(bodyText)}</pre>
       return;
     }
     if (action === "delete-tariff-article") {
+      // Lot O-E2-B5 (§42-46/§53-55) — binding club DOM + identité par id STABLE AVANT toute
+      // résolution/mutation (jamais data-index seul), même doctrine que delete-tariff-stage (B4R2).
+      const shopClubId = button.dataset.shopClubId || "";
+      if (!shopClubId || activeClubId() !== shopClubId) return;
       if (!ensureFeatureEnabledForMutation("shop")) return;
-      const index = Number(button.dataset.index);
-      const article = state.tariffs.articles[index];
+      if (!ensureUserPermission("shop.write", shopClubId)) return;
+      const articleId = button.dataset.articleId;
+      const article = state.tariffs.articles.find((a) => a.id === articleId);
       if (!article) return;
       if (!await requestConfirm({ title: "Supprimer l'article", message: `Supprimer l'article "${article.name}" ?`, confirmLabel: "Supprimer", danger: true })) return;
+      // Revalidation LIVE post-confirmation : club, feature, permission, PUIS résolution FRAÎCHE de
+      // l'article (jamais la référence capturée avant l'attente asynchrone) ; index recalculé
+      // UNIQUEMENT après cette résolution.
+      if (activeClubId() !== shopClubId) { ui.saveMessage = "Opération annulée : le club actif a changé."; render(); return; }
+      if (!ensureFeatureEnabledForMutation("shop")) return;
+      if (!ensureUserPermission("shop.write", shopClubId)) return;
+      const freshIndex = state.tariffs.articles.findIndex((a) => a.id === articleId);
+      if (freshIndex < 0) return;
+      const freshArticle = state.tariffs.articles[freshIndex];
       recordHistory();
-      const referencingOrders = state.shopOrders.filter((order) => (order.items || []).some((item) => item.articleId === article.id));
+      const referencingOrders = state.shopOrders.filter((order) => (order.items || []).some((item) => item.articleId === freshArticle.id));
       const orderQuantity = referencingOrders.reduce((sum, order) => sum + (order.items || [])
-        .filter((item) => item.articleId === article.id)
+        .filter((item) => item.articleId === freshArticle.id)
         .reduce((lineSum, item) => lineSum + asNumber(item.quantity), 0), 0);
-      if (ui.tariffEditKey === tariffKey("article", index)) ui.tariffEditKey = "";
-      state.tariffs.articles.splice(index, 1);
+      if (ui.tariffEditKey === tariffKey("article", freshIndex)) ui.tariffEditKey = "";
+      state.tariffs.articles.splice(freshIndex, 1);
       persist("Tarif article supprimé");
-      audit.shopItemDeleted(article, { orderCount: referencingOrders.length, orderQuantity });
+      audit.shopItemDeleted(freshArticle, { orderCount: referencingOrders.length, orderQuantity });
       render();
       return;
     }
@@ -33182,8 +36079,12 @@ ${esc(bodyText)}</pre>
       return;
     }
     if (action === "add-tariff-stage") {
+      // Lot O-E2-B4R2 (§22) — binding club DOM AVANT toute mutation (bouton « + » du bandeau Tarifs).
+      const tariffStageClubId = button.dataset.stageClubId || "";
+      if (!tariffStageClubId || activeClubId() !== tariffStageClubId) return;
       // Lot 2D — ajouter un tarif/stage = mutation métier : gardée avant recordHistory.
       if (!ensureFeatureEnabledForMutation("stages")) return;
+      if (!ensureUserPermission("stages.write", tariffStageClubId)) return;
       recordHistory();
       const stage = createStageDefaults();
       stampRecordClubId(stage);
@@ -33196,20 +36097,41 @@ ${esc(bodyText)}</pre>
       return;
     }
     if (action === "delete-tariff-stage") {
-      // Lot 2D — suppression d'un tarif/stage = mutation destructive : gardée avant toute lecture/mutation.
+      // Lot O-E2-B4R2 (§18-20) — un INDEX n'est jamais une identité de sécurité (une ligne peut se
+      // décaler entre le rendu et le clic). Ordre de garde : (A) club DOM, (B) feature, (C) permission,
+      // (D) Stage résolu LIVE par id, (E) index recalculé SEULEMENT après (jamais l'inverse).
+      const tariffStageClubId = button.dataset.stageClubId || "";
+      if (!tariffStageClubId || activeClubId() !== tariffStageClubId) return;
       if (!ensureFeatureEnabledForMutation("stages")) return;
-      const index = Number(button.dataset.index);
-      const stage = state.tariffs.stages[index];
-      if (stage && stageParticipantCount(stage.id)) {
+      if (!ensureUserPermission("stages.write", tariffStageClubId)) return;
+      const stageId = button.dataset.stageId || "";
+      if (!stageId) return;
+      const stage = stageById(stageId);
+      if (!stage.id) return;
+      const index = state.tariffs.stages.findIndex((s) => s.id === stageId);
+      if (index < 0) return;
+      if (stageParticipantCount(stage.id)) {
         alert("Ce stage contient des participants. Il faut supprimer les inscriptions avant de supprimer le stage.");
         return;
       }
-      if (!stage) return;
       if (!await requestConfirm({ title: "Supprimer le stage", message: `Supprimer le stage "${stage.name}" ?`, confirmLabel: "Supprimer", danger: true })) return;
+      // Lot O-E2-B4R2 (§21) — revalidation LIVE post-confirmation : club, feature, permission, PUIS
+      // résolution FRAÎCHE du Stage ET de son index (jamais les références capturées avant l'attente).
+      if (activeClubId() !== tariffStageClubId) { alert("Le club actif a changé pendant la confirmation. Réessayez."); return; }
+      if (!ensureFeatureEnabledForMutation("stages")) return;
+      if (!ensureUserPermission("stages.write", tariffStageClubId)) return;
+      const freshStage = stageById(stageId);
+      if (!freshStage.id) return;
+      const freshIndex = state.tariffs.stages.findIndex((s) => s.id === stageId);
+      if (freshIndex < 0) return;
+      if (stageParticipantCount(freshStage.id)) {
+        alert("Ce stage contient désormais des participants. Il faut supprimer les inscriptions avant de supprimer le stage.");
+        return;
+      }
       recordHistory();
-      if (ui.tariffEditKey === tariffKey("stage", index)) ui.tariffEditKey = "";
-      state.tariffs.stages.splice(index, 1);
-      delete state.stageRegistrations[stage.id];
+      if (ui.tariffEditKey === tariffKey("stage", freshIndex)) ui.tariffEditKey = "";
+      state.tariffs.stages.splice(freshIndex, 1);
+      delete state.stageRegistrations[freshStage.id];
       ui.stageId = state.tariffs.stages[0]?.id || "stage-1";
       persist("Stage supprimé");
       render();
@@ -33292,7 +36214,58 @@ ${esc(bodyText)}</pre>
       stageId: source.dataset.stageId || "",
       part: source.dataset.part || "",
       index: source.dataset.index || "0",
+      // Lot O-E2-B3B-1R (§6-8) — FAIL CLOSED strict, aucun repli vers activeClubId() : club STABLE
+      // posé au rendu par paymentControls (data-payment-club-id), jamais relu tardivement via
+      // activeClubId() seul (§18-19) — un contrôle resté affiché après un changement de club ne doit
+      // jamais muter le nouveau club actif sous une autorisation qui n'a jamais été vérifiée pour lui.
+      // Un contexte SANS cet attribut est un contexte INCOMPLET (production le pose toujours désormais,
+      // via paymentControls/paymentFields) : il doit être refusé, jamais autorisé par défaut.
+      clubId: source.dataset.paymentClubId || "",
     };
+  }
+
+  // Lot O-E2-B3B-1 — même résolution de contexte que paymentContextFrom, mais pour un bouton du
+  // formulaire ("form" mode, ex. validateFormPayment) qui ne porte pas lui-même ces attributs :
+  // paymentFields() les pose sur le conteneur englobant (data-payment-module/data-payment-club-id).
+  function paymentContextFromFormButton(button) {
+    const container = button.closest("[data-payment-module]");
+    return {
+      module: container?.dataset.paymentModule || "",
+      // Lot O-E2-B3B-1R (§6-8) — même doctrine fail-closed que paymentContextFrom ci-dessus.
+      clubId: container?.dataset.paymentClubId || "",
+    };
+  }
+
+  // Lot O-E2-B3B-1 — verrou UNIQUE pour toute mutation d'un paiement embarqué (live ET formulaire) :
+  // module reconnu (§5/§20 fail closed), club STABLE (posé au rendu, jamais périmé), payments.write +
+  // lecture du parent (§7-9). Message générique unique, aucune journalisation du refus (§35).
+  function ensureEmbeddedPaymentMutationAllowed(context, options = {}) {
+    const parentReadKey = context ? paymentParentReadPermission(context.module) : "";
+    const clubValid = Boolean(context && context.clubId && context.clubId === activeClubId());
+    // Lot O-E2-B3B-1R (§11) — module+club valides ne suffisent jamais seuls : le parent CIBLÉ doit
+    // réellement exister. Un contexte "form" (paymentContextFromFormButton) ne porte pas d'id de
+    // parent individuel (context.id === undefined) : cette vérification ne s'applique alors pas, la
+    // mutation réelle appartient au save du dialogue parent (son propre row/id, déjà vérifié là-bas).
+    const parentValid = clubValid && embeddedPaymentParentExists(context);
+    const allowed = Boolean(parentReadKey) && parentValid && ensureEmbeddedPaymentWritePermission(context.module, context?.clubId, { silent: true });
+    if (!allowed) {
+      if (!options.silent && typeof alert === "function") alert("Vous n'avez pas l'autorisation nécessaire.");
+      return false;
+    }
+    return true;
+  }
+
+  // Lot O-E2-B3B-1R (§11) — résolution RÉELLE du parent ciblé, jamais une simple chaîne de module.
+  // context.id === undefined (contexte "form", sans id de parent individuel) -> non applicable ici,
+  // la mutation réelle appartient au save du dialogue parent lui-même.
+  function embeddedPaymentParentExists(context) {
+    if (!context || context.id === undefined) return true;
+    if (context.module === "membership") return Boolean(state.memberships.find((row) => row.id === context.id));
+    if (context.module === "order") return Boolean(state.shopOrders.find((row) => row.id === context.id));
+    if (context.module === "registration") {
+      return Boolean((state.stageRegistrations[context.stageId] || []).find((row) => row.id === context.id));
+    }
+    return false;
   }
 
   function samePaymentContext(element, context) {
@@ -33671,6 +36644,10 @@ ${esc(bodyText)}</pre>
   }
 
   function updatePaymentFromControl(control) {
+    // Lot O-E2-B3B-1 — garde SILENCIEUSE (jamais d'alerte à chaque frappe/changement, même doctrine
+    // que updateQuickNote en B2) : cette fonction bas-niveau est aussi ré-appelable directement (§22),
+    // AVANT tout accès à getPaymentList/ensurePaymentAt (§24 : aucune garde après leur premier appel).
+    if (!ensureEmbeddedPaymentMutationAllowed(paymentContextFrom(control), { silent: true })) return;
     const payments = getPaymentList(control);
     const index = Number(control.dataset.index);
     const payment = ensurePaymentAt(payments, index);
@@ -33724,6 +36701,10 @@ ${esc(bodyText)}</pre>
   }
 
   function validatePayment(button) {
+    // Lot O-E2-B3B-1 — garde VISIBLE, avant tout accès à getPaymentList/ensurePaymentAt (§24-25) :
+    // un appel direct (hors clic UI) sans payments.write + lecture du parent ne doit produire AUCUNE
+    // mutation observable, y compris via ensurePaymentAt (qui peut pousser une nouvelle ligne).
+    if (!ensureEmbeddedPaymentMutationAllowed(paymentContextFrom(button))) return false;
     const payments = getPaymentList(button);
     const index = Number(button.dataset.index);
     const payment = ensurePaymentAt(payments, index);
@@ -33823,7 +36804,7 @@ ${esc(bodyText)}</pre>
   // l'utilisateur reste coincé dans une "lecture seule" fantôme. Centralisé ici pour ne JAMAIS dupliquer
   // cette décision entre les deux gardes de cancelPendingPayment, et pour ne jamais recréer un second
   // moteur d'intégrité : shopOrderIntegrityState() reste l'unique source de vérité.
-  async function reconcileOrderConsultAfterPaymentChange(button, orderId) {
+  async function reconcileOrderConsultAfterPaymentChange(button, orderId, openedClubId) {
     // Lot I-B4 — targetDialog est capturé EN PREMIER, avant toute opération susceptible de toucher au
     // DOM (y compris la branche "toujours verrouillé" ci-dessous) : depuis I-B2, le refresh remplace
     // l'outerHTML de la zone paiement, qui peut contenir le bouton cliqué lui-même. Si ce bouton
@@ -33844,12 +36825,16 @@ ${esc(bodyText)}</pre>
     // entrée keyedWindows périmée ; openOrderForConsult décide seule, sur l'état frais, qu'elle ouvre
     // ici l'édition normale (order:<id>).
     await closeDialogAndWait(targetDialog);
-    openOrderForConsult(freshOrder);
+    openOrderForConsult(freshOrder, openedClubId);
   }
 
   async function cancelPendingPayment(button) {
     const context = paymentContextFrom(button);
     if (context.module !== "order") return;
+    // Lot O-E2-B3B-1 — double garde (même patron que delete-contact/delete-membership) : avant toute
+    // confirmation (inutile de la demander pour une action de toute façon refusée), et revalidée après
+    // (le club actif ou les droits ont pu changer pendant l'attente asynchrone, §26).
+    if (!ensureEmbeddedPaymentMutationAllowed(context)) return;
     const index = Number(context.index);
     if (Number.isNaN(index)) return;
     const beforeOrder = state.shopOrders.find((row) => row.id === context.id);
@@ -33859,7 +36844,7 @@ ${esc(bodyText)}</pre>
       // Lot I-B3 — même si aucune mutation n'a lieu, la consultation ouverte peut encore afficher un
       // état périmé (boutons obsolètes sur une ligne qui n'est plus réellement pending), voire ne plus
       // avoir aucune raison d'être en lecture seule (voir reconcileOrderConsultAfterPaymentChange).
-      await reconcileOrderConsultAfterPaymentChange(button, context.id);
+      await reconcileOrderConsultAfterPaymentChange(button, context.id, context.clubId);
       return;
     }
     const confirmed = await requestConfirm({
@@ -33868,13 +36853,15 @@ ${esc(bodyText)}</pre>
       confirmLabel: "Annuler ce paiement en attente",
     });
     if (!confirmed) return; // aucune mutation, aucun checkpoint, aucun historique, aucun audit.
+    // Lot O-E2-B3B-1 — revalidation permission/club après l'attente asynchrone (§26).
+    if (!ensureEmbeddedPaymentMutationAllowed(context)) return;
     // Seconde garde : l'état a pu changer PENDANT que la confirmation était affichée (autre fenêtre,
     // le paiement validé entre-temps…) — on relit à nouveau l'objet réel avant de muter quoi que ce soit.
     const order = state.shopOrders.find((row) => row.id === context.id);
     const payment = order?.payments?.[index];
     if (!payment || !PENDING_PAYMENT_STATUSES.includes(paymentStatus(payment))) {
       alert("Ce paiement a changé pendant la confirmation : il n'est plus en attente. Aucune modification n'a été faite.");
-      await reconcileOrderConsultAfterPaymentChange(button, context.id);
+      await reconcileOrderConsultAfterPaymentChange(button, context.id, context.clubId);
       return;
     }
     const beforeSnapshot = beginHistoryCheckpoint();
@@ -33901,7 +36888,7 @@ ${esc(bodyText)}</pre>
     // verrou restant), sans risque de réutiliser une entrée keyedWindows périmée.
     const targetDialog = button.closest("dialog");
     await closeDialogAndWait(targetDialog);
-    if (freshOrder) openOrderForConsult(freshOrder);
+    if (freshOrder) openOrderForConsult(freshOrder, context.clubId);
   }
 
   // Déverrouille une ligne de paiement (form) après annulation : elle redevient éditable et la garde
@@ -33918,6 +36905,11 @@ ${esc(bodyText)}</pre>
   }
 
   function validateFormPayment(button) {
+    // Lot O-E2-B3B-1 (§27) — cette fonction ne mute QUE le formulaire (jamais state directement), mais
+    // doit être protégée elle-même : un appel direct sans droit ne doit modifier AUCUN champ DOM,
+    // avant même la résolution de form/prefix/index. Contexte porté par le conteneur englobant
+    // (paymentFields), jamais par ce bouton lui-même (mode "form", pas d'attrs live dessus).
+    if (!ensureEmbeddedPaymentMutationAllowed(paymentContextFromFormButton(button))) return;
     const form = button.closest("form");
     const prefix = button.dataset.prefix || "";
     const index = Number(button.dataset.index);
@@ -34049,10 +37041,28 @@ ${esc(bodyText)}</pre>
     if (kind === "insurance-tax") setRowTaxRate(state.tariffs.insurance[index]);
   }
 
+  // Lot O-E2-B5R3 (§11-13) — liste blanche des champs Stock/Article réellement reconnus par
+  // updateStockArticle : un data-stock forgé/inconnu ne doit jamais être traité comme une mutation
+  // valide (fail closed), même avec un articleId et un club par ailleurs corrects.
+  const SHOP_STOCK_MUTATION_FIELDS = new Set(["name", "reference", "sizes", "price-0", "price-1", "available", "stockAlert"]);
+  // Résolution PURE (aucun effet de bord) : identité par id STABLE, jamais l'index (§19), champ
+  // reconnu par liste blanche, Article existant LIVE. Réutilisée par le listener (garde AVANT
+  // beginShopItemInlineEdit/recordHistory, §10/§14) ET par updateStockArticle lui-même.
+  function boundShopStockMutationTarget(input) {
+    const articleId = input?.dataset?.articleId || "";
+    const field = input?.dataset?.stock || "";
+    if (!articleId || !SHOP_STOCK_MUTATION_FIELDS.has(field)) return null;
+    const article = state.tariffs.articles.find((row) => row.id === articleId);
+    if (!article) return null;
+    return { article, articleId, field };
+  }
+
+  // Retourne true si une mutation reconnue a réellement été appliquée, false sinon (articleId absent,
+  // champ inconnu, ou Article introuvable) — jamais de fallback vers l'index comme identité (§19).
   function updateStockArticle(input) {
-    const article = state.tariffs.articles[Number(input.dataset.index)];
-    if (!article) return;
-    const field = input.dataset.stock;
+    const bound = boundShopStockMutationTarget(input);
+    if (!bound) return false;
+    const { article, field } = bound;
     if (field === "name") {
       article.name = input.value;
       if (article.referenceAuto) article.reference = makeArticleReference(article.name, Number(input.dataset.index));
@@ -34083,18 +37093,7 @@ ${esc(bodyText)}</pre>
       article.stockInitial = asNumber(input.value) + sold;
     }
     if (field === "stockAlert") article.stockAlert = asNumber(input.value);
-  }
-
-  function updateArticleSizeStock(input) {
-    const article = state.tariffs.articles[Number(input.dataset.index)];
-    if (!article) return;
-    const size = asText(input.dataset.size);
-    article.sizeStock = normalizeSizeStock(article.sizeStock);
-    if (!size) return;
-    const quantity = asNumber(input.value);
-    if (asText(input.value) === "") delete article.sizeStock[size];
-    else article.sizeStock[size] = quantity;
-    article.stockInitial = Object.values(article.sizeStock).reduce((sum, qty) => sum + asNumber(qty), 0);
+    return true;
   }
 
   // K-B2 — retourne un statut à 3 valeurs (jamais un booléen) pour que l'appelant distingue :
@@ -34103,27 +37102,39 @@ ${esc(bodyText)}</pre>
   // permettait pas de distinguer "empty" de "updated" sans appeler beforeMutation() (donc
   // recordHistory()) même quand aucune image n'avait été réellement ajoutée.
   async function updateArticleImage(input, beforeMutation = () => true) {
-    const article = state.tariffs.articles[Number(input.dataset.index)];
+    // Lot O-E2-B5R2 (§19-22) — AUCUN fallback vers l'index : data-article-id OBLIGATOIRE.
+    const articleId = input.dataset.articleId || "";
+    if (!articleId) return "empty";
     const files = [...(input.files || [])];
-    if (!article || !files.length) return "empty";
-    const nextImages = articleImages(article);
-    const nextCaptions = articleImageCaptions(article, nextImages.length);
-    let addedAny = false;
+    if (!files.length) return "empty";
+    // Lot O-E2-B5R2 (§27-28) — les fichiers sont convertis dans des variables LOCALES uniquement :
+    // aucune lecture ni mutation de l'Article avant la fin de TOUTES les conversions asynchrones.
+    const convertedImages = [];
+    const convertedCaptions = [];
     for (const file of files) {
       if (!file.type.startsWith("image/")) {
         alert("Choisis uniquement des fichiers image.");
         continue;
       }
-      nextImages.push(await imageFileToDataUrl(file));
-      nextCaptions.push("");
-      addedAny = true;
+      convertedImages.push(await imageFileToDataUrl(file));
+      convertedCaptions.push("");
     }
-    if (!addedAny) return "empty";
+    if (!convertedImages.length) return "empty";
+    // Lot O-E2-B5R3 (§2-6) — résolution LIVE de l'Article AVANT beforeMutation() : ce dernier appelle
+    // recordHistory() (checkpoint Undo), qui ne doit JAMAIS s'engager si l'Article a disparu pendant
+    // la conversion (sinon "faux" checkpoint Undo sans mutation réelle derrière). Jamais une référence
+    // capturée avant la conversion (qui aurait pu être supprimée pendant l'attente).
+    const freshArticle = state.tariffs.articles.find((a) => a.id === articleId);
+    if (!freshArticle) return "blocked";
     // K-B2 : la conversion d'image est asynchrone. La fonctionnalité peut être désactivée pendant
-    // l'attente ; le callback revalide Shop et engage l'historique au moment exact de l'écriture,
-    // seulement si au moins une image a réellement été convertie.
+    // l'attente ; le callback revalide club/Shop et engage l'historique au moment exact de
+    // l'écriture, SEULEMENT MAINTENANT que l'existence de l'Article est confirmée.
     if (beforeMutation() === false) return "blocked";
-    setArticleImages(article, nextImages, nextCaptions);
+    // Base d'images/légendes relue depuis l'état RÉEL au moment de la mutation (jamais écrasée
+    // silencieusement par une copie figée avant l'attente).
+    const baseImages = articleImages(freshArticle);
+    const baseCaptions = articleImageCaptions(freshArticle, baseImages.length);
+    setArticleImages(freshArticle, [...baseImages, ...convertedImages], [...baseCaptions, ...convertedCaptions]);
     return "updated";
   }
 
@@ -34897,7 +37908,13 @@ ${esc(bodyText)}</pre>
     return (state.memoRows || []).find((row) => row.id === rowId) || null;
   }
 
+  // Lot O-E2-B2 — garde SILENCIEUSE (requirePermissionForClub brut, jamais ensureUserPermission) :
+  // ces fonctions bas-niveau sont ré-appelables directement (§35), et updateQuickNote est aussi
+  // invoquée à CHAQUE FRAPPE par les listeners input/change (§22) — une alerte à chaque caractère
+  // serait une régression UX inacceptable. La garde VISIBLE (avec message) vit dans les appelants
+  // handleAction/listeners, avant recordHistory().
   function addQuickNote() {
+    if (!requirePermissionForClub("notes.write", activeClubId())) return null;
     const next = normalizeMemoRow({ category: "Note", title: "Nouvelle note", note: "", amount: "", priority: "Normale" });
     state.memoRows.push(stampRecordClubId(next));
     ui.quickNoteEditId = next.id;
@@ -34907,6 +37924,7 @@ ${esc(bodyText)}</pre>
   function updateQuickNote(input) {
     const row = quickNoteById(input.dataset.id);
     if (!row) return;
+    if (!requirePermissionForClub("notes.write", activeClubId())) return;
     const field = input.dataset.quickNoteField;
     // category : champ legacy, conservé en données mais plus édité par aucune UI actuelle (voir
     // Lot "Notes contextuelles par page" — remplacé visuellement par targetView / "Afficher dans").
@@ -34919,6 +37937,7 @@ ${esc(bodyText)}</pre>
   }
 
   function deleteQuickNote(row) {
+    if (!requirePermissionForClub("notes.write", activeClubId())) return false;
     removeById(state.memoRows, row.id);
     return true;
   }
@@ -35703,8 +38722,9 @@ ${esc(bodyText)}</pre>
     const groups = (state.groups || []).filter((g) => !g.archived);
     const archived = (state.groups || []).filter((g) => g.archived);
     const cards = groups.map(groupCardHtml).join("") || ((state.groups || []).length === 0 ? emptyStateHtml("groups") : `<p class="muted">Tous les groupes sont archivés. Crée un nouveau groupe ou réactive un groupe archivé.</p>`);
+    const canWriteSport = currentUserHasPermission("sport.write", activeClubId());
     return `
-      ${toolbar("add-group", "Nouveau groupe", `<span class="muted">${groups.length} groupe${groups.length > 1 ? "s" : ""}</span>`)}
+      ${toolbar(canWriteSport ? "add-group" : "", "Nouveau groupe", `<span class="muted">${groups.length} groupe${groups.length > 1 ? "s" : ""}</span>`, "", ` data-sport-club-id="${esc(activeClubId())}"`)}
       <div class="band">
         <div class="band-title"><h2>Groupes / équipes / niveaux</h2></div>
         <div class="group-grid">${cards}</div>
@@ -35714,6 +38734,9 @@ ${esc(bodyText)}</pre>
   }
 
   function groupCardHtml(group) {
+    // Lot O-E2-B4 (§20) — UI Sport réellement read-only : sport.read=true/write=false masque
+    // Modifier/Archiver/Supprimer/Ajouter-Retirer (jamais un simple refus au clic, doctrine B3B-3R §C).
+    const canWriteSport = currentUserHasPermission("sport.write", activeClubId());
     const cap = getGroupCapacityStatus(group.id);
     const capText = cap.max > 0 ? `${cap.count} / ${cap.max} membres` : `${cap.count} membre${cap.count > 1 ? "s" : ""}`;
     // Jamais « 15–10 ans » présentée comme normale : sur une tranche invalide, un court repère
@@ -35749,16 +38772,24 @@ ${esc(bodyText)}</pre>
       ${groupAgeRangeConfigWarningHtml(group)}
       ${group.notes ? `<p class="muted group-card-notes">${esc(group.notes)}</p>` : ""}
       <div class="group-card-actions">
-        <button type="button" data-action="view-group-members" data-id="${esc(group.id)}">Membres +/−</button>
-        ${group.archived ? "" : `<button type="button" data-action="email-group" data-group-id="${esc(group.id)}" title="Préparer un e-mail aux membres de ce groupe">✉ E-mail au groupe</button>`}
-        <button type="button" data-action="edit-group" data-id="${esc(group.id)}">Modifier</button>
-        <button type="button" data-action="toggle-archive-group" data-id="${esc(group.id)}">${group.archived ? "Désarchiver" : "Archiver"}</button>
-        <button type="button" class="icon danger" data-action="delete-group" data-id="${esc(group.id)}" title="Supprimer définitivement (si aucun adhérent lié)">×</button>
+        <button type="button" data-action="view-group-members" data-id="${esc(group.id)}" data-sport-club-id="${esc(activeClubId())}">${canWriteSport ? "Membres +/−" : "Voir les membres"}</button>
+        ${group.archived ? "" : `<button type="button" data-action="email-group" data-group-id="${esc(group.id)}" data-sport-club-id="${esc(activeClubId())}" title="Préparer un e-mail aux membres de ce groupe">✉ E-mail au groupe</button>`}
+        ${canWriteSport ? `<button type="button" data-action="edit-group" data-id="${esc(group.id)}" data-sport-club-id="${esc(activeClubId())}">Modifier</button>` : ""}
+        ${canWriteSport ? `<button type="button" data-action="toggle-archive-group" data-id="${esc(group.id)}" data-sport-club-id="${esc(activeClubId())}">${group.archived ? "Désarchiver" : "Archiver"}</button>` : ""}
+        ${canWriteSport ? `<button type="button" class="icon danger" data-action="delete-group" data-id="${esc(group.id)}" data-sport-club-id="${esc(activeClubId())}" title="Supprimer définitivement (si aucun adhérent lié)">×</button>` : ""}
       </div>
     </div>`;
   }
 
-  function openGroupDialog(group = {}) {
+  // Lot O-E2-B4 (§14) — même garde active-club LOCALE que openTeamDialog : capturée à l'ouverture
+  // (CREATE et EDIT), revalidée en tout début de onSave. openedGroupId permet une relecture fraîche
+  // de l'objet vivant plutôt qu'une mutation sur la référence capturée à l'ouverture.
+  function openGroupDialog(group = {}, openedClubId = "") {
+    if (!openedClubId || activeClubId() !== openedClubId) return;
+    const openedGroupId = group.id || "";
+    if (!currentUserHasPermission("sport.read", openedClubId)) return;
+    if (!openedGroupId && !currentUserHasPermission("sport.write", openedClubId)) return;
+    const readOnly = Boolean(group.id) && !currentUserHasPermission("sport.write", openedClubId);
     const types = ["Débutants", "Confirmés", "Enfants", "Adultes", "Compétition", "Loisir", "Autre"];
     const body = [
       field("name", "Nom du groupe *", group.name || "", "text", "required"),
@@ -35783,7 +38814,22 @@ ${esc(bodyText)}</pre>
       textareaField("notes", "Notes", group.notes || ""),
     ].join("");
     setNextWindowKey(group.id ? `group:${group.id}` : null);
-    showDialog(group.id ? "Modifier le groupe" : "Nouveau groupe", body, (data, form) => {
+    showDialog(readOnly ? "Consulter le groupe" : (group.id ? "Modifier le groupe" : "Nouveau groupe"), body, (data, form) => {
+      // 1) Garde active-club — AVANT toute autre validation (doctrine K-T2B0C réutilisée).
+      if (activeClubId() !== openedClubId) {
+        alert("Le club actif a changé depuis l'ouverture de ce formulaire. Rouvrez-le pour continuer.");
+        return false;
+      }
+      // 2) Garde permission — sport.write couvre aussi les conséquences Membership (groupId), jamais
+      // memberships.write (§14/§43).
+      if (!ensureUserPermission("sport.write", openedClubId)) return false;
+      // 3) Revalidation fraîche en édition — jamais de mutation sur une référence capturée à
+      // l'ouverture ; id introuvable = REFUS (STALE EDIT INTERDIT, jamais dégénérescence en création).
+      let current = null;
+      if (openedGroupId) {
+        current = (state.groups || []).find((g) => g.id === openedGroupId);
+        if (!current) { alert("Ce groupe n'existe plus."); return false; }
+      }
       const name = asText(data.get("name"));
       if (!name) { alert("Le nom du groupe est obligatoire."); return false; }
       // La règle de non-blocage concerne l'AFFECTATION des membres, jamais la sauvegarde d'une
@@ -35804,7 +38850,7 @@ ${esc(bodyText)}</pre>
       const groupCoachId = asText(data.get("coachId"));
       // Lot 3A (clôture) — sélection CANONIQUE : la valeur du select est un identifiant (ou "__legacy__"
       // / ""). On dérive { disciplineId, discipline } directement de l'id, sans jamais repasser par le nom.
-      const groupTarget = disciplineTargetFromSelectValue(data.get("discipline"), group);
+      const groupTarget = disciplineTargetFromSelectValue(data.get("discipline"), current || group);
       // Filet de sécurité : un coach lié (coachId) doit prendre en charge la discipline choisie.
       // (Coachs polyvalents, archivés ou saisis en texte libre ne sont pas concernés.)
       if (groupCoachId) {
@@ -35819,8 +38865,8 @@ ${esc(bodyText)}</pre>
       // foi du <select>. Elle n'est conservée que si la discipline n'a pas changé ; sinon la
       // sauvegarde est refusée, AVANT toute mutation du groupe.
       const categoryChoice = readSportCategoryAssignmentValue(data.get("sportCategoryId"));
-      const previousCategoryId = asText(group.sportCategoryId);
-      const previousDisciplineId = asText(group.disciplineId);
+      const previousCategoryId = asText(current ? current.sportCategoryId : group.sportCategoryId);
+      const previousDisciplineId = asText(current ? current.disciplineId : group.disciplineId);
       const nextCategoryId = categoryChoice.keep ? previousCategoryId : categoryChoice.categoryId;
       const categoryError = validateSportCategoryAssignment(
         nextCategoryId, groupTarget.disciplineId, state, activeClubId(),
@@ -35828,8 +38874,8 @@ ${esc(bodyText)}</pre>
       );
       if (categoryError) { alert(categoryError); return false; }
       const next = {
-        ...group,
-        id: group.id || id("group"),
+        ...(current || group),
+        id: current ? current.id : id("group"),
         name,
         type: data.get("type") || "Autre",
         discipline: groupTarget.discipline,
@@ -35844,7 +38890,7 @@ ${esc(bodyText)}</pre>
         maxMembers: asText(data.get("maxMembers")) === "" ? "" : asNumber(data.get("maxMembers")),
         color: data.get("color") || "",
         notes: data.get("notes") || "",
-        archived: Boolean(group.archived),
+        archived: current ? Boolean(current.archived) : false,
       };
       state.groups = state.groups || [];
       upsert(state.groups, next);
@@ -35854,10 +38900,10 @@ ${esc(bodyText)}</pre>
       // et renvoie `null` s'ils sont égaux : création sans catégorie -> aucun événement.
       audit.groupSportCategoryChanged(next, {
         previousSportCategoryId: previousCategoryId,
-        reason: (group.id && previousDisciplineId !== asText(next.disciplineId)) ? "discipline-changed" : "",
+        reason: (current && previousDisciplineId !== asText(next.disciplineId)) ? "discipline-changed" : "",
         previousDisciplineId,
       });
-      return `${group.id ? "Modification" : "Création"} du groupe ${name}`;
+      return `${current ? "Modification" : "Création"} du groupe ${name}`;
     }, (form) => {
       // Re-filtre la liste des coachs selon la discipline choisie. Le coach sélectionné (coachId)
       // n'est conservé que s'il reste compatible ; sinon il est vidé automatiquement.
@@ -35874,18 +38920,25 @@ ${esc(bodyText)}</pre>
         // remise à vide, sans jamais chercher une homonyme dans la nouvelle discipline.
         refreshSportCategoryFieldForDiscipline(form, "sportCategoryId", newTarget.disciplineId, group.sportCategoryId, group.disciplineId);
       });
-    });
+    }, "", () => {}, "Enregistrer", { readOnly });
   }
 
-  function toggleArchiveGroup(groupId) {
+  // Lot O-E2-B4 (§14) — converti en async/await (était requestConfirm(...).then(...)) pour porter la
+  // même double garde club+permission autour de la confirmation ASYNCHRONE que toggleArchiveTeam.
+  async function toggleArchiveGroup(groupId) {
+    const targetClubId = activeClubId();
+    if (!ensureUserPermission("sport.write", targetClubId)) return;
     const group = getGroupById(groupId);
     if (!group) return;
     const count = getMembersByGroup(groupId).length;
     if (!group.archived && count > 0) {
-      requestConfirm({ title: "Archiver le groupe", message: `${count} adhérent(s) sont liés à ce groupe. L'archiver le masque sans supprimer les liens. Continuer ?`, confirmLabel: "Archiver" }).then((ok) => {
-        if (!ok) return;
-        recordHistory(); group.archived = true; persist("Groupe archivé"); render();
-      });
+      const ok = await requestConfirm({ title: "Archiver le groupe", message: `${count} adhérent(s) sont liés à ce groupe. L'archiver le masque sans supprimer les liens. Continuer ?`, confirmLabel: "Archiver" });
+      if (!ok) return;
+      if (activeClubId() !== targetClubId) { alert("Le club actif a changé pendant la confirmation. Réessayez."); return; }
+      if (!ensureUserPermission("sport.write", targetClubId)) return;
+      const freshGroup = getGroupById(groupId);
+      if (!freshGroup) return;
+      recordHistory(); freshGroup.archived = true; persist("Groupe archivé"); render();
       return;
     }
     recordHistory(); group.archived = !group.archived; persist(group.archived ? "Groupe archivé" : "Groupe réactivé"); render();
@@ -35993,6 +39046,9 @@ ${esc(bodyText)}</pre>
   function groupMembersDialogBody(groupId) {
     const group = getGroupById(groupId);
     if (!group) return `<p class="muted">Groupe introuvable.</p>`;
+    // Lot O-E2-B4 (§15/§20) — sport.read suffit à VOIR le roster (noms/effectifs), jamais
+    // memberships.read pour ce simple usage ; ajouter/retirer un membre exige sport.write.
+    const canWriteSport = currentUserHasPermission("sport.write", activeClubId());
     const members = getMembersByGroup(groupId);
     const cap = getGroupCapacityStatus(groupId);
     const candidates = groupMemberCandidates(group);
@@ -36032,7 +39088,7 @@ ${esc(bodyText)}</pre>
                 <span class="muted">${groupMemberMetaLine(m)}</span>
                 ${groupConsistencyTagHtml(group, m) ? `<span class="group-add-tags group-member-tags">${groupConsistencyTagHtml(group, m)}</span>` : ""}
               </div>
-              <button type="button" class="danger small" data-action="remove-member-from-group" data-membership-id="${esc(m.id)}">Retirer du groupe</button>
+              ${canWriteSport ? `<button type="button" class="danger small" data-action="remove-member-from-group" data-membership-id="${esc(m.id)}" data-sport-club-id="${esc(activeClubId())}">Retirer du groupe</button>` : ""}
             </div>
             ${groupAgeWarningBoxHtml(groupMemberAgeDecision(m, group))}
           </div>`).join("")}</div>`
@@ -36059,7 +39115,7 @@ ${esc(bodyText)}</pre>
           </div>`;
         }).join("")}</div>
         <div class="group-add-empty-search muted" data-list-search-empty hidden>Aucun résultat.</div>
-        <div class="inline-actions"><button type="button" class="primary" data-action="add-selected-to-group" data-group-id="${esc(groupId)}">Ajouter au groupe</button></div>`
+        <div class="inline-actions"><button type="button" class="primary" data-action="add-selected-to-group" data-group-id="${esc(groupId)}" data-sport-club-id="${esc(activeClubId())}">Ajouter au groupe</button></div>`
       : `<p class="muted">${wantDiscipline
           ? `Aucun adhérent inscrit en « ${esc(wantDiscipline)} » n'est disponible. L'affectation à un groupe se fait par inscription : crée d'abord une inscription dans cette discipline depuis la fiche de l'adhérent.`
           : `Aucun adhérent disponible. Les membres rejoignent un groupe via leur inscription (fiche adhérent).`}</p>`;
@@ -36069,12 +39125,12 @@ ${esc(bodyText)}</pre>
       <div class="dialog-section group-members-current">
         <div class="group-members-head">
           <h3>Membres du groupe (${members.length})</h3>
-          ${members.length ? `<button type="button" class="small" data-action="email-group" data-group-id="${esc(groupId)}" title="Préparer un e-mail aux membres de ce groupe">✉ Envoyer un e-mail au groupe</button>` : ""}
+          ${members.length ? `<button type="button" class="small" data-action="email-group" data-group-id="${esc(groupId)}" data-sport-club-id="${esc(activeClubId())}" title="Préparer un e-mail aux membres de ce groupe">✉ Envoyer un e-mail au groupe</button>` : ""}
         </div>
         ${capWarn}
         ${membersHtml}
       </div>
-      <div class="dialog-section group-members-add" data-list-search-scope>
+      ${canWriteSport ? `<div class="dialog-section group-members-add" data-list-search-scope>
         <h3>Ajouter des membres</h3>
         <p class="muted">${filterDesc}</p>
         ${ageToleranceNote}
@@ -36084,7 +39140,7 @@ ${esc(bodyText)}</pre>
           <span class="dialog-list-search-count muted" data-list-search-count></span>
         </div>` : ""}
         ${candidatesHtml}
-      </div>
+      </div>` : ""}
     </div>`;
   }
 
@@ -36143,7 +39199,9 @@ ${esc(bodyText)}</pre>
     setupDialogListFilter(document.querySelector("[data-group-members-dialog]") || document);
   }
 
-  function openGroupMembersDialog(groupId) {
+  function openGroupMembersDialog(groupId, openedClubId = "") {
+    if (!openedClubId || activeClubId() !== openedClubId) return;
+    if (!currentUserHasPermission("sport.read", openedClubId)) return;
     const group = getGroupById(groupId);
     showInfoDialog(group ? `${group.name}` : "Groupe", groupMembersDialogBody(groupId));
     setupGroupMembersDialog();
@@ -36204,6 +39262,14 @@ ${esc(bodyText)}</pre>
   }
 
   function renderSportDocuments() {
+    // Lot O-E2-B9R3 (Partie A, §1-3) — audit confirmé : cette page est INTÉGRALEMENT nominative
+    // (personLabel, licence, groupe, autorisation parentale, droit à l'image…), rattachée pourtant à
+    // documents.read SEUL dans VIEW_PERMISSION_MAP. Même doctrine déjà appliquée aux résolveurs de
+    // tâches "Dossier incomplet" (documents.read + memberships.read, src/11-dashboard-newsletter.js) :
+    // Option A retenue — la page reste accessible avec documents.read (structure, filtres, KPI
+    // agrégés, aucun nom), mais les LIGNES nominatives n'existent que si memberships.read est
+    // également accordé. Jamais un nouveau droit (documentsMembers.read/documents.list) créé.
+    const canReadMemberIdentities = currentUserHasPermission("memberships.read", activeClubId());
     const members = (state.memberships || []).filter((m) => asText(m.discipline));
     const filter = ui.docFilter || "all";
     let complete = 0, missing = 0, expired = 0, soon = 0, insuranceUnverified = 0;
@@ -36216,7 +39282,9 @@ ${esc(bodyText)}</pre>
       if (licStatus === "soon" || certStatus === "soon") soon += 1;
       if (!asText(m.insuranceChoice)) insuranceUnverified += 1;
     });
-    const rows = members.filter((m) => memberMatchesDocFilter(m, filter)).map((m) => {
+    const rows = !canReadMemberIdentities
+      ? `<tr><td colspan="13" class="empty">Vous n'avez pas l'autorisation de consulter le détail nominatif des dossiers.</td></tr>`
+      : members.filter((m) => memberMatchesDocFilter(m, filter)).map((m) => {
       const { licStatus, certStatus } = memberDocStatuses(m);
       const group = getGroupById(m.groupId);
       // Lot Contact/Dossier V2 — autorisation parentale, droit à l'image et règlement signé lus
@@ -36355,8 +39423,9 @@ ${esc(bodyText)}</pre>
     const findSlotBtn = (typeof isViewVisible === "function" && isViewVisible("availability"))
       ? `<button type="button" class="planning-find-slot" data-view="availability" title="Laisser MonGestaClub proposer le meilleur créneau libre">🧭 Trouver un créneau libre</button>`
       : "";
+    const canWriteSport = currentUserHasPermission("sport.write", activeClubId());
     return `
-      ${toolbar("add-course", "Nouveau créneau", `<span class="muted">${courses.length} créneau${courses.length > 1 ? "x" : ""}</span>`, findSlotBtn)}
+      ${toolbar(canWriteSport ? "add-course" : "", "Nouveau créneau", `<span class="muted">${courses.length} créneau${courses.length > 1 ? "x" : ""}</span>`, findSlotBtn, ` data-sport-club-id="${esc(activeClubId())}"`)}
       ${conflicts.length ? `<div class="band band-alert"><div class="band-title"><h2>⚠️ Conflits détectés</h2><strong>${conflicts.length}</strong></div>
         <ul class="conflict-list">${conflicts.map((x) => `<li>${esc(conflictTypeLabel(x.conflict.type))} : « ${esc(x.course.name)} » et « ${esc(x.conflict.course.name)} » (${esc(x.course.day)})</li>`).join("")}</ul></div>` : ""}
       <div class="band">
@@ -36472,6 +39541,7 @@ ${esc(bodyText)}</pre>
 
   // Dialogue « Détail du conflit » PAR DATE : valeurs résolues + actions (modifier / voir l'autre).
   function openCourseConflictDialog(courseId, dateInput = "") {
+    const openedClubId = activeClubId();
     const course = getCourseById(courseId);
     if (!course) { alert("Créneau introuvable."); return; }
     const conflicts = getCourseConflictsForDate(course, dateInput);
@@ -36484,10 +39554,13 @@ ${esc(bodyText)}</pre>
         { key: "other", label: "Voir le créneau en conflit" },
       ],
     }).then((decision) => {
+      // Revalidation post-choix ASYNCHRONE (§39 doctrine) — le club actif a pu changer pendant
+      // que la boîte de choix restait ouverte.
+      if (activeClubId() !== openedClubId) return;
       // On ouvre toujours le créneau RÉCURRENT (raw), jamais une copie résolue (sinon on
       // écrirait les valeurs exceptionnelles dans planningCourses).
-      if (decision === "edit") openCourseDialog(course);
-      else if (decision === "other") openCourseDialog(getCourseById(conflicts[0].course.id) || conflicts[0].course);
+      if (decision === "edit") openCourseDialog(course, "", openedClubId);
+      else if (decision === "other") openCourseDialog(getCourseById(conflicts[0].course.id) || conflicts[0].course, "", openedClubId);
     });
   }
 
@@ -36592,7 +39665,9 @@ ${esc(bodyText)}</pre>
   // Bouton « Gérer cette date » (présent sur chaque séance affichée, car date connue).
   function manageDateBtnHtml(course, dateInput) {
     if (!dateInput) return "";
-    return `<button type="button" class="course-date-btn" data-action="manage-course-date" data-id="${esc(course.id)}" data-date="${esc(dateInput)}" title="Exception au planning hebdomadaire : modifier SEULEMENT cette date — annuler, ou changer l'horaire, le coach ou la salle pour ce jour précis (le créneau récurrent n'est pas touché)."><span aria-hidden="true">📅</span> Modifier cette date</button>`;
+    // Lot O-E2-B4R (§31) — pure mutation (exception ponctuelle) : masquée réellement sans sport.write.
+    if (!currentUserHasPermission("sport.write", activeClubId())) return "";
+    return `<button type="button" class="course-date-btn" data-action="manage-course-date" data-id="${esc(course.id)}" data-date="${esc(dateInput)}" data-sport-club-id="${esc(activeClubId())}" title="Exception au planning hebdomadaire : modifier SEULEMENT cette date — annuler, ou changer l'horaire, le coach ou la salle pour ce jour précis (le créneau récurrent n'est pas touché)."><span aria-hidden="true">📅</span> Modifier cette date</button>`;
   }
 
   // Effectif prévu d'une séance : "X inscrits" ou "X / Y inscrits" si le cours a une capacité
@@ -36648,7 +39723,9 @@ ${esc(bodyText)}</pre>
     `;
   }
 
-  function openCourseEnrollmentDialog(courseId, dateInput = "") {
+  function openCourseEnrollmentDialog(courseId, dateInput = "", openedClubId = "") {
+    if (!openedClubId || activeClubId() !== openedClubId) return;
+    if (!currentUserHasPermission("sport.read", openedClubId)) return;
     const course = getCourseById(courseId);
     if (!course) { alert("Créneau introuvable."); return; }
     const group = getGroupById(course.groupId);
@@ -36682,7 +39759,7 @@ ${esc(bodyText)}</pre>
   function courseEnrollmentButtonHtml(course, group, dateInput, extraClass = "") {
     const label = courseEnrollmentLabel(course, group);
     if (!label) return "";
-    return `<button type="button" class="course-enrollment-btn${extraClass ? " " + extraClass : ""}" data-action="show-course-enrollment" data-course-id="${esc(course.id)}" data-date="${esc(dateInput || "")}" title="Voir les inscrits">${esc(label)}</button>`;
+    return `<button type="button" class="course-enrollment-btn${extraClass ? " " + extraClass : ""}" data-action="show-course-enrollment" data-course-id="${esc(course.id)}" data-date="${esc(dateInput || "")}" data-sport-club-id="${esc(activeClubId())}" title="Voir les inscrits">${esc(label)}</button>`;
   }
 
   function courseLineHtml(course, dateInput = "") {
@@ -36695,6 +39772,10 @@ ${esc(bodyText)}</pre>
     const cancelled = Boolean(ex && ex.cancelled);
     const shown = resolveCourseForDate(course, dateInput);
     const groupColor = group && asText(group.color) ? group.color : "";
+    // Lot O-E2-B4R (§31) — "Appel" ouvre une feuille de présence NOUVELLE (création) : masqué sans
+    // sport.write. "✎" reste visible (précédent Consulter/Modifier, comme Groupes/Coachs/Salles) :
+    // le dialogue s'ouvre déjà en lecture seule réelle via openCourseDialog quand sport.write=false.
+    const canWriteSport = currentUserHasPermission("sport.write", activeClubId());
     return `<div class="course-line ${conflict ? "course-conflict" : ""} ${pending ? "course-replace" : ""} ${cancelled ? "course-cancelled" : ""}" ${groupColor ? `style="border-left:4px solid ${esc(groupColor)}"` : ""}>
       <div class="course-time ${exceptionHasTimeOverride(ex) ? "course-time-exception" : ""}">${esc(shown.startTime || "?")}–${esc(shown.endTime || "?")}</div>
       <div class="course-info">
@@ -36706,8 +39787,8 @@ ${esc(bodyText)}</pre>
         ${courseExceptionBadgeHtml(course, dateInput)}
         ${courseAlertsHtml(course, dateInput)}
         ${manageDateBtnHtml(course, dateInput)}
-        ${course.groupId ? `<button type="button" data-action="attendance-from-course" data-id="${esc(course.id)}" title="Faire l'appel pour ce créneau">Appel</button>` : ""}
-        <button type="button" class="icon" data-action="edit-course" data-id="${esc(course.id)}" data-date="${esc(dateInput)}" title="Modifier le créneau récurrent">✎</button>
+        ${(course.groupId && canWriteSport) ? `<button type="button" data-action="attendance-from-course" data-id="${esc(course.id)}" data-sport-club-id="${esc(activeClubId())}" title="Faire l'appel pour ce créneau">Appel</button>` : ""}
+        <button type="button" class="icon" data-action="edit-course" data-id="${esc(course.id)}" data-date="${esc(dateInput)}" data-sport-club-id="${esc(activeClubId())}" title="${canWriteSport ? "Modifier le créneau récurrent" : "Consulter le créneau récurrent"}">✎</button>
       </div>
     </div>`;
   }
@@ -36747,8 +39828,10 @@ ${esc(bodyText)}</pre>
           ].filter(Boolean).join("");
           const badgesHtml = `${courseExceptionBadgeHtml(c, di)}${courseAlertsHtml(c, di)}`;
           const groupColor = g && asText(g.color) ? g.color : "";
-          return `<div class="planning-week-slot ${getCourseConflictsForDate(c, di).length ? "course-conflict" : ""} ${pending ? "course-replace" : ""} ${cancelled ? "course-cancelled" : ""}" data-action="edit-course" data-id="${esc(c.id)}" data-date="${esc(di)}" ${groupColor ? `style="border-left:4px solid ${esc(groupColor)}"` : ""}>
-            <div class="pws-line"><span class="pws-title"><strong class="${exceptionHasTimeOverride(ex) ? "course-time-exception" : ""}">${esc(shown.startTime || "")}</strong> ${esc(c.name)}${recurrenceBadgeHtml(c)}</span><button type="button" class="pws-date-btn" data-action="manage-course-date" data-id="${esc(c.id)}" data-date="${esc(di)}" aria-label="Modifier seulement cette date" title="Exception au planning hebdomadaire : modifier SEULEMENT cette date (annuler, horaire, coach ou salle pour ce jour précis).">📅</button></div>
+          // Lot O-E2-B4R (§31) — bouton 📅 masqué réellement sans sport.write (pure mutation).
+          const canWriteSportWeek = currentUserHasPermission("sport.write", activeClubId());
+          return `<div class="planning-week-slot ${getCourseConflictsForDate(c, di).length ? "course-conflict" : ""} ${pending ? "course-replace" : ""} ${cancelled ? "course-cancelled" : ""}" data-action="edit-course" data-id="${esc(c.id)}" data-date="${esc(di)}" data-sport-club-id="${esc(activeClubId())}" ${groupColor ? `style="border-left:4px solid ${esc(groupColor)}"` : ""}>
+            <div class="pws-line"><span class="pws-title"><strong class="${exceptionHasTimeOverride(ex) ? "course-time-exception" : ""}">${esc(shown.startTime || "")}</strong> ${esc(c.name)}${recurrenceBadgeHtml(c)}</span>${canWriteSportWeek ? `<button type="button" class="pws-date-btn" data-action="manage-course-date" data-id="${esc(c.id)}" data-date="${esc(di)}" data-sport-club-id="${esc(activeClubId())}" aria-label="Modifier seulement cette date" title="Exception au planning hebdomadaire : modifier SEULEMENT cette date (annuler, horaire, coach ou salle pour ce jour précis).">📅</button>` : ""}</div>
             ${metaHtml ? `<div class="pws-meta">${metaHtml}</div>` : ""}
             ${badgesHtml ? `<div class="pws-badges">${badgesHtml}</div>` : ""}
           </div>`;
@@ -36759,7 +39842,12 @@ ${esc(bodyText)}</pre>
 
   // Dialogue « Gérer cette date » : annuler / rétablir + note, pour UNE date précise.
   // N'écrit que dans state.planningExceptions ; le créneau récurrent reste intact.
-  function openCourseDateDialog(courseId, dateInput) {
+  function openCourseDateDialog(courseId, dateInput, openedClubId = "") {
+    if (!openedClubId || activeClubId() !== openedClubId) return;
+    if (!currentUserHasPermission("sport.write", openedClubId)) {
+      alert("Vous n'avez pas l'autorisation nécessaire.");
+      return;
+    }
     const course = getCourseById(courseId);
     if (!course) { alert("Créneau introuvable."); return; }
     if (!dateInput) { alert("Date de la séance inconnue."); return; }
@@ -36805,6 +39893,12 @@ ${esc(bodyText)}</pre>
       textareaField("note", "Note spéciale pour cette séance (facultatif)", ex.note || ""),
     ].join("");
     showDialog(`Séance du ${dateLabel}`, body, async (data) => {
+      if (activeClubId() !== openedClubId) {
+        alert("Le club actif a changé depuis l'ouverture de ce formulaire. Rouvrez-le pour continuer.");
+        return false;
+      }
+      if (!ensureUserPermission("sport.write", openedClubId)) return false;
+      if (!getCourseById(courseId)) { alert("Ce créneau n'existe plus."); return false; }
       const cancelled = Boolean(data.get("cancelled"));
       const note = asText(data.get("note"));
       const startTime = asText(data.get("startTime"));
@@ -36928,7 +40022,16 @@ ${esc(bodyText)}</pre>
     return `<label>Groupe<select name="groupId" data-group-select>${options}</select></label>${noneMsg}`;
   }
 
-  function openCourseDialog(course = {}, contextDate = "") {
+  // Lot O-E2-B4 (§16) — même garde active-club LOCALE + readOnly réel que Groupes/Teams : la
+  // fonction de rappel `footerLeft` doit elle aussi respecter le readOnly (delete-course masqué,
+  // §44 : un dialogue "consultation" ne peut pas exposer un bouton mutant dans son footer).
+  function openCourseDialog(course = {}, contextDate = "", openedClubId = "") {
+    if (!openedClubId || activeClubId() !== openedClubId) return;
+    const openedCourseId = course.id || "";
+    if (!currentUserHasPermission("sport.read", openedClubId)) return;
+    const canWriteCourse = currentUserHasPermission("sport.write", openedClubId);
+    if (!openedCourseId && !canWriteCourse) return;
+    const readOnly = Boolean(course.id) && !canWriteCourse;
     const groups = (state.groups || []).filter((g) => !g.archived);
     // Si la date consultée porte une exception, le rappeler clairement : cet éditeur modifie le
     // créneau RÉCURRENT (toutes les semaines), pas l'exception ponctuelle de cette date précise.
@@ -36945,7 +40048,7 @@ ${esc(bodyText)}</pre>
         <p class="course-ex-banner-title">⚠ Cette séance possède une exception</p>
         <p class="muted">${exWhat}${ctxDiffHtml ? " Voici les différences pour cette date :" : ""}</p>
         ${ctxDiffHtml}
-        <button type="button" class="course-date-btn" data-action="manage-course-date" data-id="${esc(course.id)}" data-date="${esc(contextDate)}"><span aria-hidden="true">📅</span> Modifier uniquement cette date</button>
+        ${readOnly ? "" : `<button type="button" class="course-date-btn" data-action="manage-course-date" data-id="${esc(course.id)}" data-date="${esc(contextDate)}" data-sport-club-id="${esc(openedClubId)}"><span aria-hidden="true">📅</span> Modifier uniquement cette date</button>`}
       </div>` : "";
     // Bloc d'information distinct (discret) — SANS action : prévient simplement que les champs
     // du formulaire ci-dessous modifient le créneau habituel (toutes les semaines).
@@ -36971,9 +40074,18 @@ ${esc(bodyText)}</pre>
       field("maxPlaces", "Places max", course.maxPlaces ?? "", "number", 'step="1" min="0"'),
       textareaField("notes", "Notes", course.notes || ""),
     ].join("");
-    const footer = course.id ? `<button type="button" class="danger" data-action="delete-course" data-id="${esc(course.id)}">Supprimer</button>` : "";
+    const footer = (course.id && canWriteCourse) ? `<button type="button" class="danger" data-action="delete-course" data-id="${esc(course.id)}" data-sport-club-id="${esc(openedClubId)}">Supprimer</button>` : "";
     setNextWindowKey(course.id ? `course:${course.id}` : null);
-    showDialog(course.id ? "Modifier le créneau" : "Nouveau créneau", body, async (data) => {
+    showDialog(readOnly ? "Consulter le créneau" : (course.id ? "Modifier le créneau" : "Nouveau créneau"), body, async (data) => {
+      // 1) Garde active-club — AVANT toute autre validation.
+      if (activeClubId() !== openedClubId) {
+        alert("Le club actif a changé depuis l'ouverture de ce formulaire. Rouvrez-le pour continuer.");
+        return false;
+      }
+      // 2) Garde permission sport.write.
+      if (!ensureUserPermission("sport.write", openedClubId)) return false;
+      // 3) Revalidation fraîche en édition — id introuvable = REFUS (jamais de dégénérescence en création).
+      if (openedCourseId && !getCourseById(openedCourseId)) { alert("Ce créneau n'existe plus."); return false; }
       const name = asText(data.get("name"));
       if (!name) { alert("Le nom du créneau est obligatoire."); return false; }
       const coachId = asText(data.get("coachId"));
@@ -37120,7 +40232,7 @@ ${esc(bodyText)}</pre>
           syncDayField();
         }
       });
-    }, footer);
+    }, footer, () => {}, "Enregistrer", { readOnly });
   }
 
   // =========================================================================
@@ -37145,12 +40257,12 @@ ${esc(bodyText)}</pre>
     const sessionRows = sessions.map((s) => {
       const group = getGroupById(s.groupId);
       const present = (s.rows || []).filter((r) => r.status === "present" || r.status === "late").length;
-      return `<tr class="clickable-row" data-action="edit-attendance" data-id="${esc(s.id)}">
+      return `<tr class="clickable-row" data-action="edit-attendance" data-id="${esc(s.id)}" data-sport-club-id="${esc(activeClubId())}">
         <td>${esc(dateDisplay(s.date))}</td>
         <td>${esc(group ? group.name : "—")}</td>
         <td>${esc(s.coach || "—")}</td>
         <td>${present} / ${(s.rows || []).length}</td>
-        <td><button type="button" data-action="print-attendance" data-id="${esc(s.id)}" title="Imprimer la feuille de présence">Imprimer</button></td>
+        <td><button type="button" data-action="print-attendance" data-id="${esc(s.id)}" data-sport-club-id="${esc(activeClubId())}" title="Imprimer la feuille de présence">Imprimer</button></td>
       </tr>`;
     }).join("") || (sessions.length === 0 ? `<tr><td colspan="5">${emptyStateHtml("attendance")}</td></tr>` : `<tr><td colspan="5" class="empty">Aucune séance enregistrée.</td></tr>`);
     // Statistiques par groupe
@@ -37178,8 +40290,9 @@ ${esc(bodyText)}</pre>
       const avg = Math.round(rates.reduce((a, s) => a + s.rate, 0) / rates.length);
       return `<div class="kpi"><span>${esc(d)}</span><strong>${avg} %</strong></div>`;
     }).filter(Boolean).join("");
+    const canWriteSport = currentUserHasPermission("sport.write", activeClubId());
     return `
-      ${toolbar("add-attendance", "Nouvelle feuille d'appel", `<span class="muted">${sessions.length} séance${sessions.length > 1 ? "s" : ""}</span>`)}
+      ${toolbar(canWriteSport ? "add-attendance" : "", "Nouvelle feuille d'appel", `<span class="muted">${sessions.length} séance${sessions.length > 1 ? "s" : ""}</span>`, "", ` data-sport-club-id="${esc(activeClubId())}"`)}
       <div class="band">
         <div class="band-title"><h2>Assiduité par groupe</h2></div>
         <div class="doc-summary">${groupStats}</div>
@@ -37226,7 +40339,13 @@ ${esc(bodyText)}</pre>
     return (state.attendanceSessions || []).find((s) => s.id === sessionId) || {};
   }
 
-  function openAttendanceDialog(session = {}) {
+  function openAttendanceDialog(session = {}, openedClubId = "") {
+    if (!openedClubId || activeClubId() !== openedClubId) return;
+    const openedSessionId = session.id || "";
+    if (!currentUserHasPermission("sport.read", openedClubId)) return;
+    const canWriteAttendance = currentUserHasPermission("sport.write", openedClubId);
+    if (!openedSessionId && !canWriteAttendance) return;
+    const readOnly = Boolean(session.id) && !canWriteAttendance;
     const groups = (state.groups || []).filter((g) => !g.archived);
     const isNew = !session.id;
     const groupId = session.groupId || (groups[0] && groups[0].id) || "";
@@ -37257,12 +40376,21 @@ ${esc(bodyText)}</pre>
       </div>`,
     ].join("");
     const footer = session.id
-      ? `<button type="button" data-action="print-attendance" data-id="${esc(session.id)}">Imprimer la feuille</button>
-         <button type="button" class="danger" data-action="delete-attendance" data-id="${esc(session.id)}">Supprimer</button>
-         <button type="button" data-action="apply-attendance" data-id="${esc(session.id)}" title="Enregistrer sans fermer">Appliquer</button>`
+      ? `<button type="button" data-action="print-attendance" data-id="${esc(session.id)}" data-sport-club-id="${esc(openedClubId)}">Imprimer la feuille</button>
+         ${canWriteAttendance ? `<button type="button" class="danger" data-action="delete-attendance" data-id="${esc(session.id)}" data-sport-club-id="${esc(openedClubId)}">Supprimer</button>
+         <button type="button" data-action="apply-attendance" data-id="${esc(session.id)}" data-sport-club-id="${esc(openedClubId)}" title="Enregistrer sans fermer">Appliquer</button>` : ""}`
       : "";
     setNextWindowKey(session.id ? `attendance:${session.id}` : null);
-    showDialog(session.id ? "Modifier la feuille d'appel" : "Nouvelle feuille d'appel", body, (data, form) => {
+    showDialog(readOnly ? "Consulter la feuille d'appel" : (session.id ? "Modifier la feuille d'appel" : "Nouvelle feuille d'appel"), body, (data, form) => {
+      if (activeClubId() !== openedClubId) {
+        alert("Le club actif a changé depuis l'ouverture de ce formulaire. Rouvrez-le pour continuer.");
+        return false;
+      }
+      if (!ensureUserPermission("sport.write", openedClubId)) return false;
+      if (openedSessionId && !(state.attendanceSessions || []).some((s) => s.id === openedSessionId)) {
+        alert("Cette feuille d'appel n'existe plus.");
+        return false;
+      }
       const next = attendanceSessionFromForm(form, session);
       state.attendanceSessions = state.attendanceSessions || [];
       upsert(state.attendanceSessions, next);
@@ -37282,7 +40410,7 @@ ${esc(bodyText)}</pre>
         // Réapplique le terme de recherche courant aux nouvelles lignes.
         applyDialogListFilter(form.querySelector("[data-list-search]"));
       });
-    }, footer);
+    }, footer, () => {}, "Enregistrer", { readOnly });
   }
 
   // =========================================================================
@@ -37307,19 +40435,20 @@ ${esc(bodyText)}</pre>
 
   // Champs V1 strictement minimaux (Lot K-T2B §6) : nom, discipline (obligatoire), coach optionnel,
   // catégorie sportive optionnelle. `archived` n'est jamais édité ici — cf. toggleArchiveTeam.
-  function openTeamDialog(team = {}) {
-    // Lot K-T2B0C — garde active-club LOCALE : capture au moment de l'ouverture (CREATE et EDIT),
-    // revalidée en tout début de onSave, avant toute autre validation ou mutation. showDialog
-    // générique reste intact (K-T2B0C §2/§12) : cette garde est propriété exclusive de ce dialogue.
-    const openedClubId = activeClubId();
+  function openTeamDialog(team = {}, openedClubId = "") {
+    if (!openedClubId || activeClubId() !== openedClubId) return;
     const openedTeamId = team.id || "";
+    if (!currentUserHasPermission("sport.read", openedClubId)) return;
+    if (!openedTeamId && !(hasFeature("teams") && currentUserHasPermission("sport.write", openedClubId))) return;
     const body = [
       field("name", "Nom de l'équipe *", team.name || "", "text", "required"),
       disciplineSelectField("discipline", "Discipline", team),
       sportCategorySelectField("sportCategoryId", team),
       `<div data-coach-field>${coachPickerHtml(team.coachId, { disciplineId: team.disciplineId, discipline: team.discipline }, team.coach, "Coach / encadrant")}</div>`,
     ].join("");
-    const readOnly = Boolean(team.id) && !hasFeature("teams");
+    // Lot O-E2-B4 (§35) — readOnly réel dès que la fonctionnalité OU la permission manque : les deux
+    // conditions restent indépendantes (jamais de lien automatique feature<->permission, §21).
+    const readOnly = Boolean(team.id) && (!hasFeature("teams") || !currentUserHasPermission("sport.write", openedClubId));
     setNextWindowKey(team.id ? `team:${team.id}` : null);
     showDialog(readOnly ? "Consulter l'équipe" : (team.id ? "Modifier l'équipe" : "Nouvelle équipe"), body, (data, form) => {
       // 1) Garde active-club — AVANT toute autre validation (K-T2B0C).
@@ -37330,6 +40459,9 @@ ${esc(bodyText)}</pre>
       // 2) Garde feature — même si le dialogue a été ouvert quand Teams était ON (doctrine K-D1).
       //    Jamais de garde memberships ici (roster/CRUD Team = mutation cross-domain, cf. K-T1C).
       if (!ensureFeatureEnabledForMutation("teams")) return false;
+      // 2bis) Garde permission — sport.write couvre les conséquences Membership (teamIds), jamais
+      // memberships.write (§21/§43 Lot O-E2-B4).
+      if (!ensureUserPermission("sport.write", openedClubId)) return false;
       // 3) Revalidation fraîche en édition — jamais de mutation sur une référence capturée à
       //    l'ouverture (K-T2B0C §5/§9).
       let current = null;
@@ -37403,15 +40535,17 @@ ${esc(bodyText)}</pre>
   // l'ouverture de la confirmation et sa résolution (duplication de club avec ids conservés).
   async function toggleArchiveTeam(teamId) {
     if (!ensureFeatureEnabledForMutation("teams")) return;
+    const targetClubId = activeClubId();
+    if (!ensureUserPermission("sport.write", targetClubId)) return;
     const team = getTeamById(teamId);
     if (!team) return;
     const count = membershipsReferencingTeam(teamId).length;
     if (!team.archived && count > 0) {
-      const targetClubId = activeClubId();
       const ok = await requestConfirm({ title: "Archiver l'équipe", message: `${count} adhérent(s) sont liés à cette équipe. L'archiver le masque sans supprimer les liens. Continuer ?`, confirmLabel: "Archiver" });
       if (!ok) return;
       if (!ensureFeatureEnabledForMutation("teams")) return;
       if (activeClubId() !== targetClubId) { alert("Le club actif a changé pendant la confirmation. Réessayez."); return; }
+      if (!ensureUserPermission("sport.write", targetClubId)) return;
       const freshTeam = getTeamById(teamId);
       if (!freshTeam) return;
       recordHistory(); freshTeam.archived = true; persist("Équipe archivée"); render();
@@ -37429,13 +40563,14 @@ ${esc(bodyText)}</pre>
   // =========================================================================
 
   function renderTeams() {
+    const canWriteSport = currentUserHasPermission("sport.write", activeClubId());
     const activeTeams = (state.teams || []).filter((t) => !t.archived);
     const archivedTeams = (state.teams || []).filter((t) => t.archived);
     const cards = activeTeams.map(teamCardHtml).join("") || ((state.teams || []).length === 0
-      ? `<div class="empty"><p>Aucune équipe créée.</p><button type="button" class="primary" data-action="add-team">Nouvelle équipe</button></div>`
+      ? `<div class="empty"><p>Aucune équipe créée.</p>${canWriteSport ? `<button type="button" class="primary" data-action="add-team" data-sport-club-id="${esc(activeClubId())}">Nouvelle équipe</button>` : ""}</div>`
       : `<p class="muted">Toutes les équipes sont archivées. Crée une nouvelle équipe ou réactive une équipe archivée.</p>`);
     return `
-      ${toolbar("add-team", "Nouvelle équipe", `<span class="muted">${activeTeams.length} équipe${activeTeams.length > 1 ? "s" : ""}</span>`)}
+      ${toolbar(canWriteSport ? "add-team" : "", "Nouvelle équipe", `<span class="muted">${activeTeams.length} équipe${activeTeams.length > 1 ? "s" : ""}</span>`, "", ` data-sport-club-id="${esc(activeClubId())}"`)}
       <div class="band">
         <div class="band-title"><h2>Équipes</h2></div>
         <div class="group-grid team-grid">${cards}</div>
@@ -37452,6 +40587,7 @@ ${esc(bodyText)}</pre>
   // budo-app/styles.css : les classes team-* n'ajoutent qu'un repère sémantique dans le DOM (Groupes
   // et Équipes restent deux entités visuellement distinctes dans le code, jamais dans le style).
   function teamCardHtml(team) {
+    const canWriteSport = currentUserHasPermission("sport.write", activeClubId());
     const categoryLabel = sportCategoryAssignmentLabel(team.sportCategoryId, team.disciplineId, state, activeClubId());
     const memberCount = membershipsReferencingTeam(team.id).length;
     return `<div class="group-card team-card paper ${team.archived ? "group-archived team-archived" : ""}">
@@ -37465,10 +40601,10 @@ ${esc(bodyText)}</pre>
         ${coachLabelFor(team.coachId, "") ? `<span>· Coach ${esc(coachLabelFor(team.coachId, ""))}</span>` : ""}
       </div>
       <div class="group-card-actions team-card-actions">
-        <button type="button" data-action="view-team-members" data-id="${esc(team.id)}">Membres +/−</button>
-        <button type="button" data-action="edit-team" data-id="${esc(team.id)}">Modifier</button>
-        <button type="button" data-action="toggle-archive-team" data-id="${esc(team.id)}">${team.archived ? "Réactiver" : "Archiver"}</button>
-        <button type="button" class="icon danger" data-action="delete-team" data-id="${esc(team.id)}" title="Supprimer définitivement (si aucun adhérent lié)">×</button>
+        <button type="button" data-action="view-team-members" data-id="${esc(team.id)}" data-sport-club-id="${esc(activeClubId())}">${canWriteSport ? "Membres +/−" : "Voir les membres"}</button>
+        ${canWriteSport ? `<button type="button" data-action="edit-team" data-id="${esc(team.id)}" data-sport-club-id="${esc(activeClubId())}">Modifier</button>` : ""}
+        ${canWriteSport ? `<button type="button" data-action="toggle-archive-team" data-id="${esc(team.id)}" data-sport-club-id="${esc(activeClubId())}">${team.archived ? "Réactiver" : "Archiver"}</button>` : ""}
+        ${canWriteSport ? `<button type="button" class="icon danger" data-action="delete-team" data-id="${esc(team.id)}" data-sport-club-id="${esc(activeClubId())}" title="Supprimer définitivement (si aucun adhérent lié)">×</button>` : ""}
       </div>
     </div>`;
   }
@@ -37496,6 +40632,7 @@ ${esc(bodyText)}</pre>
   function teamMembersDialogBody(teamId) {
     const team = getTeamById(teamId);
     if (!team) return `<p class="muted">Équipe introuvable.</p>`;
+    const canWriteSport = currentUserHasPermission("sport.write", activeClubId());
     const members = membershipsReferencingTeam(teamId);
     // Team archivée : l'UI reflète directement la règle moteur (add-member-to-team bloque déjà si
     // team.archived) — aucune candidate n'est proposée, jamais un bouton qui échouerait au clic.
@@ -37508,7 +40645,7 @@ ${esc(bodyText)}</pre>
               <strong>${esc(personLabel(m))}</strong>
               <span class="muted">${esc(m.discipline || "")}</span>
             </div>
-            <button type="button" class="danger small" data-action="remove-member-from-team" data-team-id="${esc(teamId)}" data-membership-id="${esc(m.id)}">Retirer</button>
+            ${canWriteSport ? `<button type="button" class="danger small" data-action="remove-member-from-team" data-team-id="${esc(teamId)}" data-membership-id="${esc(m.id)}" data-sport-club-id="${esc(activeClubId())}">Retirer</button>` : ""}
           </div>`).join("")}</div>`
       : `<p class="muted">Aucun membre dans cette équipe pour l'instant.</p>`;
 
@@ -37521,7 +40658,7 @@ ${esc(bodyText)}</pre>
                 <strong>${esc(personLabel(m))}</strong>
                 <span class="muted">${esc(m.discipline || "")}</span>
               </div>
-              <button type="button" class="small" data-action="add-member-to-team" data-team-id="${esc(teamId)}" data-membership-id="${esc(m.id)}">Ajouter à l'équipe</button>
+              <button type="button" class="small" data-action="add-member-to-team" data-team-id="${esc(teamId)}" data-membership-id="${esc(m.id)}" data-sport-club-id="${esc(activeClubId())}">Ajouter à l'équipe</button>
             </div>`).join("")}</div>`
         : `<p class="muted">Aucun adhérent disponible pour cette discipline.</p>`);
 
@@ -37530,14 +40667,16 @@ ${esc(bodyText)}</pre>
         <h3>Membres de l'équipe (${members.length})</h3>
         ${membersHtml}
       </div>
-      <div class="dialog-section group-members-add team-members-add">
+      ${canWriteSport ? `<div class="dialog-section group-members-add team-members-add">
         <h3>Ajouter des membres</h3>
         ${candidatesHtml}
-      </div>
+      </div>` : ""}
     </div>`;
   }
 
-  function openTeamMembersDialog(teamId) {
+  function openTeamMembersDialog(teamId, openedClubId = "") {
+    if (!openedClubId || activeClubId() !== openedClubId) return;
+    if (!hasFeature("teams") || !currentUserHasPermission("sport.read", openedClubId)) return;
     const team = getTeamById(teamId);
     showInfoDialog(team ? `${team.name}` : "Équipe", teamMembersDialogBody(teamId));
   }
@@ -37633,6 +40772,7 @@ ${esc(bodyText)}</pre>
   }
 
   function competitionCardHtml(competition) {
+    const canWriteCompetition = hasFeature("competitions") && currentUserHasPermission("competitions.write", activeClubId());
     const summary = competitionConvocationSummary(competition);
     const dateLabel = [competition.startDate ? dateDisplay(competition.startDate) : "", competition.startTime].filter(Boolean).join(" · ");
     const disciplineLabel = competition.disciplineId ? (disciplineById(competition.disciplineId)?.name || "") : "";
@@ -37661,9 +40801,9 @@ ${esc(bodyText)}</pre>
       </div>
       ${convocationLine ? `<div class="group-card-meta team-card-meta"><span>${esc(convocationLine)}</span></div>` : ""}
       <div class="group-card-actions team-card-actions">
-        <button type="button" data-action="edit-competition" data-id="${esc(competition.id)}">Modifier</button>
-        <button type="button" data-action="toggle-archive-competition" data-id="${esc(competition.id)}">${competition.archived ? "Réactiver" : "Archiver"}</button>
-        <button type="button" class="icon danger" data-action="delete-competition" data-id="${esc(competition.id)}" title="Supprimer définitivement">×</button>
+        <button type="button" data-action="edit-competition" data-id="${esc(competition.id)}" data-competition-club-id="${esc(activeClubId())}">${canWriteCompetition ? "Modifier" : "Consulter"}</button>
+        ${canWriteCompetition ? `<button type="button" data-action="toggle-archive-competition" data-id="${esc(competition.id)}" data-competition-club-id="${esc(activeClubId())}">${competition.archived ? "Réactiver" : "Archiver"}</button>` : ""}
+        ${canWriteCompetition ? `<button type="button" class="icon danger" data-action="delete-competition" data-id="${esc(competition.id)}" data-competition-club-id="${esc(activeClubId())}" title="Supprimer définitivement">×</button>` : ""}
       </div>
     </div>`;
   }
@@ -37672,15 +40812,16 @@ ${esc(bodyText)}</pre>
   // venir ; sinon (completed/cancelled) -> terminées. status reste une donnée métier EXPLICITE :
   // aucun moteur temporel n'infère jamais un statut depuis startDate/endDate.
   function renderCompetitions() {
+    const canWriteCompetition = hasFeature("competitions") && currentUserHasPermission("competitions.write", activeClubId());
     const all = state.competitions || [];
     const upcoming = all.filter((c) => !c.archived && c.status === "planned");
     const past = all.filter((c) => !c.archived && c.status !== "planned");
     const archived = all.filter((c) => c.archived);
     if (!all.length) {
-      return `<div class="empty"><p>Aucune rencontre créée.</p><button type="button" class="primary" data-action="add-competition">Nouvelle rencontre</button></div>`;
+      return `<div class="empty"><p>Aucune rencontre créée.</p>${canWriteCompetition ? `<button type="button" class="primary" data-action="add-competition" data-competition-club-id="${esc(activeClubId())}">Nouvelle rencontre</button>` : ""}</div>`;
     }
     return `
-      ${toolbar("add-competition", "Nouvelle rencontre", `<span class="muted">${upcoming.length} à venir</span>`)}
+      ${toolbar(canWriteCompetition ? "add-competition" : "", "Nouvelle rencontre", `<span class="muted">${upcoming.length} à venir</span>`, "", ` data-competition-club-id="${esc(activeClubId())}"`)}
       <div class="band">
         <div class="band-title"><h2>Rencontres à venir</h2></div>
         <div class="group-grid team-grid">${upcoming.map(competitionCardHtml).join("") || `<p class="muted">Aucune rencontre à venir.</p>`}</div>
@@ -37749,14 +40890,22 @@ ${esc(bodyText)}</pre>
   // à nouveau ; à la création seulement, une Team choisie peut préremplir discipline/catégorie/coach
   // ET fournir un point de départ pour les convocations (jamais une référence vivante ensuite,
   // doctrine M-A2 §6/§9) ; en édition, aucune réécriture silencieuse d'un champ déjà enregistré.
-  function openCompetitionDialog(competition = {}) {
-    const openedClubId = activeClubId();
+  // Lot O-E2-B4 (§39) — competitions.write couvre AUSSI le choix d'une Team dans le formulaire et la
+  // convocation du roster (aucune mutation de state.teams n'en résulte, cf. competitionConvocationsFromTeamRoster
+  // et l'audit préalable) : jamais de garde sport.write ici, indépendance stricte des deux permissions.
+  function openCompetitionDialog(competition = {}, openedClubId = "") {
+    if (!openedClubId || activeClubId() !== openedClubId) return;
     const openedCompetitionId = competition.id || "";
+    if (!currentUserHasPermission("competitions.read", openedClubId)) return;
+    const canWriteCompetition = hasFeature("competitions") && currentUserHasPermission("competitions.write", openedClubId);
+    if (!openedCompetitionId && !canWriteCompetition) return;
+    const readOnly = Boolean(competition.id) && !canWriteCompetition;
     const previousConvocations = Array.isArray(competition.convocations) ? competition.convocations : [];
     setNextWindowKey(competition.id ? `competition:${competition.id}` : null);
-    showDialog(competition.id ? "Modifier la rencontre" : "Nouvelle rencontre", competitionDialogBody(competition), (data, form) => {
+    showDialog(readOnly ? "Consulter la rencontre" : (competition.id ? "Modifier la rencontre" : "Nouvelle rencontre"), competitionDialogBody(competition), (data, form) => {
       if (activeClubId() !== openedClubId) { alert("Le club actif a changé depuis l'ouverture de ce formulaire. Rouvrez-le pour continuer."); return false; }
       if (!ensureFeatureEnabledForMutation("competitions")) return false;
+      if (!ensureUserPermission("competitions.write", openedClubId)) return false;
       let current = null;
       if (openedCompetitionId) {
         current = getCompetitionById(openedCompetitionId);
@@ -37860,11 +41009,12 @@ ${esc(bodyText)}</pre>
         if (form.elements.sportCategoryId && !form.elements.sportCategoryId.value) form.elements.sportCategoryId.value = chosen.sportCategoryId || "";
         if (form.elements.coachId && !form.elements.coachId.value) form.elements.coachId.value = chosen.coachId || "";
       });
-    });
+    }, "", () => {}, "Enregistrer", { readOnly });
   }
 
   async function toggleArchiveCompetition(competitionId) {
     if (!ensureFeatureEnabledForMutation("competitions")) return;
+    if (!ensureUserPermission("competitions.write", activeClubId())) return;
     const competition = getCompetitionById(competitionId);
     if (!competition) return;
     recordHistory();
@@ -38236,7 +41386,12 @@ ${esc(bodyText)}</pre>
   function coursePlanningBadgeHtml(course, dateInput = "") {
     const info = courseReplacementInfoForDate(course, dateInput);
     if (!info) return "";
-    const attrs = `role="button" tabindex="0" data-action="replace-session" data-course-id="${esc(course.id)}" data-ps="${esc(info.impact.periodStart || "")}" data-pe="${esc(info.impact.periodEnd || "")}"`;
+    // Lot O-E2-B4R (§30-31) — badge purement informatif (jamais cliquable) sans sport.write : le
+    // masquage réel porte sur la COMMANDE mutante, pas sur l'information de statut elle-même.
+    const canWriteSport = currentUserHasPermission("sport.write", activeClubId());
+    const attrs = canWriteSport
+      ? `role="button" tabindex="0" data-action="replace-session" data-course-id="${esc(course.id)}" data-ps="${esc(info.impact.periodStart || "")}" data-pe="${esc(info.impact.periodEnd || "")}" data-sport-club-id="${esc(activeClubId())}"`
+      : "";
     if (info.status === "pending") return `<span class="doc-badge doc-expired replace-badge" ${attrs} title="Coach indisponible — cliquer pour traiter (remplacer / annuler / ignorer)">⚠ Coach à remplacer</span>`;
     if (info.status === "replaced") { const r = coachById(info.impact.decision.replacementCoachId); return `<span class="doc-badge doc-ok replace-badge" ${attrs} title="Remplaçant désigné — cliquer pour gérer">Remplacé${r ? " · " + esc(coachFullName(r)) : ""}</span>`; }
     if (info.status === "cancelled") return `<span class="doc-badge doc-missing replace-badge" ${attrs} title="Séance annulée — cliquer pour gérer">Coach : annulé</span>`;
@@ -38258,7 +41413,12 @@ ${esc(bodyText)}</pre>
   }
 
   // Dialogue de traitement d'une séance impactée (à remplacer / annuler / ignorer / rétablir).
-  function openReplaceSessionDialog(courseId, periodStart, periodEnd) {
+  function openReplaceSessionDialog(courseId, periodStart, periodEnd, openedClubId = "") {
+    if (!openedClubId || activeClubId() !== openedClubId) return;
+    if (!currentUserHasPermission("sport.write", openedClubId)) {
+      alert("Vous n'avez pas l'autorisation nécessaire.");
+      return;
+    }
     const course = (state.planningCourses || []).find((c) => c.id === courseId);
     if (!course) { alert("Créneau introuvable."); return; }
     const impact = allCoachImpacts().find((x) => x.course.id === courseId && x.periodStart === periodStart && x.periodEnd === periodEnd);
@@ -38303,10 +41463,15 @@ ${esc(bodyText)}</pre>
     // de valide à qui adresser une demande de remplacement (avant ce correctif, les deux boutons
     // partageaient data-id="${originalCoachId}", envoyant la demande au coach absent lui-même).
     const footer = [
-      (originalCoachId && cEmail) ? `<button type="button" data-action="email-coach" data-id="${esc(originalCoachId)}" data-template="coachSimple" data-course-id="${esc(courseId)}" data-ps="${esc(periodStart)}" data-pe="${esc(periodEnd)}" data-statut="Coach à remplacer" title="Préparer un e-mail au coach concerné">${actionMailIcon()} Coach</button>` : "",
-      candidates.length ? `<button type="button" data-action="email-coach-replacement" data-template="coachReplacement" data-course-id="${esc(courseId)}" data-ps="${esc(periodStart)}" data-pe="${esc(periodEnd)}" data-statut="Coach à remplacer" title="Préparer une demande de remplacement au coach sélectionné ci-dessus">${actionSwapIcon()} Remplacement</button>` : "",
+      (originalCoachId && cEmail) ? `<button type="button" data-action="email-coach" data-id="${esc(originalCoachId)}" data-template="coachSimple" data-course-id="${esc(courseId)}" data-ps="${esc(periodStart)}" data-pe="${esc(periodEnd)}" data-statut="Coach à remplacer" data-sport-club-id="${esc(openedClubId)}" title="Préparer un e-mail au coach concerné">${actionMailIcon()} Coach</button>` : "",
+      candidates.length ? `<button type="button" data-action="email-coach-replacement" data-template="coachReplacement" data-course-id="${esc(courseId)}" data-ps="${esc(periodStart)}" data-pe="${esc(periodEnd)}" data-statut="Coach à remplacer" data-sport-club-id="${esc(openedClubId)}" title="Préparer une demande de remplacement au coach sélectionné ci-dessus">${actionSwapIcon()} Remplacement</button>` : "",
     ].filter(Boolean).join(" ");
     showDialog("Coach à remplacer", body, (data) => {
+      if (activeClubId() !== openedClubId) {
+        alert("Le club actif a changé depuis l'ouverture de ce formulaire. Rouvrez-le pour continuer.");
+        return false;
+      }
+      if (!ensureUserPermission("sport.write", openedClubId)) return false;
       const choice = data.get("decision") || (candidates.length ? "replace" : "cancel");
       const originalId = original ? original.id : course.coachId;
       // Lot correctif MS-AUDIT-001 : plus de recordHistory() ici — showDialog capture déjà le
@@ -38343,8 +41508,9 @@ ${esc(bodyText)}</pre>
     if (filterSpec) list = list.filter((c) => (c.specialties || []).includes(filterSpec));
     const specs = [...new Set(all.flatMap((c) => c.specialties || []))].sort();
     const cards = list.map(coachCardHtml).join("") || (all.length === 0 ? emptyStateHtml("coaches") : `<p class="muted">Aucun coach${filterSpec ? " pour cette spécialité" : ""}. Modifie le filtre ou crée un coach.</p>`);
+    const canWriteSport = currentUserHasPermission("sport.write", activeClubId());
     return `
-      ${toolbar("add-coach", "Nouveau coach", `<span class="muted">${activeCoaches().length} coach${activeCoaches().length > 1 ? "s" : ""} actif${activeCoaches().length > 1 ? "s" : ""}</span>`)}
+      ${toolbar(canWriteSport ? "add-coach" : "", "Nouveau coach", `<span class="muted">${activeCoaches().length} coach${activeCoaches().length > 1 ? "s" : ""} actif${activeCoaches().length > 1 ? "s" : ""}</span>`, "", ` data-sport-club-id="${esc(activeClubId())}"`)}
       <div class="band">
         <div class="band-title"><h2>Coachs / intervenants</h2></div>
         <div class="coach-toolbar">
@@ -38361,10 +41527,17 @@ ${esc(bodyText)}</pre>
   function coachReplaceBadgeHtml(coachId, count) {
     const first = pendingCoachReplacements().find((x) => x.coach && x.coach.id === coachId);
     if (!first) return "";
-    return `<span class="doc-badge doc-expired replace-badge" role="button" tabindex="0" data-action="replace-session" data-course-id="${esc(first.course.id)}" data-ps="${esc(first.periodStart)}" data-pe="${esc(first.periodEnd)}" title="Traiter cette séance : désigner un remplaçant, annuler ou ignorer">⚠ ${count} séance${count > 1 ? "s" : ""} à remplacer →</span>`;
+    // Lot O-E2-B4R (§30-31) — badge purement informatif (jamais cliquable) sans sport.write.
+    if (!currentUserHasPermission("sport.write", activeClubId())) {
+      return `<span class="doc-badge doc-expired replace-badge" title="Séance(s) à remplacer">⚠ ${count} séance${count > 1 ? "s" : ""} à remplacer</span>`;
+    }
+    return `<span class="doc-badge doc-expired replace-badge" role="button" tabindex="0" data-action="replace-session" data-course-id="${esc(first.course.id)}" data-ps="${esc(first.periodStart)}" data-pe="${esc(first.periodEnd)}" data-sport-club-id="${esc(activeClubId())}" title="Traiter cette séance : désigner un remplaçant, annuler ou ignorer">⚠ ${count} séance${count > 1 ? "s" : ""} à remplacer →</span>`;
   }
 
   function coachCardHtml(coach) {
+    // Lot O-E2-B4 (§20/§24) — masquage réel des actions mutantes ; le bouton € Dépense (déjà protégé
+    // par accounting.read/write + data-accounting-club-id, Lot B3B-3/3R) reste INTACT et indépendant.
+    const canWriteSport = currentUserHasPermission("sport.write", activeClubId());
     const sessions = coursesForCoach(coach.id).length;
     const toReplace = coachPendingReplacementCount(coach.id);
     const searchText = [coachFullName(coach), coach.email, coach.phone, (coach.specialties || []).join(" "), coach.notes, coachAvailabilitySummary(coach)].map((x) => asText(x)).join(" ").toLowerCase();
@@ -38392,15 +41565,15 @@ ${esc(bodyText)}</pre>
       </div>
       ${toReplace ? `<div class="group-card-meta">${coachReplaceBadgeHtml(coach.id, toReplace)}</div>` : ""}
       <div class="card-email-actions">
-        <button type="button" data-action="email-coach" data-id="${esc(coach.id)}" data-template="coachSimple" title="Préparer un e-mail au coach">${actionMailIcon()} E-mail</button>
-        <button type="button" data-action="email-coach" data-id="${esc(coach.id)}" data-template="coachPlanning" title="Préparer une information planning">${actionCalendarIcon()} Planning</button>
-        <button type="button" data-action="email-coach" data-id="${esc(coach.id)}" data-template="coachReplacement" title="Préparer une demande de remplacement">${actionSwapIcon()} Remplacement</button>
-        ${coach.expenseEnabled && asText(coach.expenseAmount) !== "" ? `<button type="button" data-action="create-coach-expense" data-id="${esc(coach.id)}" title="Créer une dépense liée à ce coach">€ Dépense</button>` : ""}
+        <button type="button" data-action="email-coach" data-id="${esc(coach.id)}" data-template="coachSimple" data-sport-club-id="${esc(activeClubId())}" title="Préparer un e-mail au coach">${actionMailIcon()} E-mail</button>
+        <button type="button" data-action="email-coach" data-id="${esc(coach.id)}" data-template="coachPlanning" data-sport-club-id="${esc(activeClubId())}" title="Préparer une information planning">${actionCalendarIcon()} Planning</button>
+        <button type="button" data-action="email-coach" data-id="${esc(coach.id)}" data-template="coachReplacement" data-sport-club-id="${esc(activeClubId())}" title="Préparer une demande de remplacement">${actionSwapIcon()} Remplacement</button>
+        ${coach.expenseEnabled && asText(coach.expenseAmount) !== "" ? `<button type="button" data-action="create-coach-expense" data-id="${esc(coach.id)}" data-accounting-club-id="${esc(activeClubId())}" title="Créer une dépense liée à ce coach">€ Dépense</button>` : ""}
       </div>
       <div class="group-card-actions">
-        <button type="button" data-action="edit-coach" data-id="${esc(coach.id)}">Modifier</button>
-        <button type="button" data-action="toggle-archive-coach" data-id="${esc(coach.id)}">${coach.archived ? "Réactiver" : "Archiver"}</button>
-        <button type="button" class="icon danger" data-action="delete-coach" data-id="${esc(coach.id)}" title="Supprimer">×</button>
+        <button type="button" data-action="edit-coach" data-id="${esc(coach.id)}" data-sport-club-id="${esc(activeClubId())}">${canWriteSport ? "Modifier" : "Consulter"}</button>
+        ${canWriteSport ? `<button type="button" data-action="toggle-archive-coach" data-id="${esc(coach.id)}" data-sport-club-id="${esc(activeClubId())}">${coach.archived ? "Réactiver" : "Archiver"}</button>` : ""}
+        ${canWriteSport ? `<button type="button" class="icon danger" data-action="delete-coach" data-id="${esc(coach.id)}" data-sport-club-id="${esc(activeClubId())}" title="Supprimer">×</button>` : ""}
       </div>
     </div>`;
   }
@@ -38425,7 +41598,12 @@ ${esc(bodyText)}</pre>
     </div>`;
   }
 
-  function openCoachDialog(coach = {}) {
+  function openCoachDialog(coach = {}, openedClubId = "") {
+    if (!openedClubId || activeClubId() !== openedClubId) return;
+    const openedCoachId = coach.id || "";
+    if (!currentUserHasPermission("sport.read", openedClubId)) return;
+    if (!openedCoachId && !currentUserHasPermission("sport.write", openedClubId)) return;
+    const readOnly = Boolean(coach.id) && !currentUserHasPermission("sport.write", openedClubId);
     // Lot 3A — sélection CANONIQUE par identifiant. Les cases des disciplines portent discipline.id
     // (les homonymes sont donc distinguables) ; les id inconnus et les valeurs libres/historiques
     // sont présentés séparément et préservés.
@@ -38505,7 +41683,13 @@ ${esc(bodyText)}</pre>
       `<div class="wide">${textareaField("notes", "Notes", coach.notes || "")}</div>`,
     ].join("");
     setNextWindowKey(coach.id ? `coach:${coach.id}` : null);
-    showDialog(coach.id ? "Modifier le coach" : "Nouveau coach", body, (data, formElement) => {
+    showDialog(readOnly ? "Consulter le coach" : (coach.id ? "Modifier le coach" : "Nouveau coach"), body, (data, formElement) => {
+      if (activeClubId() !== openedClubId) {
+        alert("Le club actif a changé depuis l'ouverture de ce formulaire. Rouvrez-le pour continuer.");
+        return false;
+      }
+      if (!ensureUserPermission("sport.write", openedClubId)) return false;
+      if (openedCoachId && !coachById(openedCoachId)) { alert("Ce coach n'existe plus."); return false; }
       const lastName = asText(data.get("lastName"));
       if (!lastName) { alert("Le nom du coach est obligatoire."); return false; }
       // Lot 3A — la sélection canonique est lue DIRECTEMENT depuis les identifiants cochés (valeurs =
@@ -38560,7 +41744,7 @@ ${esc(bodyText)}</pre>
       return impacted.length
         ? { message: msg, notice: `${impacted.length} séance(s) déjà planifiée(s) sont touchées par une indisponibilité : coach à remplacer (voir « À faire »).` }
         : msg;
-    });
+    }, () => {}, "", () => {}, "Enregistrer", { readOnly });
   }
 
   // =========================================================================
@@ -38801,7 +41985,11 @@ ${esc(bodyText)}</pre>
   function courseRoomBadgeHtml(course, dateInput = "") {
     const info = courseRoomReplacementInfoForDate(course, dateInput);
     if (!info) return "";
-    const attrs = `role="button" tabindex="0" data-action="replace-room-session" data-course-id="${esc(course.id)}" data-ps="${esc(info.impact.periodStart || "")}" data-pe="${esc(info.impact.periodEnd || "")}"`;
+    // Lot O-E2-B4R (§30-31) — badge purement informatif (jamais cliquable) sans sport.write.
+    const canWriteSport = currentUserHasPermission("sport.write", activeClubId());
+    const attrs = canWriteSport
+      ? `role="button" tabindex="0" data-action="replace-room-session" data-course-id="${esc(course.id)}" data-ps="${esc(info.impact.periodStart || "")}" data-pe="${esc(info.impact.periodEnd || "")}" data-sport-club-id="${esc(activeClubId())}"`
+      : "";
     if (info.status === "pending") return `<span class="doc-badge doc-expired replace-badge" ${attrs} title="Salle indisponible — cliquer pour traiter (remplacer / annuler / ignorer)">⚠ Salle à remplacer</span>`;
     if (info.status === "replaced") { const r = roomById(info.impact.decision.replacementRoomId); return `<span class="doc-badge doc-ok replace-badge" ${attrs} title="Salle de remplacement — cliquer pour gérer">Salle remplacée${r ? " · " + esc(roomName(r)) : ""}</span>`; }
     if (info.status === "cancelled") return `<span class="doc-badge doc-missing replace-badge" ${attrs} title="Séance annulée — cliquer pour gérer">Salle : annulé</span>`;
@@ -38822,7 +42010,12 @@ ${esc(bodyText)}</pre>
     });
   }
 
-  function openReplaceRoomDialog(courseId, periodStart, periodEnd) {
+  function openReplaceRoomDialog(courseId, periodStart, periodEnd, openedClubId = "") {
+    if (!openedClubId || activeClubId() !== openedClubId) return;
+    if (!currentUserHasPermission("sport.write", openedClubId)) {
+      alert("Vous n'avez pas l'autorisation nécessaire.");
+      return;
+    }
     const course = (state.planningCourses || []).find((c) => c.id === courseId);
     if (!course) { alert("Créneau introuvable."); return; }
     const impact = allRoomImpacts().find((x) => x.course.id === courseId && x.periodStart === periodStart && x.periodEnd === periodEnd);
@@ -38859,9 +42052,14 @@ ${esc(bodyText)}</pre>
       </select></label>`,
     ].join("");
     const originalRoomId = original ? original.id : course.roomId;
-    const footer = (originalRoomId && rEmail) ? `<button type="button" data-action="email-room" data-id="${esc(originalRoomId)}" data-template="roomSimple" data-course-id="${esc(courseId)}" data-ps="${esc(periodStart)}" data-pe="${esc(periodEnd)}" data-statut="Salle à remplacer" title="Préparer un e-mail au responsable">${actionMailIcon()} Responsable</button>
-      <button type="button" data-action="email-room" data-id="${esc(originalRoomId)}" data-template="roomChange" data-course-id="${esc(courseId)}" data-ps="${esc(periodStart)}" data-pe="${esc(periodEnd)}" data-statut="Salle à remplacer" title="Prévenir d'une modification / annulation">${actionWarnIcon()} Prévenir</button>` : "";
+    const footer = (originalRoomId && rEmail) ? `<button type="button" data-action="email-room" data-id="${esc(originalRoomId)}" data-template="roomSimple" data-course-id="${esc(courseId)}" data-ps="${esc(periodStart)}" data-pe="${esc(periodEnd)}" data-statut="Salle à remplacer" data-sport-club-id="${esc(openedClubId)}" title="Préparer un e-mail au responsable">${actionMailIcon()} Responsable</button>
+      <button type="button" data-action="email-room" data-id="${esc(originalRoomId)}" data-template="roomChange" data-course-id="${esc(courseId)}" data-ps="${esc(periodStart)}" data-pe="${esc(periodEnd)}" data-statut="Salle à remplacer" data-sport-club-id="${esc(openedClubId)}" title="Prévenir d'une modification / annulation">${actionWarnIcon()} Prévenir</button>` : "";
     showDialog("Salle à remplacer", body, (data) => {
+      if (activeClubId() !== openedClubId) {
+        alert("Le club actif a changé depuis l'ouverture de ce formulaire. Rouvrez-le pour continuer.");
+        return false;
+      }
+      if (!ensureUserPermission("sport.write", openedClubId)) return false;
       const choice = data.get("decision") || (candidates.length ? "replace" : "cancel");
       const originalId = original ? original.id : course.roomId;
       // Lot correctif MS-AUDIT-001 : plus de recordHistory() ici — showDialog capture déjà le
@@ -38901,8 +42099,9 @@ ${esc(bodyText)}</pre>
     const types = [...new Set(all.map((r) => r.type).filter(Boolean))].sort();
     const specs = [...new Set(all.flatMap((r) => r.disciplines || []))].sort();
     const cards = list.map(roomCardHtml).join("") || (all.length === 0 ? emptyStateHtml("rooms") : `<p class="muted">Aucune salle${filterType || filterSpec ? " pour ce filtre" : ""}. Modifie le filtre ou crée une salle.</p>`);
+    const canWriteSport = currentUserHasPermission("sport.write", activeClubId());
     return `
-      ${toolbar("add-room", "Nouvelle salle", `<span class="muted">${activeRooms().length} salle${activeRooms().length > 1 ? "s" : ""} active${activeRooms().length > 1 ? "s" : ""}</span>`)}
+      ${toolbar(canWriteSport ? "add-room" : "", "Nouvelle salle", `<span class="muted">${activeRooms().length} salle${activeRooms().length > 1 ? "s" : ""} active${activeRooms().length > 1 ? "s" : ""}</span>`, "", ` data-sport-club-id="${esc(activeClubId())}"`)}
       <div class="band">
         <div class="band-title"><h2>Salles / lieux</h2></div>
         <div class="coach-toolbar">
@@ -38920,10 +42119,16 @@ ${esc(bodyText)}</pre>
   function roomReplaceBadgeHtml(roomId, count) {
     const first = pendingRoomReplacements().find((x) => x.room && x.room.id === roomId);
     if (!first) return "";
-    return `<span class="doc-badge doc-expired replace-badge" role="button" tabindex="0" data-action="replace-room-session" data-course-id="${esc(first.course.id)}" data-ps="${esc(first.periodStart)}" data-pe="${esc(first.periodEnd)}" title="Traiter cette séance : désigner une salle de remplacement, annuler ou ignorer">⚠ ${count} séance${count > 1 ? "s" : ""} à remplacer →</span>`;
+    // Lot O-E2-B4R (§30-31) — badge purement informatif (jamais cliquable) sans sport.write.
+    if (!currentUserHasPermission("sport.write", activeClubId())) {
+      return `<span class="doc-badge doc-expired replace-badge" title="Séance(s) à remplacer">⚠ ${count} séance${count > 1 ? "s" : ""} à remplacer</span>`;
+    }
+    return `<span class="doc-badge doc-expired replace-badge" role="button" tabindex="0" data-action="replace-room-session" data-course-id="${esc(first.course.id)}" data-ps="${esc(first.periodStart)}" data-pe="${esc(first.periodEnd)}" data-sport-club-id="${esc(activeClubId())}" title="Traiter cette séance : désigner une salle de remplacement, annuler ou ignorer">⚠ ${count} séance${count > 1 ? "s" : ""} à remplacer →</span>`;
   }
 
   function roomCardHtml(room) {
+    // Lot O-E2-B4 (§20/§24) — même doctrine que coachCardHtml : € Dépense reste intact (B3B-3/3R).
+    const canWriteSport = currentUserHasPermission("sport.write", activeClubId());
     const searchText = [roomName(room), room.address, room.type, (room.disciplines || []).join(" "), room.equipment, room.notes, room.description, room.managerName, room.managerEmail, room.managerPhone, roomAvailabilitySummary(room)].map((x) => asText(x)).join(" ").toLowerCase();
     const cap = asText(room.capacity) !== "" ? `${room.capacity} pers.` : "";
     const surf = asText(room.surface) !== "" ? `${room.surface} m²` : "";
@@ -38950,16 +42155,16 @@ ${esc(bodyText)}</pre>
       ${managerLine ? `<p class="muted group-card-notes">${metaIcon("coach-meta-responsible")} ${esc(managerLine)}</p>` : ""}
       ${rental ? `<div class="group-card-meta"><span class="doc-badge doc-none">Location ${esc(rental)}</span></div>` : ""}
       <div class="card-email-actions">
-        <button type="button" data-action="email-room" data-id="${esc(room.id)}" data-template="roomSimple" title="Préparer un e-mail au responsable">${actionMailIcon()} Responsable</button>
-        <button type="button" data-action="email-room" data-id="${esc(room.id)}" data-template="roomAvailability" title="Préparer une demande de disponibilité">${actionCalendarIcon()} Dispo</button>
-        <button type="button" data-action="email-room" data-id="${esc(room.id)}" data-template="roomReservation" title="Préparer une information de réservation">${actionCheckIcon()} Réservation</button>
-        <button type="button" data-action="email-room" data-id="${esc(room.id)}" data-template="roomChange" title="Prévenir d'une modification / annulation">${actionWarnIcon()} Modif/annul</button>
-        ${room.expenseEnabled && asText(room.expenseAmount) !== "" ? `<button type="button" data-action="create-room-expense" data-id="${esc(room.id)}" title="Créer une dépense liée à cette salle">€ Dépense</button>` : ""}
+        <button type="button" data-action="email-room" data-id="${esc(room.id)}" data-template="roomSimple" data-sport-club-id="${esc(activeClubId())}" title="Préparer un e-mail au responsable">${actionMailIcon()} Responsable</button>
+        <button type="button" data-action="email-room" data-id="${esc(room.id)}" data-template="roomAvailability" data-sport-club-id="${esc(activeClubId())}" title="Préparer une demande de disponibilité">${actionCalendarIcon()} Dispo</button>
+        <button type="button" data-action="email-room" data-id="${esc(room.id)}" data-template="roomReservation" data-sport-club-id="${esc(activeClubId())}" title="Préparer une information de réservation">${actionCheckIcon()} Réservation</button>
+        <button type="button" data-action="email-room" data-id="${esc(room.id)}" data-template="roomChange" data-sport-club-id="${esc(activeClubId())}" title="Prévenir d'une modification / annulation">${actionWarnIcon()} Modif/annul</button>
+        ${room.expenseEnabled && asText(room.expenseAmount) !== "" ? `<button type="button" data-action="create-room-expense" data-id="${esc(room.id)}" data-accounting-club-id="${esc(activeClubId())}" title="Créer une dépense liée à cette salle">€ Dépense</button>` : ""}
       </div>
       <div class="group-card-actions">
-        <button type="button" data-action="edit-room" data-id="${esc(room.id)}">Modifier</button>
-        <button type="button" data-action="toggle-archive-room" data-id="${esc(room.id)}">${room.archived ? "Réactiver" : "Archiver"}</button>
-        <button type="button" class="icon danger" data-action="delete-room" data-id="${esc(room.id)}" title="Supprimer">×</button>
+        <button type="button" data-action="edit-room" data-id="${esc(room.id)}" data-sport-club-id="${esc(activeClubId())}">${canWriteSport ? "Modifier" : "Consulter"}</button>
+        ${canWriteSport ? `<button type="button" data-action="toggle-archive-room" data-id="${esc(room.id)}" data-sport-club-id="${esc(activeClubId())}">${room.archived ? "Réactiver" : "Archiver"}</button>` : ""}
+        ${canWriteSport ? `<button type="button" class="icon danger" data-action="delete-room" data-id="${esc(room.id)}" data-sport-club-id="${esc(activeClubId())}" title="Supprimer">×</button>` : ""}
       </div>
     </div>`;
   }
@@ -38984,7 +42189,12 @@ ${esc(bodyText)}</pre>
     </div>`;
   }
 
-  function openRoomDialog(room = {}) {
+  function openRoomDialog(room = {}, openedClubId = "") {
+    if (!openedClubId || activeClubId() !== openedClubId) return;
+    const openedRoomId = room.id || "";
+    if (!currentUserHasPermission("sport.read", openedClubId)) return;
+    if (!openedRoomId && !currentUserHasPermission("sport.write", openedClubId)) return;
+    const readOnly = Boolean(room.id) && !currentUserHasPermission("sport.write", openedClubId);
     // Lot 3A — sélection CANONIQUE par identifiant (homonymes distinguables) ; id inconnus et valeurs
     // libres/historiques présentés séparément et préservés.
     const specView = disciplineSelectionView(room.disciplineIds, [...(room.disciplinesFree || []), ...(room.disciplines || [])]);
@@ -39028,7 +42238,13 @@ ${esc(bodyText)}</pre>
       `<div class="wide">${textareaField("notes", "Notes", room.notes || "")}</div>`,
     ].join("");
     setNextWindowKey(room.id ? `room:${room.id}` : null);
-    showDialog(room.id ? "Modifier la salle" : "Nouvelle salle", body, (data, formElement) => {
+    showDialog(readOnly ? "Consulter la salle" : (room.id ? "Modifier la salle" : "Nouvelle salle"), body, (data, formElement) => {
+      if (activeClubId() !== openedClubId) {
+        alert("Le club actif a changé depuis l'ouverture de ce formulaire. Rouvrez-le pour continuer.");
+        return false;
+      }
+      if (!ensureUserPermission("sport.write", openedClubId)) return false;
+      if (openedRoomId && !roomById(openedRoomId)) { alert("Cette salle n'existe plus."); return false; }
       const name = asText(data.get("name"));
       if (!name) { alert("Le nom de la salle est obligatoire."); return false; }
       // Lot 3A — sélection canonique lue DIRECTEMENT depuis les identifiants cochés (valeurs = id).
@@ -39080,7 +42296,7 @@ ${esc(bodyText)}</pre>
       return impacted.length
         ? { message: msg, notice: `${impacted.length} séance(s) déjà planifiée(s) sont touchées par une indisponibilité de salle : salle à remplacer (voir « À faire »).` }
         : msg;
-    });
+    }, () => {}, "", () => {}, "Enregistrer", { readOnly });
   }
   // ===================================================================================
   // ASSISTANT MONGESTACLUB — Fondations enrichies
@@ -40637,8 +43853,14 @@ ${esc(bodyText)}</pre>
     return evaluateVisibleIf(relevance, { view: step.view, module: step.module, itemId: step.id });
   }
 
-  function visibleAssistantSteps() {
-    return ASSISTANT_STEPS.filter(assistantStepVisible);
+  // Lot O-E2-B8R2 (§8-14) — visibleAssistantSteps() est le point d'entrée COMMUN à toutes les
+  // surfaces qui exposent la progression (carte Dashboard, Centre d'accompagnement complet,
+  // assistant-continue) : le filtre READ (assistantStepReadable) s'applique ICI, AVANT tout calcul
+  // de assistantStepDone()/progression — jamais seulement masqué après coup. Une étape interdite
+  // n'est jamais évaluée (son done() peut inspecter state.invoices/state.groups/etc.), jamais
+  // comptée dans un total/pourcentage, jamais candidate à "prochaine étape".
+  function visibleAssistantSteps(clubId = activeClubId()) {
+    return ASSISTANT_STEPS.filter(assistantStepVisible).filter((step) => assistantStepReadable(step, clubId));
   }
 
   // Une étape est-elle accomplie ? Dérivé du state, ou drapeau manuel pour le non-détectable.
@@ -40670,9 +43892,34 @@ ${esc(bodyText)}</pre>
     }).filter((entry) => entry.total > 0);
   }
 
+  // Lot O-E2-B8R2 (§49-58/§13) — READ requis pour qu'une étape (ASSISTANT_STEPS) soit même retenue
+  // par visibleAssistantSteps() : dérivé par défaut de step.view via permissionRequirementForView
+  // (même mapping que VIEW_PERMISSION_MAP, réutilisé — §53), avec un correctif EXPLICITE pour les 2
+  // étapes où view ne reflète pas le vrai domaine révélé : first-membership vit sous la vue
+  // "disciplines" mais révèle l'existence d'inscriptions (memberships.read) ; email-template vit
+  // sous "settings" mais révèle l'état des modèles e-mail (newsletter.read, §52/§22). club-identity
+  // reste sans garde : donnée publique (§52), sa vue "settings" n'est de toute façon pas protégée
+  // par VIEW_PERMISSION_MAP. Déclarée AVANT visibleAssistantSteps() dans l'ordre de lecture (peu
+  // importe pour l'exécution, les function declarations de cette IIFE sont hoistées).
+  const ASSISTANT_STEP_READ_OVERRIDES = Object.freeze({
+    "first-membership": "memberships.read",
+    "email-template": "newsletter.read",
+  });
+  function assistantStepReadable(step, clubId = activeClubId()) {
+    if (!step) return false;
+    const override = ASSISTANT_STEP_READ_OVERRIDES[step.id];
+    if (override) return currentUserHasPermission(override, clubId);
+    const requirement = (typeof permissionRequirementForView === "function") ? permissionRequirementForView(step.view) : { protected: false };
+    if (!requirement.protected) return true;
+    return currentUserHasPermission(requirement.permissionKey, clubId);
+  }
+
   // Prochaine étape visible non accomplie, par priorité décroissante (« prochain objectif »).
-  function nextAssistantStep() {
-    return visibleAssistantSteps()
+  // Lot O-E2-B8R2 (§13) — visibleAssistantSteps() est désormais permission-aware EN AMONT : plus
+  // besoin d'une variante dédiée par appelant, doctrine UNIQUE partagée par la carte Dashboard, le
+  // Centre d'accompagnement complet et le handler assistant-continue (fin du finding B8R "AA").
+  function nextAssistantStep(clubId = activeClubId()) {
+    return visibleAssistantSteps(clubId)
       .filter((step) => !assistantStepDone(step))
       .sort((a, b) => (b.priority || 0) - (a.priority || 0))[0] || null;
   }
@@ -41173,7 +44420,16 @@ ${esc(bodyText)}</pre>
                   ${next.estimateMinutes ? `<span class="assistant-tour-duration">≈ ${next.estimateMinutes} minute${next.estimateMinutes > 1 ? "s" : ""}</span>` : ""}
                 </div>
                 <button type="button" class="primary" data-action="assistant-continue">Aller à cette étape</button>
-              </div>` : `<p class="assistant-empty-note">Votre club est entièrement configuré 🎉 Vous pouvez revoir une visite guidée à tout moment ci-dessous.</p>`}
+              </div>` : (
+                // Lot O-E2-B8R2 (§24/ASSIST-CENTER-04) — "next" peut être null pour DEUX raisons très
+                // différentes : tout est réellement configuré, OU aucune étape lisible ne subsiste
+                // (visibleAssistantSteps() vide malgré des étapes réellement incomplètes et invisibles
+                // pour cet utilisateur). Affirmer "entièrement configuré" dans le second cas serait un
+                // statut accompli caché non prouvé — même doctrine que allCalm/clubIsEmpty (B8R §42-44).
+                global.total
+                  ? `<p class="assistant-empty-note">Votre club est entièrement configuré 🎉 Vous pouvez revoir une visite guidée à tout moment ci-dessous.</p>`
+                  : `<p class="assistant-empty-note">Rien à afficher avec vos droits actuels.</p>`
+              )}
             </div>
           </section>
 
@@ -41332,7 +44588,7 @@ ${esc(bodyText)}</pre>
   function openCourseDialogForTour() {
     try {
       if (document.querySelector("dialog[open] select[name='day']")) return;
-      if (typeof openCourseDialog === "function") openCourseDialog();
+      if (typeof openCourseDialog === "function") openCourseDialog({}, "", activeClubId());
     } catch (e) {}
   }
   // Referme le formulaire de créneau pour montrer la grille du planning (bouton « Modifier cette date »).
@@ -41345,7 +44601,7 @@ ${esc(bodyText)}</pre>
   function openAttendanceDialogForTour() {
     try {
       if (document.querySelector("dialog[open] [data-attendance-rows]")) return;
-      if (typeof openAttendanceDialog === "function") openAttendanceDialog();
+      if (typeof openAttendanceDialog === "function") openAttendanceDialog({}, activeClubId());
     } catch (e) {}
   }
   // Ouvre un dialogue « Nouveau groupe » VIERGE (openGroupDialog ne persiste rien tant que le
@@ -41354,7 +44610,7 @@ ${esc(bodyText)}</pre>
   function openGroupDialogForTour() {
     try {
       if (document.querySelector("dialog[open] input[name='maxMembers']")) return;
-      if (typeof openGroupDialog === "function") openGroupDialog();
+      if (typeof openGroupDialog === "function") openGroupDialog({}, activeClubId());
     } catch (e) {}
   }
   // Ouvre un dialogue « Nouvelle équipe » VIERGE (openTeamDialog ne persiste rien tant que le
@@ -41365,7 +44621,7 @@ ${esc(bodyText)}</pre>
   function openTeamDialogForTour() {
     try {
       if (document.querySelector("dialog[open] .dialog-header h2")?.textContent === "Nouvelle équipe") return;
-      if (typeof openTeamDialog === "function") openTeamDialog();
+      if (typeof openTeamDialog === "function") openTeamDialog({}, activeClubId());
     } catch (e) {}
   }
   // Ouvre l'effectif d'un groupe RÉEL déjà existant (openGroupMembersDialog ne fait qu'afficher :
@@ -41379,7 +44635,7 @@ ${esc(bodyText)}</pre>
       const groups = state.groups || [];
       if (!groups.length) return;
       const group = groups.find((g) => !g.archived) || groups[0];
-      if (group && typeof openGroupMembersDialog === "function") openGroupMembersDialog(group.id);
+      if (group && typeof openGroupMembersDialog === "function") openGroupMembersDialog(group.id, activeClubId());
     } catch (e) {}
   }
   // Ouvre l'effectif d'une équipe RÉELLE déjà existante (openTeamMembersDialog ne fait qu'afficher :
@@ -41393,7 +44649,7 @@ ${esc(bodyText)}</pre>
       const teams = state.teams || [];
       if (!teams.length) return;
       const team = teams.find((t) => !t.archived) || teams[0];
-      if (team && typeof openTeamMembersDialog === "function") openTeamMembersDialog(team.id);
+      if (team && typeof openTeamMembersDialog === "function") openTeamMembersDialog(team.id, activeClubId());
     } catch (e) {}
   }
   // Ouvre un dialogue « Nouvelle salle » VIERGE (openRoomDialog ne persiste rien tant que le
@@ -41403,7 +44659,7 @@ ${esc(bodyText)}</pre>
   function openRoomDialogForTour() {
     try {
       if (document.querySelector("dialog[open] [data-room-avail-list]")) return;
-      if (typeof openRoomDialog === "function") openRoomDialog();
+      if (typeof openRoomDialog === "function") openRoomDialog({}, activeClubId());
     } catch (e) {}
   }
   // Ouvre un dialogue « Nouveau coach » VIERGE (openCoachDialog ne persiste rien tant que le
@@ -41412,7 +44668,7 @@ ${esc(bodyText)}</pre>
   function openCoachDialogForTour() {
     try {
       if (document.querySelector("dialog[open] [data-coach-avail-list]")) return;
-      if (typeof openCoachDialog === "function") openCoachDialog();
+      if (typeof openCoachDialog === "function") openCoachDialog({}, activeClubId());
     } catch (e) {}
   }
   // Ouvre un dialogue « Nouvelle dépense » VIERGE (openExpenseDialog ne persiste rien tant que le
@@ -41421,7 +44677,7 @@ ${esc(bodyText)}</pre>
   function openExpenseDialogForTour() {
     try {
       if (document.querySelector("dialog[open] [data-expense-boutique-help]")) return;
-      if (typeof openExpenseDialog === "function") openExpenseDialog();
+      if (typeof openExpenseDialog === "function") openExpenseDialog({}, activeClubId());
     } catch (e) {}
   }
   // Ouvre un dialogue « Nouveau stage » VIERGE (openStageDialog ne persiste rien tant que le
@@ -41430,7 +44686,7 @@ ${esc(bodyText)}</pre>
   function openStageDialogForTour() {
     try {
       if (document.querySelector("dialog[open] select[name='publicAccess']")) return;
-      if (typeof openStageDialog === "function") openStageDialog();
+      if (typeof openStageDialog === "function") openStageDialog({}, {}, activeClubId());
     } catch (e) {}
   }
   // Ouvre l'inscription à un stage RÉEL déjà existant (openRegistrationDialog ne persiste rien
@@ -41444,7 +44700,7 @@ ${esc(bodyText)}</pre>
       const stages = (state.tariffs && state.tariffs.stages) || [];
       if (!stages.length) return;
       const stage = stages.find((s) => typeof stageRegistrationClosed !== "function" || !stageRegistrationClosed(s)) || stages[0];
-      if (stage && typeof openRegistrationDialog === "function") openRegistrationDialog(stage.id);
+      if (stage && typeof openRegistrationDialog === "function") openRegistrationDialog(stage.id, {}, activeClubId());
     } catch (e) {}
   }
   // Ouvre un dialogue « Nouvelle commande » VIERGE (openOrderDialog ne persiste rien tant que le
@@ -41453,7 +44709,7 @@ ${esc(bodyText)}</pre>
   function openOrderDialogForTour() {
     try {
       if (document.querySelector("dialog[open] [data-order-dialog-summary]")) return;
-      if (typeof openOrderDialog === "function") openOrderDialog();
+      if (typeof openOrderDialog === "function") openOrderDialog({}, {}, activeClubId());
     } catch (e) {}
   }
   // Ouvre le dialogue « Nouvel article » VIERGE si aucun n'est déjà ouvert. La création se fait
@@ -41824,9 +45080,35 @@ ${esc(bodyText)}</pre>
     catch (error) { return false; }
   }
 
+  // Lot O-E2-B8R (§49-58) — mapping fixe du READ métier requis pour qu'une suggestion proactive de
+  // la carte « Aujourd'hui » soit même ÉVALUÉE : chaque suggestion révèle un fait métier précis dans
+  // son texte (adhérents, groupes, factures, inscriptions...) ; sans le READ correspondant, elle est
+  // purement et simplement absente (jamais une carte vide révélant qu'une étape cachée existe, §54).
+  // Suggestion inconnue -> fail closed (jamais un repli permissif). Les 4 CTA de cette carte lancent
+  // TOUJOURS une visite guidée (cta.tour prioritaire sur cta.action dans assistantTodayHeadline,
+  // jamais une mutation directe sur CETTE carte) : aucune vérification WRITE supplémentaire requise
+  // ici (§51, condition "si le CTA est une mutation" non remplie).
+  // Lot O-E2-B8R2 (§1-7) — "members-without-group"/"members-without-discipline" révèlent CHACUNE
+  // deux faits distincts : un agrégat sur les adhérents (stats.read, même nature qu'un total Stats/
+  // KPI "Adhérents") ET l'état d'un second domaine (sport.read pour les groupes, memberships.read
+  // pour les inscriptions) — sport.read/memberships.read SEUL ne couvrait pas le premier fait.
+  // "groups-without-planning" reste sport.read seul : groupes ET planning vivent tous deux dans le
+  // même domaine Sport, aucun agrégat adhérents n'y est révélé.
+  const ASSISTANT_SUGGESTION_READS = Object.freeze({
+    "members-without-group": ["stats.read", "sport.read"],
+    "groups-without-planning": ["sport.read"],
+    "invoices-without-email-template": ["billing.read", "newsletter.read"],
+    "members-without-discipline": ["stats.read", "memberships.read"],
+  });
+  function assistantSuggestionReadable(item, clubId = activeClubId()) {
+    const reads = ASSISTANT_SUGGESTION_READS[item && item.id];
+    if (!reads) return false;
+    return reads.every((key) => currentUserHasPermission(key, clubId));
+  }
+
   function activeAssistantSuggestions() {
     if (!assistantFeatureEnabled()) return [];
-    return ASSISTANT_SUGGESTIONS.filter(suggestionVisible).sort((a, b) => (b.priority || 0) - (a.priority || 0));
+    return ASSISTANT_SUGGESTIONS.filter(suggestionVisible).filter((item) => assistantSuggestionReadable(item)).sort((a, b) => (b.priority || 0) - (a.priority || 0));
   }
 
   function topAssistantSuggestion() {
@@ -42361,6 +45643,9 @@ ${esc(bodyText)}</pre>
     const groupOk = !(groupDim && f.groupId && groupCourseConflict(f.groupId, probe));
     const overlap = (state.planningCourses || []).filter((c) => !c.archived && asText(c.day) === day && coursesOverlap(probe, c)).length;
     // Compatibilité avec les critères posés (logique identique à l'ancien availSlotMatches).
+    // Lot O-E2-B4R (§5/§6) — cette compatibilité ne dépend JAMAIS de stages.read : le moteur de
+    // blocage (bloqué/compatible) reste strictement identique quelle que soit cette permission,
+    // qui ne module QUE la quantité d'information révélée dans le TEXTE des raisons ci-dessous.
     let matches = true;
     if (coachDim) {
       if (f.coachId) { if (!coaches.some((c) => c.id === f.coachId)) matches = false; }
@@ -42372,19 +45657,24 @@ ${esc(bodyText)}</pre>
     }
     if (matches && !groupOk) matches = false;
     const result = { probe, coachDim, roomDim, groupDim, coaches, rooms, groupOk, overlap, matches };
-    if (opts.withReasons) result.blocking = availSlotBlockingReasons(f, probe);
+    if (opts.withReasons) result.blocking = availSlotBlockingReasons(f, probe, { revealStageNames: opts.revealStageNames });
     return result;
   }
 
-  // Raisons de blocage (texte président, pas technique) — logique inchangée, extraite du moteur.
-  function availSlotBlockingReasons(f, probe) {
+  // Raisons de blocage (texte présenté, pas technique) — logique inchangée, extraite du moteur.
+  // Lot O-E2-B4R (§4/§6) — `options.revealStageNames` (false par défaut, fail-closed) ne pilote QUE
+  // la PRÉSENTATION du nom du Stage bloquant, jamais le calcul de blocage lui-même (déjà déterminé
+  // en amont par availStageForCoachOnDay/availStageForRoomOnDay, inchangés). Sans ce droit, la
+  // même contrainte réelle reste rapportée, sous une formulation générique.
+  function availSlotBlockingReasons(f, probe, options = {}) {
+    const revealStageNames = Boolean(options.revealStageNames);
     const reasons = [];
     if (availCoachDim()) {
       if (f.coachId) {
         const c = coachById(f.coachId);
         const stg = c ? availStageForCoachOnDay(c.id, probe.day) : null;
         if (c && !coachHandlesDiscipline(c, { disciplineId: f.disciplineId, discipline: f.discipline })) reasons.push(`${coachFullName(c)} ne prend pas en charge cette discipline`);
-        else if (c && stg) reasons.push(`${coachFullName(c)} est occupé par le stage « ${stg.name || "stage"} »`);
+        else if (c && stg) reasons.push(revealStageNames ? `${coachFullName(c)} est occupé par le stage « ${stg.name || "stage"} »` : `${coachFullName(c)} est indisponible en raison d'un stage`);
         else if (c && !eligibleCoachesForCourse(probe).some((x) => x.id === c.id)) reasons.push(coachCourseConflict(c.id, probe) ? `${coachFullName(c)} est déjà en séance` : `${coachFullName(c)} est indisponible`);
       } else if (activeCoaches().some((c) => coachHandlesDiscipline(c, { disciplineId: f.disciplineId, discipline: f.discipline })) && !availEligibleCoaches(probe).length) {
         reasons.push("aucun coach disponible");
@@ -42395,7 +45685,7 @@ ${esc(bodyText)}</pre>
         const r = roomById(f.roomId);
         const stg = r ? availStageForRoomOnDay(r.id, probe.day) : null;
         if (r && !roomHandlesDiscipline(r, { disciplineId: f.disciplineId, discipline: f.discipline })) reasons.push(`${roomName(r)} n'accueille pas cette discipline`);
-        else if (r && stg) reasons.push(`${roomName(r)} est occupée par le stage « ${stg.name || "stage"} »`);
+        else if (r && stg) reasons.push(revealStageNames ? `${roomName(r)} est occupée par le stage « ${stg.name || "stage"} »` : `${roomName(r)} est occupée en raison d'un stage`);
         else if (r && !eligibleRoomsForCourse(probe).some((x) => x.id === r.id)) reasons.push(roomCourseConflict(r.id, probe) ? `${roomName(r)} est déjà occupée` : `${roomName(r)} est indisponible`);
       } else if (activeRooms().some((r) => roomHandlesDiscipline(r, { disciplineId: f.disciplineId, discipline: f.discipline })) && !availEligibleRooms(probe).length) {
         reasons.push("aucune salle disponible");
@@ -42413,9 +45703,11 @@ ${esc(bodyText)}</pre>
     return availEvaluateSlot(f, day, startMin, startMin + f.duration).matches;
   }
 
-  // Raisons de blocage d'un créneau (délègue au moteur). Signature inchangée.
-  function availBlockingReasons(f, day, startMin) {
-    return availEvaluateSlot(f, day, startMin, startMin + f.duration, { withReasons: true }).blocking;
+  // Raisons de blocage d'un créneau (délègue au moteur). `options.revealStageNames` répercuté TEL
+  // QUEL (aucune lecture de permission ici : le seul appelant, availSlotDetailHtml, la calcule une
+  // fois via currentUserHasPermission("stages.read", ...) et la transmet explicitement, §6).
+  function availBlockingReasons(f, day, startMin, options = {}) {
+    return availEvaluateSlot(f, day, startMin, startMin + f.duration, { withReasons: true, revealStageNames: options.revealStageNames }).blocking;
   }
 
   // =========================================================================
@@ -42637,7 +45929,7 @@ ${esc(bodyText)}</pre>
   // directe, préremplissage intelligent) + voir les détails.
   function availSlotActionsHtml(f, day, startMin, primaryFirst) {
     const details = `<button type="button" class="avail-act-secondary" data-action="avail-slot-detail" data-day="${esc(day)}" data-start="${startMin}">Voir les détails</button>`;
-    const create = `<button type="button" class="primary" data-action="avail-create-slot" data-day="${esc(day)}" data-start="${startMin}">Créer ce cours</button>`;
+    const create = `<button type="button" class="primary" data-action="avail-create-slot" data-day="${esc(day)}" data-start="${startMin}" data-sport-club-id="${esc(activeClubId())}">Créer ce cours</button>`;
     return primaryFirst ? create + details : details + create;
   }
 
@@ -42824,7 +46116,10 @@ ${esc(bodyText)}</pre>
       if (availSlotMatches(f, day, startMin)) {
         parts.push(`<div class="avail-detail-status ok"><span class="avail-detail-status-ico" aria-hidden="true">✓</span><strong>Compatible avec vos critères</strong></div>`);
       } else {
-        const reasons = availBlockingReasons(f, day, startMin).map((r) => `<li>${esc(r)}</li>`).join("");
+        // Lot O-E2-B4R (§4/§6) — seul endroit où stages.read est consulté dans ce module : pilote
+        // UNIQUEMENT la présentation du nom du Stage bloquant, jamais le calcul de compatibilité.
+        const revealStageNames = currentUserHasPermission("stages.read", activeClubId());
+        const reasons = availBlockingReasons(f, day, startMin, { revealStageNames }).map((r) => `<li>${esc(r)}</li>`).join("");
         parts.push(`<div class="avail-detail-status ko"><span class="avail-detail-status-ico" aria-hidden="true">✕</span><div><strong>Ce créneau ne convient pas</strong><ul class="avail-detail-reasons">${reasons}</ul></div></div>`);
       }
     }
@@ -42886,7 +46181,8 @@ ${esc(bodyText)}</pre>
   // coach et salle remplis si choisis dans l'assistant OU si un SEUL candidat est
   // compatible avec ce créneau (moteur existant). Si plusieurs candidats, on laisse
   // vide (pas de choix arbitraire). Les modules désactivés ne sont jamais préremplis.
-  function availOpenCourseForSlot(day, startMin) {
+  function availOpenCourseForSlot(day, startMin, openedClubId = "") {
+    if (!openedClubId || activeClubId() !== openedClubId) return;
     const f = availFilters();
     const probe = availProbe(day, startMin, startMin + f.duration, { discipline: f.discipline, disciplineId: f.disciplineId });
 
@@ -42905,7 +46201,7 @@ ${esc(bodyText)}</pre>
       day, startTime: availMinutesToTime(startMin), endTime: availMinutesToTime(startMin + f.duration),
       discipline: f.discipline, disciplineId: f.disciplineId, groupId: availGroupDim() ? f.groupId : "",
       coachId, roomId,
-    });
+    }, "", openedClubId);
   }
   // Utilisateurs locaux (Lot 1) — socle uniquement : identité + appartenance aux clubs.
   // Globaux à l'installation (mongestaclub-users-v1), séparés du clubStore, sur le même
@@ -42913,12 +46209,22 @@ ${esc(bodyText)}</pre>
   // réelle, aucun mot de passe, aucun journal d'audit ici : uniquement de quoi savoir, plus
   // tard, qui a fait quoi (Lot 2).
 
+  // Lot O-D1 — 4 profils ajoutés (registrations/shop/payments/administrative) sans jamais changer
+  // les 6 clés historiques (admin/president/secretary/treasurer/coach/readonly), ni leur ordre
+  // relatif : aucune migration destructive, une ancienne Membership garde son profil tel quel.
+  // "shop" (profil logiciel "Responsable boutique") est un identifiant DISTINCT de "shop" (clé de
+  // feature registry) et de "shop" (rôle de club.managers) — trois espaces de noms indépendants
+  // qui partagent un mot par coïncidence lexicale, jamais une même donnée.
   function userRoleOptions() {
     return [
       ["admin", "Administrateur"],
       ["president", "Président"],
       ["secretary", "Secrétaire"],
       ["treasurer", "Trésorier"],
+      ["registrations", "Responsable inscriptions"],
+      ["shop", "Responsable boutique"],
+      ["payments", "Responsable paiements"],
+      ["administrative", "Responsable administratif"],
       ["coach", "Encadrant"],
       ["readonly", "Lecture seule"],
     ];
@@ -42926,6 +46232,279 @@ ${esc(bodyText)}</pre>
 
   function userRoleLabel(role) {
     return userRoleOptions().find(([value]) => value === role)?.[1] || asText(role) || "Administrateur";
+  }
+
+  // =====================================================================================================
+  // Lot O-D1 — registre central des permissions + profils de droits + moteur de résolution.
+  //
+  // IMPORTANT : ce lot construit le MODÈLE et l'ÉDITEUR uniquement. Aucune permission ici ne bloque
+  // encore une action métier (handleAction, contacts, factures, paiements, boutique, etc.) : cette
+  // activation réelle des gardes, ainsi que la protection "dernier administrateur", sont prévues
+  // pour le Lot O-E. Ici, effectivePermissionForMembership() est un CALCUL PUR, jamais consulté par
+  // aucun handler existant.
+  //
+  // Trois notions à ne jamais confondre (doctrine déjà établie en O-B/O-C, reconduite ici) :
+  //  A. Fonction humaine (club.managers[].role/function) — le bureau du club (Président, Trésorier…).
+  //  B. Profil de droits logiciel (Membership.role) — ex. admin/treasurer/secretary/readonly.
+  //  C. Permissions effectives (calculées : preset + overrides personnalisés).
+  // Aucune fonction humaine n'impose jamais automatiquement un profil logiciel (§30 du lot).
+  // =====================================================================================================
+
+  // Granularité volontairement modérée (lecture/écriture par domaine + quelques droits spéciaux) :
+  // éviter l'usine à gaz d'une permission par bouton. featureKey : uniquement pour les domaines
+  // dont l'existence même dépend d'une fonctionnalité optionnelle (shop/stages/competitions) —
+  // jamais pour "sport" (structure sportive : disciplines/groupes/coachs/salles/planning/présences/
+  // équipes), qui existe indépendamment de la fonctionnalité Équipes.
+  function userPermissionDefinitions() {
+    return [
+      { key: "contacts.read", label: "Consulter les contacts", group: "Contacts" },
+      { key: "contacts.write", label: "Modifier les contacts", group: "Contacts" },
+      { key: "memberships.read", label: "Consulter les inscriptions / adhésions", group: "Inscriptions / Adhésions" },
+      { key: "memberships.write", label: "Modifier les inscriptions / adhésions", group: "Inscriptions / Adhésions" },
+      { key: "billing.read", label: "Consulter les factures", group: "Factures" },
+      { key: "billing.write", label: "Modifier les factures", group: "Factures" },
+      { key: "payments.read", label: "Consulter les paiements", group: "Paiements" },
+      { key: "payments.write", label: "Enregistrer des paiements", group: "Paiements" },
+      { key: "accounting.read", label: "Consulter la comptabilité", group: "Comptabilité" },
+      { key: "accounting.write", label: "Modifier la comptabilité", group: "Comptabilité" },
+      { key: "sport.read", label: "Consulter la structure sportive", group: "Structure sportive" },
+      { key: "sport.write", label: "Modifier la structure sportive", group: "Structure sportive" },
+      { key: "documents.read", label: "Consulter les documents", group: "Documents" },
+      { key: "documents.write", label: "Modifier les documents", group: "Documents" },
+      { key: "newsletter.read", label: "Consulter la newsletter / e-mails", group: "Newsletter" },
+      { key: "newsletter.write", label: "Envoyer / modifier la newsletter", group: "Newsletter" },
+      { key: "stages.read", label: "Consulter les stages", group: "Stages", featureKey: "stages" },
+      { key: "stages.write", label: "Modifier les stages", group: "Stages", featureKey: "stages" },
+      { key: "competitions.read", label: "Consulter les rencontres", group: "Rencontres", featureKey: "competitions" },
+      { key: "competitions.write", label: "Modifier les rencontres", group: "Rencontres", featureKey: "competitions" },
+      { key: "shop.read", label: "Consulter la boutique", group: "Boutique", featureKey: "shop" },
+      { key: "shop.write", label: "Modifier la boutique", group: "Boutique", featureKey: "shop" },
+      { key: "stats.read", label: "Consulter les statistiques", group: "Statistiques" },
+      { key: "notes.read", label: "Consulter les notes", group: "Notes" },
+      { key: "notes.write", label: "Modifier les notes", group: "Notes" },
+      { key: "clubSettings.manage", label: "Gérer les paramètres du club", group: "Paramètres club" },
+      { key: "managers.manage", label: "Gérer les responsables", group: "Responsables" },
+      { key: "users.manage", label: "Gérer les utilisateurs", group: "Utilisateurs" },
+      { key: "audit.read", label: "Consulter le journal d'activité", group: "Journal / Historique" },
+      { key: "data.export", label: "Exporter les données", group: "Export" },
+    ];
+  }
+
+  function permissionDefinition(key) {
+    const k = asText(key);
+    return k ? (userPermissionDefinitions().find((def) => def.key === k) || null) : null;
+  }
+
+  function isKnownPermissionKey(key) {
+    return permissionDefinition(key) !== null;
+  }
+
+  // Regroupement par domaine, dans l'ordre de déclaration (jamais un tri alphabétique qui
+  // mélangerait l'ordre voulu de l'écran). Consommé par l'éditeur de droits.
+  function permissionGroups() {
+    const groups = [];
+    userPermissionDefinitions().forEach((def) => {
+      let group = groups.find((g) => g.name === def.group);
+      if (!group) { group = { name: def.group, permissions: [] }; groups.push(group); }
+      group.permissions.push(def);
+    });
+    return groups;
+  }
+
+  // Lot O-D1 — profils prédéfinis. "admin" est VOLONTAIREMENT calculé (toutes permissions connues
+  // à true) plutôt que matérialisé ici avec 30 clés à true (§11 du lot) : rolePresetAllows()
+  // le court-circuite avant toute lecture de `permissions`. Les 4 profils issus de club.managers
+  // (registrations/shop/payments/administrative) restent des PROFILS LOGICIELS indépendants — leur
+  // contenu est un point de départ métier raisonnable, jamais lié automatiquement à un Responsable.
+  function rolePresetDefinitions() {
+    return {
+      admin: { key: "admin", label: "Administrateur" },
+      president: {
+        key: "president", label: "Président",
+        // Très large accès métier, MAIS jamais users.manage (§12 : Président ≠ Administrateur
+        // technique — il ne doit pas pouvoir modifier les droits logiciels des AUTRES utilisateurs).
+        permissions: {
+          "contacts.read": true, "contacts.write": true,
+          "memberships.read": true, "memberships.write": true,
+          "billing.read": true, "billing.write": true,
+          "payments.read": true, "payments.write": true,
+          "accounting.read": true, "accounting.write": true,
+          "sport.read": true, "sport.write": true,
+          "documents.read": true, "documents.write": true,
+          "newsletter.read": true, "newsletter.write": true,
+          "stages.read": true, "stages.write": true,
+          "competitions.read": true, "competitions.write": true,
+          "shop.read": true, "shop.write": true,
+          "stats.read": true,
+          "notes.read": true, "notes.write": true,
+          "clubSettings.manage": true,
+          "managers.manage": true,
+          "audit.read": true,
+          "data.export": true,
+        },
+      },
+      treasurer: {
+        key: "treasurer", label: "Trésorier",
+        permissions: {
+          "contacts.read": true,
+          "memberships.read": true,
+          "billing.read": true, "billing.write": true,
+          "payments.read": true, "payments.write": true,
+          "accounting.read": true, "accounting.write": true,
+          "documents.read": true,
+          "stats.read": true,
+          "audit.read": true,
+          "data.export": true,
+        },
+      },
+      secretary: {
+        key: "secretary", label: "Secrétaire",
+        permissions: {
+          "contacts.read": true, "contacts.write": true,
+          "memberships.read": true, "memberships.write": true,
+          "billing.read": true,
+          "payments.read": true,
+          "sport.read": true,
+          "documents.read": true, "documents.write": true,
+          "newsletter.read": true, "newsletter.write": true,
+          "stages.read": true,
+          "competitions.read": true,
+          "stats.read": true,
+          "notes.read": true, "notes.write": true,
+        },
+      },
+      registrations: {
+        key: "registrations", label: "Responsable inscriptions",
+        permissions: {
+          "contacts.read": true, "contacts.write": true,
+          "memberships.read": true, "memberships.write": true,
+          "billing.read": true,
+          "payments.read": true, "payments.write": true,
+          "documents.read": true,
+          "stats.read": true,
+        },
+      },
+      shop: {
+        key: "shop", label: "Responsable boutique",
+        permissions: {
+          "contacts.read": true,
+          "payments.read": true, "payments.write": true,
+          "shop.read": true, "shop.write": true,
+          "stats.read": true,
+        },
+      },
+      payments: {
+        key: "payments", label: "Responsable paiements",
+        permissions: {
+          "contacts.read": true,
+          "memberships.read": true,
+          "billing.read": true,
+          "payments.read": true, "payments.write": true,
+          "accounting.read": true,
+          "stats.read": true,
+        },
+      },
+      administrative: {
+        key: "administrative", label: "Responsable administratif",
+        permissions: {
+          "contacts.read": true, "contacts.write": true,
+          "memberships.read": true, "memberships.write": true,
+          "billing.read": true, "billing.write": true,
+          "payments.read": true,
+          "sport.read": true,
+          "documents.read": true, "documents.write": true,
+          "newsletter.read": true, "newsletter.write": true,
+          "stats.read": true,
+          "notes.read": true, "notes.write": true,
+          "clubSettings.manage": true,
+          "managers.manage": true,
+          // PAS users.manage (même doctrine que Président, §18).
+        },
+      },
+      coach: {
+        key: "coach", label: "Encadrant",
+        permissions: {
+          "contacts.read": true,
+          "memberships.read": true,
+          "sport.read": true, "sport.write": true,
+          "stages.read": true, "stages.write": true,
+          "competitions.read": true, "competitions.write": true,
+          "documents.read": true,
+          "stats.read": true,
+          "notes.read": true, "notes.write": true,
+        },
+      },
+      // Lecture seule : toutes les *.read à true (y compris stats.read/audit.read), tout le
+      // reste (*.write/*.manage) à false. data.export:true — décision documentée (§20) : exporter/
+      // consulter n'altère aucune donnée, contrairement à *.write/*.manage.
+      readonly: {
+        key: "readonly", label: "Lecture seule",
+        permissions: Object.fromEntries(userPermissionDefinitionsReadonlyPairs()),
+      },
+    };
+  }
+
+  // Extrait pour éviter une dépendance circulaire de déclaration (rolePresetDefinitions référence
+  // le résultat de userPermissionDefinitions() une seule fois, calculé ici).
+  function userPermissionDefinitionsReadonlyPairs() {
+    return userPermissionDefinitions().map((def) => [def.key, def.key.endsWith(".read") || def.key === "data.export"]);
+  }
+
+  function rolePresetDefinition(role) {
+    const key = asText(role);
+    return key ? (rolePresetDefinitions()[key] || null) : null;
+  }
+
+  // Valeur du PRESET SEUL (sans overrides) pour une permission connue.
+  // Règle de résolution (§21 du lot) :
+  //  1. permission inconnue -> false ;
+  //  2. role "admin" -> true (calculé, jamais un objet `permissions` de 30 clés) ;
+  //  3. profil connu -> valeur déclarée (absente = false) ;
+  //  4. profil INCONNU (ex. "webmaster" importé) -> équivalent Lecture seule (§22) : préserve un
+  //     accès de consultation plutôt que de transformer silencieusement l'utilisateur en
+  //     administrateur. La chaîne `role` d'origine n'est JAMAIS remplacée dans les données.
+  function rolePresetAllows(role, permissionKey) {
+    if (!isKnownPermissionKey(permissionKey)) return false;
+    const key = asText(role);
+    if (key === "admin") return true;
+    const preset = rolePresetDefinition(key);
+    if (!preset) return rolePresetAllows("readonly", permissionKey);
+    return Boolean(preset.permissions?.[permissionKey]);
+  }
+
+  // Permission EFFECTIVE d'une Membership : preset, éventuellement dérogé par
+  // membership.permissionOverrides. Administrateur reste TOUJOURS true, quel que soit le contenu de
+  // permissionOverrides (anti-auto-verrouillage, §21) — aucun override n'est même consulté pour lui.
+  function effectivePermissionForMembership(membership, permissionKey) {
+    if (!isKnownPermissionKey(permissionKey)) return false;
+    const role = asText(membership?.role);
+    if (role === "admin") return true;
+    // Lot O-E1 (§5) — "Gérer les utilisateurs" est verrouillé ADMIN-ONLY par le moteur lui-même,
+    // avant même de consulter permissionOverrides : aucun preset (president/administrative...) ni
+    // aucun override importé ne peut jamais l'accorder à un profil non-admin. Une clé "users.manage"
+    // déjà présente pour compatibilité (import ancien) reste PRÉSERVÉE dans les données (voir
+    // normalizePermissionOverrides), simplement ignorée ici.
+    if (permissionKey === "users.manage") return false;
+    const overrides = membership?.permissionOverrides;
+    if (overrides && typeof overrides === "object" && typeof overrides[permissionKey] === "boolean") {
+      return overrides[permissionKey];
+    }
+    return rolePresetAllows(role, permissionKey);
+  }
+
+  // Lot O-D1 §5 — objet SPARSE : seules les dérogations explicites (booléens stricts) sont
+  // conservées. Les clés INCONNUES du registre actuel sont PRÉSERVÉES si booléennes (une version
+  // future/ancienne de l'app ne doit jamais détruire silencieusement un droit qu'elle ne connaît
+  // pas encore) ; le moteur courant les ignore simplement (isKnownPermissionKey les filtre à la
+  // résolution, jamais à la normalisation). Clés dangereuses exclues par précaution.
+  function normalizePermissionOverrides(source) {
+    if (!source || typeof source !== "object" || Array.isArray(source)) return {};
+    const result = {};
+    Object.keys(source).forEach((key) => {
+      if (key === "__proto__" || key === "prototype" || key === "constructor") return;
+      if (typeof source[key] === "boolean") result[key] = source[key];
+    });
+    return result;
   }
 
   function rawUserStoreFromStorage() {
@@ -42944,6 +46523,25 @@ ${esc(bodyText)}</pre>
     };
   }
 
+  // Lot O-C (correction Pix) — invariant STRUCTUREL : un Responsable (couple clubId+responsibleId)
+  // ne peut être conservé que sur UNE SEULE Membership. Repose sur l'ORDRE du tableau déjà
+  // normalisé/filtré : la PREMIÈRE liaison valide rencontrée gagne. Ceci fait naturellement gagner
+  // le LOCAL sur l'IMPORTÉ (mergeImportedUserStore place toujours les memberships locales en tête,
+  // cf. doctrine §4 du lot) sans code dédié. Les liaisons suivantes sur le même couple sont
+  // neutralisées (responsibleId: ""), JAMAIS la Membership elle-même supprimée : role/userId/
+  // clubId/id/createdAt restent intacts. Scope STRICT par clubId (jamais responsibleId seul) :
+  // deux clubs peuvent légitimement partager le même manager.id (duplication historique avant O-B).
+  function normalizeMembershipResponsibleLinks(memberships) {
+    const seenLinks = new Set();
+    return memberships.map((membership) => {
+      if (!membership.responsibleId) return membership;
+      const key = `${membership.clubId}:${membership.responsibleId}`;
+      if (seenLinks.has(key)) return { ...membership, responsibleId: "" };
+      seenLinks.add(key);
+      return membership;
+    });
+  }
+
   function normalizeMembershipRow(source = {}) {
     const now = new Date().toISOString();
     return {
@@ -42951,9 +46549,95 @@ ${esc(bodyText)}</pre>
       userId: asText(source.userId),
       clubId: asText(source.clubId),
       role: asText(source.role) || "admin",
+      // Lot O-C — liaison FACULTATIVE vers un Responsable humain (club.managers[]) du MÊME club.
+      // Non validée ici (fonction pure, ne connaît pas encore le contenu réel du club) : la
+      // validité (club existe + manager.id existe dans CE club) est garantie par
+      // normalizeUserStore() juste après (même invariant que le filtrage clubId ci-dessous —
+      // clubStore est toujours chargé avant userStore, au démarrage comme à l'import). FONCTION
+      // HUMAINE ≠ DROITS LOGICIELS : ce champ ne modifie jamais `role`, jamais User.displayName.
+      responsibleId: asText(source.responsibleId),
+      // Lot O-D1 — dérogations individuelles au profil de droits (`role`). Objet sparse : voir
+      // normalizePermissionOverrides(). Ancienne Membership sans ce champ -> {}. Indépendant de
+      // responsibleId dans les deux sens (changer l'un ne modifie jamais l'autre).
+      permissionOverrides: normalizePermissionOverrides(source.permissionOverrides),
       createdAt: source.createdAt || now,
       updatedAt: source.updatedAt || now,
     };
+  }
+
+  // Lot O-C — résout un Responsable (club.managers[]) STRICTEMENT dans le club donné. Jamais une
+  // recherche par manager.id seul : deux clubs peuvent historiquement partager un id (clubs
+  // dupliqués avant O-B) — le club fait toujours autorité. Retourne null si le club ou le
+  // manager n'existe pas (donnée orpheline : jamais un crash, jamais une résolution erronée).
+  function clubManagerById(clubId, managerId) {
+    const cid = asText(clubId);
+    const mid = asText(managerId);
+    if (!cid || !mid) return null;
+    const club = (clubStore?.clubs || []).find((row) => row.id === cid);
+    if (!club) return null;
+    return (club.managers || []).find((manager) => manager.id === mid) || null;
+  }
+
+  // Résout le Responsable réel référencé par une Membership (delegue à clubManagerById, borné au
+  // clubId de la Membership elle-même — jamais un autre club).
+  function responsibleForMembership(membership) {
+    if (!membership) return null;
+    return clubManagerById(membership.clubId, membership.responsibleId);
+  }
+
+  // Lot O-C — décision produit : un Responsable d'un club ne peut être lié qu'à UN SEUL compte
+  // utilisateur DANS CE CLUB. Portée STRICTEMENT scopée par clubId (jamais une recherche globale) :
+  // un même manager.id historique partagé entre deux clubs (duplication avant O-B) ne bloque
+  // jamais l'autre club. excludeUserId permet de ne pas se bloquer soi-même en cas de re-sélection
+  // du même Responsable sur la même Membership.
+  function managerAlreadyLinked(clubId, managerId, excludeUserId = "") {
+    const cid = asText(clubId);
+    const mid = asText(managerId);
+    if (!cid || !mid) return false;
+    // Lot O-C (correction Pix §8) — toujours RE-normaliser, jamais consommer `userStore` tel quel :
+    // rien ne garantit dans tous les chemins d'appel qu'il soit déjà passé par normalizeUserStore
+    // (donc déjà passé par l'invariant d'unicité ci-dessus). Aucun risque de récursion :
+    // normalizeUserStore() n'appelle jamais managerAlreadyLinked().
+    const store = normalizeUserStore(userStore || rawUserStoreFromStorage());
+    return store.memberships.some((row) => row.clubId === cid && row.responsibleId === mid && row.userId !== excludeUserId);
+  }
+
+  // Libellé humain d'un Responsable dans le sélecteur de liaison : "Prénom Nom — Fonction". Si nom
+  // et prénom sont absents, retombe sur la seule fonction (jamais un libellé vide).
+  function clubManagerOptionLabel(manager) {
+    const name = asText([manager.firstName, manager.lastName].filter(Boolean).join(" "));
+    const fn = asText(manager.function) || "Responsable";
+    return name ? `${name} — ${fn}` : fn;
+  }
+
+  // Lot O-C — lie/dissocie un Responsable humain (club.managers[]) à la Membership userId+clubId.
+  // RÈGLE ABSOLUE : ne modifie JAMAIS membership.role, ne touche jamais User.displayName (fonction
+  // humaine ≠ droits logiciels — O-D construira les vrais profils). responsibleId:"" dissocie sans
+  // aucun autre effet (PIN, activation, suppression du Responsable, rôle... tous inchangés).
+  // Revérifie l'unicité et l'appartenance au club ICI (jamais une confiance aveugle au DOM/select).
+  function setUserMembershipResponsible(userId, clubId, responsibleId) {
+    // Lot O-E1 (§11/§31) — seul un Administrateur du club CIBLÉ peut modifier une liaison
+    // Responsable ↔ Utilisateur. Revérifié ICI (jamais une confiance aveugle en l'UI) : un appel
+    // direct à cette fonction ne peut donc jamais contourner la garde.
+    if (!requireAdminForClub(clubId)) return false;
+    const store = normalizeUserStore(userStore || rawUserStoreFromStorage());
+    const membership = store.memberships.find((row) => row.userId === userId && row.clubId === clubId);
+    if (!membership) return false;
+    const nextId = asText(responsibleId);
+    if (nextId) {
+      if (!clubManagerById(clubId, nextId)) { render(); return false; }
+      if (managerAlreadyLinked(clubId, nextId, userId)) {
+        ui.saveMessage = "Impossible de lier ce responsable : il est déjà lié à un autre utilisateur de ce club.";
+        render();
+        return false;
+      }
+    }
+    membership.responsibleId = nextId;
+    membership.updatedAt = new Date().toISOString();
+    writeUserStore(store);
+    ui.saveMessage = nextId ? "Responsable lié" : "Responsable dissocié";
+    render();
+    return true;
   }
 
   // Idempotente : répare une structure absente/partielle, garantit l'utilisateur système
@@ -42998,7 +46682,7 @@ ${esc(bodyText)}</pre>
 
     const validUserIds = new Set(users.map((user) => user.id));
     const seenMembershipKeys = new Set();
-    const memberships = (Array.isArray(source?.memberships) ? source.memberships : [])
+    const membershipsBeforeUniqueness = (Array.isArray(source?.memberships) ? source.memberships : [])
       .map(normalizeMembershipRow)
       .filter((membership) => {
         if (!membership.userId || !membership.clubId) return false;
@@ -43008,7 +46692,21 @@ ${esc(bodyText)}</pre>
         if (seenMembershipKeys.has(key)) return false;
         seenMembershipKeys.add(key);
         return true;
-      });
+      })
+      // Lot O-C — un responsibleId qui ne correspond plus à AUCUN manager du club (Responsable
+      // supprimé, import orphelin, incohérence externe) est neutralisé ICI, jamais laissé tel
+      // quel : même invariant que le filtrage clubId ci-dessus (clubStore est toujours chargé
+      // avant userStore — ensureClubStoreInitialized précède ensureUserStoreInitialized au
+      // démarrage, et writeClubStore(merged) précède mergeImportedUserStore à l'import). Aucune
+      // action métier ne doit jamais dépendre d'un manager inexistant.
+      .map((membership) => (membership.responsibleId && !clubManagerById(membership.clubId, membership.responsibleId))
+        ? { ...membership, responsibleId: "" }
+        : membership);
+    // Lot O-C (correction Pix) — garantit l'invariant "un Responsable = au plus une Membership"
+    // MÊME pour une donnée déjà incohérente (ancienne sauvegarde, import, incohérence externe) :
+    // appliqué APRÈS le filtrage orphelin ci-dessus, donc un responsibleId neutralisé (vers "")
+    // pour cause d'orphelin ne réserve jamais artificiellement sa clé d'unicité.
+    const memberships = normalizeMembershipResponsibleLinks(membershipsBeforeUniqueness);
 
     return {
       version: 1,
@@ -43151,12 +46849,442 @@ ${esc(bodyText)}</pre>
   }
 
   // Point d'appel unique (changement de club, changement d'utilisateur, import, création/
-  // activation de club) : garantit que l'utilisateur actif a une appartenance sur le club
-  // actif, sans jamais bloquer si ce n'est pas encore le cas.
+  // activation de club).
+  //
+  // Correction Pix (O-E1, §23-26) — doctrine REVUE : un simple changement de club ou d'utilisateur
+  // ne doit plus JAMAIS promouvoir silencieusement quelqu'un Administrateur.
+  //  - Si l'utilisateur actif a DÉJÀ une Membership sur ce club (quel que soit son rôle) : elle est
+  //    conservée telle quelle, jamais modifiée ici.
+  //  - Si ce club possède DÉJÀ au moins une Membership (pour n'importe quel utilisateur) mais aucune
+  //    pour l'utilisateur actif : AUCUNE création automatique (§24/§26 — un club déjà « possédé »
+  //    par quelqu'un ne doit jamais recevoir un second Admin fantôme au hasard d'une navigation).
+  //  - Seul le cas de BOOTSTRAP légitime reste automatique (§25) : ce club ne possède ENCORE AUCUNE
+  //    Membership pour PERSONNE (club tout neuf, ou club historique jamais associé à un compte) — il
+  //    deviendrait sinon définitivement ingérable. L'utilisateur actif (nécessairement normal et
+  //    actif : activeUserIdOrFallback() ne retourne jamais le système ni un profil désactivé) en
+  //    devient alors l'Admin initial.
   function ensureActiveUserMembershipForActiveClub() {
     const uid = activeUserIdOrFallback();
     const cid = typeof activeClubId === "function" ? activeClubId() : "";
-    if (uid && cid) ensureUserMembership(uid, cid, "admin");
+    if (!uid || !cid) return;
+    const store = userStore || normalizeUserStore(rawUserStoreFromStorage());
+    if (store.memberships.some((row) => row.userId === uid && row.clubId === cid)) return;
+    if (store.memberships.some((row) => row.clubId === cid)) return;
+    ensureUserMembership(uid, cid, "admin");
+  }
+
+  // ===================================================================================
+  // Lot O-E1 — SOCLE D'AUTORISATION. Verrouille la gestion des utilisateurs/Memberships au SEUL
+  // Administrateur du CLUB CIBLÉ (§4 : membership.role === "admin" ET utilisateur actif — jamais
+  // president/administrative/users.manage override/fonction humaine Président). Ce socle sert AUSSI
+  // (currentUserHasPermission/requirePermissionForClub) de préparation pour O-E2, qui branchera les
+  // permissions métier — AUCUN handler métier ne les appelle encore dans ce lot (§34, preuve O-E1-*).
+  // ===================================================================================
+
+  // Membership de l'utilisateur ACTUELLEMENT ACTIF dans un club donné, ou null si aucune.
+  function activeUserMembershipForClub(clubId) {
+    const uid = activeUserId();
+    if (!uid || !clubId) return null;
+    const store = userStore || normalizeUserStore(rawUserStoreFromStorage());
+    return store.memberships.find((row) => row.userId === uid && row.clubId === clubId) || null;
+  }
+
+  // L'utilisateur actif est-il STRICTEMENT Administrateur de CE club (et actif, non système) ?
+  function currentUserIsAdminForClub(clubId) {
+    const uid = activeUserId();
+    if (!uid || !clubId) return false;
+    const store = userStore || normalizeUserStore(rawUserStoreFromStorage());
+    const user = store.users.find((row) => row.id === uid);
+    if (!user || user.isSystem || !user.active) return false;
+    const membership = store.memberships.find((row) => row.userId === uid && row.clubId === clubId);
+    return Boolean(membership) && membership.role === "admin";
+  }
+
+  // Permission effective de l'utilisateur actif dans CE club (délègue à effectivePermissionForMembership
+  // — moteur pur, non encore branché sur les handlers métier, voir §34).
+  function currentUserHasPermission(permissionKey, clubId) {
+    const uid = activeUserId();
+    if (!uid || !clubId) return false;
+    const store = userStore || normalizeUserStore(rawUserStoreFromStorage());
+    const user = store.users.find((row) => row.id === uid);
+    if (!user || user.isSystem || !user.active) return false;
+    const membership = store.memberships.find((row) => row.userId === uid && row.clubId === clubId);
+    if (!membership) return false;
+    return effectivePermissionForMembership(membership, permissionKey);
+  }
+
+  // --- Socle de lecture/navigation (Lot O-E2-B1) ---
+  //
+  // Cartographie NON AMBIGUË vue -> permission de lecture (audit O-E2A §9, complétée Lot O-E2-B4 §25
+  // pour coaches/rooms, Lot O-E2-B4R §2 pour availability — décision Pix finale : Availability est un
+  // outil de PLANIFICATION Sport, gardé par sport.read comme les autres écrans Sport). Volontairement
+  // absente de cette table : les vues "mixtes" qui mélangent plusieurs domaines dans un même écran
+  // (clubs, club-settings, settings, dashboard, tarifs, help, assistant, tasks, search) — leur
+  // protection fine, section par section, est différée aux lots métier respectifs (§11-13 de
+  // l'instruction). Teams est rattaché à sport.read (décision Pix §10) : AUCUNE clé teams.read/
+  // teams.write n'existe ni ne doit exister dans le registre. "due-payments" (Lot O-E2-B3B-1R) et
+  // "history" (Lot O-E2-B9R, ancien "Historique des actions" — traces nominatives, jamais un fil
+  // neutre) sont, eux, mono-domaine malgré leur apparence transverse : présents dans la table.
+  const VIEW_PERMISSION_MAP = Object.freeze({
+    contacts: "contacts.read",
+    invoices: "billing.read",
+    newsletter: "newsletter.read",
+    disciplines: "sport.read",
+    groups: "sport.read",
+    teams: "sport.read",
+    planning: "sport.read",
+    attendance: "sport.read",
+    coaches: "sport.read",
+    rooms: "sport.read",
+    availability: "sport.read",
+    competitions: "competitions.read",
+    documents: "documents.read",
+    boutique: "shop.read",
+    stock: "shop.read",
+    stages: "stages.read",
+    stats: "stats.read",
+    accounting: "accounting.read",
+    notes: "notes.read",
+    "audit-log": "audit.read",
+    // Lot O-E2-B9R (Partie A) — "Historique des actions" (state.activityLog, renderHistory,
+    // src/11-dashboard-newsletter.js) N'EST PAS un fil neutre : ses messages embarquent des noms de
+    // contacts, des libellés de discipline, des ventes Boutique et numéros de facture nominatifs
+    // (recordHistory() consigne le texte affiché à l'écran, pas un identifiant opaque). Un utilisateur
+    // sans aucun READ métier ne doit donc pas pouvoir les lire simplement en consultant "Historique" —
+    // gouverné par audit.read, jamais un history.read/history.export dédié (§2, aucun nouveau droit).
+    history: "audit.read",
+    // Lot O-E2-B3B-1R (§13) — "Paiements dus" (renderDuePayments/allAlerts, src/10-calcs-shell.js) est
+    // une surface EXCLUSIVEMENT constituée d'informations Payment (montant dû, statut, tiroir de
+    // paiement) sur les 3 modules déjà couverts par payments.read — jamais mêlée à une autre donnée
+    // structurelle. Garde de PAGE globale ici ; chaque ligne exige EN PLUS sa propre lecture de parent
+    // (memberships.read/shop.read/stages.read), filtrée dans renderDuePayments lui-même.
+    "due-payments": "payments.read",
+  });
+
+  // Helper PUR : distingue (A) vue mono-domaine protégée, (B)/(C) vue non protégée par ce socle
+  // (shell mixte ou vue sans restriction métier — mêmes conséquences ici, jamais de garde ajoutée).
+  function permissionRequirementForView(view) {
+    const key = VIEW_PERMISSION_MAP[asText(view)];
+    return key ? { protected: true, permissionKey: key } : { protected: false, permissionKey: "" };
+  }
+
+  // Garde de LECTURE pure pour le rendu/navigation : jamais requireAuthenticatedSession() ici (la
+  // session est déjà établie avant le rendu normal, §5) — uniquement currentUserHasPermission(), qui
+  // renvoie déjà false sans Membership/utilisateur inactif/permission inconnue (§21/§23 inchangés).
+  // AUCUNE permission *.write n'est consultée ici (§3/§24 : write n'implique jamais read).
+  function currentUserCanAccessView(view, clubId = activeClubId()) {
+    const requirement = permissionRequirementForView(view);
+    if (!requirement.protected) return true;
+    return currentUserHasPermission(requirement.permissionKey, clubId);
+  }
+
+  // Garde d'autorisation stricte : 1) SESSION AUTHENTIFIÉE, via la garde centrale RÉELLE
+  // requireAuthenticatedSession() (src/30-user-auth.js) — jamais une confiance aveugle en la garde
+  // de handleAction() : les mutations déclenchées par le listener `change` (setUserMembershipRole/
+  // Responsible/PermissionOverride) n'y passent PAS et doivent donc l'assurer elles-mêmes.
+  // Correction Pix — isSessionAuthenticated() seule ne suffisait pas : elle ignore authStorageCorrupt()
+  // (stockage d'authentification illisible/incohérent), que requireAuthenticatedSession() refuse
+  // explicitement (fail-closed) EN PLUS de déclencher l'écran de réparation / le flux de ré-authentification
+  // — exactement la même protection que celle déjà appliquée à toute action passant par handleAction().
+  // 2) utilisateur actif ; 3) réellement Administrateur du club CIBLÉ. Toute mutation Utilisateurs
+  // listée au §11 (O-E1) l'appelle elle-même, AVANT toute écriture — un appel direct à la fonction ne
+  // peut donc jamais la contourner.
+  function requireAdminForClub(clubId) {
+    if (typeof requireAuthenticatedSession === "function" && !requireAuthenticatedSession()) return false;
+    return currentUserIsAdminForClub(clubId);
+  }
+
+  // Socle pour O-E2 (§34) : même doctrine d'authentification que requireAdminForClub, mais pour une
+  // permission métier précise. Créé et testé dès O-E1 ; AUCUN handler métier ne l'appelle encore.
+  function requirePermissionForClub(permissionKey, clubId) {
+    if (typeof requireAuthenticatedSession === "function" && !requireAuthenticatedSession()) return false;
+    return currentUserHasPermission(permissionKey, clubId);
+  }
+
+  // --- Socle de mutation métier (Lot O-E2-B2) ---
+  //
+  // Même patron que ensureFeatureEnabledForMutation (src/04b-features-registry.js) : garde-fou
+  // générique d'ACCÈS UTILISATEUR (lecture révélée à l'ouverture d'un dialogue, ou mutation au
+  // moment du save), jamais une garde de fonctionnalité — les deux restent CUMULATIVES, jamais
+  // substituées l'une à l'autre. Message sobre et générique (jamais le nom de la permission, §27) ;
+  // aucune journalisation du refus (§28). `options.silent` permet un appel direct sans alerte (garde
+  // interne d'une fonction bas-niveau déjà re-vérifiée par son appelant UI, §35 : direct call -> pas
+  // de fenêtre système intempestive, juste aucune mutation).
+  function ensureUserPermission(permissionKey, clubId, options = {}) {
+    if (requirePermissionForClub(permissionKey, clubId)) return true;
+    if (!options.silent && typeof alert === "function") alert("Vous n'avez pas l'autorisation nécessaire.");
+    return false;
+  }
+
+  // Lot O-E2-B2R — garde pour une action CROSS-DOMAIN atomique (archiveSeason, §15) : un ENSEMBLE de
+  // permissions doit être vrai simultanément, sinon l'action entière est refusée (jamais une exécution
+  // partielle selon les droits accordés). Simple boucle sur requirePermissionForClub (déjà validé) :
+  // n'introduit aucune nouvelle règle dans le moteur O-D1, une seule alerte générique quel que soit le
+  // nombre de clés manquantes (jamais le détail des clés, §16).
+  function ensureUserPermissionsForClub(permissionKeys, clubId, options = {}) {
+    const allowed = (permissionKeys || []).every((key) => requirePermissionForClub(key, clubId));
+    if (!allowed) {
+      if (!options.silent && typeof alert === "function") alert("Vous n'avez pas l'autorisation nécessaire.");
+      return false;
+    }
+    return true;
+  }
+
+  // Lot O-E2-B3B-3R (§27-30) — permissions requises pour un vidage CIBLÉ « Vider les données »
+  // touchant Comptabilité/Paiements embarqués (runResetScope/applyResetScope, src/17-dialogs-forms.js).
+  // Nommées ICI (jamais littéralement dans 17-dialogs-forms.js : STRUCT-PAY-01/02 l'interdisent et
+  // restent inchangés) — runResetScope appelle uniquement resetScopeRequiredPermissions(scope) +
+  // ensureUserPermissionsForClub(...), ni l'un ni l'autre ne contient de chaîne de permission en dur.
+  // Le scope global "all" (exception maintenance déjà protégée par mot de passe seul, §24) n'est
+  // volontairement PAS concerné : retourne [] comme tous les autres scopes hors périmètre Comptabilité.
+  // Parent read calculé DYNAMIQUEMENT (§28) : seuls les modules qui possèdent RÉELLEMENT des paiements
+  // embarqués exigent la lecture de leur domaine parent, même doctrine que currentUserCanReadEmbeddedPayment.
+  function resetScopePaymentsParentReads() {
+    const perms = [];
+    if ((state.memberships || []).some((row) => (row.payments || []).length)) perms.push(paymentParentReadPermission("membership"));
+    if ((state.shopOrders || []).some((row) => (row.payments || []).length)) perms.push(paymentParentReadPermission("order"));
+    if (Object.values(state.stageRegistrations || {}).flat().some((row) => (row.event?.payments || []).length || (row.lodging?.payments || []).length)) perms.push(paymentParentReadPermission("registration"));
+    return perms.filter(Boolean);
+  }
+  function resetScopeRequiredPermissions(scope) {
+    if (scope === "expenses") return ["accounting.write"];
+    if (scope === "creditNotes") return ["accounting.write"];
+    // "accounting" (nom historique) vide en réalité les PAIEMENTS embarqués (resetAllPayments), jamais
+    // state.expenses/state.creditNotes : relève donc de payments.write, jamais accounting.write (§27).
+    if (scope === "accounting") return ["payments.write", ...resetScopePaymentsParentReads()];
+    // "comptabilite" vide expenses + creditNotes ET les paiements embarqués : les deux domaines.
+    if (scope === "comptabilite") return ["accounting.write", "payments.write", ...resetScopePaymentsParentReads()];
+    // Lot O-E2-B4 (§48) — scopes Sport : toute conséquence Membership (groupId/teamIds) est une
+    // conséquence STRUCTURELLE de Sport, jamais memberships.write (même doctrine que le reste du lot).
+    if (
+      scope === "disciplines" ||
+      scope === "groups" ||
+      scope === "coaches" ||
+      scope === "coach-replacements" ||
+      scope === "rooms" ||
+      scope === "room-replacements" ||
+      scope === "planning" ||
+      scope === "planning-exceptions" ||
+      scope === "attendance"
+    ) {
+      return ["sport.write"];
+    }
+    // Lot O-E2-B4 (§50) — scopes Stages : la fonctionnalité reste gardée séparément par
+    // ensureFeatureEnabledForMutation("stages") en tête de runResetScope ; ceci n'ajoute QUE la permission.
+    if (scope === "stages" || scope === "stage-registrations") return ["stages.write"];
+    // Lot O-E2-B5 (§59-61) — même doctrine pour les scopes Boutique : la fonctionnalité reste gardée
+    // séparément par ensureFeatureEnabledForMutation("shop") en tête de runResetScope ; ceci n'ajoute
+    // QUE la permission métier (aucune donnée Facturation n'est touchée par ces scopes). "boutique" et
+    // "boutique-orders" vident aussi state.shopOrders[].payments (paiements embarqués Commande) :
+    // même doctrine dynamique que "accounting" ci-dessus, mais scopée au seul module order (jamais
+    // memberships.read/stages.read même si CES modules ont par ailleurs des paiements — hors périmètre
+    // de ce scope). "boutique-articles" ne touche jamais les commandes : shop.write seul suffit.
+    if (scope === "boutique" || scope === "boutique-orders") {
+      const perms = ["shop.write"];
+      if ((state.shopOrders || []).some((row) => (row.payments || []).length)) perms.push("payments.write", paymentParentReadPermission("order"));
+      return perms;
+    }
+    if (scope === "boutique-articles") return ["shop.write"];
+    return [];
+  }
+
+  // §16/§23 — écrire un document (ou une note) EMBARQUÉ dans un parent exige la permission write du
+  // domaine lui-même ET la permission de LECTURE du domaine PARENT (jamais parent.write : la lecture
+  // du parent suffit à légitimer l'accès à ce qui lui est rattaché). Composition PURE de deux
+  // vérifications déjà existantes — n'introduit aucune hiérarchie implicite dans le moteur O-D1.
+  function ensureAttachedWritePermission(attachedWriteKey, parentReadKey, clubId) {
+    if (!ensureUserPermission(attachedWriteKey, clubId)) return false;
+    if (!currentUserHasPermission(parentReadKey, clubId)) {
+      if (typeof alert === "function") alert("Vous n'avez pas l'autorisation nécessaire.");
+      return false;
+    }
+    return true;
+  }
+
+  // --- Socle de mutation métier (Lot O-E2-B3B-1) — paiements EMBARQUÉS uniquement (state.memberships
+  // [].payments / state.shopOrders[].payments / state.stageRegistrations[*][].event|lodging.payments).
+  // NE COUVRE PAS invoice.paymentsSnapshot/paymentsAfterIssue (Billing, B3B-2). Mapping PUR, module
+  // inconnu -> "" (fail closed, §5/§20) : aucune permission n'est jamais devinée pour un module absent
+  // du registre.
+  const EMBEDDED_PAYMENT_PARENT_READ = Object.freeze({
+    membership: "memberships.read",
+    order: "shop.read",
+    registration: "stages.read",
+  });
+  function paymentParentReadPermission(module) {
+    return EMBEDDED_PAYMENT_PARENT_READ[asText(module)] || "";
+  }
+  // Lecture d'un paiement embarqué (§6) : jamais une donnée autonome — payments.read ET lecture du
+  // parent sont TOUJOURS les deux exigées ensemble, quelle que soit la page qui l'affiche.
+  function currentUserCanReadEmbeddedPayment(module, clubId = activeClubId()) {
+    const parentReadKey = paymentParentReadPermission(module);
+    if (!parentReadKey) return false;
+    return currentUserHasPermission("payments.read", clubId) && currentUserHasPermission(parentReadKey, clubId);
+  }
+
+  // Lot O-E2-B9R2 (Partie A, §3-10) — autorité UNIQUE pour la VISIBILITÉ/activation du bouton de
+  // sauvegarde globale (export-json) : même règle ALL-CLUBS que le handler lui-même (21-handlers.js)
+  // — data.export vrai sur CHAQUE club de clubStore.clubs, jamais admin/isAdmin/clubSettings.manage/
+  // users.manage. Ce helper ne remplace jamais le handler (qui reste l'autorité de MUTATION,
+  // fail-closed, revalidé indépendamment à chaque clic) : il évite seulement de présenter un contrôle
+  // qui échouerait systématiquement, conformément à la doctrine "Permission != Affichage != Feature"
+  // — ici appliquée en sens inverse (un affichage cohérent avec un droit qui n'existe déjà pas).
+  function currentUserCanExportGlobalBackup() {
+    const clubs = normalizeClubStore(clubStore || rawClubStoreFromStorage()).clubs;
+    if (!clubs.length) return false;
+    return clubs.every((club) => currentUserHasPermission("data.export", club.id));
+  }
+  // Lot O-E2-B7R2 (§10-12) — parent READ pour un bouton e-mail agrégé (repli "minimal" de la carte
+  // « Paiements dus », qui peut mélanger membership/order/registration pour une même personne : aucun
+  // module unique à passer à currentUserCanReadEmbeddedPayment). Lecture de PAGE seule (payments.read,
+  // déjà la garde VIEW_PERMISSION_MAP de "due-payments"), jamais un parent spécifique. Nommée pour que
+  // 21-handlers.js n'ait jamais à écrire la chaîne littérale "payments.read" (STRUCT-PAY-01).
+  function currentUserCanReadPaymentsAgenda(clubId = activeClubId()) {
+    return currentUserHasPermission("payments.read", clubId);
+  }
+  // Lot O-E2-B8 (§12/§13/§22) — le résolveur Vigilance famille "payments" mélange, dans UNE seule
+  // liste, des paiements embarqués (membership/order/registration, taskRows editAction) ET des
+  // factures en retard (taskRows action "open-invoice") : deux natures d'objet distinctes, jamais le
+  // même READ. Réutilise PAYMENT_AGENDA_ROW_MODULE (12-shop-contacts-render.js, même whitelist que
+  // "Paiements dus") pour les premiers ; billing.read (+ payments.read, périmètre de la famille) pour
+  // les seconds — jamais payments.read seul pour une facture. Une ligne dont le READ n'est pas
+  // accordé est simplement exclue (ni comptée, ni montrée), jamais toute la fenêtre bloquée.
+  function canReadVigilancePaymentRow(row, clubId = activeClubId()) {
+    if (!row) return false;
+    if (row.action === "open-invoice") {
+      return currentUserHasPermission("payments.read", clubId) && currentUserHasPermission("billing.read", clubId);
+    }
+    const module = (typeof PAYMENT_AGENDA_ROW_MODULE === "object" && PAYMENT_AGENDA_ROW_MODULE) ? PAYMENT_AGENDA_ROW_MODULE[row.action] || "" : "";
+    return Boolean(module) && currentUserCanReadEmbeddedPayment(module, clubId);
+  }
+  // Version PURE (sans effet de bord, sans alerte) de la garde d'écriture — réservée au calcul d'un
+  // booléen d'affichage (contrôles éditables/désactivés, §11). Jamais utilisée pour autoriser une
+  // mutation réelle : voir ensureEmbeddedPaymentWritePermission pour cela.
+  function currentUserCanWriteEmbeddedPayment(module, clubId = activeClubId()) {
+    const parentReadKey = paymentParentReadPermission(module);
+    if (!parentReadKey) return false;
+    return currentUserHasPermission("payments.write", clubId) && currentUserHasPermission(parentReadKey, clubId);
+  }
+  // Écriture d'un paiement embarqué (§7-9) : AUTHENTIFICATION (via requirePermissionForClub) +
+  // payments.write + lecture du parent — JAMAIS le write du parent (memberships.write/shop.write/
+  // stages.write ne sont pas consultés ici, doctrine identique aux Documents/Notes de B2). Module
+  // inconnu -> refus (§5/§20). Message générique unique, aucune journalisation du refus (§35).
+  function ensureEmbeddedPaymentWritePermission(module, clubId, options = {}) {
+    const parentReadKey = paymentParentReadPermission(module);
+    const allowed = Boolean(parentReadKey) && requirePermissionForClub("payments.write", clubId) && currentUserHasPermission(parentReadKey, clubId);
+    if (!allowed) {
+      if (!options.silent && typeof alert === "function") alert("Vous n'avez pas l'autorisation nécessaire.");
+      return false;
+    }
+    return true;
+  }
+
+  // Delta PUR entre deux versions d'un enregistrement, restreint à une liste de clés (§17-18) : sert
+  // à décider QUELLE permission write est réellement nécessaire (champs du domaine principal vs.
+  // pièce jointe), jamais à décider si la mutation entière est autorisée à elle seule. Comparaison
+  // tolérante aux valeurs manquantes/undefined (formulaire vs. enregistrement stocké) : les chaînes
+  // sont comparées via asText, les booléens via Boolean(), jamais une stricte égalité de types.
+  function anyFieldDiffers(before, after, keys) {
+    return keys.some((key) => {
+      const a = before ? before[key] : undefined;
+      const b = after ? after[key] : undefined;
+      if (typeof a === "boolean" || typeof b === "boolean") return Boolean(a) !== Boolean(b);
+      return asText(a) !== asText(b);
+    });
+  }
+
+  // --- Invariant "dernier Administrateur actif" (§15-20), toujours scopé À UN CLUB ---
+  //
+  // Un Admin compte pour cet invariant seulement s'il est : User non système, User actif,
+  // Membership de CE club, Membership.role === "admin". Un Admin inactif, un Président, ou un
+  // override users.manage:true ne comptent JAMAIS comme secours (§15/§26-28).
+
+  function activeAdminMembershipsForClub(clubId, store) {
+    const s = store || userStore || normalizeUserStore(rawUserStoreFromStorage());
+    const activeNormalUserIds = new Set(s.users.filter((user) => !user.isSystem && user.active).map((user) => user.id));
+    return s.memberships.filter((row) => row.clubId === clubId && row.role === "admin" && activeNormalUserIds.has(row.userId));
+  }
+
+  function activeAdminUserIdsForClub(clubId, store) {
+    return activeAdminMembershipsForClub(clubId, store).map((row) => row.userId);
+  }
+
+  // true si retirer le statut Admin de userId (changement de rôle OU désactivation) laisserait ce
+  // club sans aucun Administrateur actif.
+  function wouldRemoveLastActiveAdmin(clubId, userId, store) {
+    const admins = activeAdminUserIdsForClub(clubId, store);
+    return admins.includes(userId) && admins.length === 1;
+  }
+
+  // Tous les clubs qui perdraient leur dernier Administrateur actif si ce User était désactivé
+  // (§19-20 : la désactivation est GLOBALE, donc évaluée sur TOUS les clubs où il est Admin, pas
+  // seulement le club actif).
+  function clubsLosingLastActiveAdminIfDeactivated(userId, store) {
+    const s = store || userStore || normalizeUserStore(rawUserStoreFromStorage());
+    const candidateClubIds = s.memberships.filter((row) => row.userId === userId && row.role === "admin").map((row) => row.clubId);
+    return candidateClubIds.filter((clubId) => wouldRemoveLastActiveAdmin(clubId, userId, s));
+  }
+
+  // --- Récupération d'administration d'un club sans admin actif (Lot O-E1R-B1) ---
+  //
+  // Helper PUR d'éligibilité, SANS écriture, SANS déclenchement d'authentification, SANS rendu :
+  // ne doit JAMAIS appeler requireAuthenticatedSession()/userAuthAvailable() (ce sont des conditions
+  // d'AFFICHAGE/de capacité d'exécution, pas de la logique métier d'éligibilité) — même séparation
+  // que currentUserCanManageGlobalUser() ci-dessus, pour les mêmes raisons (appelé pendant le rendu).
+  // eligible:true seulement si : le club a au moins une Membership (pour quiconque), ce club n'a
+  // AUCUN Administrateur actif, l'utilisateur ACTIF est lui-même actif/non-système, ET possède DÉJÀ
+  // une Membership dans ce club (jamais de création de Membership par cette voie — §5/§16).
+  function adminRecoveryEligibilityForClub(clubId, store) {
+    const s = store || userStore || normalizeUserStore(rawUserStoreFromStorage());
+    if (!clubId) return { eligible: false, reason: "no-club", membership: null, user: null };
+    // Correction Pix — "club connu" doit être vérifié explicitement contre clubStore.clubs, jamais
+    // déduit de la seule présence d'une Membership. Une Membership orpheline (clubId inexistant,
+    // import incohérent, club supprimé) ne doit jamais suffire à rendre ce mécanisme éligible.
+    const clubExists = (clubStore?.clubs || []).some((row) => row.id === clubId);
+    if (!clubExists) return { eligible: false, reason: "unknown-club", membership: null, user: null };
+    const hasAnyMembershipInClub = s.memberships.some((row) => row.clubId === clubId);
+    if (!hasAnyMembershipInClub) return { eligible: false, reason: "no-membership-in-club", membership: null, user: null };
+    if (activeAdminMembershipsForClub(clubId, s).length > 0) {
+      return { eligible: false, reason: "has-active-admin", membership: null, user: null };
+    }
+    const uid = activeUserId();
+    const user = s.users.find((row) => row.id === uid) || null;
+    if (!user || user.isSystem || !user.active) {
+      return { eligible: false, reason: "active-user-not-eligible", membership: null, user };
+    }
+    const membership = s.memberships.find((row) => row.userId === uid && row.clubId === clubId) || null;
+    if (!membership) {
+      return { eligible: false, reason: "active-user-has-no-membership", membership: null, user };
+    }
+    return { eligible: true, reason: "", membership, user };
+  }
+
+  // §13 — User.displayName/active sont GLOBAUX (partagés entre tous les clubs où il a une
+  // Membership) : un Admin d'un seul club ne doit pas pouvoir renommer/désactiver/réactiver un User
+  // qui appartient aussi à un club qu'il n'administre pas. Règle : s'il a des Memberships dans N
+  // clubs, l'Admin agissant doit être Admin de TOUS ces clubs ; s'il n'en a aucune, l'Admin du club
+  // actif suffit (cas d'un User tout juste créé, pas encore rattaché).
+  // PUR, SANS EFFET SECONDAIRE (isSessionAuthenticated() seulement) : c'est ce qui permet à
+  // userCardHtml() de l'appeler librement pendant le rendu (disabled/enabled des boutons Renommer/
+  // Désactiver/Réactiver) sans jamais déclencher un écran de corruption, un flux de
+  // ré-authentification, ni un second render() en cascade. La garde FAIL-CLOSED réelle des
+  // mutations vit dans requireGlobalUserManagement() ci-dessous — jamais ici.
+  function currentUserCanManageGlobalUser(targetUserId, store) {
+    if (typeof isSessionAuthenticated === "function" && !isSessionAuthenticated()) return false;
+    const s = store || userStore || normalizeUserStore(rawUserStoreFromStorage());
+    const targetClubIds = [...new Set(s.memberships.filter((row) => row.userId === targetUserId).map((row) => row.clubId))];
+    if (!targetClubIds.length) return currentUserIsAdminForClub(activeClubId());
+    return targetClubIds.every((clubId) => currentUserIsAdminForClub(clubId));
+  }
+
+  // Correction Pix — garde de MUTATION distincte pour les Users globaux (renommer/désactiver/
+  // réactiver) : utilise la garde centrale RÉELLE requireAuthenticatedSession() (fail-closed,
+  // refuse notamment authStorageCorrupt()), contrairement à currentUserCanManageGlobalUser()
+  // ci-dessus qui reste volontairement pure pour l'UI. Un appel direct à une mutation ne peut donc
+  // jamais contourner ni l'authentification ni la règle métier (Admin de TOUS les clubs du User).
+  function requireGlobalUserManagement(targetUserId, store) {
+    if (typeof requireAuthenticatedSession === "function" && !requireAuthenticatedSession()) return false;
+    return currentUserCanManageGlobalUser(targetUserId, store);
   }
 
   // --- Sérialisation pour sauvegarde/export : les utilisateurs et appartenances sont des
@@ -43200,6 +47328,12 @@ ${esc(bodyText)}</pre>
   // --- Actions déclenchées depuis Paramètres > Utilisateurs (voir handleAction) ---
 
   async function createUserFromPrompt() {
+    // Lot O-E1 (§12) — création globale, mais nécessite d'être Administrateur du club ACTIF (créer
+    // un compte n'accorde aucun droit dans les autres clubs : il faudra l'y ajouter explicitement).
+    if (!requireAdminForClub(activeClubId())) {
+      alert("Seul un administrateur du club actif peut créer un utilisateur.");
+      return;
+    }
     const name = await requestTextInput({
       title: "Créer un utilisateur",
       label: "Nom affiché",
@@ -43223,6 +47357,14 @@ ${esc(bodyText)}</pre>
     const store = normalizeUserStore(userStore || rawUserStoreFromStorage());
     const user = store.users.find((row) => row.id === userId && !row.isSystem);
     if (!user) return;
+    // Lot O-E1 (§13) — User.displayName est GLOBAL : un Admin d'un seul club ne peut pas renommer un
+    // User qui appartient aussi à des clubs qu'il n'administre pas. Correction Pix — garde de
+    // MUTATION fail-closed (requireGlobalUserManagement), distincte de la version pure utilisée par
+    // le rendu (currentUserCanManageGlobalUser).
+    if (!requireGlobalUserManagement(userId, store)) {
+      alert("Seul un administrateur de TOUS les clubs de cet utilisateur peut le renommer.");
+      return;
+    }
     const name = await requestTextInput({
       title: "Renommer l'utilisateur",
       label: "Nom affiché",
@@ -43246,6 +47388,12 @@ ${esc(bodyText)}</pre>
     const store = normalizeUserStore(userStore || rawUserStoreFromStorage());
     const user = store.users.find((row) => row.id === userId && !row.isSystem);
     if (!user) return;
+    // Lot O-E1 (§13) — même garde globale que le renommage. Correction Pix — fail-closed
+    // (requireGlobalUserManagement).
+    if (!requireGlobalUserManagement(userId, store)) {
+      alert("Seul un administrateur de TOUS les clubs de cet utilisateur peut le désactiver.");
+      return;
+    }
     if (user.id === activeUserId()) {
       alert("Impossible de désactiver l'utilisateur actuellement actif. Choisis d'abord un autre profil actif.");
       return;
@@ -43253,6 +47401,15 @@ ${esc(bodyText)}</pre>
     const otherActiveExists = store.users.some((row) => !row.isSystem && row.active && row.id !== user.id);
     if (!otherActiveExists) {
       alert("Impossible de désactiver le dernier utilisateur actif. Crée ou réactive un autre profil avant.");
+      return;
+    }
+    // Lot O-E1 (§19-20) — désactivation GLOBALE : évaluée sur TOUS les clubs où ce User est
+    // Administrateur, pas seulement le club actif. Un seul club perdant son dernier Admin actif
+    // suffit à refuser, même si d'autres clubs restent administrables.
+    const blockedClubIds = clubsLosingLastActiveAdminIfDeactivated(user.id, store);
+    if (blockedClubIds.length) {
+      const names = blockedClubIds.map((id) => (clubStore?.clubs || []).find((club) => club.id === id)?.name || id).join(", ");
+      alert(`Impossible de désactiver ${user.displayName} : ce club doit conserver au moins un administrateur actif (${names}).`);
       return;
     }
     const confirmed = await requestConfirm({
@@ -43273,6 +47430,13 @@ ${esc(bodyText)}</pre>
     const store = normalizeUserStore(userStore || rawUserStoreFromStorage());
     const user = store.users.find((row) => row.id === userId && !row.isSystem);
     if (!user) return;
+    // Lot O-E1 (§13) — même garde globale. La réactivation ne modifie jamais Memberships/role/
+    // responsibleId/permissionOverrides (§21) : un Admin inactif redevient donc Admin de ses clubs.
+    // Correction Pix — fail-closed (requireGlobalUserManagement).
+    if (!requireGlobalUserManagement(userId, store)) {
+      alert("Seul un administrateur de TOUS les clubs de cet utilisateur peut le réactiver.");
+      return;
+    }
     // Confirmation explicite (Lot 4A) : la réactivation ne doit jamais être silencieuse — un ancien
     // profil réutilisé (départ/retour, changement de titulaire) doit repasser par une activation
     // locale avec un nouveau PIN.
@@ -43297,20 +47461,98 @@ ${esc(bodyText)}</pre>
   }
 
   function addUserMembershipFromButton(userId, clubId) {
-    const membership = ensureUserMembership(userId, clubId, "admin");
+    // Lot O-E1 (§11) — seul un Administrateur du club CIBLÉ peut y ajouter un utilisateur.
+    if (!requireAdminForClub(clubId)) return;
+    // Correction Pix — PRIVILÈGE MINIMAL PAR DÉFAUT : "Ajouter à ce club" ne doit jamais signifier
+    // "Rendre Administrateur". Puisque requireAdminForClub a réussi ci-dessus, ce club possède déjà
+    // au moins une Membership admin (l'acteur lui-même) : ce n'est donc jamais le cas de bootstrap
+    // (club à ZÉRO Membership, seul cas qui crée encore un Admin automatiquement, voir
+    // ensureActiveUserMembershipForActiveClub). La nouvelle Membership démarre en "readonly" ;
+    // l'Administrateur choisit ENSUITE explicitement le vrai profil (Président, Trésorier...).
+    const membership = ensureUserMembership(userId, clubId, "readonly");
     if (!membership) return;
     ui.saveMessage = "Appartenance ajoutée";
     render();
   }
 
   function setUserMembershipRole(userId, clubId, role) {
+    // Lot O-E1 (§11) — seul un Administrateur du club CIBLÉ peut changer un profil de droits.
+    if (!requireAdminForClub(clubId)) return false;
     const store = normalizeUserStore(userStore || rawUserStoreFromStorage());
     const membership = store.memberships.find((row) => row.userId === userId && row.clubId === clubId);
-    if (!membership) return;
-    membership.role = asText(role) || "admin";
+    if (!membership) return false;
+    // Correction Pix — JAMAIS de repli `|| "admin"` dans une mutation de rôle : une valeur vide/
+    // absente ("", null, undefined) doit être refusée explicitement, pas silencieusement interprétée
+    // comme "Administrateur" (le repli `|| "admin"` reste correct et voulu UNIQUEMENT dans
+    // normalizeMembershipRow(), pour une Membership STOCKÉE sans role du tout).
+    const nextRole = asText(role);
+    if (!nextRole) return false;
+    // Re-sélectionner la valeur déjà active (y compris un profil inconnu importé, ex. "webmaster")
+    // est un no-op silencieux, jamais un refus (§33 — correction Pix).
+    if (nextRole === membership.role) return true;
+    // Lot O-E1 (§32-33) — durcissement : une mutation ne peut affecter QUE l'un des 10 profils
+    // officiels. Ceci n'empêche jamais normalizeMembershipRow() de PRÉSERVER une ancienne valeur
+    // inconnue tant qu'elle n'est pas explicitement changée (compatibilité import, voir O-D1).
+    if (!userRoleOptions().some(([value]) => value === nextRole)) return false;
+    // Lot O-E1 (§17-18/§30) — invariant "dernier Administrateur actif" : retirer le rôle admin du
+    // SEUL Administrateur actif de ce club est refusé, y compris pour lui-même (auto-modification).
+    if (membership.role === "admin" && wouldRemoveLastActiveAdmin(clubId, userId, store)) {
+      ui.saveMessage = "Ce club doit conserver au moins un administrateur actif.";
+      render();
+      return false;
+    }
+    membership.role = nextRole;
     membership.updatedAt = new Date().toISOString();
     writeUserStore(store);
     render();
+    return true;
+  }
+
+  // Lot O-D1 — dérogation individuelle d'une permission pour une Membership.
+  // Lot O-E1 (§11/§6) — désormais gardée : seul un Administrateur du club CIBLÉ peut la modifier, et
+  // "users.manage" ne peut jamais être accordé (true) à une Membership non-admin, même par un
+  // Administrateur — le moteur (effectivePermissionForMembership) l'ignorerait de toute façon (§5),
+  // mais on refuse ici la CRÉATION de cet override plutôt que de stocker une donnée inerte/trompeuse.
+  // Ne modifie jamais role/responsibleId/User/PIN. `value` doit être un booléen strict, sinon no-op.
+  function setUserMembershipPermissionOverride(userId, clubId, permissionKey, value) {
+    if (!requireAdminForClub(clubId)) return false;
+    if (!isKnownPermissionKey(permissionKey)) return false;
+    if (value !== true && value !== false) return false;
+    const store = normalizeUserStore(userStore || rawUserStoreFromStorage());
+    const membership = store.memberships.find((row) => row.userId === userId && row.clubId === clubId);
+    if (!membership) return false;
+    // Administrateur : droits calculés implicitement à true, jamais personnalisables (§11/§21 —
+    // anti-auto-verrouillage). Toute tentative de dérogation sur un admin reste un no-op silencieux
+    // (succès, puisque le droit demandé est de toute façon déjà acquis) — aucun override inerte
+    // n'est jamais stocké pour lui.
+    if (membership.role === "admin") return true;
+    if (permissionKey === "users.manage" && value === true) return false;
+    const presetValue = rolePresetAllows(membership.role, permissionKey);
+    const overrides = { ...membership.permissionOverrides };
+    // Objet SPARSE (§26) : une valeur qui rejoint celle du preset retire la clé plutôt que de la
+    // stocker inutilement.
+    if (value === presetValue) delete overrides[permissionKey];
+    else overrides[permissionKey] = value;
+    membership.permissionOverrides = overrides;
+    membership.updatedAt = new Date().toISOString();
+    writeUserStore(store);
+    render();
+    return true;
+  }
+
+  // Réinitialise TOUTES les dérogations d'une Membership vers son profil actuel (permissionOverrides
+  // redevient {}). Ne touche jamais role/responsibleId/User/PIN (§27).
+  // Lot O-E1 (§11) — gardée : seul un Administrateur du club CIBLÉ peut réinitialiser.
+  function resetUserMembershipPermissionOverrides(userId, clubId) {
+    if (!requireAdminForClub(clubId)) return false;
+    const store = normalizeUserStore(userStore || rawUserStoreFromStorage());
+    const membership = store.memberships.find((row) => row.userId === userId && row.clubId === clubId);
+    if (!membership) return false;
+    membership.permissionOverrides = {};
+    membership.updatedAt = new Date().toISOString();
+    writeUserStore(store);
+    render();
+    return true;
   }
 
   // --- Rendu : sélecteur discret (barre latérale) + panneau Paramètres > Utilisateurs ---
@@ -43332,23 +47574,141 @@ ${esc(bodyText)}</pre>
     </div>`;
   }
 
+  // Lot O-C — sélecteur "Responsable lié" : "Aucun responsable lié" + tous les managers RÉELS de
+  // CE club. Un manager déjà lié à un AUTRE utilisateur de ce club est proposé mais désactivé
+  // (jamais masqué silencieusement : l'utilisateur comprend pourquoi il ne peut pas le choisir),
+  // avec un signalement explicite dans son libellé.
+  // `canManage` (Lot O-E1, §28) : défaut true pour ne rien changer aux appels directs existants
+  // (tests, autres consommateurs) — seul userMembershipRowHtml calcule la vraie valeur
+  // (currentUserIsAdminForClub) selon qui regarde réellement l'écran.
+  function membershipResponsibleFieldHtml(user, club, membership, canManage = true) {
+    const managerOptions = (club.managers || []).map((manager) => {
+      const linkedElsewhere = managerAlreadyLinked(club.id, manager.id, user.id);
+      const label = clubManagerOptionLabel(manager) + (linkedElsewhere ? " (déjà lié à un autre utilisateur)" : "");
+      return `<option value="${esc(manager.id)}" ${membership.responsibleId === manager.id ? "selected" : ""} ${linkedElsewhere ? "disabled" : ""}>${esc(label)}</option>`;
+    }).join("");
+    return `<select data-user-responsible-field data-user-id="${esc(user.id)}" data-club-id="${esc(club.id)}" ${canManage ? "" : "disabled"}>
+      <option value="" ${membership.responsibleId ? "" : "selected"}>Aucun responsable lié</option>
+      ${managerOptions}
+    </select>`;
+  }
+
+  // Correction Pix (O-D1) — hasFeature() est le helper du CLUB ACTIF (src/04b-features-registry.js) ;
+  // or Paramètres > Utilisateurs affiche les memberships de PLUSIEURS clubs simultanément dans la
+  // même fiche utilisateur. Utiliser hasFeature() ici évaluerait systématiquement la feature du club
+  // actif, même en affichant les droits d'un autre club (bug multi-club). On calcule donc l'état de
+  // la feature à partir des settings du CLUB DE LA MEMBERSHIP AFFICHÉE, via le calcul pur
+  // featureEnabledInSettings, jamais via hasFeature() (qui reste inchangé, pour le contexte courant).
+  function featureEnabledForUserPermissionClub(club, featureKey) {
+    if (!club || !featureKey) return true;
+    const clubSettings = club.id === activeClubId() ? settings : clubStore?.data?.[club.id]?.settings;
+    return featureEnabledInSettings(featureKey, clubSettings || {});
+  }
+
+  // Lot O-D1 — un groupe de permissions désactivé si sa feature associée (shop/stages/competitions)
+  // est désactivée pour ce club : les cases restent visibles (fieldset[disabled] désactive aussi
+  // les <input> descendants nativement) et le texte le signale, mais RIEN n'est jamais supprimé de
+  // permissionOverrides (§29). Chaque case reflète la permission EFFECTIVE (preset + overrides).
+  // `canManage` (Lot O-E1, §28) : défaut true (voir membershipResponsibleFieldHtml ci-dessus) — le
+  // <fieldset> lui-même ne reçoit JAMAIS "disabled" pour cette raison (uniquement pour featureOff,
+  // §29 O-D1 inchangé) : seules les cases individuelles le sont, pour ne jamais rendre "feature
+  // désactivée" et "lecture seule car non-admin" indiscernables l'une de l'autre dans le HTML.
+  function permissionGroupHtml(user, club, membership, group, canManage = true) {
+    const featureKey = group.permissions.find((def) => def.featureKey)?.featureKey;
+    const featureOff = Boolean(featureKey) && !featureEnabledForUserPermissionClub(club, featureKey);
+    return `<fieldset class="user-permissions-group" ${featureOff ? "disabled" : ""}>
+      <legend>${esc(group.name)}${featureOff ? ` <small>(Fonctionnalité désactivée pour ce club)</small>` : ""}</legend>
+      ${group.permissions.map((def) => {
+        const effective = effectivePermissionForMembership(membership, def.key);
+        // Lot O-E1 (§7) — "users.manage" est verrouillé ADMIN-ONLY par le moteur lui-même : pour
+        // toute Membership non-admin, la case est TOUJOURS non cochée, non modifiable, et signalée
+        // — quel que soit qui regarde (même un Administrateur ne peut pas l'accorder à un autre).
+        const usersManageLocked = def.key === "users.manage" && membership.role !== "admin";
+        return `<label class="settings-check">
+          <input type="checkbox" data-user-permission-field data-user-id="${esc(user.id)}" data-club-id="${esc(club.id)}" data-permission-key="${esc(def.key)}" ${effective ? "checked" : ""} ${(featureOff || !canManage || usersManageLocked) ? "disabled" : ""} />
+          <span>${esc(def.label)}${usersManageLocked ? ` <small>(Réservé au profil Administrateur)</small>` : ""}</span>
+        </label>`;
+      }).join("")}
+    </fieldset>`;
+  }
+
+  // Zone repliable "Personnaliser les droits" par Membership (jamais 30 cases affichées en
+  // permanence, §24). L'Administrateur n'a rien à personnaliser (ses droits sont toujours complets,
+  // §11) : la zone l'indique sans proposer d'éditeur inutile. Un badge signale si des dérogations
+  // sont actives (§28), et un bouton permet de tout réinitialiser vers le profil (§27).
+  // `canManage` (Lot O-E1, §28) : défaut true, mêmes raisons que ci-dessus.
+  function membershipPermissionsEditorHtml(user, club, membership, canManage = true) {
+    const isAdmin = membership.role === "admin";
+    const hasOverrides = Object.keys(membership.permissionOverrides || {}).length > 0;
+    return `<details class="user-permissions-editor" data-user-permissions-editor>
+      <summary>Personnaliser les droits${hasOverrides ? ` <span class="user-permissions-custom-badge">Droits personnalisés actifs</span>` : ""}</summary>
+      ${isAdmin
+        ? `<p class="muted">L'Administrateur possède toujours l'ensemble des droits ; ils ne sont pas personnalisables.</p>`
+        : `<div class="user-permissions-groups">
+            ${permissionGroups().map((group) => permissionGroupHtml(user, club, membership, group, canManage)).join("")}
+          </div>
+          <div class="inline-actions">
+            <button type="button" data-action="reset-user-membership-permissions" data-user-id="${esc(user.id)}" data-club-id="${esc(club.id)}" ${canManage ? "" : "disabled"}>Réinitialiser selon le profil</button>
+          </div>`}
+    </details>`;
+  }
+
+  // Correction Pix (O-D1) — un Membership.role IMPORTÉ/INCONNU (ni un des 10 profils officiels) doit
+  // rester VISIBLE et SÉLECTIONNÉ tant que l'utilisateur ne le change pas explicitement : même
+  // doctrine que le correctif O-B pour club.managers[].role (voir clubManagerCardHtml). Sans cela, un
+  // <select> sans option correspondant à sa valeur affiche silencieusement sa PREMIÈRE option
+  // (Administrateur) alors que le moteur applique en réalité le fallback readonly
+  // (rolePresetAllows/effectivePermissionForMembership) — affichage mensonger et dangereux. La valeur
+  // "webmaster" n'est JAMAIS ajoutée à userRoleOptions()/rolePresetDefinitions() : ce n'est pas un
+  // nouveau profil officiel durable, juste un affichage ponctuel pour la donnée déjà présente.
+  function userRoleSelectOptionsHtml(role) {
+    const options = userRoleOptions();
+    const rawRole = asText(role);
+    const isKnownRole = options.some(([value]) => value === rawRole);
+    const optionsList = (rawRole && !isKnownRole)
+      ? [[rawRole, `${rawRole} — profil ancien/importé (lecture seule)`], ...options]
+      : options;
+    return optionsList.map(([value, label]) => `<option value="${esc(value)}" ${value === rawRole ? "selected" : ""}>${esc(label)}</option>`).join("");
+  }
+
+  // Lot O-E1 (§28) — par ligne de club, les contrôles ne sont modifiables que si l'utilisateur
+  // ACTUELLEMENT ACTIF est réellement Administrateur de CE club précis (jamais du seul club actif de
+  // la session, jamais d'un autre club affiché dans la même fiche). Sinon : champs visibles mais
+  // désactivés/lecture seule + signal discret — aucune mutation directe ne pourrait de toute façon
+  // aboutir (les fonctions elles-mêmes revérifient via requireAdminForClub, §29).
   function userMembershipRowHtml(user, clubs, store) {
     const rows = clubs.map((club) => {
       const membership = store.memberships.find((row) => row.userId === user.id && row.clubId === club.id);
-      return `<label class="user-membership-row">
+      const canManage = currentUserIsAdminForClub(club.id);
+      // Correction Pix (O-C) — conteneur DIV, jamais LABEL : la ligne contient plusieurs champs
+      // <label> distincts (Responsable lié / Profil de droits), pas un unique champ. Des <label>
+      // imbriqués seraient du HTML invalide (le navigateur peut fermer/réorganiser les balises de
+      // façon imprévisible). .user-membership-row (CSS) cible la classe, jamais label.user-membership-row.
+      return `<div class="user-membership-row"${canManage ? "" : " data-user-membership-readonly"}>
         <span>${esc(club.name)}</span>
         ${membership
-          ? `<select data-user-role-field data-user-id="${esc(user.id)}" data-club-id="${esc(club.id)}">
-              ${userRoleOptions().map(([value, label]) => `<option value="${esc(value)}" ${membership.role === value ? "selected" : ""}>${esc(label)}</option>`).join("")}
-            </select>`
-          : `<button type="button" data-action="add-user-membership" data-user-id="${esc(user.id)}" data-club-id="${esc(club.id)}">Ajouter à ce club</button>`}
-      </label>`;
+          ? `<div class="user-membership-fields">
+              <label>Responsable lié${membershipResponsibleFieldHtml(user, club, membership, canManage)}</label>
+              <label>Profil de droits<select data-user-role-field data-user-id="${esc(user.id)}" data-club-id="${esc(club.id)}" ${canManage ? "" : "disabled"}>
+                ${userRoleSelectOptionsHtml(membership.role)}
+              </select></label>
+            </div>
+            ${membershipPermissionsEditorHtml(user, club, membership, canManage)}
+            ${canManage ? "" : `<p class="muted">Administration de ce club requise pour modifier ces droits.</p>`}`
+          : (canManage
+              ? `<button type="button" data-action="add-user-membership" data-user-id="${esc(user.id)}" data-club-id="${esc(club.id)}">Ajouter à ce club</button>`
+              : `<p class="muted">Administration de ce club requise pour ajouter cet utilisateur.</p>`)}
+      </div>`;
     }).join("");
     return `<div class="user-memberships">${rows}</div>`;
   }
 
   function userCardHtml(user, clubs, store, options = {}) {
     const isActive = user.id === activeUserId();
+    // Lot O-E1 (§13/§29) — boutons globaux (renommer/désactiver/réactiver) : suivent
+    // currentUserCanManageGlobalUser (Admin de TOUS les clubs de ce User). L'UI se contente de
+    // refléter l'état ; les fonctions elles-mêmes revérifient à l'appel (§29 — même si mal rendu).
+    const canManageUser = currentUserCanManageGlobalUser(user.id, store);
     // Statut / gestion du PIN (Lot 4A) : uniquement dans la version de bureau (auth Electron
     // disponible). La création/modification du PIN n'est proposée que pour l'utilisateur
     // actuellement authentifié (chacun gère son propre PIN) ; le retrait n'est offert qu'en
@@ -43369,13 +47729,29 @@ ${esc(bodyText)}</pre>
         ${pinChip}
       </div>
       <div class="inline-actions">
-        <button type="button" data-action="rename-user" data-user-id="${esc(user.id)}">Renommer</button>
+        <button type="button" data-action="rename-user" data-user-id="${esc(user.id)}" ${canManageUser ? "" : "disabled"}>Renommer</button>
         ${pinActions}
         ${options.deactivated
-          ? `<button type="button" class="primary" data-action="reactivate-user" data-user-id="${esc(user.id)}">Réactiver</button>`
-          : `<button type="button" data-action="deactivate-user" data-user-id="${esc(user.id)}">Désactiver</button>`}
+          ? `<button type="button" class="primary" data-action="reactivate-user" data-user-id="${esc(user.id)}" ${canManageUser ? "" : "disabled"}>Réactiver</button>`
+          : `<button type="button" data-action="deactivate-user" data-user-id="${esc(user.id)}" ${canManageUser ? "" : "disabled"}>Désactiver</button>`}
       </div>
       ${userMembershipRowHtml(user, clubs, store)}
+    </div>`;
+  }
+
+  // Un seul bloc par club verrouillé (jamais dupliqué par carte utilisateur), affiché SEULEMENT
+  // quand l'utilisateur actif est lui-même éligible à la récupération de ce club (§17-18). En version
+  // Web/PWA (pas d'auth Electron), pas de bouton actif : message d'orientation vers la version bureau.
+  function adminRecoveryBlockHtml(club, store) {
+    const eligibility = adminRecoveryEligibilityForClub(club.id, store);
+    if (!eligibility.eligible) return "";
+    const authOn = typeof userAuthAvailable === "function" && userAuthAvailable();
+    return `<div class="admin-recovery-block">
+      <p><strong>${esc(club.name)}</strong> — Aucun administrateur actif</p>
+      <p class="muted">Ce club n'a plus aucun Administrateur actif : personne ne peut actuellement gérer les utilisateurs, les profils de droits ou les autres réglages réservés à l'Administrateur. Vous pouvez récupérer ce rôle pour votre propre profil, avec le code de récupération de cette installation.</p>
+      ${authOn
+        ? `<button type="button" class="primary" data-action="recover-club-administration" data-club-id="${esc(club.id)}">Récupérer l'administration</button>`
+        : `<p class="muted">Cette récupération est disponible dans la version de bureau.</p>`}
     </div>`;
   }
 
@@ -43386,11 +47762,13 @@ ${esc(bodyText)}</pre>
     const activeUsers = normalUsers.filter((user) => user.active);
     const inactiveUsers = normalUsers.filter((user) => !user.active);
     const authOn = typeof userAuthAvailable === "function" && userAuthAvailable();
+    const recoveryBlocks = clubs.map((club) => adminRecoveryBlockHtml(club, store)).join("");
     return `<div class="users-settings">
-      <p class="muted">Chaque profil permet de distinguer qui utilise le logiciel sur cet ordinateur. Le rôle par club est mémorisé pour préparer un futur système de droits — il n'a aucun effet aujourd'hui.</p>
+      <p class="muted">Chaque profil permet de distinguer qui utilise le logiciel sur cet ordinateur. Le Responsable lié rattache ce profil à une personne du bureau du club (Paramètres > Paramètres du club > Responsables) — facultatif, purement informatif. Le profil de droits définit les permissions recommandées de l'utilisateur pour ce club ; « Personnaliser les droits » permet d'adapter ce profil au cas par cas. La gestion des utilisateurs, des profils de droits et des liaisons Responsable est désormais réservée aux Administrateurs de chaque club. L'application de ces permissions aux actions du logiciel (contacts, factures, paiements, boutique, etc.) sera activée dans un lot suivant.</p>
       ${authOn
         ? `<p class="muted">La protection par PIN garantit que les actions du Journal d'activité sont bien attribuées à la bonne personne. Dès qu'au moins deux profils existent, chacun doit avoir un PIN.</p>`
         : `<p class="muted">La protection des utilisateurs par PIN est disponible dans la version de bureau.</p>`}
+      ${recoveryBlocks}
       <div class="inline-actions">
         <button type="button" class="primary" data-action="new-user">Créer un utilisateur</button>
       </div>
@@ -43489,6 +47867,10 @@ ${esc(bodyText)}</pre>
     // patron que club.feature.updated. Jamais un événement par avertissement affiché ni par
     // tentative d'affectation refusée (ces surfaces ne journalisent aucune validation aujourd'hui).
     "club.groupAgePolicy.updated",
+    // Lot O-E1R-B1 — récupération d'administration d'un club sans admin actif : événement rare,
+    // attribué à l'UTILISATEUR AUTHENTIFIÉ lui-même (jamais Système), jamais de recoveryCode/
+    // verificationId/PIN/hash en métadonnée (voir audit.clubAdminRecovered ci-dessous).
+    "club.admin.recovered",
   ];
 
   function rawAuditLogFromStorage() {
@@ -44112,6 +48494,20 @@ ${esc(bodyText)}</pre>
           toUserId: toUser.id,
           toUserLabel: toUser.displayName,
         },
+      });
+    },
+    // Récupération d'administration d'un club sans admin actif (Lot O-E1R-B1) : acteur = l'utilisateur
+    // AUTHENTIFIÉ qui vient de récupérer le rôle (jamais Système — c'est une action volontaire de sa
+    // part, à la différence de userPinReset). Métadonnées minimales, JAMAIS de recoveryCode, de
+    // verificationId, de PIN ni de hash.
+    clubAdminRecovered(club, userId) {
+      return recordAuditEvent({
+        action: "club.admin.recovered",
+        entityType: "club",
+        entityId: club.id,
+        entityLabel: club.name,
+        clubId: club.id,
+        metadata: { clubId: club.id, previousActiveAdminCount: 0, recoveredUserId: userId },
       });
     },
     // --- Lot 5A — cycle de vie des stages et de leurs inscriptions ---
@@ -44741,6 +49137,7 @@ ${esc(bodyText)}</pre>
         ? `${to} a ouvert une session (profil précédent : « ${from} »)`
         : `${to} a ouvert une session`;
     },
+    "club.admin.recovered": (actor, label) => `${actor} a récupéré l'administration du club « ${label || "?"} » (aucun administrateur actif)`,
     "stage.created": (actor, label) => `${actor} a créé le stage « ${label || "?"} »`,
     "stage.updated": (actor, label, metadata) => {
       const changes = Array.isArray(metadata.changes) ? metadata.changes : [];
@@ -44932,10 +49329,19 @@ ${esc(bodyText)}</pre>
     return club ? club.name : "Club supprimé";
   }
 
+  // Lot O-E2-B9 (§11 doctrine audit.read) — le filtre "Tous les clubs" agrégeait auparavant les
+  // événements de TOUS les clubs locaux sans aucune vérification, alors que audit.read est une
+  // permission PAR CLUB comme toute autre : un utilisateur avec audit.read seulement sur son club
+  // actif pouvait ainsi lire le journal (utilisateurs, réglages, paiements...) d'un autre club où il
+  // n'a aucun droit, simplement en changeant ce sélecteur d'affichage. Filtré ici À LA SOURCE — avant
+  // tout rendu ET avant tout export CSV/PDF, puisque les deux consomment cette même fonction —, jamais
+  // un filtrage a posteriori dans renderAuditLog() qui aurait laissé les exports directs en prise.
   function auditLogRows() {
     const store = auditLog || normalizeAuditLog(rawAuditLogFromStorage());
     const filterClubId = ui.auditLogFilter === "all" ? "" : (typeof activeClubId === "function" ? activeClubId() : "");
-    const rows = filterClubId ? store.events.filter((event) => event.clubId === filterClubId) : store.events.slice();
+    const rows = filterClubId
+      ? store.events.filter((event) => event.clubId === filterClubId)
+      : store.events.filter((event) => currentUserHasPermission("audit.read", event.clubId));
     return rows.sort((a, b) => (b.timestamp || "").localeCompare(a.timestamp || ""));
   }
 
@@ -45422,6 +49828,141 @@ ${esc(bodyText)}</pre>
     return true;
   }
 
+  // Récupération d'administration d'un club sans admin actif (Lot O-E1R-B1). Zéro confiance dans
+  // l'état affiché à l'écran : l'éligibilité est REVALIDÉE à trois reprises (avant l'autorisation
+  // principale, avant la consommation du jeton, et une troisième fois juste avant la mutation
+  // elle-même) — un administrateur peut apparaître entre deux étapes (import, autre profil...) et
+  // doit alors faire échouer la récupération, même si le jeton en devient perdu de ce fait
+  // (volontairement fail-safe, §21). Mutation strictement limitée à membership.role/updatedAt.
+  async function runAdminRecoveryFlow(clubId) {
+    const cid = asText(clubId);
+    if (!cid) return false;
+    if (!requireAuthenticatedSession()) return false;
+
+    // Correction Pix — capturé UNE SEULE FOIS, avant tout dialogue : c'est CE profil qui doit
+    // devenir Administrateur, quoi qu'il arrive ensuite à l'écran. activeUserId() n'est plus jamais
+    // relu comme référence après ce point ; il n'est relu que pour être COMPARÉ à recoveryUserId, à
+    // trois reprises (avant l'autorisation, avant la consommation, juste avant la mutation) — toute
+    // divergence doit faire échouer le flux, jamais glisser silencieusement vers un autre profil.
+    const recoveryUserId = activeUserId();
+    if (!recoveryUserId) return false;
+
+    const club = (clubStore?.clubs || []).find((row) => row.id === cid);
+    if (!club) return false;
+
+    let eligibility = adminRecoveryEligibilityForClub(cid);
+    if (!eligibility.eligible) {
+      alert("Ce club a de nouveau un administrateur actif, ou vous n'êtes plus éligible à cette récupération.");
+      render();
+      return false;
+    }
+
+    const intentConfirmed = await requestConfirm({
+      title: "Récupérer l'administration",
+      message: `Ce club n'a plus d'administrateur actif.\n« ${club.name} » ne peut actuellement être géré par personne.`,
+      confirmLabel: "Continuer",
+    });
+    if (!intentConfirmed) return false;
+
+    const recoveryCode = await requestTextInput({
+      title: "Code de récupération",
+      label: "Saisissez le code de récupération de l'installation",
+      placeholder: "XXXX-XXXX-XXXX-XXXX",
+      confirmLabel: "Continuer",
+    });
+    if (!recoveryCode) return false;
+
+    const finalConfirmed = await requestConfirm({
+      title: "Devenir Administrateur",
+      message: `Votre profil deviendra Administrateur de ce club.\n« ${club.name} »`,
+      confirmLabel: "Devenir Administrateur",
+    });
+    if (!finalConfirmed) return false;
+
+    const api = userAuthApi();
+    if (!api) return false;
+
+    // Revalidation utilisateur n°1 (§11) : trois dialogues asynchrones ont pu laisser le temps à un
+    // changement de profil actif. Aucun jeton n'existe encore ici : rien à annuler, un simple refus.
+    if (activeUserId() !== recoveryUserId) return false;
+
+    let authorize;
+    try { authorize = await api.authorizeAdminRecovery(recoveryUserId, cid, recoveryCode); } catch (error) { authorize = null; }
+    if (!authorize || !authorize.ok) {
+      alert("Code de récupération incorrect, ou récupération impossible.");
+      return false;
+    }
+
+    // Le jeton admin-recovery existe désormais côté main (TTL court, mais réel). Toute revalidation
+    // négative à partir d'ici doit explicitement l'annuler (§13) plutôt que le laisser vivre jusqu'à
+    // expiration naturelle. Fail-safe : si l'annulation elle-même échoue (IPC indisponible...), le
+    // flux refuse malgré tout — aucune mutation n'est jamais conditionnée à la réussite de l'annulation.
+    const abandonToken = async () => {
+      try { await api.cancelVerification(authorize.verificationId); } catch (error) { /* fail-safe : refus quand même */ }
+    };
+
+    // Revalidation utilisateur n°2 (§11), juste avant la consommation.
+    if (activeUserId() !== recoveryUserId) {
+      await abandonToken();
+      return false;
+    }
+
+    eligibility = adminRecoveryEligibilityForClub(cid);
+    if (!eligibility.eligible) {
+      await abandonToken();
+      alert("Ce club a de nouveau un administrateur actif : récupération annulée.");
+      render();
+      return false;
+    }
+
+    let consume;
+    try { consume = await api.consumeAdminRecovery(recoveryUserId, cid, authorize.verificationId); } catch (error) { consume = null; }
+    if (!consume || !consume.ok) {
+      alert("La récupération n'a pas pu être confirmée. Recommencez depuis le début.");
+      return false;
+    }
+
+    // Revalidation utilisateur n°3 (§11), juste avant la mutation. Le jeton est déjà consommé à ce
+    // stade (usage unique, §2) : un échec ici perd la récupération, qui devra être recommencée
+    // depuis le début — fail-safe assumé (§21), jamais une mutation sur la foi d'un profil différent.
+    if (activeUserId() !== recoveryUserId) {
+      alert("Récupération annulée : le profil actif a changé pendant l'opération.");
+      render();
+      return false;
+    }
+
+    // Même idiome que tout le reste du module Utilisateurs (userStore || rawUserStoreFromStorage()) :
+    // userStore reste toujours synchronisé avec le stockage via writeUserStore, donc cette relecture
+    // est une RE-DÉRIVATION explicite (jamais une variable capturée avant les `await` ci-dessus), pas
+    // un contournement du cache mémoire.
+    const freshStore = normalizeUserStore(userStore || rawUserStoreFromStorage());
+    const user = freshStore.users.find((row) => row.id === recoveryUserId);
+    if (!user || user.isSystem || !user.active) {
+      alert("Récupération annulée : votre profil n'est plus éligible.");
+      render();
+      return false;
+    }
+    const membership = freshStore.memberships.find((row) => row.userId === recoveryUserId && row.clubId === cid);
+    if (!membership) {
+      alert("Récupération annulée : votre appartenance à ce club a disparu entre-temps.");
+      render();
+      return false;
+    }
+    if (activeAdminMembershipsForClub(cid, freshStore).length > 0) {
+      alert("Ce club a de nouveau un administrateur actif : récupération annulée.");
+      render();
+      return false;
+    }
+
+    membership.role = "admin";
+    membership.updatedAt = new Date().toISOString();
+    writeUserStore(freshStore);
+    audit.clubAdminRecovered(club, recoveryUserId);
+    ui.saveMessage = "Administration récupérée";
+    render();
+    return true;
+  }
+
   // --- Changement d'utilisateur sécurisé (depuis le sélecteur) ---
 
   function hasOpenMutationForms() {
@@ -45860,6 +50401,10 @@ ${esc(bodyText)}</pre>
     return {
       step: "identity",
       fromMesClubs: false,
+      // Lot O-E2-B6R (§27) — club actif d'AUTORITÉ capturé à l'ouverture, uniquement quand le flux
+      // part d'une application déjà initialisée (fromMesClubs). Vide en FirstLaunch (non concerné,
+      // aucun Admin n'existe encore) : chemin FirstLaunch strictement inchangé.
+      authorityClubId: "",
       identity: { clubName: "", clubSubtitle: "", theme: settings.theme || "graphite", logoDataUrl: "", email: "", phone: "", address: "" },
       selectedSportIds: [],
       // Lot 1B-2 — disciplines nommées choisies (catalog/disciplines/*.json, ex. "futsal"), séparément
@@ -45902,6 +50447,10 @@ ${esc(bodyText)}</pre>
     if (typeof clearFirstLaunchImportContext === "function") clearFirstLaunchImportContext();
     ui.initialClubWizard = freshClubWizardDraft();
     ui.initialClubWizard.fromMesClubs = Boolean(options.fromMesClubs);
+    // Lot O-E2-B6R (§27) — l'Admin strict a déjà été vérifié par le handler "new-club" avant cet
+    // appel ; on capture ici le club d'autorité pour le revalider au submit (§28), sans dupliquer la
+    // garde ni toucher au chemin FirstLaunch (authorityClubId reste "" quand !fromMesClubs).
+    if (ui.initialClubWizard.fromMesClubs) ui.initialClubWizard.authorityClubId = activeClubId();
     if (!options.fromMesClubs) {
       ui.initialClubWizard.identity.clubName = asText(settings.clubName === "MonGestaClub" ? "" : (settings.clubName || ""));
     }
@@ -46914,6 +51463,16 @@ ${esc(bodyText)}</pre>
       const err = validateWizardStep(step);
       if (err) { d.step = step; renderClubWizard(err); return; }
     }
+    // Lot O-E2-B6R (§27-29) — application déjà initialisée (fromMesClubs) : créer un nouveau club
+    // exige l'Admin strict du club d'autorité capturé à l'ouverture, revalidé ici (contexte + droit
+    // toujours effectifs). FirstLaunch (fromMesClubs=false, authorityClubId="") reste NON concerné,
+    // strictement inchangé.
+    if (d.fromMesClubs) {
+      if (!d.authorityClubId || activeClubId() !== d.authorityClubId || !requireAdminForClub(d.authorityClubId)) {
+        alert("Seul un administrateur du club actif peut créer un nouveau club.");
+        return;
+      }
+    }
     clubWizardCreating = true;
     if (triggerButton) triggerButton.disabled = true;
     try {
@@ -47063,12 +51622,156 @@ ${esc(bodyText)}</pre>
     return `Sauvegarde importée — ${parts.join(", ")}`;
   }
 
-  // IMPORT ORDINAIRE (depuis l'application) — chemin HISTORIQUE inchangé : applique via
-  // importBackupPayload (qui écrit) après recordHistory. Renvoie { success, summary } ou une erreur.
+  // --- Sécurisation de l'import ORDINAIRE contre l'élévation de privilèges (Lot O-E1R-B2) ---
+  //
+  // Faille fermée : mergeImportedUserStore (src/28-users.js) accepte toute paire (userId, clubId)
+  // INÉDITE localement, y compris un tout nouvel Utilisateur avec Membership.role:"admin" vers un
+  // club LOCAL déjà existant — sans jamais passer par requireAdminForClub/setUserMembershipRole. Un
+  // simple utilisateur authentifié (même readonly) pouvait donc s'auto-promouvoir Administrateur
+  // d'un club existant via un fichier de sauvegarde forgé. Ce mécanisme NE remplace PAS la
+  // récupération officielle O-E1R-B1 : un club local sans Administrateur actif reste refusé par
+  // cette garde (personne n'y passe currentUserIsAdminForClub), c'est volontaire (§10).
+  //
+  // ordinaryImportSecurityPlan() est un helper PUR d'ANALYSE : aucune écriture, aucun render, aucune
+  // alerte, aucun appel avec effet de bord (currentUserIsAdminForClub est un simple calcul, pas une
+  // garde). Il calcule l'union des clubs LOCAUX déjà existants affectés par la sauvegarde — via son
+  // propre clubStore importé (§6.A), via les Memberships de son userStore importé même si le club n'a
+  // pas de fiche club dans la sauvegarde (§6.B/§15), et via le club actif quand la sauvegarde ajoute
+  // un nouvel Utilisateur global sans aucune Membership importée (§16, contourne sinon
+  // createUserFromPrompt) — jamais pour un Utilisateur lié uniquement à un club tout nouveau (§17).
+  // Un club qui n'existe PAS encore localement (§8) n'exige aucun droit préalable : c'est une pure
+  // restauration, ses rôles importés (y compris admin) sont préservés tels quels.
+  function ordinaryImportSecurityPlan(payload) {
+    const localStore = normalizeClubStore(clubStore || rawClubStoreFromStorage());
+    const localClubIds = new Set(localStore.clubs.map((club) => club.id));
+    const existingAffected = new Set();
+    const newClubIds = [];
+
+    const isModern = Boolean(payload && payload.clubStore && Array.isArray(payload.clubStore.clubs) && payload.clubStore.clubs.length);
+    if (isModern) {
+      payload.clubStore.clubs.forEach((club) => {
+        const cid = asText(club && club.id);
+        if (!cid) return;
+        if (localClubIds.has(cid)) existingAffected.add(cid); else newClubIds.push(cid);
+      });
+    } else {
+      // Formats historique mono-club ET fallback état brut (§13) : importBackupPayload mute
+      // TOUJOURS le club ACTIF dans ces deux cas (aucun clubStore/userStore dans la sauvegarde).
+      const activeId = activeClubId();
+      if (activeId) existingAffected.add(activeId);
+    }
+
+    const importsUserStore = isModern && payload.userStore !== undefined;
+    const incomingMembershipClubIds = [];
+    let addsStandaloneUsers = false;
+
+    if (importsUserStore) {
+      const rawUsers = Array.isArray(payload.userStore.users) ? payload.userStore.users : [];
+      const rawMemberships = Array.isArray(payload.userStore.memberships) ? payload.userStore.memberships : [];
+      const localUserStore = normalizeUserStore(userStore || rawUserStoreFromStorage());
+      const localUserIds = new Set(localUserStore.users.map((user) => user.id));
+
+      // Correction Pix — l'analyse doit refléter ce qui SURVIT réellement à normalizeUserRow/
+      // normalizeMembershipRow/normalizeUserStore dans mergeImportedUserStore, jamais les seules
+      // valeurs brutes du payload. VALID TARGET CLUB IDS = clubs locaux existants UNION clubs
+      // déclarés dans payload.clubStore.clubs avec un id stable non vide (newClubIds). Une Membership
+      // vers un clubId hors de cet ensemble ("ghost-club", vide, club sans id stable...) ne sera
+      // JAMAIS conservée par normalizeUserStore (filtrage knownClubIds) : elle ne doit donc jamais
+      // compter comme rattachement effectif d'un nouvel Utilisateur pour la détection standalone.
+      const validTargetClubIds = new Set([...localClubIds, ...newClubIds]);
+
+      const clubIdsByUserId = new Map();
+      rawMemberships.forEach((row) => {
+        const uid = asText(row && row.userId);
+        const cid = asText(row && row.clubId);
+        if (!uid || !cid) return;
+        if (!incomingMembershipClubIds.includes(cid)) incomingMembershipClubIds.push(cid);
+        // §6.B/§15 — Membership vers un club LOCAL, même si ce club n'a pas de fiche propre dans
+        // payload.clubStore.clubs (une sauvegarde peut référencer un club local sans le réimporter).
+        if (localClubIds.has(cid)) existingAffected.add(cid);
+        // Membership fantôme (clubId hors de validTargetClubIds) : ne compte pas comme rattachement
+        // effectif, elle disparaîtra à la normalisation — voir clubIdsByUserId ci-dessous.
+        if (!validTargetClubIds.has(cid)) return;
+        if (!clubIdsByUserId.has(uid)) clubIdsByUserId.set(uid, []);
+        clubIdsByUserId.get(uid).push(cid);
+      });
+
+      rawUsers.forEach((rawUser) => {
+        // §9 — un raw User isSystem:true n'est de toute façon jamais importé comme User normal par
+        // mergeImportedUserStore (.filter((user) => !user.isSystem && ...)) : ne jamais le compter.
+        if (!rawUser || rawUser.isSystem === true) return;
+        const uid = asText(rawUser.id);
+        // §2-3/§13 — un id vide/manquant recevra un NOUVEL id généré par normalizeUserRow au moment
+        // RÉEL de la fusion (id("user")) : ce n'est jamais un profil local existant, toujours un
+        // nouveau User anonyme. Ne jamais tenter de deviner la valeur générée : aucune Membership
+        // brute du payload ne peut légitimement le référencer avant que cet id n'existe -- il est
+        // donc TOUJOURS traité comme standalone par sécurité, quel que soit le reste du payload.
+        if (!uid) { addsStandaloneUsers = true; return; }
+        // Un userId déjà local est de toute façon ignoré par mergeImportedUserStore (§19) : aucun
+        // risque de ce côté, jamais compté comme "standalone" nouveau.
+        if (localUserIds.has(uid)) return;
+        const clubIdsForUser = clubIdsByUserId.get(uid) || [];
+        if (clubIdsForUser.length === 0) addsStandaloneUsers = true;
+        // Sinon (§17/§18) : ses clubs cibles VALIDES sont déjà pris en compte ci-dessus via les
+        // Memberships — aucune garde supplémentaire spécifique à l'utilisateur lui-même.
+      });
+    }
+
+    if (addsStandaloneUsers) {
+      const activeId = activeClubId();
+      if (activeId) existingAffected.add(activeId);
+    }
+
+    const existingAffectedClubIds = [...existingAffected];
+    const blockedClubIds = existingAffectedClubIds.filter((cid) => !currentUserIsAdminForClub(cid));
+
+    return {
+      existingAffectedClubIds,
+      newClubIds,
+      importsUserStore,
+      incomingMembershipClubIds,
+      addsStandaloneUsers,
+      allowed: blockedClubIds.length === 0,
+      blockedClubIds,
+    };
+  }
+
+  // Garde AVEC authentification/UI (§29) : sépare l'ANALYSE pure ci-dessus de la décision. Revérifie
+  // sa propre authentification (§22, jamais une confiance aveugle dans l'appelant), capture
+  // importUserId UNE SEULE FOIS (§26, même doctrine de binding que O-E1R-B1) puis affiche un message
+  // clair désignant les clubs bloquants sans jamais suggérer une édition manuelle du JSON (§27).
+  function requireOrdinaryImportAuthorization(payload) {
+    if (!requireAuthenticatedSession()) return { allowed: false };
+    const importUserId = activeUserId();
+    const plan = ordinaryImportSecurityPlan(payload);
+    if (!plan.allowed) {
+      const blockedNames = plan.blockedClubIds.map((cid) => (clubStore?.clubs || []).find((club) => club.id === cid)?.name || cid);
+      const anyZeroActiveAdmin = plan.blockedClubIds.some((cid) => activeAdminMembershipsForClub(cid).length === 0);
+      let message = "Import impossible : vous devez être Administrateur de tous les clubs locaux concernés par cette sauvegarde.";
+      if (blockedNames.length) message += ` (${blockedNames.join(", ")})`;
+      if (anyZeroActiveAdmin) message += " Utilisez d'abord « Récupérer l'administration » dans Paramètres > Utilisateurs.";
+      alert(message);
+      return { allowed: false, plan };
+    }
+    // Revalidation utilisateur (§25-26) : aucun `await` ne sépare ce contrôle du point de mutation
+    // appelé juste après par importBackupFile (recordHistory + importBackupPayload, synchrones) — un
+    // changement de profil actif ne peut donc pas matériellement survenir entre les deux ICI, mais
+    // l'invariant est exprimé explicitement, comme dans runAdminRecoveryFlow (O-E1R-B1), pour rester
+    // sûr par construction si un futur appelant introduisait un point d'attente entre les deux.
+    if (activeUserId() !== importUserId) return { allowed: false, plan };
+    return { allowed: true, plan, importUserId };
+  }
+
+  // IMPORT ORDINAIRE (depuis l'application) — chemin historique, désormais gardé par
+  // requireOrdinaryImportAuthorization AVANT toute écriture (recordHistory/importBackupPayload).
+  // Un import refusé n'appelle ni recordHistory() ni importBackupPayload() : aucun niveau Undo
+  // inutile, aucune mutation, même partielle. Renvoie { success, summary } ou une erreur.
   async function importBackupFile(file) {
     if (!file) return { success: false, reason: "no-file" };
     const read = readBackupPayloadText(await file.text());
     if (!read.success) return read;
+    const authorization = requireOrdinaryImportAuthorization(read.payload);
+    if (!authorization.allowed) return { success: false, reason: "not-authorized" };
     let summary;
     try {
       recordHistory();
@@ -47353,7 +52056,7 @@ ${esc(bodyText)}</pre>
     preloadDefaultLogoDataUrl();
     // Statut du secret SMTP (présent/chiffré ?) — non bloquant ; permet d'afficher tout de suite
     // le bon bouton (envoi intégré ou mailto) sur la page E-mail sans attendre une navigation.
-    if (typeof refreshSmtpSecretStatus === "function") refreshSmtpSecretStatus().then(() => render());
+    if (typeof refreshSmtpSecretStatus === "function") refreshSmtpSecretStatus(activeClubId()).then(() => render());
   }
 
   initApp();
