@@ -1222,6 +1222,10 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
     // Curseur virtuel dans les résultats de recherche (flèches haut/bas). -1 = aucun résultat
     // actif. État d'interface pur : jamais persisté, jamais dans l'historique métier.
     searchActiveIndex: -1,
+    // Lot UI Pré-Phase P (§9) — utilisateur SÉLECTIONNÉ dans le panneau Paramètres > Comptes d'accès
+    // (layout master/detail), PUREMENT visuel : ne modifie jamais activeUserId. Consulter la fiche
+    // d'un profil pour le configurer ne l'authentifie jamais. État d'interface pur, jamais persisté.
+    settingsSelectedUserId: "",
     discipline: "",
     disciplineLetter: "",
     contactLetter: "",
@@ -8228,7 +8232,7 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
       ["logo", "Logo", "Logo du club et icônes de l'application.", ["logo", "image", "embleme", "blason", "icone de l application"]],
       ["emails", "Messages e-mail", "Modèles de messages et relances.", ["modele", "modeles", "modele e mail", "message", "relance", "relances", "email", "e mail", "mail"]],
       ["smtp", "Envoi d'e-mails (SMTP)", "Configurer le serveur d'envoi des e-mails du club.", ["smtp", "serveur mail", "serveur d envoi", "envoi e mail", "email", "e mail", "mail", "messagerie", "port", "expediteur"]],
-      ["users", "Utilisateurs", "Profils locaux, code PIN et profil actif.", ["utilisateur", "utilisateurs", "utilisateur local", "profil", "profils", "pin", "code pin", "compte", "session"]],
+      ["users", "Comptes d'accès", "Comptes d'accès, code PIN et compte actif.", ["utilisateur", "utilisateurs", "utilisateur local", "profil", "profils", "pin", "code pin", "compte", "compte d acces", "comptes d acces", "acces", "session"]],
       ["data", "Données", "Sauvegarde, restauration, import/export et vidage.", ["donnee", "donnees", "sauvegarde", "backup", "restauration", "restaurer", "import", "importer", "export", "exporter", "archive", "archivage", "vider", "reinitialiser"]],
       ["license", "Licence", "Activation et état de la licence.", ["licence", "license", "activation", "cle", "abonnement", "essai"]],
       // Lot 3B-3 — la bande « sport-categories » était un panneau VALIDE (SETTINGS_PANEL_IDS) mais
@@ -15643,21 +15647,39 @@ ${esc(bodyText)}</pre>
   }
 
   function renderTarifs() {
+    // Lot Permissions Tarifs (R1) — la vue « Tarifs » reste une vue MIXTE (hors VIEW_PERMISSION_MAP),
+    // mais CHAQUE section est filtrée par SA permission READ EXISTANTE (doctrine Phase O, READ ≠ WRITE) :
+    //   TVA          -> accounting.read
+    //   Articles     -> shop.read       + feature "shop"
+    //   Disciplines   -> sport.read
+    //   Stages       -> stages.read     + feature "stages"
+    //   Assurances   -> memberships.read
+    // read=false / write=true  -> section NON rendue (WRITE n'implique JAMAIS READ, aucune déduction
+    //   implicite). read=true / write=false -> section visible en consultation, aucun contrôle de
+    //   mutation (bouton « + » retiré, lignes consultatives). La vraie garde de mutation reste côté
+    //   handler/primitive avec la permission WRITE (jamais remplacée par READ+WRITE).
+    const tarifsClubId = activeClubId();
+    const canReadVat = currentUserHasPermission("accounting.read", tarifsClubId);
+    const canWriteVat = currentUserHasPermission("accounting.write", tarifsClubId);
+    const canReadDisciplines = currentUserHasPermission("sport.read", tarifsClubId);
+    const canReadStages = currentUserHasPermission("stages.read", tarifsClubId);
+    const canReadInsurance = currentUserHasPermission("memberships.read", tarifsClubId);
     return `
-      ${tariffCollapsibleBand("vat", "TVA actuelle", isClubVatExempt() ? "—" : `${intValue(settings.defaultVatRate || 0)}%`, `
+      ${canReadVat ? tariffCollapsibleBand("vat", "TVA actuelle", isClubVatExempt() ? "—" : `${intValue(settings.defaultVatRate || 0)}%`, `
         <div class="tariff-vat-panel pad">
           <div>
             <p class="muted">Ce taux s'applique automatiquement à tous les paiements et à toutes les lignes de tarifs qui n'ont pas de TVA spécifique.</p>
           </div>
           <label>TVA globale (%)
-            <input type="number" min="0" step="0.01" value="${esc(settings.defaultVatRate || 0)}" data-setting="defaultVatRate" />
+            <input type="number" min="0" step="0.01" value="${esc(settings.defaultVatRate || 0)}" data-setting="defaultVatRate" ${canWriteVat ? "" : "disabled"} />
           </label>
+          ${canWriteVat ? "" : `<p class="muted">La modification du taux de TVA est réservée aux profils autorisés à modifier la comptabilité.</p>`}
         </div>
-      `)}
-      ${(hasFeature("shop") && currentUserHasPermission("shop.read", activeClubId())) ? tariffCollapsibleBand("articles", "Articles", intValue(state.tariffs.articles.length), editableArticles(), currentUserHasPermission("shop.write", activeClubId()) ? "add-tariff-article" : "") : ""}
-      ${tariffCollapsibleBand("disciplines", "Disciplines", intValue(state.tariffs.disciplines.length), editableDisciplines(), "add-tariff-discipline")}
-      ${hasFeature("stages") ? tariffCollapsibleBand("stages", "Stages", intValue(state.tariffs.stages.length), editableStages(), "add-tariff-stage") : ""}
-      ${tariffCollapsibleBand("insurance", "Assurances", intValue(state.tariffs.insurance.length), editableInsurance(), "add-tariff-insurance")}`;
+      `) : ""}
+      ${(hasFeature("shop") && currentUserHasPermission("shop.read", tarifsClubId)) ? tariffCollapsibleBand("articles", "Articles", intValue(state.tariffs.articles.length), editableArticles(), currentUserHasPermission("shop.write", tarifsClubId) ? "add-tariff-article" : "") : ""}
+      ${canReadDisciplines ? tariffCollapsibleBand("disciplines", "Disciplines", intValue(state.tariffs.disciplines.length), editableDisciplines(), currentUserHasPermission("sport.write", tarifsClubId) ? "add-tariff-discipline" : "") : ""}
+      ${(hasFeature("stages") && canReadStages) ? tariffCollapsibleBand("stages", "Stages", intValue(state.tariffs.stages.length), editableStages(), currentUserHasPermission("stages.write", tarifsClubId) ? "add-tariff-stage" : "") : ""}
+      ${canReadInsurance ? tariffCollapsibleBand("insurance", "Assurances", intValue(state.tariffs.insurance.length), editableInsurance(), currentUserHasPermission("memberships.write", tarifsClubId) ? "add-tariff-insurance" : "") : ""}`;
   }
 
   function editableArticles() {
@@ -15727,7 +15749,47 @@ ${esc(bodyText)}</pre>
     return ui.tariffEditKey === tariffKey(kind, index);
   }
 
-  function tariffActions(kind, index, deleteAction, extraAttrs = "") {
+  // Lot Permissions Tarifs — table de correspondance « kind » de ligne Tarifs -> permission WRITE
+  // EXISTANTE du registre O-D1 (jamais une nouvelle clé). Décidée d'après le modèle de données réel :
+  //  - "article"    -> shop.write        (catalogue Boutique ; déjà la doctrine de add/delete-tariff-article)
+  //  - "discipline"  -> sport.write       (structure sportive ; cf. VIEW_PERMISSION_MAP.disciplines = "sport.read"
+  //                                        et syncDisciplineName qui réécrit la structure du modèle)
+  //  - "stage"      -> stages.write       (déjà la doctrine de add/delete-tariff-stage)
+  //  - "insurance"  -> memberships.write  (les lignes d'assurance ne sont consommées que par le calcul
+  //                                        du total et la ligne de facture d'ADHÉSION — composante
+  //                                        tarifaire de l'adhésion, décision produit confirmée)
+  // FAIL CLOSED : un kind inconnu/forgé renvoie "" — l'appelant DOIT refuser la mutation dans ce cas,
+  // jamais un fallthrough vers un chemin non gardé (même doctrine de liste blanche que
+  // SHOP_STOCK_MUTATION_FIELDS).
+  function tariffRowPermissionKey(kind) {
+    const map = { article: "shop.write", discipline: "sport.write", stage: "stages.write", insurance: "memberships.write" };
+    return map[asText(kind)] || "";
+  }
+
+  // Même table, indexée par le préfixe du data-tariff porté par l'INPUT lui-même
+  // (article-name / discipline-price / stage-lodging-tax / insurance-options…) : la garde du listener
+  // "input" et de commitTariffRow doit s'appuyer sur le champ RÉELLEMENT muté (updateTariff dispatche
+  // sur input.dataset.tariff), jamais sur ui.tariffEditKey qui pourrait pointer sur un autre kind.
+  function tariffFieldPermissionKey(dataTariff) {
+    return tariffRowPermissionKey(asText(dataTariff).split("-")[0]);
+  }
+
+  // L'utilisateur actif peut-il modifier une ligne Tarifs de ce kind dans le club actif ? Cumule la
+  // permission WRITE ET (pour les kinds adossés à une fonctionnalité optionnelle) son activation —
+  // même cumul feature + permission que partout ailleurs, jamais l'une substituée à l'autre.
+  function canWriteTariffRow(kind) {
+    const key = tariffRowPermissionKey(kind);
+    if (!key) return false;
+    if (kind === "article" && !hasFeature("shop")) return false;
+    if (kind === "stage" && !hasFeature("stages")) return false;
+    return currentUserHasPermission(key, activeClubId());
+  }
+
+  // `canWrite` (défaut true — appels historiques Article déjà gardés en amont par canWriteShop) :
+  // sans droit d'écriture sur ce kind, AUCUNE commande de mutation n'est rendue (ni ✓, ni ×). La
+  // DONNÉE de la ligne reste affichée par la fonction de rendu appelante (READ ≠ WRITE).
+  function tariffActions(kind, index, deleteAction, extraAttrs = "", canWrite = true) {
+    if (!canWrite) return "";
     const editing = isTariffEditing(kind, index);
     return `<div class="actions">
       ${editing
@@ -15803,8 +15865,37 @@ ${esc(bodyText)}</pre>
       render();
       return;
     }
+    // Lot Permissions Tarifs (R1) — stale CLUB de la SESSION d'édition (discipline/stage/insurance) :
+    // edit-tariff-row fige ui.tariffEditClubId = club actif à l'entrée en édition ; si le club actif a
+    // changé entre-temps (navigation A -> B avec ui.tariffEditKey encore posé), valider ✓ appliquerait
+    // l'index de A au state de B. Même doctrine que la branche ARTICLE ci-dessus. NO-OP propre : on
+    // referme l'édition sans rien écrire. (Rétro-compatible : si ui.tariffEditClubId n'est pas posé —
+    // tests bas niveau K-B qui règlent tariffEditKey à la main — la garde est neutre.)
+    if (asText(ui.tariffEditClubId) && ui.tariffEditClubId !== activeClubId()) {
+      clearTariffEditState();
+      render();
+      return;
+    }
+    // Lot Permissions Tarifs — garde de MUTATION au moment de la validation clavier (clic ✓ /
+    // close-tariff-row), sur le kind RÉELLEMENT en édition. FAIL CLOSED sur un kind inconnu
+    // (tariffRowPermissionKey === ""). Permission retirée pendant que la ligne était en édition
+    // (stale) -> sortie propre du mode édition, aucune écriture, aucun recordHistory.
+    const rowPermissionKey = tariffRowPermissionKey(editKind);
+    if (!rowPermissionKey || !ensureUserPermission(rowPermissionKey, activeClubId())) {
+      ui.tariffEditKey = "";
+      render();
+      return;
+    }
     recordHistory();
-    row.querySelectorAll("[data-tariff]").forEach(updateTariff);
+    // Lot Permissions Tarifs — updateTariff() dispatche sur input.dataset.tariff (son propre champ),
+    // jamais sur ui.tariffEditKey : la garde ci-dessus (portée par editKind) et la mutation doivent
+    // s'accorder sur le MÊME domaine. On n'applique donc updateTariff qu'aux inputs dont le préfixe
+    // de data-tariff exige exactement la permission déjà validée — un input forgé pointant sur un
+    // autre kind (ex. "discipline-price" dans une ligne "insurance") est ignoré, jamais écrit.
+    row.querySelectorAll("[data-tariff]").forEach((input) => {
+      if (tariffFieldPermissionKey(input.dataset.tariff) !== rowPermissionKey) return;
+      updateTariff(input);
+    });
     ui.tariffEditKey = "";
     persist("Tarif enregistré");
     render();
@@ -15853,7 +15944,18 @@ ${esc(bodyText)}</pre>
   }
 
   function tariffDisciplineRow(discipline, index) {
-    const editing = isTariffEditing("discipline", index);
+    // Lot Permissions Tarifs — sans sport.write, la ligne reste STRICTEMENT consultative : ni
+    // data-action="edit-tariff-row" (aucune entrée en édition, même par un clic), ni ✓/× (tariffActions).
+    // Si la permission est retirée PENDANT l'édition, editing retombe à false -> ligne consultative au
+    // prochain render (même doctrine que tariffArticleRow / canWriteShop).
+    // Lot Permissions Tarifs (R1) — editing s'annule aussi si le club actif a changé depuis l'entrée
+    // en édition (ui.tariffEditClubId), pour ne jamais laisser une ligne éditable née dans un autre club.
+    const canWrite = canWriteTariffRow("discipline");
+    const editing = isTariffEditing("discipline", index) && canWrite
+      && (!asText(ui.tariffEditClubId) || ui.tariffEditClubId === activeClubId());
+    // Club SOURCE figé dans le DOM (data-discipline-club-id) : lu par delete-tariff-discipline pour
+    // refuser un clic sur un bouton rendu sous un autre club actif (doctrine anti-stale-DOM O-E2-B4R2).
+    const clubIdAttr = ` data-discipline-club-id="${esc(activeClubId())}"`;
     // Lot 2C — le renommage inline reste possible même archivée (résout une collision au restore,
     // cf. « Renommez l'une des deux disciplines avant de restaurer celle-ci. »), aucun blocage ajouté.
     const archivedBadge = discipline.archived === true ? ' <span class="archived-badge">Archivée</span>' : "";
@@ -15863,7 +15965,7 @@ ${esc(bodyText)}</pre>
         <td><input type="number" step="0.01" data-tariff="discipline-price" data-index="${index}" value="${esc(discipline.price)}" /></td>
         <td><input type="number" step="0.01" data-tariff="discipline-license" data-index="${index}" value="${esc(discipline.license)}" /></td>
         <td class="tariff-tax-cell"><input type="number" step="0.01" min="0" placeholder="${esc(intValue(effectiveDefaultVatRate()))}" data-tariff="discipline-tax" data-index="${index}" value="${esc(hasSpecificTaxRate(discipline) ? tariffTaxRate(discipline) : "")}" /></td>
-        <td>${tariffActions("discipline", index, "delete-tariff-discipline")}</td>
+        <td>${tariffActions("discipline", index, "delete-tariff-discipline", clubIdAttr, canWrite)}</td>
       </tr>`;
     }
     // « À définir » : montant vide (discipline seedée par le wizard, jamais tarifée). Distinct d'un
@@ -15872,17 +15974,21 @@ ${esc(bodyText)}</pre>
     const tariffAmountCell = (value) => value === ""
       ? `<span class="tariff-to-define" title="Tarif non encore renseigné — à compléter">À définir</span>`
       : money(value);
-    return `<tr class="tariff-row" data-action="edit-tariff-row" data-kind="discipline" data-index="${index}">
+    return `<tr class="tariff-row"${canWrite ? ` data-action="edit-tariff-row" data-kind="discipline" data-index="${index}"` : ""}>
       <td><strong>${esc(discipline.name)}</strong>${archivedBadge}</td>
       <td class="money">${tariffAmountCell(discipline.price)}</td>
       <td class="money">${tariffAmountCell(discipline.license)}</td>
       <td class="tariff-tax-cell">${esc(taxRateLabel(discipline))}</td>
-      <td>${tariffActions("discipline", index, "delete-tariff-discipline")}</td>
+      <td>${tariffActions("discipline", index, "delete-tariff-discipline", clubIdAttr, canWrite)}</td>
     </tr>`;
   }
 
   function tariffStageRow(stage, index) {
-    const editing = isTariffEditing("stage", index);
+    // Lot Permissions Tarifs — sans stages.write (ou fonctionnalité Stages OFF), ligne consultative :
+    // ni entrée en édition, ni ✓/× (canWriteTariffRow cumule feature + permission).
+    const canWrite = canWriteTariffRow("stage");
+    const editing = isTariffEditing("stage", index) && canWrite
+      && (!asText(ui.tariffEditClubId) || ui.tariffEditClubId === activeClubId());
     if (editing) {
       return `<tr class="tariff-row editing">
         <td><input data-tariff="stage-name" data-index="${index}" value="${esc(stage.name)}" /></td>
@@ -15892,10 +15998,10 @@ ${esc(bodyText)}</pre>
         <td><input data-tariff="stage-lodging-name" data-index="${index}" value="${esc(stage.lodgingName)}" /></td>
         <td><input type="number" step="0.01" data-tariff="stage-lodging-price" data-index="${index}" value="${esc(stage.lodgingUnitPrice)}" /></td>
         <td class="tariff-tax-cell"><input type="number" step="0.01" min="0" placeholder="${esc(intValue(effectiveDefaultVatRate()))}" data-tariff="stage-lodging-tax" data-index="${index}" value="${esc(hasSpecificLodgingTaxRate(stage) ? lodgingTaxRate(stage) : "")}" /></td>
-        <td>${tariffActions("stage", index, "delete-tariff-stage", ` data-stage-id="${esc(stage.id)}" data-stage-club-id="${esc(activeClubId())}"`)}</td>
+        <td>${tariffActions("stage", index, "delete-tariff-stage", ` data-stage-id="${esc(stage.id)}" data-stage-club-id="${esc(activeClubId())}"`, canWrite)}</td>
       </tr>`;
     }
-    return `<tr class="tariff-row" data-action="edit-tariff-row" data-kind="stage" data-index="${index}">
+    return `<tr class="tariff-row"${canWrite ? ` data-action="edit-tariff-row" data-kind="stage" data-index="${index}"` : ""}>
       <td><strong>${esc(stage.name)}</strong></td>
       <td class="money">${money(stage.unitPrice)}</td>
       <td class="tariff-tax-cell">${esc(taxRateLabel(stage))}</td>
@@ -15903,27 +16009,34 @@ ${esc(bodyText)}</pre>
       <td>${esc(stage.lodgingName) || `<span class="muted">-</span>`}</td>
       <td class="money">${money(stage.lodgingUnitPrice)}</td>
       <td class="tariff-tax-cell">${esc(lodgingTaxRateLabel(stage))}</td>
-      <td>${tariffActions("stage", index, "delete-tariff-stage", ` data-stage-id="${esc(stage.id)}" data-stage-club-id="${esc(activeClubId())}"`)}</td>
+      <td>${tariffActions("stage", index, "delete-tariff-stage", ` data-stage-id="${esc(stage.id)}" data-stage-club-id="${esc(activeClubId())}"`, canWrite)}</td>
     </tr>`;
   }
 
   function tariffInsuranceRow(item, index) {
-    const editing = isTariffEditing("insurance", index);
+    // Lot Permissions Tarifs — sans memberships.write, ligne consultative (assurance = composante
+    // tarifaire de l'adhésion) : ni entrée en édition, ni ✓/×.
+    // Lot Permissions Tarifs (R1) — editing s'annule si le club actif a changé depuis l'entrée en
+    // édition ; club SOURCE figé dans le DOM (data-insurance-club-id) lu par delete-tariff-insurance.
+    const canWrite = canWriteTariffRow("insurance");
+    const editing = isTariffEditing("insurance", index) && canWrite
+      && (!asText(ui.tariffEditClubId) || ui.tariffEditClubId === activeClubId());
+    const clubIdAttr = ` data-insurance-club-id="${esc(activeClubId())}"`;
     if (editing) {
       return `<tr class="tariff-row editing">
         <td><input data-tariff="insurance-category" data-index="${index}" value="${esc(item.category)}" /></td>
         <td><input data-tariff="insurance-label" data-index="${index}" value="${esc(item.label)}" /></td>
         <td><input data-tariff="insurance-options" data-index="${index}" value="${esc((item.options || []).join(", "))}" /></td>
         <td class="tariff-tax-cell"><input type="number" step="0.01" min="0" placeholder="${esc(intValue(effectiveDefaultVatRate()))}" data-tariff="insurance-tax" data-index="${index}" value="${esc(hasSpecificTaxRate(item) ? tariffTaxRate(item) : "")}" /></td>
-        <td>${tariffActions("insurance", index, "delete-tariff-insurance")}</td>
+        <td>${tariffActions("insurance", index, "delete-tariff-insurance", clubIdAttr, canWrite)}</td>
       </tr>`;
     }
-    return `<tr class="tariff-row" data-action="edit-tariff-row" data-kind="insurance" data-index="${index}">
+    return `<tr class="tariff-row"${canWrite ? ` data-action="edit-tariff-row" data-kind="insurance" data-index="${index}"` : ""}>
       <td><strong>${esc(item.category)}</strong></td>
       <td>${esc(item.label) || `<span class="muted">-</span>`}</td>
       <td>${esc((item.options || []).map(money).join(" / ")) || `<span class="muted">-</span>`}</td>
       <td class="tariff-tax-cell">${esc(taxRateLabel(item))}</td>
-      <td>${tariffActions("insurance", index, "delete-tariff-insurance")}</td>
+      <td>${tariffActions("insurance", index, "delete-tariff-insurance", clubIdAttr, canWrite)}</td>
     </tr>`;
   }
 
@@ -16054,12 +16167,23 @@ ${esc(bodyText)}</pre>
       .map(({ row }) => row);
   }
 
+  // Lot R3 — classe de priorité portée par la ligne : le CADRE (bord + teinte) reprend la
+  // sémantique couleur de la pastille (Important = .status.wait bleu, Urgent = .status.late rouge)
+  // pour lire le niveau d'attention sans avoir à lire la pastille. Normale/Archive : aucun cadre
+  // (rendu inchangé). Aucune couleur inventée : le CSS dérive de --accent / --danger (thème-aware).
+  function contextualNotePriorityClass(priority) {
+    if (priority === "Urgent") return " note-prio-urgent";
+    if (priority === "Important") return " note-prio-important";
+    return "";
+  }
+
   // Une ligne compacte du bloc contextuel : mêmes actions (edit-quick-note/delete-quick-note) et
   // mêmes champs (quickNoteFieldHtml) que la page Notes — aucun second moteur d'édition/suppression.
   function contextualNoteRowHtml(row, canWrite = true) {
     const editing = canWrite && ui.quickNoteEditId === row.id;
+    const prioClass = contextualNotePriorityClass(row.priority);
     if (editing) {
-      return `<div class="contextual-note-row editing" data-id="${esc(row.id)}">
+      return `<div class="contextual-note-row editing${prioClass}" data-id="${esc(row.id)}">
         <div class="contextual-note-edit-fields">
           ${quickNoteFieldHtml("targetView", row)}
           ${quickNoteFieldHtml("title", row)}
@@ -16069,7 +16193,7 @@ ${esc(bodyText)}</pre>
         <div class="actions"><button class="icon" title="Terminer la modification" data-action="close-quick-note">✓</button><button class="icon danger" title="Supprimer" data-action="delete-quick-note" data-id="${esc(row.id)}">×</button></div>
       </div>`;
     }
-    return `<div class="contextual-note-row" data-id="${esc(row.id)}">
+    return `<div class="contextual-note-row${prioClass}" data-id="${esc(row.id)}">
       <strong>${esc(row.title) || `<span class="muted">-</span>`}</strong>
       <span class="contextual-note-text">${esc(row.note)}</span>
       ${quickNotePriorityBadge(row.priority)}
@@ -16204,7 +16328,7 @@ ${esc(bodyText)}</pre>
             ${competitionsEnabled ? `<a href="#help-rencontres">Rencontres</a>` : ""}
             <a href="#help-tarifs">Tarifs</a>
             <a href="#help-parametres">Paramètres</a>
-            <a href="#help-utilisateurs">Utilisateurs</a>
+            <a href="#help-utilisateurs">Comptes d'accès</a>
             <a href="#help-notes">Notes</a>
             <a href="#help-stats">Statistiques</a>
             <a href="#help-compta">Comptabilité</a>
@@ -16699,16 +16823,22 @@ ${esc(bodyText)}</pre>
               "Les crédits, licences et ressources tierces sont accessibles depuis le menu Aide > Licences et ressources tierces. La fenêtre À propos reste volontairement courte.",
             ])}
 
-            ${helpSection("help-utilisateurs", "Utilisateurs", [
-              "Dans Paramètres > Utilisateurs, chaque profil permet de distinguer qui utilise le logiciel sur cet ordinateur : ce n'est pas le club, c'est la personne installée devant l'écran. Le club actif (voir Mes clubs) reste un réglage séparé : un même utilisateur peut travailler sur plusieurs clubs, et un même club peut être ouvert par plusieurs utilisateurs.",
-              "Le bouton Créer un utilisateur ajoute un nouveau profil, avec un nom modifiable à tout moment (bouton Renommer).",
-              "Un utilisateur peut être ajouté à un ou plusieurs clubs. Pour chaque club, on lui attribue un rôle (Administrateur, Président, Secrétaire, Trésorier, Encadrant ou Lecture seule) : ce rôle est aujourd'hui uniquement informatif, il prépare un futur système de droits mais ne restreint encore aucune action.",
-              "Le sélecteur d'utilisateur (barre latérale) permet de changer de profil actif sans fermer le logiciel.",
-              "Un utilisateur désactivé n'apparaît plus dans le sélecteur mais reste visible dans Paramètres > Utilisateurs, avec un bouton Réactiver.",
-              "Dans la version installée (Mac/Windows), chaque profil peut être protégé par un PIN à 6 chiffres. Dès qu'il existe au moins deux profils sur le poste, un PIN devient obligatoire pour chacun ; avec un seul profil sans PIN, le logiciel s'ouvre directement.",
-              "Le PIN protège l'accès à votre profil dans MonGestaClub sur cet ordinateur et aide à garantir que les actions du Journal d'activité sont attribuées à la bonne personne. Chacun configure et change son propre PIN depuis son profil actif (boutons Configurer le PIN / Changer le PIN).",
+            ${helpSection("help-utilisateurs", "Comptes d'accès", [
+              "Un Responsable est une personne du bureau, décrite par sa fonction humaine dans le club : Président, Trésorier, Secrétaire, etc. Un Compte d'accès est différent : c'est le compte qui permet de se connecter à MonGestaClub. Les Responsables se gèrent dans les Paramètres du club ; les Comptes d'accès se gèrent dans Paramètres > Comptes d'accès.",
+              "Un Compte d'accès n'est pas un club : c'est la personne qui utilise le logiciel. Le club actif (voir Mes clubs), c'est sur quoi on travaille. Un même compte peut être ajouté à plusieurs clubs, et un même club peut être ouvert par plusieurs comptes.",
+              "L'accès d'un compte à un club se règle club par club : pour chaque club où le compte est ajouté, on choisit un Profil d'accès. Le même compte peut ainsi avoir des droits différents d'un club à l'autre.",
+              "Le Profil d'accès est un modèle de droits prêt à l'emploi : Administrateur, Président, Secrétaire, Trésorier, Responsable inscriptions, Responsable boutique, Responsable paiements, Responsable administratif, Encadrant ou Lecture seule. Il détermine ce que le compte peut consulter et modifier dans ce club.",
+              "Les droits effectifs peuvent être personnalisés au-delà du profil, avec le bouton Personnaliser les droits d'une ligne de club. La fonction humaine d'un Responsable n'impose jamais automatiquement des droits logiciels : c'est toujours le Profil d'accès (et ses éventuelles personnalisations) qui décide.",
+              "Un Compte d'accès peut être lié, pour un club, à un Responsable de ce club — une association facultative qui indique à quelle personne du bureau correspond le compte. Créer ou retirer cette liaison ne modifie pas les droits du compte.",
+              "Depuis la carte d'un Responsable (Paramètres du club), le bouton Créer un accès MonGestaClub ouvre un choix : créer un nouveau compte pour cette personne, ou lier un compte déjà existant. Le profil proposé n'est qu'une suggestion d'après la fonction du Responsable — on reste libre d'en choisir un autre.",
+              "Quand on lie un compte qui a déjà un accès à ce club, son Profil d'accès et ses droits personnalisés restent inchangés : la liaison ne fait qu'ajouter le rattachement au Responsable.",
+              "Désactiver un Compte d'accès ne supprime jamais le Responsable auquel il est lié. Supprimer un Responsable ne supprime ni ne désactive le Compte d'accès : ce sont deux éléments indépendants. Un Compte d'accès ne se supprime pas — il se désactive, puis se réactive au besoin.",
+              "Le bouton Créer un compte d'accès ajoute un compte autonome (sans passer par un Responsable), avec un nom modifiable à tout moment (bouton Renommer).",
+              "Le sélecteur de compte (barre latérale) permet de changer de compte actif sans fermer le logiciel. Un compte désactivé n'apparaît plus dans ce sélecteur mais reste visible dans Paramètres > Comptes d'accès, avec un bouton Réactiver.",
+              "Dans la version installée (Mac/Windows), chaque compte peut être protégé par un PIN à 6 chiffres. Dès qu'il existe au moins deux comptes sur le poste, un PIN devient obligatoire pour chacun ; avec un seul compte sans PIN, le logiciel s'ouvre directement.",
+              "Le PIN protège l'accès à votre compte dans MonGestaClub sur cet ordinateur et aide à garantir que les actions du Journal d'activité sont attribuées à la bonne personne. Chacun configure et change son propre PIN depuis son compte actif (boutons Configurer le PIN / Changer le PIN).",
               "À la création d'un PIN, un code de récupération s'affiche une seule fois : il permet de redéfinir un nouveau PIN en cas d'oubli. Il faut le noter et le conserver en lieu sûr, en dehors de l'application.",
-              "Cette protection par PIN n'existe que dans la version installée : dans un navigateur (par exemple la démo en ligne), les profils fonctionnent sans PIN.",
+              "Cette protection par PIN n'existe que dans la version installée : dans un navigateur (par exemple la démo en ligne), les comptes fonctionnent sans PIN.",
             ])}
 
             ${helpSection("help-notes", "Notes", [
@@ -16986,7 +17116,7 @@ ${esc(bodyText)}</pre>
     const configured = Boolean(settings.features && settings.features.configured === true);
     // Lot K-C2B — message global : explique immédiatement la séparation Fonctionnalités/Affichage,
     // sans vocabulaire technique, avec un accès direct vers Affichage (action déjà existante).
-    const intro = `<p class="muted">Activez uniquement les fonctionnalités utilisées par votre club « ${esc(clubName)} ». L'affichage des pages dans le menu se règle séparément dans Affichage. Désactiver une fonctionnalité ne supprime pas ses données. Les droits des utilisateurs sont gérés séparément.</p>
+    const intro = `<p class="muted">Activez uniquement les fonctionnalités utilisées par votre club « ${esc(clubName)} ». L'affichage des pages dans le menu se règle séparément dans Affichage. Désactiver une fonctionnalité ne supprime pas ses données. Les droits des comptes d'accès sont gérés séparément.</p>
       <p class="muted feature-display-link"><button type="button" class="link-button" data-action="open-display-settings">Régler l'affichage du menu</button></p>`;
     const originInfo = configured
       ? ""
@@ -17145,7 +17275,7 @@ ${esc(bodyText)}</pre>
       ${canReadNewsletter ? settingsCollapsibleBand("smtp", "Envoi d'e-mails (SMTP)", smtpStatusLabel().label, `<div class="settings-panel smtp-settings">
           ${smtpSettingsHtml()}
         </div>`) : ""}
-      ${settingsCollapsibleBand("users", "Utilisateurs", activeUserDisplayName() || "Profils locaux", `<div class="settings-panel users-settings-panel">
+      ${settingsCollapsibleBand("users", "Comptes d'accès", activeUserDisplayName() || "Comptes d'accès", `<div class="settings-panel users-settings-panel">
           ${usersSettingsHtml()}
         </div>`)}
       ${settingsCollapsibleBand("data", "Données", "Sauvegarde et vidage", `<div class="settings-panel">
@@ -17308,7 +17438,32 @@ ${esc(bodyText)}</pre>
   // corruption au submit — managersFromForm() lit exclusivement via `.value`/`.checked` en DOM direct
   // (jamais FormData), qui reste lisible sur un contrôle disabled (seule la SOUMISSION FormData est
   // affectée par disabled, jamais la propriété .value elle-même).
-  function clubManagerCardHtml(manager, locked = false) {
+  // Lot R3 — bloc "Comptes d'accès MonGestaClub" d'une carte Responsable. `clubId` reste ABSENT
+  // ("") pour un Responsable non encore persisté (création/duplication/Assistant complet, cf.
+  // addManagerCard qui n'en fournit jamais un troisième argument, et clubFormSectionsHtml qui passe
+  // `options.clubId`, jamais `club.id` — ce dernier existe DÉJÀ pour un brouillon non enregistré,
+  // cf. normalizeClubIdentity) : afficher un bouton qui échouerait à coup sûr au clic serait pire
+  // qu'une absence de bloc (aucune Membership réelle ne peut de toute façon exister pour un club/
+  // Responsable pas encore enregistré). Pur affichage : ne crée/modifie RIEN ici (doctrine §14,
+  // Responsable ≠ User ≠ Membership) ; toute mutation passe par les data-action gérés dans
+  // src/21-handlers.js, qui revérifient eux-mêmes les droits Administrateur du club CIBLÉ (§9).
+  function clubManagerAccessBlockHtml(clubId, manager) {
+    if (!clubId || !currentUserIsAdminForClub(clubId)) return "";
+    const membership = membershipLinkedToManager(clubId, manager.id);
+    if (!membership) {
+      return `<div class="club-manager-access">
+        <button type="button" data-action="open-manager-access-dialog" data-club-id="${esc(clubId)}" data-manager-id="${esc(manager.id)}">Créer un accès MonGestaClub</button>
+      </div>`;
+    }
+    const store = userStore || normalizeUserStore(rawUserStoreFromStorage());
+    const user = store.users.find((row) => row.id === membership.userId);
+    return `<div class="club-manager-access">
+      <p class="muted">Accès MonGestaClub<br />Compte : <strong>${esc(user?.displayName || "Compte inconnu")}</strong><br />Profil d'accès : <strong>${esc(userRoleLabel(membership.role))}</strong></p>
+      <button type="button" data-action="configure-manager-access" data-club-id="${esc(clubId)}" data-user-id="${esc(membership.userId)}">Configurer l'accès</button>
+    </div>`;
+  }
+
+  function clubManagerCardHtml(manager, locked = false, clubId = "") {
     const options = clubManagerFunctionOptions();
     const rawRole = asText(manager.role);
     const isKnownRole = options.some(([role]) => role === rawRole);
@@ -17320,21 +17475,33 @@ ${esc(bodyText)}</pre>
     // un affichage ponctuel pour la donnée déjà présente (ex. role:"webmaster" importé).
     const optionsHtml = (rawRole && !isKnownRole) ? [[rawRole, asText(manager.function) || rawRole], ...options] : options;
     const lockedAttr = locked ? "disabled" : "";
+    // Lot Pré-Phase P — R3A-3 (§UX du lot) — le champ libre "function" ne s'affiche que pour "Autre /
+    // Fonction personnalisée" (roleValue === "custom") : une fonction prédéfinie a déjà un libellé
+    // cohérent (clubManagerLabels()), le montrer en plus donnerait l'impression fausse de deux
+    // fonctions différentes configurées ("Fonction prédéfinie [Trésorier] et rien d'autre"). Un role
+    // IMPORTÉ INCONNU (ex. "webmaster", !isKnownRole mais ≠ "custom") continue de l'afficher pour ne
+    // jamais perdre silencieusement son libellé réel. Le champ reste TOUJOURS présent dans le DOM
+    // (jamais retiré) : seule sa visibilité bascule (updateManagerFunctionFieldVisibility), la valeur
+    // tapée survit à un aller-retour sur le select, avant tout enregistrement.
+    const showFunctionField = roleValue === "custom" || !isKnownRole;
     return `<div class="club-manager-card" data-manager-card data-manager-id="${esc(manager.id)}">
       <div class="club-manager-card-header">
-        <label>Fonction prédéfinie<select name="role" ${lockedAttr}>
+        <label>Fonction prédéfinie<select name="role" data-manager-role-field ${lockedAttr}>
           ${optionsHtml.map(([role, label]) => `<option value="${esc(role)}" ${role === roleValue ? "selected" : ""}>${esc(label)}</option>`).join("")}
         </select></label>
-        ${locked ? "" : `<button class="icon danger" type="button" title="Supprimer ce responsable" data-action="delete-manager-card">Supprimer</button>`}
+        ${locked ? "" : `<button class="icon danger" type="button" title="Supprimer ce responsable" data-action="delete-manager-card" aria-label="Supprimer ce responsable"><svg class="mgc-icon" viewBox="0 0 64 64" aria-hidden="true"><g stroke="#2f3740" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"><rect x="26" y="8" width="12" height="6" rx="2" fill="#b7b7b7"/><rect x="15" y="15" width="34" height="7" rx="2.5" fill="#9a9a9a"/><path d="M19 24h26l-3 30a4 4 0 0 1-4 3.6H26a4 4 0 0 1-4-3.6Z" fill="#c9c9c9"/><path d="M26 30v20M32 30v20M38 30v20" stroke="#2f3740" stroke-width="2.6"/></g></svg></button>`}
+      </div>
+      <div class="club-manager-function-field" data-manager-function-field ${showFunctionField ? "" : "hidden"}>
+        ${field("function", "Nom de la fonction", manager.function, "text", `placeholder="Ex : Responsable communication" ${lockedAttr}`)}
       </div>
       <div class="form-grid compact">
         ${field("lastName", "Nom", manager.lastName, "text", `placeholder="Ex : Dupont" ${lockedAttr}`)}
         ${field("firstName", "Prénom", manager.firstName, "text", `placeholder="Ex : Marie" ${lockedAttr}`)}
         ${field("email", "Email", manager.email, "email", `placeholder="Ex : marie.dupont@monclub.fr" ${lockedAttr}`)}
         ${field("phone", "Téléphone", manager.phone, "text", `placeholder="Ex : 06 12 34 56 78" ${lockedAttr}`)}
-        ${field("function", "Fonction (libellé affiché)", manager.function, "text", `placeholder="Ex : Présidente" ${lockedAttr}`)}
       </div>
       ${textareaField("notes", "Notes", manager.notes, "Ex : Disponible en soirée et le week-end", lockedAttr)}
+      ${clubManagerAccessBlockHtml(clubId, manager)}
     </div>`;
   }
 
@@ -17417,7 +17584,7 @@ ${esc(bodyText)}</pre>
         <div class="band-title"><h2>Responsables</h2><span>Ajoutez, modifiez ou supprimez librement les responsables du club</span></div>
         <div class="club-manager-grid" data-manager-list data-club-id="${esc(club.id)}">
           ${club.managers.length
-            ? club.managers.map((manager) => clubManagerCardHtml(manager, !canEditManagers)).join("")
+            ? club.managers.map((manager) => clubManagerCardHtml(manager, !canEditManagers, clubId)).join("")
             : `<p class="muted" data-manager-empty>Aucun responsable enregistré pour ce club.</p>`}
         </div>
         ${canEditManagers ? `<button type="button" data-action="add-manager-card">Ajouter un responsable</button>` : ""}
@@ -17475,6 +17642,22 @@ ${esc(bodyText)}</pre>
     return asText(new FormData(form).get(name));
   }
 
+  // Lot Pré-Phase P — R3A-4 (§1) — le champ DOM "function" peut rester intact tant que le
+  // formulaire n'est pas enregistré (R3A-3 : un aller-retour "Autre" -> "Trésorier" -> "Autre" AVANT
+  // Enregistrer doit retrouver le brouillon personnalisé tapé). Mais la valeur réellement PERSISTÉE
+  // ne doit jamais dépendre de ce brouillon caché : pour un role prédéfini connu, c'est TOUJOURS le
+  // libellé canonique (clubManagerLabels()[role]) qui est retenu, jamais un texte "Autre" resté dans
+  // un champ masqué. Fonction PURE, testable indépendamment de managersFromForm.
+  //  - role === "custom"           -> le texte libre, trimé.
+  //  - role prédéfini connu        -> le libellé canonique de ce role (jamais le champ libre).
+  //  - role importé inconnu        -> son libellé libre existant (jamais perdu, cf. O-B).
+  function canonicalManagerFunction(role, rawFunction) {
+    const normalizedRole = asText(role);
+    if (normalizedRole === "custom") return asText(rawFunction);
+    const canonicalLabel = clubManagerLabels()[normalizedRole];
+    return canonicalLabel || asText(rawFunction);
+  }
+
   // Lot O-B — lecture réelle des cartes Responsables PRÉSENTES dans le formulaire (ajoutées/
   // supprimées librement côté DOM par addManagerCard/deleteManagerCard, sans passer par render()).
   // Aucune reconstruction depuis une liste de rôles fixes : une carte présente, même vide, est
@@ -17482,16 +17665,30 @@ ${esc(bodyText)}</pre>
   // EXCLUSIVEMENT data-manager-id, jamais son role ni sa position. Extraite en fonction dédiée
   // (jamais de FormData ici, contrairement au reste de clubFromForm) : testable indépendamment.
   function managersFromForm(form) {
-    return [...form.querySelectorAll("[data-manager-card]")].map((card) => ({
-      id: asText(card.dataset.managerId),
-      role: asText(card.querySelector('[name="role"]')?.value),
-      function: asText(card.querySelector('[name="function"]')?.value),
-      lastName: asText(card.querySelector('[name="lastName"]')?.value),
-      firstName: asText(card.querySelector('[name="firstName"]')?.value),
-      email: asText(card.querySelector('[name="email"]')?.value),
-      phone: asText(card.querySelector('[name="phone"]')?.value),
-      notes: asText(card.querySelector('[name="notes"]')?.value),
-    }));
+    return [...form.querySelectorAll("[data-manager-card]")].map((card) => {
+      const role = asText(card.querySelector('[name="role"]')?.value);
+      return {
+        id: asText(card.dataset.managerId),
+        role,
+        function: canonicalManagerFunction(role, card.querySelector('[name="function"]')?.value),
+        lastName: asText(card.querySelector('[name="lastName"]')?.value),
+        firstName: asText(card.querySelector('[name="firstName"]')?.value),
+        email: asText(card.querySelector('[name="email"]')?.value),
+        phone: asText(card.querySelector('[name="phone"]')?.value),
+        notes: asText(card.querySelector('[name="notes"]')?.value),
+      };
+    });
+  }
+
+  // Lot Pré-Phase P — R3A-3 (§3-5 du lot) — une fonction humaine "Autre / Fonction personnalisée"
+  // sans libellé n'est JAMAIS enregistrée silencieusement comme "Responsable" générique :
+  // normalizeClubIdentity reste volontairement tolérante (fallback, pour l'import/les données
+  // historiques), donc cette vérification doit avoir lieu AVANT clubFromForm/normalizeClubIdentity,
+  // sur les managers BRUTS du formulaire (managersFromForm), jamais après. asText() trim déjà la
+  // valeur (§4 du lot). Fonction humaine (bureau du club) ≠ rôle logiciel/permission : ne touche à
+  // rien d'autre que ce libellé.
+  function findManagerMissingCustomFunction(managers) {
+    return managers.find((manager) => asText(manager.role) === "custom" && !asText(manager.function));
   }
 
   function clubFromForm(form, baseClub = {}) {
@@ -17562,6 +17759,18 @@ ${esc(bodyText)}</pre>
     return club;
   }
 
+  // Lot Pré-Phase P — R3A-3 — bascule PUREMENT visuelle (aucun render(), aucune donnée touchée) du
+  // champ libre "Nom de la fonction" quand l'utilisateur change le select "Fonction prédéfinie" d'une
+  // carte déjà rendue. Ne vide jamais le champ : sa valeur DOM survit à un aller-retour sur le select,
+  // tant que le formulaire n'a pas été enregistré (managersFromForm la relira si "Autre" est
+  // finalement sélectionné au submit).
+  function updateManagerFunctionFieldVisibility(roleSelect) {
+    const card = roleSelect.closest("[data-manager-card]");
+    const wrapper = card?.querySelector("[data-manager-function-field]");
+    if (!wrapper) return;
+    wrapper.hidden = roleSelect.value !== "custom";
+  }
+
   // Correction Pix (O-B) — synchronise l'état vide de la section Responsables : retire le message
   // [data-manager-empty] dès qu'au moins une carte existe, le (re)crée (exactement un) dès qu'il
   // n'en reste plus aucune. Centralisé pour qu'addManagerCard/deleteManagerCard ne divergent
@@ -17601,7 +17810,7 @@ ${esc(bodyText)}</pre>
     const clubId = asText(list?.dataset?.clubId);
     const managerId = asText(card.dataset.managerId);
     if (clubId && managerId && typeof managerAlreadyLinked === "function" && managerAlreadyLinked(clubId, managerId)) {
-      alert("Ce responsable possède encore un accès utilisateur.\n\nDissociez d'abord son compte dans Paramètres > Utilisateurs avant de supprimer ce responsable.");
+      alert("Ce responsable possède encore un accès utilisateur.\n\nDissociez d'abord son compte dans Paramètres > Comptes d'accès avant de supprimer ce responsable.");
       return;
     }
     const label = asText(card.querySelector('[name="function"]')?.value) || asText(card.querySelector('[name="lastName"]')?.value) || "ce responsable";
@@ -17614,6 +17823,163 @@ ${esc(bodyText)}</pre>
     if (!confirmed) return;
     card.remove();
     syncManagerEmptyState(list);
+  }
+
+  // Lot R3 — corps du dialogue "Créer un accès MonGestaClub". Pur gabarit HTML (aucune mutation) :
+  // le clubId cible est porté par data-club-id sur le sélecteur de compte existant, jamais déduit
+  // implicitement au moment du submit (doctrine stale-context, §10 du lot).
+  function managerAccessDialogBodyHtml(clubId, manager, eligibleUsers, suggestedRole) {
+    const roleOptionsHtml = userRoleOptions().map(([value, label]) => `<option value="${esc(value)}" ${value === suggestedRole ? "selected" : ""}>${esc(label)}</option>`).join("");
+    const existingOptionsHtml = eligibleUsers.map((user) => `<option value="${esc(user.id)}">${esc(user.displayName)}</option>`).join("");
+    const suggestedLabel = userRoleLabel(suggestedRole);
+    // Lot R3-R1 (correction audit Pix §2) — nom PROPOSÉ pour le nouveau compte : uniquement
+    // "Prénom Nom" (managerAccountDisplayName), jamais "Prénom Nom — Fonction" (clubManagerOptionLabel,
+    // réservée à l'affichage informatif de la fonction ci-dessous). Si le Responsable n'a ni prénom ni
+    // nom, le champ reste VIDE (jamais un repli "Responsable"/la fonction) : saisie manuelle requise.
+    const suggestedDisplayName = managerAccountDisplayName(manager);
+    const hasEligible = eligibleUsers.length > 0;
+    // Lot R3-R2 — refonte visuelle : le choix du mode passe par DEUX cartes entièrement cliquables
+    // (label enveloppant un vrai <input type="radio">, sémantique et navigation clavier natives ;
+    // l'état sélectionné vient du CSS via :has(input:checked), la carte désactivée reste inerte).
+    // Les hooks fonctionnels (name="accessMode", data-manager-access-mode-field, value new/existing,
+    // data-manager-access-panel, data-manager-access-role-wrapper…) sont STRICTEMENT conservés :
+    // updateManagerAccessDialogVisibility et createUserAccessForManager sont inchangés.
+    return `<div class="manager-access-dialog">
+      <p class="manager-access-lede">Accès MonGestaClub pour <strong>${esc(clubManagerOptionLabel(manager))}</strong>.</p>
+      <div class="choice-card-group" role="radiogroup" aria-label="Type d'accès">
+        <label class="choice-card">
+          <input type="radio" name="accessMode" value="new" data-manager-access-mode-field checked />
+          <span class="choice-card-text">
+            <span class="choice-card-title">Créer un nouveau compte</span>
+            <span class="choice-card-desc">Un nouvel accès pour cette personne.</span>
+          </span>
+        </label>
+        <label class="choice-card${hasEligible ? "" : " is-disabled"}">
+          <input type="radio" name="accessMode" value="existing" data-manager-access-mode-field ${hasEligible ? "" : "disabled"} />
+          <span class="choice-card-text">
+            <span class="choice-card-title">Lier un compte existant</span>
+            <span class="choice-card-desc">${hasEligible ? "Associer un compte déjà présent." : "Aucun compte éligible pour ce club."}</span>
+          </span>
+        </label>
+      </div>
+      <div class="manager-access-fields">
+        <div data-manager-access-panel="new">
+          ${field("displayName", "Nom affiché du compte", suggestedDisplayName, "text", `placeholder="Ex : ${esc(suggestedDisplayName || "Prénom Nom")}"`)}
+        </div>
+        <div data-manager-access-panel="existing" hidden>
+          <label>Compte existant<select name="existingUserId" data-manager-access-user-field data-club-id="${esc(clubId)}">
+            <option value="">Choisir un compte…</option>
+            ${existingOptionsHtml}
+          </select></label>
+        </div>
+        <div data-manager-access-role-wrapper>
+          <label>Profil d'accès<select name="role" data-manager-access-role-field>${roleOptionsHtml}</select></label>
+          <p class="muted manager-access-hint">Suggestion d'après la fonction du responsable : <strong>${esc(suggestedLabel)}</strong>. Vous pouvez choisir un autre profil, ou l'ajuster plus tard dans Comptes d'accès.</p>
+        </div>
+        <p class="muted" data-manager-access-existing-role-note hidden></p>
+      </div>
+    </div>`;
+  }
+
+  // Lot R3 — bascule d'affichage du dialogue "Créer un accès MonGestaClub" (mode nouveau/existant,
+  // et masquage du sélecteur de profil quand le compte existant choisi possède déjà une Membership
+  // dans ce club — §7 : son role/permissionOverrides restent STRICTEMENT préservés, le proposer
+  // modifiable donnerait l'impression fausse qu'il serait appliqué). Purement UI, aucune mutation.
+  // Lot R3-R3 — pilote AUSSI le bouton de validation : libellé selon le mode (« Créer l'accès » /
+  // « Lier le compte ») et désactivation tant qu'aucun compte existant n'est choisi (§4/§5).
+  function updateManagerAccessDialogVisibility(form) {
+    if (!form) return;
+    const mode = form.querySelector('[name="accessMode"]:checked')?.value === "existing" ? "existing" : "new";
+    const newPanel = form.querySelector('[data-manager-access-panel="new"]');
+    const existingPanel = form.querySelector('[data-manager-access-panel="existing"]');
+    if (newPanel) newPanel.hidden = mode !== "new";
+    if (existingPanel) existingPanel.hidden = mode !== "existing";
+    const roleWrapper = form.querySelector('[data-manager-access-role-wrapper]');
+    const note = form.querySelector('[data-manager-access-existing-role-note]');
+    const existingSelect = form.querySelector('[data-manager-access-user-field]');
+    const existingUserId = mode === "existing" ? asText(existingSelect?.value) : "";
+    let existingMembership = null;
+    if (existingUserId) existingMembership = userMembershipForClub(existingUserId, existingSelect.dataset.clubId);
+    if (roleWrapper) roleWrapper.hidden = Boolean(existingMembership);
+    if (note) {
+      note.hidden = !existingMembership;
+      if (existingMembership) note.textContent = `Profil d'accès actuel (inchangé) : ${userRoleLabel(existingMembership.role)} — ce profil et les droits personnalisés seront conservés.`;
+    }
+    const submit = form.querySelector('button[type="submit"]');
+    if (submit) {
+      submit.textContent = mode === "existing" ? "Lier le compte" : "Créer l'accès";
+      submit.disabled = mode === "existing" && !existingUserId;
+    }
+  }
+
+  // Lot R3-R3 — CÂBLAGE de la bascule nouveau/existant, appelé par onOpen de showDialog. Le
+  // dialogue s'ouvre dans #editorDialog (frère de #app) : ni le listener délégué global de #app,
+  // ni bindDialogDelegates (jamais posé sur #editorDialog) n'y exécutent le handler
+  // data-manager-access-mode-field. L'ancien câblage NE S'EXÉCUTAIT DONC PAS quand ce dialogue
+  // était le premier ouvert (bug capture Thierry). On attache les écouteurs DIRECTEMENT sur les
+  // contrôles réels du formulaire (même patron que openDisciplineCreationDialog) + état initial.
+  function wireManagerAccessDialog(form) {
+    if (!form) return;
+    form.querySelectorAll("[data-manager-access-mode-field]").forEach((radio) => {
+      radio.addEventListener("change", () => updateManagerAccessDialogVisibility(form));
+    });
+    const userField = form.querySelector("[data-manager-access-user-field]");
+    if (userField) userField.addEventListener("change", () => updateManagerAccessDialogVisibility(form));
+    updateManagerAccessDialogVisibility(form);
+  }
+
+  // Lot R3 — ouvre le dialogue "Créer un accès MonGestaClub" pour le couple (clubId, managerId)
+  // EXPLICITE porté par le bouton qui l'a déclenché (jamais activeClubId() implicite, §10 du lot).
+  // Revérifie tout ce qui a déjà été vérifié au rendu de la carte (§9 : jamais une confiance aveugle
+  // en l'UI) — un appel direct à cette fonction ne peut donc jamais contourner les gardes.
+  function openManagerAccessDialog(clubId, managerId) {
+    const cid = asText(clubId);
+    const mid = asText(managerId);
+    if (!requireAdminForClub(cid)) {
+      alert("Seul un administrateur de ce club peut créer un accès.");
+      return;
+    }
+    const manager = clubManagerById(cid, mid);
+    if (!manager) {
+      alert("Ce responsable n'existe plus.");
+      return;
+    }
+    if (managerAlreadyLinked(cid, mid)) {
+      alert("Ce responsable est déjà lié à un compte MonGestaClub.");
+      render();
+      return;
+    }
+    const eligibleUsers = eligibleUsersForManagerLink(cid, mid);
+    const suggestedRole = suggestedMembershipRoleForManagerFunction(manager.role);
+    const body = managerAccessDialogBodyHtml(cid, manager, eligibleUsers, suggestedRole);
+    showDialog("Créer un accès MonGestaClub", body, async (_data, form) => {
+      // Revalidation COMPLÈTE au submit (§9/§10) : cid/mid restent ceux capturés à l'ouverture,
+      // jamais relus depuis le DOM/le club actif — createUserAccessForManager revérifie de toute
+      // façon lui-même l'intégralité des gardes (Administrateur, existence, déjà-lié).
+      // Lot R3-R4 — DOCTRINE STALE-CLUB (identique aux suppressions/édition Tarifs async et à la
+      // création de discipline avec dialogue stale) : un formulaire ouvert sous le club `cid`, puis
+      // validé alors que l'utilisateur a basculé ailleurs, est PÉRIMÉ. Ni le club source ni le club
+      // actif ne doivent être mutés. Garde COMMUNE aux deux modes (nouveau compte / lier existant),
+      // AVANT toute lecture de champ et AVANT createUserAccessForManager.
+      if (activeClubId() !== cid) {
+        alert("Le club actif a changé depuis l'ouverture de ce formulaire.\n\nRevenez au club d'origine pour créer ou lier cet accès.");
+        return false;
+      }
+      const mode = form.querySelector('[name="accessMode"]:checked')?.value === "existing" ? "existing" : "new";
+      const displayName = asText(form.querySelector('[name="displayName"]')?.value);
+      const existingUserId = asText(form.querySelector('[name="existingUserId"]')?.value);
+      const role = asText(form.querySelector('[name="role"]')?.value);
+      if (mode === "existing" && !existingUserId) {
+        alert("Choisissez un compte existant à lier.");
+        return false;
+      }
+      const result = createUserAccessForManager(cid, mid, { mode, displayName, existingUserId, role });
+      if (!result.ok) {
+        alert(result.message);
+        return false;
+      }
+      return result.message;
+    }, wireManagerAccessDialog, "", () => {}, "Créer l'accès");
   }
 
   // Lot O-E2-B6R (§12-13) — chemins FEUILLE réellement possédés par clubFormSectionsHtml/
@@ -17970,6 +18336,10 @@ ${esc(bodyText)}</pre>
     }
     setNextWindowKey(existing && !isDuplicate ? `club:${existing.id}` : null);
     showDialog(title, clubFormSectionsHtml(base, { clubId: existing && !isDuplicate ? existing.id : "" }), async (_data, form) => {
+      if (findManagerMissingCustomFunction(managersFromForm(form))) {
+        alert("Merci de préciser le nom de la fonction personnalisée avant d'enregistrer.");
+        return false;
+      }
       const club = clubFromForm(form, base);
       if (!asText(club.name)) {
         alert("Le nom du club est obligatoire.");
@@ -18049,6 +18419,10 @@ ${esc(bodyText)}</pre>
       </div>
     </div>`;
     showDialog(existing ? "Assistant du club" : "Assistant de création du club", wizardBody, async (_data, form) => {
+      if (findManagerMissingCustomFunction(managersFromForm(form))) {
+        alert("Merci de préciser le nom de la fonction personnalisée avant d'enregistrer.");
+        return false;
+      }
       const club = clubFromForm(form, base);
       if (!asText(club.name)) {
         alert("Le nom du club est obligatoire.");
@@ -18812,6 +19186,10 @@ ${esc(bodyText)}</pre>
     const form = app.querySelector("[data-club-settings-form]");
     const club = activeClub();
     if (!form || !club) return;
+    if (findManagerMissingCustomFunction(managersFromForm(form))) {
+      alert("Merci de préciser le nom de la fonction personnalisée avant d'enregistrer.");
+      return;
+    }
     const updated = clubFromForm(form, club);
     const message = saveExistingClubGuarded(updated, club, club.id);
     if (message) ui.saveMessage = message;
@@ -19944,6 +20322,24 @@ ${esc(bodyText)}</pre>
   // touche jamais au DOM (le dialogue en dérive son affichage).
   function commitDisciplineCreation(prepared, options = {}) {
     const clubId = asText(options.clubId || prepared && prepared.clubId);
+    // Lot Permissions Tarifs — créer une discipline est une mutation de la STRUCTURE SPORTIVE
+    // (sport.write) quel que soit le point d'entrée du dialogue (bande Tarifs, page Disciplines,
+    // Paramètres, recherche, assistant). Garde posée ICI, dans la primitive de mutation elle-même et
+    // pas seulement à l'ouverture du dialogue : ni un appel direct, ni la resoumission d'un
+    // formulaire resté dans le DOM après une révocation de droits ne peuvent la contourner. FAIL
+    // CLOSED (l'UI n'expose plus le bouton « + » sans la permission — refus non journalisé).
+    if (!requirePermissionForClub("sport.write", clubId)) {
+      return { ok: false, errors: ["Vous n'avez pas l'autorisation de créer une discipline."], warnings: [], reason: "forbidden" };
+    }
+    // Lot Permissions Tarifs (R2) — cette primitive mute le state GLOBAL, c'est-à-dire celui du
+    // club ACTIF. Si la cible demandée (options.clubId, figé à l'ouverture du dialogue) n'est plus
+    // le club actif, écrire ici estamperait une discipline « club A » dans le state du club B :
+    // refus strict plutôt que corruption inter-club. Le seul appelant de production (submit du
+    // dialogue) garantit déjà l'égalité via resolveDisciplineCreationTarget ; cette garde protège
+    // les appels directs et les resoumissions de formulaire après un changement de club.
+    if (clubId && clubId !== activeClubId()) {
+      return { ok: false, errors: ["Le club actif a changé : la discipline n'a pas été créée."], warnings: [], reason: "stale-club" };
+    }
     // 1. Revalidation : le brouillon a pu vieillir (autre onglet, autre mutation entre-temps).
     const check = validateDisciplineCreation(prepared, state, clubId);
     if (!check.ok) return { ok: false, errors: check.errors, warnings: check.warnings, reason: "invalid" };
@@ -20067,10 +20463,37 @@ ${esc(bodyText)}</pre>
     return `Créer la discipline et ${intValue(n)} catégorie${n > 1 ? "s" : ""}`;
   }
 
+  // Lot Permissions Tarifs (R2) — résolveur de la CIBLE du submit « Nouvelle discipline ». Il
+  // n'écrit RIEN (aucun recordHistory, aucun persist, aucune mutation de state, aucun journal) :
+  // il tranche seulement quel club doit recevoir la création et refuse proprement les trois
+  // contextes devenus invalides, chacun avec sa propre raison (l'appelant en dérive un message
+  // distinct). Appelé AVANT prepareDisciplineCreation par TOUS les points d'entrée du dialogue
+  // (bande Tarifs, page Disciplines, Paramètres, recherche, assistant) : une création née sous le
+  // club A ne peut jamais aboutir sous un club B basculé pendant que le dialogue est ouvert.
+  function resolveDisciplineCreationTarget(sourceClubId) {
+    const source = asText(sourceClubId);
+    if (!source) {
+      return { ok: false, reason: "no-club", error: "Club introuvable : la discipline n'a pas pu être créée." };
+    }
+    if (activeClubId() !== source) {
+      return { ok: false, reason: "stale-club", error: "Le club actif a changé depuis l'ouverture de ce formulaire. Revenez au club d'origine pour créer cette discipline." };
+    }
+    if (!requirePermissionForClub("sport.write", source)) {
+      return { ok: false, reason: "forbidden", error: "Vous n'avez pas l'autorisation de créer une discipline." };
+    }
+    return { ok: true, clubId: source };
+  }
+
   // Point d'entrée UNIQUE de tous les boutons « Nouvelle discipline ».
   function openDisciplineCreationDialog(options = {}) {
     const trigger = options.trigger || null;
     const origin = asText(options.origin);
+    // Lot Permissions Tarifs (R2) — CLUB SOURCE figé à l'OUVERTURE du dialogue. Tous les points
+    // d'entrée (bande Tarifs, page Disciplines, Paramètres, recherche, assistant) transitent par
+    // cette fonction : capturer activeClubId() maintenant garantit qu'une création née sous le
+    // club A ne pourra JAMAIS aboutir sous un club B basculé pendant que le dialogue est ouvert.
+    // Le submit ne recalcule jamais sa cible métier avec activeClubId() courant.
+    const sourceClubId = asText(options.sourceClubId || activeClubId());
     const draft = freshDisciplineCreationDraft();
     // Un brouillon n'est créé qu'UNE fois. Le verrou global `disciplineCreating` protège des
     // soumissions concurrentes ; celui-ci protège de la resoumission d'un brouillon déjà abouti,
@@ -20146,7 +20569,14 @@ ${esc(bodyText)}</pre>
         event.preventDefault();
         if (creationDone || disciplineCreating) return;
         draft.name = asText(nameInput.value);
-        const clubId = activeClubId();
+        // R2 — la cible métier est résolue AVANT toute préparation, à partir du club SOURCE figé à
+        // l'ouverture (jamais activeClubId() courant). resolveDisciplineCreationTarget n'écrit rien :
+        // il refuse proprement les trois contextes devenus invalides (club source vide, club actif
+        // changé depuis l'ouverture, droit sport.write révoqué). commitDisciplineCreation conserve
+        // sa propre garde requirePermissionForClub — défense en profondeur inchangée.
+        const target = resolveDisciplineCreationTarget(sourceClubId);
+        if (!target.ok) { render({ error: target.error }); return; }
+        const clubId = target.clubId;
         const prepared = prepareDisciplineCreation(draft, state, clubId);
         const check = validateDisciplineCreation(prepared, state, clubId);
         if (!check.ok) { render({ error: check.errors[0] }); return; }
@@ -20289,6 +20719,13 @@ ${esc(bodyText)}</pre>
         event.preventDefault();
         event.stopPropagation();
         await handleAction(actionTarget);
+        // Lot UI Pré-Phase P (§12-14) — "Réinitialiser selon le profil" mute la Membership et appelle
+        // déjà render() (qui ne touche jamais #editorDialog, frère de #app) : rafraîchir manuellement
+        // le contenu du dialogue de droits s'il est encore ouvert pour ce même couple userId/clubId,
+        // jamais un autre dialogue ouvert entre-temps.
+        if (actionTarget.dataset.action === "reset-user-membership-permissions" && typeof refreshOpenUserPermissionsDialog === "function") {
+          refreshOpenUserPermissionsDialog(targetDialog, actionTarget.dataset.userId, actionTarget.dataset.clubId);
+        }
       }
     });
     targetDialog.addEventListener("change", (event) => {
@@ -20307,6 +20744,28 @@ ${esc(bodyText)}</pre>
       }
       if (target.name === "contactDocuments") {
         previewContactDocumentFiles(target);
+      }
+      // Lot Pré-Phase P — R3A-3 — même bascule que le listener global de #app (src/20-demo-export.js),
+      // rejouée ici car les dialogues (#editorDialog et .stacked-dialog) sont hors de sa portée.
+      if (target.dataset.managerRoleField !== undefined) {
+        updateManagerFunctionFieldVisibility(target);
+      }
+      // Lot R3 — dialogue "Créer un accès MonGestaClub" (managerAccessDialogBodyHtml, toujours ouvert
+      // via showDialog donc toujours frère de #app, comme le dialogue "Personnaliser les droits" ci-
+      // dessous) : bascule nouveau compte / compte existant, et masquage du profil quand le compte
+      // choisi a déjà une Membership dans ce club (§7 — jamais un profil modifiable en apparence).
+      if (target.dataset.managerAccessModeField !== undefined || target.dataset.managerAccessUserField !== undefined) {
+        updateManagerAccessDialogVisibility(target.closest("form"));
+      }
+      // Lot UI Pré-Phase P (§12-14) — le dialogue "Personnaliser les droits" (userPermissionsDialogBodyHtml,
+      // src/28-users.js) réutilise EXACTEMENT le même attribut data-user-permission-field que l'ancien
+      // éditeur inline (jamais un nouveau mécanisme de mutation) : simplement rejoué ici, puisque ce
+      // dialogue est un frère de #app (#editorDialog), hors de portée du listener change de #app.
+      if (target.dataset.userPermissionField !== undefined) {
+        setUserMembershipPermissionOverride(target.dataset.userId, target.dataset.clubId, target.dataset.permissionKey, target.checked === true);
+        if (typeof refreshOpenUserPermissionsDialog === "function") {
+          refreshOpenUserPermissionsDialog(targetDialog, target.dataset.userId, target.dataset.clubId);
+        }
       }
     });
   }
@@ -32458,6 +32917,13 @@ ${esc(bodyText)}</pre>
     }
     if (target.dataset.tariff) {
       if (target.closest(".tariff-row.editing")) return;
+      // Lot Permissions Tarifs — garde SILENCIEUSE (ce listener se déclenche à chaque frappe) sur le
+      // champ RÉELLEMENT muté (préfixe de data-tariff), FAIL CLOSED sur un préfixe inconnu. Défense en
+      // profondeur : aujourd'hui ces inputs ne vivent que dans une ligne « .editing » (déjà court-
+      // circuitée ci-dessus), mais la classe « editing » est un détail de rendu, jamais une frontière
+      // de sécurité — même forme de garde que data-stock juste en dessous.
+      const tariffFieldKey = tariffFieldPermissionKey(target.dataset.tariff);
+      if (!tariffFieldKey || !ensureUserPermission(tariffFieldKey, activeClubId(), { silent: true })) return;
       recordHistory();
       updateTariff(target);
       persist();
@@ -32555,6 +33021,12 @@ ${esc(bodyText)}</pre>
     }
     if (target.dataset.userRoleField !== undefined) {
       setUserMembershipRole(target.dataset.userId, target.dataset.clubId, target.value);
+      return;
+    }
+    // Lot Pré-Phase P — R3A-3 — bascule visuelle du champ "Nom de la fonction" d'une carte Responsable
+    // (formulaire local, jamais de render() ni de persistance ici).
+    if (target.dataset.managerRoleField !== undefined) {
+      updateManagerFunctionFieldVisibility(target);
       return;
     }
     // Lot O-C — liaison Responsable ↔ Utilisateur. setUserMembershipResponsible revérifie
@@ -32791,6 +33263,11 @@ ${esc(bodyText)}</pre>
       return;
     }
     if (target.dataset.setting === "defaultVatRate") {
+      // Lot Permissions Tarifs — la TVA globale est un paramètre de FACTURATION transverse (elle
+      // s'applique à tous les paiements et à toutes les lignes de tarifs) : mutation gouvernée par
+      // accounting.write. Garde SILENCIEUSE + FAIL CLOSED (l'input est déjà rendu « disabled » sans
+      // la permission ; ceci est le véritable garde-fou, jamais la seule confiance en l'attribut HTML).
+      if (!ensureUserPermission("accounting.write", activeClubId(), { silent: true })) return;
       recordHistory();
       settings.defaultVatRate = Math.max(0, asNumber(target.value));
       persistSettings();
@@ -33067,6 +33544,24 @@ ${esc(bodyText)}</pre>
     // doctrine que add-size-stock-row/remove-size-stock-row ci-dessous).
     if (action === "add-manager-card") return addManagerCard(button);
     if (action === "delete-manager-card") return deleteManagerCard(button);
+    // Lot R3 — "Créer un accès MonGestaClub" depuis une carte Responsable non liée. clubId/managerId
+    // sont lus EXPLICITEMENT sur CE bouton (rendu par clubManagerAccessBlockHtml), jamais activeClubId()
+    // implicite (§10 du lot) : openManagerAccessDialog revérifie de toute façon tout lui-même (§9).
+    if (action === "open-manager-access-dialog") return openManagerAccessDialog(button.dataset.clubId, button.dataset.managerId);
+    // Lot R3 (§12) — "Configurer l'accès" depuis une carte Responsable déjà liée : ferme le dialogue
+    // d'édition du club (bouton situé DEDANS, cf. armCloseHandler/showDialog) puis sélectionne ce
+    // compte dans Paramètres > Comptes d'accès (ui.settingsSelectedUserId, doctrine UI Pré-Phase P déjà
+    // établie) et ouvre ce panneau. Ne touche JAMAIS activeUserId/l'authentification : configurer un
+    // accès ne connecte jamais ce profil (même garde documentée que select-settings-user ci-dessous).
+    if (action === "configure-manager-access") {
+      button.closest("dialog")?.close();
+      ui.settingsSelectedUserId = asText(button.dataset.userId);
+      ui.settingsPanels = { ...(ui.settingsPanels || {}), users: true };
+      navigateTo({ view: "settings" });
+      if (typeof flashVigilanceTargets === "function") flashVigilanceTargets('[data-action="toggle-settings-panel"][data-panel="users"]');
+      render();
+      return;
+    }
     if (action === "new-user") return createUserFromPrompt();
     if (action === "rename-user") return renameUserFromPrompt(button.dataset.userId);
     if (action === "deactivate-user") return deactivateUserWithChecks(button.dataset.userId);
@@ -33075,8 +33570,22 @@ ${esc(bodyText)}</pre>
     if (action === "change-user-pin") return changeOwnPinFlow(button.dataset.userId);
     if (action === "remove-user-pin") return removeOwnPinFlow(button.dataset.userId);
     if (action === "add-user-membership") return addUserMembershipFromButton(button.dataset.userId, button.dataset.clubId);
+    // Lot UI Pré-Phase P (§9) — sélection PUREMENT visuelle dans le panneau Paramètres > Comptes d'accès
+    // (layout master/detail) : ne touche JAMAIS activeUserId/l'authentification. Consulter la fiche
+    // d'un profil pour le configurer ne l'authentifie jamais (voir requestUserSwitch pour le VRAI
+    // changement d'utilisateur, mécanisme totalement distinct et inchangé par ce lot).
+    if (action === "select-settings-user") {
+      ui.settingsSelectedUserId = asText(button.dataset.userId);
+      render();
+      return;
+    }
+    // Lot UI Pré-Phase P (§12-13) — ouvre le dialogue "Personnaliser les droits" pour le couple
+    // (userId, clubId) explicite porté par CE bouton précis, jamais l'utilisateur sélectionné dans le
+    // panneau ni activeClubId() implicite (doctrine stale-context Phase O, appliquée ici au contexte
+    // du dialogue).
+    if (action === "open-user-permissions-dialog") return openUserPermissionsDialog(button.dataset.userId, button.dataset.clubId);
     // Lot O-D1 — réinitialise les dérogations de droits d'une Membership vers son profil (éditeur
-    // de droits, Paramètres > Utilisateurs). Nécessité justifiée : toute action déclenchée par un
+    // de droits, Paramètres > Comptes d'accès). Nécessité justifiée : toute action déclenchée par un
     // bouton (data-action) passe par ce dispatcher unique dans tout le projet (même doctrine que
     // add-manager-card/delete-manager-card, add-user-membership ci-dessus) — créer un second
     // mécanisme de dispatch uniquement pour ce bouton aurait été moins cohérent que ces 2 lignes.
@@ -35966,7 +36475,16 @@ ${esc(bodyText)}</pre>
         render();
         return;
       }
+      // Lot Permissions Tarifs — entrée en mode édition d'une ligne discipline / stage / insurance :
+      // exige la permission WRITE du domaine correspondant sur le club actif (FAIL CLOSED si le kind
+      // est inconnu). commitTariffRow revalide de toute façon au moment de la validation (stale).
+      const editRowPermissionKey = tariffRowPermissionKey(button.dataset.kind);
+      if (!editRowPermissionKey || !ensureUserPermission(editRowPermissionKey, activeClubId())) return;
       ui.tariffEditKey = tariffKey(button.dataset.kind, Number(button.dataset.index));
+      // Lot Permissions Tarifs (R1) — fige le club de la SESSION d'édition : commitTariffRow refuse
+      // (NO-OP) si le club actif diffère au moment du ✓ (navigation A -> B avec la ligne encore en
+      // édition). Même rôle que ui.tariffEditClubId dans la branche ARTICLE.
+      ui.tariffEditClubId = activeClubId();
       render();
       return;
     }
@@ -36043,9 +36561,20 @@ ${esc(bodyText)}</pre>
     // annulation, ni choix de profil, ni protection contre le double clic. `add-tariff-discipline`
     // est conservé comme alias : le CTA du Centre d'accompagnement et d'anciens rendus le portent.
     if (action === "add-tariff-discipline" || action === "open-discipline-creation") {
+      // Lot Permissions Tarifs — le « + » de la bande Disciplines de Tarifs (add-tariff-discipline)
+      // exige sport.write au clic, exactement comme add-tariff-stage / add-tariff-insurance : un
+      // dialogue qui échouerait à coup sûr au submit ne doit pas s'ouvrir. open-discipline-creation
+      // (page Disciplines, recherche, assistant) conserve son point d'entrée propre — et
+      // commitDisciplineCreation revalide sport.write dans TOUS les cas (primitive de mutation).
+      if (action === "add-tariff-discipline" && !ensureUserPermission("sport.write", activeClubId())) return;
+      // Lot Permissions Tarifs (R2) — club SOURCE capturé au clic et transmis au dialogue : la
+      // création restera rattachée à CE club même si l'utilisateur bascule ailleurs avant de
+      // valider. Le submit du dialogue NO-OP alors, sans rien créer dans le club devenu actif.
+      const disciplineSourceClubId = activeClubId();
       openDisciplineCreationDialog({
         trigger: button,
         origin: asText(button.dataset.origin) || (ui.view === "settings" ? "settings" : ui.view === "tarifs" ? "tarifs" : "disciplines"),
+        sourceClubId: disciplineSourceClubId,
       });
       return;
     }
@@ -36057,9 +36586,15 @@ ${esc(bodyText)}</pre>
       // explicite. Lot suppression sûre — la logique (garde-fou, message, confirmation,
       // suppression, journal) est désormais centralisée dans requestDisciplineDeletion, PARTAGÉE
       // avec le bouton « Supprimer la discipline » du dialogue « Discipline « Nom » ».
+      // Lot Permissions Tarifs (R1) — club SOURCE figé dans le DOM (data-discipline-club-id) : refus
+      // immédiat d'un clic sur un bouton rendu sous un autre club actif (anti-stale-DOM). Le club
+      // source est ENSUITE transmis explicitement à requestDisciplineDeletion, qui le revalide APRÈS
+      // sa confirmation asynchrone (jamais activeClubId() courant comme cible).
+      const disciplineClubId = button.dataset.disciplineClubId || "";
+      if (!disciplineClubId || activeClubId() !== disciplineClubId) return;
       const index = Number(button.dataset.index);
       const disc = state.tariffs.disciplines[index];
-      if (!await requestDisciplineDeletion(disc)) return;
+      if (!await requestDisciplineDeletion(disc, disciplineClubId)) return;
       if (ui.tariffEditKey === tariffKey("discipline", index)) ui.tariffEditKey = "";
       render();
       return;
@@ -36069,7 +36604,9 @@ ${esc(bodyText)}</pre>
       // (16-settings-themes.js, disciplineDangerZoneHtml). Même orchestrateur que Tarifs ci-dessus :
       // aucune règle, aucun message, aucune confirmation dupliqués.
       const discipline = disciplineByIdStrict(button.dataset.id);
-      if (!await requestDisciplineDeletion(discipline)) return;
+      // Lot Permissions Tarifs (R1) — club SOURCE capturé À L'ENTRÉE (synchrone), transmis
+      // explicitement : requestDisciplineDeletion le revalide après sa confirmation asynchrone.
+      if (!await requestDisciplineDeletion(discipline, activeClubId())) return;
       // La discipline n'existe plus : on ferme le dialogue plutôt que de le rafraîchir sur place
       // (refreshDisciplineCategoriesDialog rechargerait une discipline introuvable).
       const container = document.querySelector("[data-discipline-categories-dialog]");
@@ -36138,6 +36675,9 @@ ${esc(bodyText)}</pre>
       return;
     }
     if (action === "add-tariff-insurance") {
+      // Lot Permissions Tarifs — une ligne d'assurance n'est consommée que par la tarification d'une
+      // ADHÉSION : mutation gouvernée par memberships.write sur le club actif.
+      if (!ensureUserPermission("memberships.write", activeClubId())) return;
       recordHistory();
       state.tariffs.insurance.push(stampRecordClubId({ category: "Nouvelle assurance", label: "", options: [0] }));
       ui.tariffEditKey = tariffKey("insurance", state.tariffs.insurance.length - 1);
@@ -36146,10 +36686,22 @@ ${esc(bodyText)}</pre>
       return;
     }
     if (action === "delete-tariff-insurance") {
+      // Lot Permissions Tarifs (R1) — club SOURCE figé dans le DOM (data-insurance-club-id). Ordre de
+      // garde anti-stale (doctrine O-E2-B4R2) : (A) lire le club DOM, (B) refuser si vide, (C) refuser
+      // si le club actif a changé depuis le rendu, (D) permission memberships.write sur le club SOURCE.
+      const insuranceClubId = button.dataset.insuranceClubId || "";
+      if (!insuranceClubId || activeClubId() !== insuranceClubId) return;
+      if (!ensureUserPermission("memberships.write", insuranceClubId)) return;
       const index = Number(button.dataset.index);
       const item = state.tariffs.insurance[index];
       if (!item) return;
       if (!await requestConfirm({ title: "Supprimer l'assurance", message: `Supprimer l'assurance "${item.category}" ?`, confirmLabel: "Supprimer", danger: true })) return;
+      // APRÈS l'attente : le club actif a-t-il basculé ? -> NO-OP propre (jamais l'index de A appliqué
+      // au state de B). Revalidation de la permission sur le MÊME club source, puis re-résolution de
+      // l'item (une autre suppression a pu décaler la collection entre-temps).
+      if (activeClubId() !== insuranceClubId) return;
+      if (!requirePermissionForClub("memberships.write", insuranceClubId)) return;
+      if (!state.tariffs.insurance[index]) return;
       recordHistory();
       if (ui.tariffEditKey === tariffKey("insurance", index)) ui.tariffEditKey = "";
       state.tariffs.insurance.splice(index, 1);
@@ -37511,16 +38063,36 @@ ${esc(bodyText)}</pre>
   // true si la discipline a réellement été supprimée, false sinon (bloquée OU annulée) — chaque
   // surface décide ensuite de son propre rafraîchissement (render() pour Tarifs, fermeture du
   // dialogue + render() pour le dialogue de gestion).
-  async function requestDisciplineDeletion(discipline) {
+  async function requestDisciplineDeletion(discipline, clubId) {
     if (!discipline) return false;
+    // Lot Permissions Tarifs (R1) — club SOURCE explicite (jamais activeClubId() implicite comme
+    // cible). `clubId` est fourni par l'appelant (data-discipline-club-id pour la bande Tarifs,
+    // activeClubId() capturé À L'ENTRÉE pour la zone de danger du dialogue) ; le défaut ne sert
+    // qu'aux appels internes/tests directs et capture l'état synchrone à l'entrée, jamais après un
+    // await. Toute la garde travaille ensuite sur ce club figé.
+    const sourceClubId = asText(clubId || activeClubId());
+    if (!sourceClubId || activeClubId() !== sourceClubId) return false;
+    // Supprimer une discipline est une mutation de la STRUCTURE SPORTIVE (sport.write) quel que soit
+    // le point d'entrée. Revalidée AVANT le garde-fou de références ET APRÈS la confirmation
+    // asynchrone : un appel direct, une permission retirée, OU un changement de club actif pendant la
+    // boîte de dialogue ne peut jamais laisser la suppression aboutir.
+    if (!ensureUserPermission("sport.write", sourceClubId)) return false;
     const name = asText(discipline.name);
-    const blockers = disciplineReferenceCounts(discipline, activeClubId());
+    const blockers = disciplineReferenceCounts(discipline, sourceClubId);
     if (blockers.total > 0) {
       alert(disciplineDeletionBlockedMessage(name, blockers));
       return false;
     }
     if (!await requestConfirm({ title: "Supprimer la discipline", message: `Supprimer définitivement la discipline « ${name || "sans nom"} » ?`, confirmLabel: "Supprimer", danger: true })) return false;
-    performDisciplineDeletion(discipline);
+    // APRÈS l'attente : club actif toujours = club source ? permission toujours accordée sur CE club ?
+    // discipline ciblée toujours présente dans le state (devenu, à ce point, celui du club source) ?
+    // Sinon NO-OP propre — jamais performDisciplineDeletion sur la référence capturée avant l'attente,
+    // ni sur le state d'un autre club.
+    if (activeClubId() !== sourceClubId) return false;
+    if (!requirePermissionForClub("sport.write", sourceClubId)) return false;
+    const freshDiscipline = (state.tariffs.disciplines || []).find((d) => asText(d.id) === asText(discipline.id));
+    if (!freshDiscipline) return false;
+    performDisciplineDeletion(freshDiscipline);
     return true;
   }
 
@@ -43381,20 +43953,28 @@ ${esc(bodyText)}</pre>
         { view: "audit-log", anchor: ".band-title", final: true,
           title: "Une trace qui continue en silence", body: "Le Journal continue d'enregistrer même si cette page reste masquée dans votre menu. C'est votre trace de contrôle sur la durée, distincte de l'Historique du quotidien." },
       ] },
-    // --- Lot F — Utilisateurs, rôles et PIN. -----------------------------------------------
+    // --- Lot R3-R2 — Responsables, comptes d'accès, profils, permissions et PIN. -----------
     "utilisateurs": {
-      id: "utilisateurs", category: "suivi", label: "Comprendre les Utilisateurs",
-      summary: "Un profil utilisateur, ce n'est pas un club : c'est la personne qui utilise le logiciel sur cet ordinateur.", estimateMinutes: 2,
+      id: "utilisateurs", category: "suivi", label: "Comprendre les comptes d'accès",
+      summary: "Responsable, compte d'accès, profil, permissions : qui peut faire quoi dans MonGestaClub, club par club.", estimateMinutes: 2,
       view: "settings", helpAnchor: "help-utilisateurs", priority: 22, next: [],
       segments: [
+        { view: "club-settings", anchor: ".club-manager-grid",
+          title: "Les Responsables sont des personnes", body: "Dans Paramètres du club, la section Responsables décrit les personnes du bureau par leur fonction humaine : Président, Trésorier, Secrétaire… C'est une information d'organisation, pas un accès au logiciel. Rien ne sera modifié pendant cette visite, et vous pouvez quitter quand vous voulez." },
+        { view: "club-settings", anchor: "[data-action='open-manager-access-dialog']",
+          title: "Créer un accès depuis un Responsable", body: "Lorsqu'un Responsable n'a pas encore d'accès, sa carte propose « Créer un accès MonGestaClub » : créer un nouveau compte pour cette personne, ou lier un compte déjà existant. Le profil proposé n'est qu'une suggestion d'après la fonction — vous restez libre d'en choisir un autre. Lier un compte déjà utilisé ne change jamais ses droits actuels." },
         { view: "settings", anchor: ".users-settings", prepare: openUsersPanel,
-          title: "Utilisateur ou club : deux choses différentes", body: "Le club actif (voir Mes clubs), c'est SUR QUOI vous travaillez. L'utilisateur, c'est QUI travaille. Un même utilisateur peut intervenir sur plusieurs clubs, et plusieurs utilisateurs peuvent se relayer sur un même club. Rien ne sera modifié pendant cette visite." },
+          title: "Le compte d'accès, c'est la connexion", body: "Paramètres > Comptes d'accès liste les comptes qui permettent de se connecter à MonGestaClub. Un compte n'est pas un club : c'est la personne qui utilise le logiciel. Un même compte peut être ajouté à plusieurs clubs, et un même club ouvert par plusieurs comptes." },
         { view: "settings", anchor: "[data-action='new-user']", prepare: openUsersPanel,
-          title: "Créer, renommer, désactiver", body: "« Créer un utilisateur » ajoute un nouveau profil. Chaque profil peut être renommé à tout moment, ou désactivé sans perdre son historique — il suffit de le réactiver plus tard." },
+          title: "Créer, renommer, désactiver", body: "« Créer un compte d'accès » ajoute un compte autonome, sans passer par un Responsable. Chaque compte se renomme à tout moment, ou se désactive sans perdre son historique — il suffit de le réactiver plus tard." },
         { view: "settings", anchor: ".user-membership-row", prepare: openUsersPanel,
-          title: "Un rôle par club, informatif", body: "Pour chaque club, vous attribuez un rôle : Administrateur, Président, Secrétaire, Trésorier, Encadrant ou Lecture seule. Ce rôle est aujourd'hui purement informatif — il ne restreint encore aucune action dans le logiciel." },
+          title: "Un profil d'accès par club", body: "Pour chaque club où le compte est ajouté, vous choisissez un Profil d'accès : Administrateur, Trésorier, Encadrant, Lecture seule… Ce profil détermine réellement ce que le compte peut consulter et modifier dans ce club. Le même compte peut avoir des droits différents d'un club à l'autre." },
+        { view: "settings", anchor: "[data-action='open-user-permissions-dialog']", prepare: openUsersPanel,
+          title: "Des permissions personnalisables", body: "Au-delà du profil, « Personnaliser les droits » ajuste finement chaque autorisation. La fonction humaine d'un Responsable n'impose jamais automatiquement des droits, et lier un compte à un Responsable ne modifie pas ses droits : c'est toujours le profil d'accès, et ses éventuelles personnalisations, qui décide." },
+        { view: "settings", anchor: "[data-settings-panel='features']", prepare: openFeaturesPanel,
+          title: "Droits ou modules : à ne pas confondre", body: "Séparément des droits, « Fonctionnalités du club » active ou désactive des modules entiers (Boutique, Stages, Équipes…). Une fonctionnalité désactivée bloque son usage pour tout le monde, quels que soient les profils d'accès." },
         { view: "settings", anchor: ".users-settings", prepare: openUsersPanel, final: true,
-          title: "Et le PIN, dans tout ça ?", body: "Dans la version installée du logiciel, chaque profil peut être protégé par un PIN à 6 chiffres : dès que deux profils existent, chacun doit en avoir un. Ce PIN protège l'accès à VOTRE PROFIL dans MonGestaClub sur cet ordinateur — pas l'ordinateur lui-même — et aide à garantir que les actions du Journal d'activité sont attribuées à la bonne personne. Chacun gère son propre PIN, et un code de récupération s'affiche une seule fois à sa création, à conserver en lieu sûr. Cette protection n'existe pas dans un navigateur (par exemple la démo en ligne) : avec un seul profil, le logiciel s'ouvre alors directement, sans jamais rien exiger." },
+          title: "Et le PIN, dans tout ça ?", body: "Dans la version installée, chaque compte d'accès peut être protégé par un PIN à 6 chiffres : dès que deux comptes existent, chacun doit en avoir un. Ce PIN protège l'accès à votre compte dans MonGestaClub sur cet ordinateur — pas l'ordinateur lui-même — et fiabilise l'attribution des actions du Journal d'activité. Chacun gère son propre PIN, et un code de récupération s'affiche une seule fois à sa création, à conserver en lieu sûr. Dans un navigateur (par exemple la démo en ligne), il n'y a pas de PIN : avec un seul compte, le logiciel s'ouvre directement." },
       ] },
     // --- Lot F — Sauvegarde des données. ---------------------------------------------------
     "sauvegarde": {
@@ -43426,10 +44006,14 @@ ${esc(bodyText)}</pre>
         { view: "search", anchor: "[data-search-results]", final: true,
           title: "Les résultats vous emmènent au bon endroit", body: "Les résultats sont classés en deux groupes : Pages, réglages et actions, puis Données du club. Cliquer sur un résultat disponible ouvre directement la page, la fiche ou l'action correspondante." },
       ] },
-    "nouveautes": { id: "nouveautes", category: "decouverte", label: "Découvrir les nouveautés", summary: "Un tour rapide des nouveautés de cette version : visites interactives, carte Aujourd'hui et accompagnement enrichi.", estimateMinutes: 2, helpAnchor: "help-demarrer", priority: 5,
+    // Lot Première version — l'identifiant technique "nouveautes" est conservé (compatibilité +
+    // catégorie prévue pour l'après-première-distribution) ; seul le libellé/contenu visible est
+    // reformulé en DÉCOUVERTE INITIALE : MonGestaClub n'a jamais été distribué, il n'y a encore
+    // aucune « nouveauté » ni version antérieure pour l'utilisateur.
+    "nouveautes": { id: "nouveautes", category: "decouverte", label: "Découvrir MonGestaClub", summary: "Un tour rapide de l'accompagnement : la carte Aujourd'hui sur l'accueil, et le Centre d'accompagnement avec ses visites guidées.", estimateMinutes: 2, helpAnchor: "help-demarrer", priority: 5,
       segments: [
-        { view: "dashboard", anchor: ".cockpit-hero", title: "Nouveauté : la carte Aujourd'hui", body: "L'accueil vous propose désormais la prochaine étape utile et un rappel des points à suivre, au bon moment." },
-        { view: "dashboard", anchor: "[data-target='assistant']", title: "Nouveauté : visites interactives", body: "Le Centre d'accompagnement propose de vraies visites guidées avec mise en évidence à l'écran, des favoris et votre progression par domaine." },
+        { view: "dashboard", anchor: ".cockpit-hero", title: "La carte Aujourd'hui", body: "Sur l'accueil, MonGestaClub met en avant la prochaine étape utile et un rappel des points à suivre, au bon moment. Rien n'est modifié pendant cette visite." },
+        { view: "dashboard", anchor: "[data-target='assistant']", title: "Le Centre d'accompagnement", body: "Le Centre réunit toutes les visites guidées, avec mise en évidence à l'écran, favoris et progression par domaine. Vous pouvez relancer chaque visite autant de fois que nécessaire." },
       ] },
   };
 
@@ -43488,7 +44072,8 @@ ${esc(bodyText)}</pre>
 
   const ASSISTANT_ACHIEVEMENTS = [];  // Phase 8 : succès (🏆), dérivés de state.
 
-  // --- Nouveautés par version (consultables à tout moment depuis le Centre). -----------
+  // --- Nouveautés par version (visibles UNIQUEMENT après une mise à jour depuis une version
+  //     antérieure — jamais en première installation ; cf. hasUnseenWhatsNew). -----------
   const WHATS_NEW = {
     "1.0.4": {
       version: "1.0.4",
@@ -44388,7 +44973,11 @@ ${esc(bodyText)}</pre>
 
   function renderAssistant() {
     const conf = assistantSettings();
-    const hasWhatsNew = Object.keys(WHATS_NEW).length > 0;
+    // Lot Première version — le bouton « Quoi de neuf ? » ne s'affiche QUE lorsqu'une mise à jour a
+    // réellement eu lieu (hasUnseenWhatsNew : lastSeenVersion non vide et différent de la version
+    // courante), jamais en première installation. Le mécanisme WHATS_NEW/whats-new reste en place
+    // pour l'après-première-distribution ; seule sa visibilité prématurée est retirée.
+    const hasWhatsNew = hasUnseenWhatsNew();
     const global = assistantGlobalProgress();
     const tours = assistantToursProgress();
     const next = nextAssistantStep();
@@ -44443,7 +45032,7 @@ ${esc(bodyText)}</pre>
               <div class="assistant-center-actions">
                 <button type="button" data-action="assistant-reset-welcome">Revoir l'accueil</button>
                 <button type="button" data-action="assistant-redo-onboarding">Recommencer les visites guidées</button>
-                <button type="button" data-action="assistant-show-whatsnew" ${hasWhatsNew ? "" : "disabled"}>Quoi de neuf ?</button>
+                ${hasWhatsNew ? `<button type="button" data-action="assistant-show-whatsnew">Quoi de neuf ?</button>` : ""}
               </div>
               <p class="muted assistant-note">Recommencer les visites guidées remet la découverte à zéro. Votre configuration et vos données ne changent pas.</p>
               ${assistantToursCatalogHtml()}
@@ -44542,11 +45131,19 @@ ${esc(bodyText)}</pre>
       if (discipline && typeof openDisciplineCategoriesDialog === "function") openDisciplineCategoriesDialog(discipline.id);
     } catch (e) {}
   }
-  // Lot F — même patron : ouvre uniquement la bande Paramètres > Utilisateurs
+  // Lot F — même patron : ouvre uniquement la bande Paramètres > Comptes d'accès
   // (settingsCollapsibleBand("users", ...), src/16-settings-themes.js).
   function openUsersPanel() {
     if (!ui.settingsPanels || typeof ui.settingsPanels !== "object") ui.settingsPanels = {};
     ui.settingsPanels.users = true;
+  }
+
+  // Lot R3-R2 — même patron : ouvre la bande Paramètres > Fonctionnalités du club
+  // (settingsCollapsibleBand("features", ...)), sans écrire aucune donnée. Sert la visite
+  // « Comprendre les comptes d'accès » pour distinguer droits (par compte) et modules (par club).
+  function openFeaturesPanel() {
+    if (!ui.settingsPanels || typeof ui.settingsPanels !== "object") ui.settingsPanels = {};
+    ui.settingsPanels.features = true;
   }
 
   // --- Préparations d'étape pour la visite « Créer une facture » (UI uniquement). -----
@@ -46284,7 +46881,7 @@ ${esc(bodyText)}</pre>
       { key: "notes.write", label: "Modifier les notes", group: "Notes" },
       { key: "clubSettings.manage", label: "Gérer les paramètres du club", group: "Paramètres club" },
       { key: "managers.manage", label: "Gérer les responsables", group: "Responsables" },
-      { key: "users.manage", label: "Gérer les utilisateurs", group: "Utilisateurs" },
+      { key: "users.manage", label: "Gérer les comptes d'accès", group: "Comptes d'accès" },
       { key: "audit.read", label: "Consulter le journal d'activité", group: "Journal / Historique" },
       { key: "data.export", label: "Exporter les données", group: "Export" },
     ];
@@ -46610,6 +47207,79 @@ ${esc(bodyText)}</pre>
     return name ? `${name} — ${fn}` : fn;
   }
 
+  // Lot R3-R1 (correction audit Pix) — SUGGESTION uniquement d'un profil de droits logiciel à partir
+  // de la fonction humaine du Responsable (club.managers[].role) : jamais appliquée silencieusement
+  // (doctrine §4 du lot O), une simple pré-sélection modifiable dans le dialogue de création/liaison
+  // d'accès — AUCUNE Membership n'existe tant que ce dialogue n'est pas confirmé. Table VALIDÉE par
+  // Pix (remplace un mappage identité initial incorrect pour "president") :
+  //   president     -> admin           (décision produit explicite, PAS le preset "president")
+  //   treasurer     -> treasurer
+  //   secretary     -> secretary
+  //   registrations -> registrations
+  //   shop          -> shop
+  //   payments      -> payments
+  //   admin (humain)-> administrative  (voir piège ci-dessous)
+  //   coach         -> coach
+  //   custom/inconnu-> readonly        (privilège minimal par défaut)
+  // PIÈGE DE VOCABULAIRE CONSERVÉ : club.managers[].role==="admin" signifie "Responsable
+  // administratif" (fonction HUMAINE), sans aucun rapport avec Membership.role==="admin"
+  // (Administrateur technique, droits complets y compris users.manage) — le confondre promouvrait
+  // silencieusement un Responsable administratif en Administrateur technique, violant l'invariant
+  // Phase O "aucune promotion automatique selon la fonction humaine". D'où le mappage explicite vers
+  // "administrative" (profil "Responsable administratif" existant, sans users.manage).
+  function suggestedMembershipRoleForManagerFunction(managerRole) {
+    const map = {
+      president: "admin",
+      treasurer: "treasurer",
+      secretary: "secretary",
+      registrations: "registrations",
+      shop: "shop",
+      payments: "payments",
+      admin: "administrative",
+      coach: "coach",
+    };
+    return map[asText(managerRole)] || "readonly";
+  }
+
+  // Lot R3-R1 (correction audit Pix §2) — nom affiché PROPOSÉ pour un NOUVEAU compte : uniquement
+  // "Prénom Nom", JAMAIS la fonction humaine (clubManagerOptionLabel produit "Prénom Nom — Fonction",
+  // adapté à un libellé de <select> mais pas à un nom de compte : "Marie Dupont — Présidente" ne
+  // doit jamais être fabriqué comme displayName). clubManagerOptionLabel() reste inchangée et
+  // utilisée ailleurs (sélecteurs) — ne jamais la réutiliser pour ce besoin précis. Retourne ""
+  // (jamais un repli "Responsable"/la fonction) si le Responsable n'a ni prénom ni nom : le champ
+  // doit alors rester à saisir manuellement, jamais un nom fabriqué silencieusement.
+  function managerAccountDisplayName(manager) {
+    return asText([asText(manager.firstName), asText(manager.lastName)].filter(Boolean).join(" "));
+  }
+
+  // Lot R3 — recherche INVERSE de responsibleForMembership : la Membership (s'il y en a une) liée à
+  // CE Responsable dans CE club. Scope STRICT par clubId, même doctrine que clubManagerById/
+  // managerAlreadyLinked (deux clubs peuvent partager historiquement un même manager.id).
+  function membershipLinkedToManager(clubId, managerId) {
+    const cid = asText(clubId);
+    const mid = asText(managerId);
+    if (!cid || !mid) return null;
+    const store = userStore || normalizeUserStore(rawUserStoreFromStorage());
+    return store.memberships.find((row) => row.clubId === cid && row.responsibleId === mid) || null;
+  }
+
+  // Lot R3 — comptes ÉLIGIBLES à une liaison avec CE Responsable dans CE club : jamais le système,
+  // jamais un compte désactivé (même doctrine que selectableUsers). Un compte sans Membership dans ce
+  // club reste éligible (ensureUserMembership en créera une lors de la liaison, §5 du lot). Un compte
+  // dont la Membership ici est déjà réservée à un AUTRE Responsable est exclu (§8 : jamais proposé
+  // pour ensuite échouer silencieusement à la validation).
+  function eligibleUsersForManagerLink(clubId, managerId) {
+    const cid = asText(clubId);
+    const mid = asText(managerId);
+    const store = userStore || normalizeUserStore(rawUserStoreFromStorage());
+    return store.users.filter((user) => {
+      if (user.isSystem || !user.active) return false;
+      const membership = store.memberships.find((row) => row.userId === user.id && row.clubId === cid);
+      if (!membership) return true;
+      return !membership.responsibleId || membership.responsibleId === mid;
+    });
+  }
+
   // Lot O-C — lie/dissocie un Responsable humain (club.managers[]) à la Membership userId+clubId.
   // RÈGLE ABSOLUE : ne modifie JAMAIS membership.role, ne touche jamais User.displayName (fonction
   // humaine ≠ droits logiciels — O-D construira les vrais profils). responsibleId:"" dissocie sans
@@ -46627,7 +47297,7 @@ ${esc(bodyText)}</pre>
     if (nextId) {
       if (!clubManagerById(clubId, nextId)) { render(); return false; }
       if (managerAlreadyLinked(clubId, nextId, userId)) {
-        ui.saveMessage = "Impossible de lier ce responsable : il est déjà lié à un autre utilisateur de ce club.";
+        ui.saveMessage = "Impossible de lier ce responsable : il est déjà lié à un autre compte d'accès de ce club.";
         render();
         return false;
       }
@@ -46846,6 +47516,117 @@ ${esc(bodyText)}</pre>
     store.memberships.push(membership);
     writeUserStore(store);
     return membership;
+  }
+
+  // Lot R3-R2 (correction audit Pix §1) — valide un profil pour une NOUVELLE Membership : un
+  // options.role forgé/inconnu/ABSENT ("", undefined, "foobar"...) n'est JAMAIS persisté tel quel
+  // (repli "readonly", même doctrine de privilège minimal qu'addUserMembershipFromButton). Cette
+  // primitive métier n'invente JAMAIS un rôle privilégié à partir de la fonction humaine du
+  // Responsable : la suggestion (suggestedMembershipRoleForManagerFunction, ex. Président -> admin)
+  // reste STRICTEMENT une pré-sélection de l'UI du dialogue — le submit normal la retransmet de
+  // façon EXPLICITE via options.role, jamais lue ici implicitement en cas d'absence. N'est JAMAIS
+  // appelée pour une Membership déjà EXISTANTE (§7 : son role reste strictement intouché, voir la
+  // branche "existing" ci-dessous, qui ne lit jamais cette fonction dans ce cas).
+  function safeNewMembershipRole(requestedRole) {
+    const requested = asText(requestedRole);
+    return userRoleOptions().some(([value]) => value === requested) ? requested : "readonly";
+  }
+
+  // Lot R3-R1 (correction audit Pix §3) — orchestration UNIQUE de création/liaison d'un compte
+  // MonGestaClub pour un Responsable (bouton "Créer un accès MonGestaClub" d'une carte Responsable).
+  // Réutilise EXCLUSIVEMENT les primitives de SÉCURITÉ déjà durcies (requireAdminForClub,
+  // clubManagerById, managerAlreadyLinked) : aucune garde réimplémentée. TOUTES les validations sont
+  // faites AVANT toute mutation, et chaque branche n'effectue plus qu'UNE SEULE écriture finale
+  // (writeUserStore) construite entièrement en mémoire au préalable : ceci élimine PAR CONSTRUCTION
+  // toute fenêtre où un User/une Membership pourrait être persisté sans le reste de l'opération —
+  // jamais besoin d'un rollback a posteriori (remplace un design antérieur en 2 écritures séparées,
+  // audité par Pix comme exposé à un état partiel en cas d'échec intermédiaire). Un double clic/une
+  // double soumission retombe systématiquement sur le refus "déjà lié" du tout premier test.
+  // clubId/managerId sont TOUJOURS explicites (doctrine stale-context Phase O) : jamais activeClubId()
+  // implicite, même si le club affiché à l'écran a changé entre l'ouverture du dialogue et l'envoi.
+  // options = { mode: "new"|"existing", displayName, existingUserId, role }. Retourne toujours
+  // { ok:true, message } ou { ok:false, message } — jamais d'exception.
+  function createUserAccessForManager(clubId, managerId, options = {}) {
+    const cid = asText(clubId);
+    const mid = asText(managerId);
+    if (!requireAdminForClub(cid)) {
+      return { ok: false, message: "Seul un administrateur de ce club peut créer un accès." };
+    }
+    const manager = clubManagerById(cid, mid);
+    if (!manager) {
+      // Couvre aussi le cas d'un Responsable supprimé entretemps (dialogue resté ouvert) : aucune
+      // mutation n'a encore eu lieu à ce stade, donc aucun état partiel possible.
+      return { ok: false, message: "Ce responsable n'existe plus." };
+    }
+    // §8 — refuse un Responsable déjà lié. Vérifié ICI, avant toute mutation : couvre aussi bien un
+    // premier appel légitime sur un Responsable déjà lié par ailleurs qu'une double soumission du
+    // MÊME dialogue (le premier appel a déjà posé ce responsibleId avant que le second ne s'exécute,
+    // JS étant mono-thread — aucune fenêtre de concurrence réelle entre les deux appels).
+    if (managerAlreadyLinked(cid, mid)) {
+      return { ok: false, message: "Ce responsable est déjà lié à un compte MonGestaClub." };
+    }
+    const mode = asText(options.mode) === "existing" ? "existing" : "new";
+
+    if (mode === "existing") {
+      const userId = asText(options.existingUserId);
+      if (!userId) return { ok: false, message: "Choisissez un compte existant." };
+      const store = normalizeUserStore(userStore || rawUserStoreFromStorage());
+      const user = store.users.find((row) => row.id === userId && !row.isSystem && row.active);
+      if (!user) return { ok: false, message: "Ce compte n'est plus disponible." };
+      const existingMembership = store.memberships.find((row) => row.userId === userId && row.clubId === cid);
+      // §8 — un compte dont la Membership ici est déjà réservée à un AUTRE Responsable est refusé
+      // (eligibleUsersForManagerLink l'exclut déjà de la liste proposée : ceci couvre un appel direct
+      // ou une liste devenue périmée entre l'ouverture du dialogue et la soumission — AUCUNE mutation
+      // n'a encore eu lieu, refus avant écriture).
+      if (existingMembership && existingMembership.responsibleId && existingMembership.responsibleId !== mid) {
+        return { ok: false, message: "Ce compte est déjà lié à un autre responsable de ce club." };
+      }
+      if (existingMembership) {
+        // §7 — Membership déjà existante : role/permissionOverrides STRICTEMENT préservés, quel que
+        // soit options.role (jamais lu ici, même forgé). Seul responsibleId est posé, en UNE écriture.
+        existingMembership.responsibleId = mid;
+        existingMembership.updatedAt = new Date().toISOString();
+        writeUserStore(store);
+        return { ok: true, message: "Accès lié à ce responsable." };
+      }
+      // Pas de Membership existante pour ce compte dans ce club : construite en mémoire puis écrite
+      // UNE SEULE fois avec sa liaison déjà posée (jamais une Membership persistée sans responsibleId).
+      const role = safeNewMembershipRole(options.role);
+      const membership = normalizeMembershipRow({ userId, clubId: cid, role, responsibleId: mid });
+      store.memberships.push(membership);
+      writeUserStore(store);
+      return { ok: true, message: "Accès lié à ce responsable." };
+    }
+
+    // Mode "new" — §2 (correction audit Pix R3-R1, durci R3-R2) : nom affiché TRIMÉ obligatoire,
+    // jamais une fonction humaine fabriquée silencieusement comme nom de compte. Distinction
+    // IMPORTANTE (R3-R2) : options.displayName EXPLICITEMENT transmis (le vrai dialogue le transmet
+    // TOUJOURS) mais vidé par l'utilisateur -> REFUS IMMÉDIAT, jamais un repli silencieux vers le
+    // nom du Responsable (effacer volontairement le champ ne doit jamais le faire réapparaître).
+    // Seule l'ABSENCE de la propriété (appel interne direct, jamais le dialogue réel) autorise le
+    // repli vers managerAccountDisplayName(manager).
+    const displayNameProvided = Object.prototype.hasOwnProperty.call(options, "displayName");
+    const trimmedDisplayName = asText(options.displayName);
+    if (displayNameProvided && !trimmedDisplayName) {
+      return { ok: false, message: "Le nom affiché du compte est obligatoire." };
+    }
+    const displayName = trimmedDisplayName || managerAccountDisplayName(manager);
+    if (!displayName) {
+      return { ok: false, message: "Le nom affiché du compte est obligatoire." };
+    }
+    // §5/§6 : exactement 1 User + exactement 1 Membership (ce club uniquement), jamais de Membership
+    // parasite dans un autre club (aucune boucle sur clubStore.clubs ici). Construction ENTIÈREMENT
+    // en mémoire, écriture UNIQUE : audit.userCreated n'est appelé qu'après ce succès complet (§3 —
+    // jamais journalisé si l'opération avait dû être refusée).
+    const role = safeNewMembershipRole(options.role);
+    const store = normalizeUserStore(userStore || rawUserStoreFromStorage());
+    const user = normalizeUserRow({ displayName });
+    const membership = normalizeMembershipRow({ userId: user.id, clubId: cid, role, responsibleId: mid });
+    store.users.push(user);
+    store.memberships.push(membership);
+    writeUserStore(store);
+    audit.userCreated(user);
+    return { ok: true, message: "Accès créé pour ce responsable." };
   }
 
   // Point d'appel unique (changement de club, changement d'utilisateur, import, création/
@@ -47325,17 +48106,17 @@ ${esc(bodyText)}</pre>
     });
   }
 
-  // --- Actions déclenchées depuis Paramètres > Utilisateurs (voir handleAction) ---
+  // --- Actions déclenchées depuis Paramètres > Comptes d'accès (voir handleAction) ---
 
   async function createUserFromPrompt() {
     // Lot O-E1 (§12) — création globale, mais nécessite d'être Administrateur du club ACTIF (créer
     // un compte n'accorde aucun droit dans les autres clubs : il faudra l'y ajouter explicitement).
     if (!requireAdminForClub(activeClubId())) {
-      alert("Seul un administrateur du club actif peut créer un utilisateur.");
+      alert("Seul un administrateur du club actif peut créer un compte d'accès.");
       return;
     }
     const name = await requestTextInput({
-      title: "Créer un utilisateur",
+      title: "Créer un compte d'accès",
       label: "Nom affiché",
       placeholder: "Ex. Secrétaire",
       confirmLabel: "Créer",
@@ -47348,8 +48129,8 @@ ${esc(bodyText)}</pre>
     writeUserStore(store);
     audit.userCreated(user);
     ui.saveMessage = ambiguous
-      ? `Utilisateur créé : ${user.displayName} (un autre profil porte déjà ce nom)`
-      : `Utilisateur créé : ${user.displayName}`;
+      ? `Compte d'accès créé : ${user.displayName} (un autre compte porte déjà ce nom)`
+      : `Compte d'accès créé : ${user.displayName}`;
     render();
   }
 
@@ -47362,11 +48143,11 @@ ${esc(bodyText)}</pre>
     // MUTATION fail-closed (requireGlobalUserManagement), distincte de la version pure utilisée par
     // le rendu (currentUserCanManageGlobalUser).
     if (!requireGlobalUserManagement(userId, store)) {
-      alert("Seul un administrateur de TOUS les clubs de cet utilisateur peut le renommer.");
+      alert("Seul un administrateur de TOUS les clubs de ce compte d'accès peut le renommer.");
       return;
     }
     const name = await requestTextInput({
-      title: "Renommer l'utilisateur",
+      title: "Renommer le compte d'accès",
       label: "Nom affiché",
       value: user.displayName,
       confirmLabel: "Enregistrer",
@@ -47379,8 +48160,8 @@ ${esc(bodyText)}</pre>
     writeUserStore(store);
     audit.userRenamed(user, previousLabel);
     ui.saveMessage = ambiguous
-      ? `Utilisateur renommé : ${name} (un autre profil porte déjà ce nom)`
-      : `Utilisateur renommé : ${name}`;
+      ? `Compte d'accès renommé : ${name} (un autre compte porte déjà ce nom)`
+      : `Compte d'accès renommé : ${name}`;
     render();
   }
 
@@ -47391,16 +48172,16 @@ ${esc(bodyText)}</pre>
     // Lot O-E1 (§13) — même garde globale que le renommage. Correction Pix — fail-closed
     // (requireGlobalUserManagement).
     if (!requireGlobalUserManagement(userId, store)) {
-      alert("Seul un administrateur de TOUS les clubs de cet utilisateur peut le désactiver.");
+      alert("Seul un administrateur de TOUS les clubs de ce compte d'accès peut le désactiver.");
       return;
     }
     if (user.id === activeUserId()) {
-      alert("Impossible de désactiver l'utilisateur actuellement actif. Choisis d'abord un autre profil actif.");
+      alert("Impossible de désactiver le compte d'accès actuellement actif. Choisis d'abord un autre compte actif.");
       return;
     }
     const otherActiveExists = store.users.some((row) => !row.isSystem && row.active && row.id !== user.id);
     if (!otherActiveExists) {
-      alert("Impossible de désactiver le dernier utilisateur actif. Crée ou réactive un autre profil avant.");
+      alert("Impossible de désactiver le dernier compte d'accès actif. Crée ou réactive un autre compte avant.");
       return;
     }
     // Lot O-E1 (§19-20) — désactivation GLOBALE : évaluée sur TOUS les clubs où ce User est
@@ -47413,8 +48194,8 @@ ${esc(bodyText)}</pre>
       return;
     }
     const confirmed = await requestConfirm({
-      title: "Désactiver l'utilisateur",
-      message: `Désactiver ${user.displayName} ?\n\nSon profil et ses appartenances aux clubs restent conservés ; il disparaîtra seulement du sélecteur.`,
+      title: "Désactiver le compte d'accès",
+      message: `Désactiver ${user.displayName} ?\n\nLe compte et ses appartenances aux clubs restent conservés ; il disparaîtra seulement du sélecteur.`,
       confirmLabel: "Désactiver",
     });
     if (!confirmed) return;
@@ -47422,7 +48203,7 @@ ${esc(bodyText)}</pre>
     user.updatedAt = new Date().toISOString();
     writeUserStore(store);
     audit.userDeactivated(user);
-    ui.saveMessage = `Utilisateur désactivé : ${user.displayName}`;
+    ui.saveMessage = `Compte d'accès désactivé : ${user.displayName}`;
     render();
   }
 
@@ -47434,15 +48215,15 @@ ${esc(bodyText)}</pre>
     // responsibleId/permissionOverrides (§21) : un Admin inactif redevient donc Admin de ses clubs.
     // Correction Pix — fail-closed (requireGlobalUserManagement).
     if (!requireGlobalUserManagement(userId, store)) {
-      alert("Seul un administrateur de TOUS les clubs de cet utilisateur peut le réactiver.");
+      alert("Seul un administrateur de TOUS les clubs de ce compte d'accès peut le réactiver.");
       return;
     }
     // Confirmation explicite (Lot 4A) : la réactivation ne doit jamais être silencieuse — un ancien
-    // profil réutilisé (départ/retour, changement de titulaire) doit repasser par une activation
+    // compte réutilisé (départ/retour, changement de titulaire) doit repasser par une activation
     // locale avec un nouveau PIN.
     const confirmed = await requestConfirm({
-      title: "Réactiver l'utilisateur",
-      message: `Réactiver ${user.displayName} ?\n\nPour des raisons de sécurité, ce profil devra définir un nouveau PIN à sa prochaine connexion.`,
+      title: "Réactiver le compte d'accès",
+      message: `Réactiver ${user.displayName} ?\n\nPour des raisons de sécurité, ce compte devra définir un nouveau PIN à sa prochaine connexion.`,
       confirmLabel: "Réactiver",
     });
     if (!confirmed) return;
@@ -47456,7 +48237,7 @@ ${esc(bodyText)}</pre>
       if (api) { await api.requireNewPin(user.id); await refreshAuthState(); }
     } catch (error) { console.error(error); }
     audit.userReactivated(user);
-    ui.saveMessage = `Utilisateur réactivé : ${user.displayName}`;
+    ui.saveMessage = `Compte d'accès réactivé : ${user.displayName}`;
     render();
   }
 
@@ -47555,19 +48336,19 @@ ${esc(bodyText)}</pre>
     return true;
   }
 
-  // --- Rendu : sélecteur discret (barre latérale) + panneau Paramètres > Utilisateurs ---
+  // --- Rendu : sélecteur discret (barre latérale) + panneau Paramètres > Comptes d'accès ---
 
   function userSwitcherHtml() {
     const users = selectableUsers();
     const current = activeUser();
     if (users.length <= 1) {
-      return `<div class="user-switcher compact" title="Utilisateur actif">
-        <span>Utilisateur actif</span>
+      return `<div class="user-switcher compact" title="Compte d'accès actif">
+        <span>Compte d'accès actif</span>
         <strong>${esc(current?.displayName || "Administrateur local")}</strong>
       </div>`;
     }
-    return `<div class="user-switcher" title="Utilisateur actif">
-      <span>Utilisateur actif</span>
+    return `<div class="user-switcher" title="Compte d'accès actif">
+      <span>Compte d'accès actif</span>
       <select data-user-switch>
         ${users.map((user) => `<option value="${esc(user.id)}" ${user.id === current?.id ? "selected" : ""}>${esc(user.displayName)}</option>`).join("")}
       </select>
@@ -47584,7 +48365,7 @@ ${esc(bodyText)}</pre>
   function membershipResponsibleFieldHtml(user, club, membership, canManage = true) {
     const managerOptions = (club.managers || []).map((manager) => {
       const linkedElsewhere = managerAlreadyLinked(club.id, manager.id, user.id);
-      const label = clubManagerOptionLabel(manager) + (linkedElsewhere ? " (déjà lié à un autre utilisateur)" : "");
+      const label = clubManagerOptionLabel(manager) + (linkedElsewhere ? " (déjà lié à un autre compte d'accès)" : "");
       return `<option value="${esc(manager.id)}" ${membership.responsibleId === manager.id ? "selected" : ""} ${linkedElsewhere ? "disabled" : ""}>${esc(label)}</option>`;
     }).join("");
     return `<select data-user-responsible-field data-user-id="${esc(user.id)}" data-club-id="${esc(club.id)}" ${canManage ? "" : "disabled"}>
@@ -47594,7 +48375,7 @@ ${esc(bodyText)}</pre>
   }
 
   // Correction Pix (O-D1) — hasFeature() est le helper du CLUB ACTIF (src/04b-features-registry.js) ;
-  // or Paramètres > Utilisateurs affiche les memberships de PLUSIEURS clubs simultanément dans la
+  // or Paramètres > Comptes d'accès affiche les memberships de PLUSIEURS clubs simultanément dans la
   // même fiche utilisateur. Utiliser hasFeature() ici évaluerait systématiquement la feature du club
   // actif, même en affichant les droits d'un autre club (bug multi-club). On calcule donc l'état de
   // la feature à partir des settings du CLUB DE LA MEMBERSHIP AFFICHÉE, via le calcul pur
@@ -47637,20 +48418,83 @@ ${esc(bodyText)}</pre>
   // §11) : la zone l'indique sans proposer d'éditeur inutile. Un badge signale si des dérogations
   // sont actives (§28), et un bouton permet de tout réinitialiser vers le profil (§27).
   // `canManage` (Lot O-E1, §28) : défaut true, mêmes raisons que ci-dessus.
-  function membershipPermissionsEditorHtml(user, club, membership, canManage = true) {
+  // Contenu PUR de l'éditeur de droits (30 cases, groupées) pour un couple (user, club, membership)
+  // donné — extrait de membershipPermissionsEditorHtml (Lot UI Pré-Phase P) pour être réutilisé à
+  // l'IDENTIQUE par deux présentations : le <details> historique ci-dessous (encore utilisé par les
+  // tests existants) et le nouveau dialogue "Personnaliser les droits" (userPermissionsDialogBodyHtml).
+  // AUCUN changement de comportement/permission : uniquement un partage de code, sortie strictement
+  // identique à l'ancien contenu inline.
+  function membershipPermissionsContentHtml(user, club, membership, canManage = true) {
     const isAdmin = membership.role === "admin";
+    return isAdmin
+      ? `<p class="muted">L'Administrateur possède toujours l'ensemble des droits.</p>`
+      : `<div class="user-permissions-groups">
+          ${permissionGroups().map((group) => permissionGroupHtml(user, club, membership, group, canManage)).join("")}
+        </div>
+        <div class="inline-actions">
+          <button type="button" data-action="reset-user-membership-permissions" data-user-id="${esc(user.id)}" data-club-id="${esc(club.id)}" ${canManage ? "" : "disabled"}>Réinitialiser selon le profil</button>
+        </div>`;
+  }
+
+  function membershipPermissionsEditorHtml(user, club, membership, canManage = true) {
     const hasOverrides = Object.keys(membership.permissionOverrides || {}).length > 0;
     return `<details class="user-permissions-editor" data-user-permissions-editor>
       <summary>Personnaliser les droits${hasOverrides ? ` <span class="user-permissions-custom-badge">Droits personnalisés actifs</span>` : ""}</summary>
-      ${isAdmin
-        ? `<p class="muted">L'Administrateur possède toujours l'ensemble des droits ; ils ne sont pas personnalisables.</p>`
-        : `<div class="user-permissions-groups">
-            ${permissionGroups().map((group) => permissionGroupHtml(user, club, membership, group, canManage)).join("")}
-          </div>
-          <div class="inline-actions">
-            <button type="button" data-action="reset-user-membership-permissions" data-user-id="${esc(user.id)}" data-club-id="${esc(club.id)}" ${canManage ? "" : "disabled"}>Réinitialiser selon le profil</button>
-          </div>`}
+      ${membershipPermissionsContentHtml(user, club, membership, canManage)}
     </details>`;
+  }
+
+  // Contenu du dialogue "Personnaliser les droits" (Lot UI Pré-Phase P, §12-14) : relit TOUJOURS
+  // user/club/membership depuis userId/clubId explicites (jamais une fermeture sur un objet capturé
+  // à l'ouverture) — doctrine stale-context Phase O appliquée ici au contexte du dialogue plutôt qu'à
+  // des attributs DOM. Si l'un des trois n'existe plus (club supprimé, membership retirée pendant que
+  // le dialogue était ouvert), affiche un message neutre plutôt qu'une erreur.
+  function userPermissionsDialogBodyHtml(userId, clubId) {
+    const store = normalizeUserStore(userStore || rawUserStoreFromStorage());
+    const user = store.users.find((row) => row.id === userId);
+    const club = (clubStore?.clubs || []).find((row) => row.id === clubId);
+    const membership = store.memberships.find((row) => row.userId === userId && row.clubId === clubId);
+    if (!user || !club || !membership) {
+      return `<div class="user-permissions-dialog-body" data-user-permissions-dialog-body data-user-id="${esc(userId)}" data-club-id="${esc(clubId)}">
+        <p class="muted">Ce profil ou ce club n'est plus disponible.</p>
+      </div>`;
+    }
+    const canManage = currentUserIsAdminForClub(clubId);
+    const hasOverrides = Object.keys(membership.permissionOverrides || {}).length > 0;
+    const roleLabel = (userRoleOptions().find(([value]) => value === membership.role)?.[1]) || asText(membership.role) || "—";
+    return `<div class="user-permissions-dialog-body" data-user-permissions-dialog-body data-user-id="${esc(userId)}" data-club-id="${esc(clubId)}">
+      <p class="muted user-permissions-dialog-meta">${esc(club.name)} · Profil : ${esc(roleLabel)}${hasOverrides ? ` · <span class="user-permissions-custom-badge">Droits personnalisés actifs</span>` : ""}</p>
+      ${membershipPermissionsContentHtml(user, club, membership, canManage)}
+    </div>`;
+  }
+
+  // Ouvre le dialogue "Personnaliser les droits" pour U/A explicites (jamais l'utilisateur sélectionné
+  // dans le panneau ou activeClubId() implicite, §13 du lot). Réutilise le composant dialog générique
+  // déjà existant dans l'application (bindDialogDelegates/showFloatingDialog), jamais un nouveau
+  // composant modal parallèle.
+  function openUserPermissionsDialog(userId, clubId) {
+    const store = normalizeUserStore(userStore || rawUserStoreFromStorage());
+    const user = store.users.find((row) => row.id === userId);
+    const club = (clubStore?.clubs || []).find((row) => row.id === clubId);
+    if (!user || !club) return;
+    const targetDialog = dialogForNewWindow();
+    targetDialog.classList.remove("has-identity-photo");
+    targetDialog.innerHTML = `<div class="dialog-header"><h2>Droits de ${esc(user.displayName)}</h2><button class="icon" type="button" data-dialog-close title="Fermer" aria-label="Fermer">×</button></div>
+      <div class="dialog-body">${userPermissionsDialogBodyHtml(userId, clubId)}</div>
+      <div class="dialog-footer"><span></span><button type="button" data-dialog-close>Fermer</button></div>`;
+    bindDialogDelegates(targetDialog);
+    targetDialog.querySelectorAll("[data-dialog-close]").forEach((button) => button.addEventListener("click", () => targetDialog.close()));
+    showFloatingDialog(targetDialog, "[data-dialog-close]", targetDialog);
+  }
+
+  // Rafraîchit le contenu du dialogue de droits ACTUELLEMENT OUVERT après une mutation (checkbox ou
+  // réinitialisation) sans le refermer ni le rouvrir — render() global ne touche jamais #editorDialog
+  // (élément frère de #app, jamais son enfant), donc ce rafraîchissement est manuel et ciblé.
+  function refreshOpenUserPermissionsDialog(targetDialog, userId, clubId) {
+    if (!targetDialog || !targetDialog.open) return;
+    const body = targetDialog.querySelector("[data-user-permissions-dialog-body]");
+    if (!body || body.dataset.userId !== userId || body.dataset.clubId !== clubId) return;
+    body.outerHTML = userPermissionsDialogBodyHtml(userId, clubId);
   }
 
   // Correction Pix (O-D1) — un Membership.role IMPORTÉ/INCONNU (ni un des 10 profils officiels) doit
@@ -47684,20 +48528,29 @@ ${esc(bodyText)}</pre>
       // <label> distincts (Responsable lié / Profil de droits), pas un unique champ. Des <label>
       // imbriqués seraient du HTML invalide (le navigateur peut fermer/réorganiser les balises de
       // façon imprévisible). .user-membership-row (CSS) cible la classe, jamais label.user-membership-row.
+      // Lot UI Pré-Phase P (§11-12) — l'éditeur complet des 30 permissions ne s'affiche plus inline
+      // ici (c'était le principal défaut visuel signalé) : un bouton dédié ouvre le dialogue
+      // userPermissionsDialogBodyHtml pour ce couple (user.id, club.id) explicite. Responsable lié et
+      // Profil de droits restent des champs directs de cette ligne (inchangé, comportement identique).
+      const hasOverrides = membership ? Object.keys(membership.permissionOverrides || {}).length > 0 : false;
       return `<div class="user-membership-row"${canManage ? "" : " data-user-membership-readonly"}>
         <span>${esc(club.name)}</span>
         ${membership
           ? `<div class="user-membership-fields">
-              <label>Responsable lié${membershipResponsibleFieldHtml(user, club, membership, canManage)}</label>
-              <label>Profil de droits<select data-user-role-field data-user-id="${esc(user.id)}" data-club-id="${esc(club.id)}" ${canManage ? "" : "disabled"}>
+              <label>Profil d'accès<select data-user-role-field data-user-id="${esc(user.id)}" data-club-id="${esc(club.id)}" ${canManage ? "" : "disabled"}>
                 ${userRoleSelectOptionsHtml(membership.role)}
               </select></label>
+              <label>Responsable du club associé — facultatif${membershipResponsibleFieldHtml(user, club, membership, canManage)}</label>
             </div>
-            ${membershipPermissionsEditorHtml(user, club, membership, canManage)}
+            <p class="muted user-membership-responsible-hint">Cette liaison associe le compte à une personne du bureau. Elle ne modifie pas ses droits.</p>
+            <div class="user-membership-permissions-cta">
+              ${hasOverrides ? `<span class="user-permissions-custom-badge">Droits personnalisés actifs</span>` : ""}
+              <button type="button" data-action="open-user-permissions-dialog" data-user-id="${esc(user.id)}" data-club-id="${esc(club.id)}">Personnaliser les droits</button>
+            </div>
             ${canManage ? "" : `<p class="muted">Administration de ce club requise pour modifier ces droits.</p>`}`
           : (canManage
               ? `<button type="button" data-action="add-user-membership" data-user-id="${esc(user.id)}" data-club-id="${esc(club.id)}">Ajouter à ce club</button>`
-              : `<p class="muted">Administration de ce club requise pour ajouter cet utilisateur.</p>`)}
+              : `<p class="muted">Administration de ce club requise pour ajouter ce compte d'accès.</p>`)}
       </div>`;
     }).join("");
     return `<div class="user-memberships">${rows}</div>`;
@@ -47735,6 +48588,7 @@ ${esc(bodyText)}</pre>
           ? `<button type="button" class="primary" data-action="reactivate-user" data-user-id="${esc(user.id)}" ${canManageUser ? "" : "disabled"}>Réactiver</button>`
           : `<button type="button" data-action="deactivate-user" data-user-id="${esc(user.id)}" ${canManageUser ? "" : "disabled"}>Désactiver</button>`}
       </div>
+      <h4 class="user-card-subtitle">Accès aux clubs</h4>
       ${userMembershipRowHtml(user, clubs, store)}
     </div>`;
   }
@@ -47748,11 +48602,56 @@ ${esc(bodyText)}</pre>
     const authOn = typeof userAuthAvailable === "function" && userAuthAvailable();
     return `<div class="admin-recovery-block">
       <p><strong>${esc(club.name)}</strong> — Aucun administrateur actif</p>
-      <p class="muted">Ce club n'a plus aucun Administrateur actif : personne ne peut actuellement gérer les utilisateurs, les profils de droits ou les autres réglages réservés à l'Administrateur. Vous pouvez récupérer ce rôle pour votre propre profil, avec le code de récupération de cette installation.</p>
+      <p class="muted">Ce club n'a plus aucun Administrateur actif : personne ne peut actuellement gérer les comptes d'accès, les profils de droits ou les autres réglages réservés à l'Administrateur. Vous pouvez récupérer ce rôle pour votre propre profil, avec le code de récupération de cette installation.</p>
       ${authOn
         ? `<button type="button" class="primary" data-action="recover-club-administration" data-club-id="${esc(club.id)}">Récupérer l'administration</button>`
         : `<p class="muted">Cette récupération est disponible dans la version de bureau.</p>`}
     </div>`;
+  }
+
+  // Lot UI Pré-Phase P — R1 (§6) — initiales PUREMENT VISUELLES pour l'avatar de liste : jamais
+  // stockées, jamais ajoutées au modèle User, recalculées à chaque rendu depuis displayName. 2
+  // caractères maximum : 1er caractère des deux premiers mots si plusieurs mots, sinon les 2
+  // premiers caractères du mot unique.
+  function userInitials(displayName) {
+    const text = asText(displayName).trim();
+    if (!text) return "";
+    const words = text.split(/\s+/).filter(Boolean);
+    if (words.length >= 2) return (words[0][0] + words[1][0]).toUpperCase();
+    return text.slice(0, 2).toUpperCase();
+  }
+
+  // Lot UI Pré-Phase P (§7-9) — layout master/detail : une LISTE compacte (jamais de répétition des
+  // clubs/responsables/droits) + une fiche détaillée pour l'utilisateur SÉLECTIONNÉ uniquement. La
+  // sélection est un état UI PUR (ui.settingsSelectedUserId), jamais activeUserId — configurer un
+  // profil ≠ s'authentifier sous ce profil (doctrine impérative du lot, jamais touchée ailleurs).
+  function userListItemHtml(user, selectedId, options = {}) {
+    const isActive = user.id === activeUserId();
+    const isSelected = user.id === selectedId;
+    const authOn = typeof userAuthAvailable === "function" && userAuthAvailable();
+    const hasPin = authOn && typeof userHasPin === "function" && userHasPin(user.id);
+    return `<button type="button" class="user-list-item${isSelected ? " selected" : ""}" data-action="select-settings-user" data-user-id="${esc(user.id)}" aria-pressed="${isSelected ? "true" : "false"}">
+      <span class="user-list-item-avatar" aria-hidden="true">${esc(userInitials(user.displayName))}</span>
+      <span class="user-list-item-body">
+        <span class="user-list-item-name">${esc(user.displayName)}</span>
+        <span class="user-list-item-meta">
+          ${isActive ? `<em>Actif</em>` : ""}
+          ${options.deactivated
+            ? `<span class="archived-badge">Désactivé</span>`
+            : (authOn ? `<span class="user-pin-chip ${hasPin ? "ok" : "off"}">${hasPin ? "PIN" : "Sans PIN"}</span>` : "")}
+        </span>
+      </span>
+    </button>`;
+  }
+
+  // Retombe proprement sur un utilisateur visible si la sélection courante a disparu/été désactivée
+  // entre-temps (§9 du lot) : jamais d'écran vide silencieux, jamais une erreur.
+  function resolveSettingsSelectedUserId(activeUsers, inactiveUsers) {
+    const visible = [...activeUsers, ...inactiveUsers];
+    const current = asText(ui.settingsSelectedUserId);
+    if (current && visible.some((user) => user.id === current)) return current;
+    const fallback = activeUsers.find((user) => user.id === activeUserId()) || activeUsers[0] || inactiveUsers[0];
+    return fallback ? fallback.id : "";
   }
 
   function usersSettingsHtml() {
@@ -47763,19 +48662,29 @@ ${esc(bodyText)}</pre>
     const inactiveUsers = normalUsers.filter((user) => !user.active);
     const authOn = typeof userAuthAvailable === "function" && userAuthAvailable();
     const recoveryBlocks = clubs.map((club) => adminRecoveryBlockHtml(club, store)).join("");
+    const selectedId = resolveSettingsSelectedUserId(activeUsers, inactiveUsers);
+    ui.settingsSelectedUserId = selectedId;
+    const selectedUser = normalUsers.find((user) => user.id === selectedId);
     return `<div class="users-settings">
-      <p class="muted">Chaque profil permet de distinguer qui utilise le logiciel sur cet ordinateur. Le Responsable lié rattache ce profil à une personne du bureau du club (Paramètres > Paramètres du club > Responsables) — facultatif, purement informatif. Le profil de droits définit les permissions recommandées de l'utilisateur pour ce club ; « Personnaliser les droits » permet d'adapter ce profil au cas par cas. La gestion des utilisateurs, des profils de droits et des liaisons Responsable est désormais réservée aux Administrateurs de chaque club. L'application de ces permissions aux actions du logiciel (contacts, factures, paiements, boutique, etc.) sera activée dans un lot suivant.</p>
+      <p class="muted">Un compte d'accès permet à une personne de se connecter à MonGestaClub et définit ses droits pour chaque club. Il peut être lié facultativement à un Responsable du club.</p>
       ${authOn
-        ? `<p class="muted">La protection par PIN garantit que les actions du Journal d'activité sont bien attribuées à la bonne personne. Dès qu'au moins deux profils existent, chacun doit avoir un PIN.</p>`
-        : `<p class="muted">La protection des utilisateurs par PIN est disponible dans la version de bureau.</p>`}
+        ? `<p class="muted">Chaque compte d'accès doit avoir un PIN dès qu'au moins deux comptes existent, pour attribuer correctement les actions du Journal d'activité.</p>`
+        : `<p class="muted">La protection des comptes d'accès par PIN est disponible dans la version de bureau.</p>`}
       ${recoveryBlocks}
-      <div class="inline-actions">
-        <button type="button" class="primary" data-action="new-user">Créer un utilisateur</button>
+      <div class="users-master-detail">
+        <div class="users-master-list">
+          <div class="inline-actions">
+            <button type="button" class="primary" data-action="new-user">Créer un compte d'accès</button>
+          </div>
+          <h4>Comptes d'accès actifs</h4>
+          <div class="user-list">${activeUsers.map((user) => userListItemHtml(user, selectedId)).join("") || `<p class="muted">Aucun.</p>`}</div>
+          ${inactiveUsers.length ? `<h4>Comptes d'accès désactivés</h4>
+          <div class="user-list">${inactiveUsers.map((user) => userListItemHtml(user, selectedId, { deactivated: true })).join("")}</div>` : ""}
+        </div>
+        <div class="users-detail-pane">
+          ${selectedUser ? userCardHtml(selectedUser, clubs, store, { deactivated: !selectedUser.active }) : `<p class="muted">Sélectionnez un compte d'accès dans la liste.</p>`}
+        </div>
       </div>
-      <h4>Utilisateurs actifs</h4>
-      <div class="user-card-list">${activeUsers.map((user) => userCardHtml(user, clubs, store)).join("") || `<p class="muted">Aucun.</p>`}</div>
-      ${inactiveUsers.length ? `<h4>Utilisateurs désactivés</h4>
-      <div class="user-card-list">${inactiveUsers.map((user) => userCardHtml(user, clubs, store, { deactivated: true })).join("")}</div>` : ""}
     </div>`;
   }
   // Journal d'activité (Lot 2) — socle uniquement : événements structurés, append-only,
@@ -49349,7 +50258,7 @@ ${esc(bodyText)}</pre>
     const rows = auditLogRows();
     return `<div class="band">
       <div class="band-title">
-        <div><h2>Journal d'activité</h2><p class="muted">Qui a fait quoi, quand, sur quel club — utilisateurs, clubs et paramètres du club.</p></div>
+        <div><h2>Journal d'activité</h2><p class="muted">Qui a fait quoi, quand, sur quel club — comptes d'accès, clubs et paramètres du club.</p></div>
         <label>Affichage
           <select data-audit-log-filter>
             <option value="active" ${ui.auditLogFilter !== "all" ? "selected" : ""}>Club actif</option>
@@ -49926,7 +50835,7 @@ ${esc(bodyText)}</pre>
     // stade (usage unique, §2) : un échec ici perd la récupération, qui devra être recommencée
     // depuis le début — fail-safe assumé (§21), jamais une mutation sur la foi d'un profil différent.
     if (activeUserId() !== recoveryUserId) {
-      alert("Récupération annulée : le profil actif a changé pendant l'opération.");
+      alert("Récupération annulée : le compte d'accès actif a changé pendant l'opération.");
       render();
       return false;
     }
@@ -50029,7 +50938,7 @@ ${esc(bodyText)}</pre>
     }
   }
 
-  // --- Gestion de son propre PIN (depuis Paramètres > Utilisateurs) ---
+  // --- Gestion de son propre PIN (depuis Paramètres > Comptes d'accès) ---
 
   async function configureOwnPinFlow(userId) {
     const api = userAuthApi();
@@ -51749,7 +52658,7 @@ ${esc(bodyText)}</pre>
       const anyZeroActiveAdmin = plan.blockedClubIds.some((cid) => activeAdminMembershipsForClub(cid).length === 0);
       let message = "Import impossible : vous devez être Administrateur de tous les clubs locaux concernés par cette sauvegarde.";
       if (blockedNames.length) message += ` (${blockedNames.join(", ")})`;
-      if (anyZeroActiveAdmin) message += " Utilisez d'abord « Récupérer l'administration » dans Paramètres > Utilisateurs.";
+      if (anyZeroActiveAdmin) message += " Utilisez d'abord « Récupérer l'administration » dans Paramètres > Comptes d'accès.";
       alert(message);
       return { allowed: false, plan };
     }
