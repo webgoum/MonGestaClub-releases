@@ -18240,19 +18240,72 @@ ${esc(bodyText)}</pre>
     syncManagerEmptyState(list);
   }
 
+  // Lot UX Comptes d'accès — une ligne informative pour CHAQUE compte listé dans le récapitulatif
+  // (tous statuts, y compris AVAILABLE : "Disponible", cf. exemples du protocole) sous le <select>
+  // "Compte existant". Jamais un filtrage silencieux : chaque compte pertinent reste visible avec la
+  // raison exacte. Seul ALREADY_LINKED_OTHER_MANAGER expose une action (« Réaffecter ce compte »,
+  // data-action="reassign-manager-access") — les autres statuts restent strictement informatifs
+  // (aucun bouton, doctrine §12/§13 : système et désactivé ne sont JAMAIS associables ; AVAILABLE se
+  // sélectionne via le <select> ci-dessus, jamais depuis cette ligne). currentManagerId sur le
+  // bouton sert UNIQUEMENT au libellé de confirmation ; setUserMembershipResponsible revalide l'état
+  // réel au moment de l'écriture, jamais une confiance en cette valeur figée au rendu.
+  function managerAccessCandidateRowHtml(clubId, managerId, candidate) {
+    const { user, status, linkedManager } = candidate;
+    const statusText = status === "AVAILABLE"
+      ? "Disponible"
+      : status === "ALREADY_LINKED_OTHER_MANAGER"
+        ? `Déjà associé à « ${esc(clubManagerOptionLabel(linkedManager))} »`
+        : status === "ALREADY_LINKED_THIS_MANAGER"
+          ? "Déjà associé à ce Responsable"
+          : status === "INACTIVE"
+            ? "Compte désactivé"
+            : "Compte système — non associable";
+    const reassignBtn = status === "ALREADY_LINKED_OTHER_MANAGER"
+      ? `<button type="button" class="small" data-action="reassign-manager-access" data-club-id="${esc(clubId)}" data-user-id="${esc(user.id)}" data-target-manager-id="${esc(managerId)}" data-current-manager-id="${esc(linkedManager ? linkedManager.id : "")}">Réaffecter ce compte</button>`
+      : "";
+    return `<li class="manager-access-candidate-row" data-candidate-status="${esc(status)}">
+      <div class="manager-access-candidate-info">
+        <strong>${esc(user.displayName)}</strong>
+        <span class="muted">${statusText}</span>
+      </div>
+      ${reassignBtn}
+    </li>`;
+  }
+
   // Lot R3 — corps du dialogue "Créer un accès MonGestaClub". Pur gabarit HTML (aucune mutation) :
   // le clubId cible est porté par data-club-id sur le sélecteur de compte existant, jamais déduit
   // implicitement au moment du submit (doctrine stale-context, §10 du lot).
-  function managerAccessDialogBodyHtml(clubId, manager, eligibleUsers, suggestedRole) {
+  // Lot UX Comptes d'accès — `candidates` (5e paramètre, OPTIONNEL) est la classification complète
+  // (managerAccessCandidates, src/28) fournie par l'appelant réel (openManagerAccessDialog) : quand
+  // présente, le <select> ne liste QUE les comptes AVAILABLE qu'elle contient (recalculés depuis
+  // `candidates`, jamais une seconde logique divergente de eligibleUsersForManagerLink) et une liste
+  // informative des autres comptes (déjà associés à un autre Responsable/désactivés/système) est
+  // ajoutée en dessous — jamais un filtrage silencieux (doctrine du lot). `eligibleUsers` seul
+  // (candidates absent, comportement historique) préserve EXACTEMENT l'ancien rendu — nécessaire à
+  // la non-régression des tests R3 existants (tests/r3-access-ui.test.js), qui appellent cette
+  // fonction directement avec un tableau d'utilisateurs déjà filtré, sans connaître `candidates`.
+  function managerAccessDialogBodyHtml(clubId, manager, eligibleUsers, suggestedRole, candidates = null) {
     const roleOptionsHtml = userRoleOptions().map(([value, label]) => `<option value="${esc(value)}" ${value === suggestedRole ? "selected" : ""}>${esc(label)}</option>`).join("");
-    const existingOptionsHtml = eligibleUsers.map((user) => `<option value="${esc(user.id)}">${esc(user.displayName)}</option>`).join("");
+    const effectiveEligibleUsers = candidates ? candidates.filter((c) => c.status === "AVAILABLE").map((c) => c.user) : eligibleUsers;
+    const existingOptionsHtml = effectiveEligibleUsers.map((user) => `<option value="${esc(user.id)}">${esc(user.displayName)}</option>`).join("");
     const suggestedLabel = userRoleLabel(suggestedRole);
     // Lot R3-R1 (correction audit Pix §2) — nom PROPOSÉ pour le nouveau compte : uniquement
     // "Prénom Nom" (managerAccountDisplayName), jamais "Prénom Nom — Fonction" (clubManagerOptionLabel,
     // réservée à l'affichage informatif de la fonction ci-dessous). Si le Responsable n'a ni prénom ni
     // nom, le champ reste VIDE (jamais un repli "Responsable"/la fonction) : saisie manuelle requise.
     const suggestedDisplayName = managerAccountDisplayName(manager);
-    const hasEligible = eligibleUsers.length > 0;
+    // Liste informative COMPLÈTE (tous statuts, y compris AVAILABLE = "Disponible") : la sélection
+    // réelle se fait via le <select> ci-dessus, cette liste ne fait QUE rendre visible et expliquer
+    // chaque compte — jamais un second mécanisme de sélection concurrent.
+    const allCandidateRows = candidates || [];
+    // Y du compteur "X disponible(s) sur Y" : exclut le compte système (jamais associable, purement
+    // technique) du décompte principal — décision UX du lot, cf. §4 du protocole.
+    const nonSystemCandidateCount = candidates ? candidates.filter((c) => c.status !== "SYSTEM").length : effectiveEligibleUsers.length;
+    // Le mode "Lier un compte existant" reste ouvrable dès qu'il y a QUELQUE CHOSE à expliquer
+    // (un compte disponible OU un compte réaffectable/désactivé listé), jamais seulement quand un
+    // compte est directement sélectionnable (§15 : ne jamais réduire à "Aucun compte disponible"
+    // sans explication quand des comptes existent réellement).
+    const existingModeUsable = candidates ? nonSystemCandidateCount > 0 : effectiveEligibleUsers.length > 0;
     // Lot R3-R2 — refonte visuelle : le choix du mode passe par DEUX cartes entièrement cliquables
     // (label enveloppant un vrai <input type="radio">, sémantique et navigation clavier natives ;
     // l'état sélectionné vient du CSS via :has(input:checked), la carte désactivée reste inerte).
@@ -18269,11 +18322,11 @@ ${esc(bodyText)}</pre>
             <span class="choice-card-desc">Un nouvel accès pour cette personne.</span>
           </span>
         </label>
-        <label class="choice-card${hasEligible ? "" : " is-disabled"}">
-          <input type="radio" name="accessMode" value="existing" data-manager-access-mode-field ${hasEligible ? "" : "disabled"} />
+        <label class="choice-card${existingModeUsable ? "" : " is-disabled"}">
+          <input type="radio" name="accessMode" value="existing" data-manager-access-mode-field ${existingModeUsable ? "" : "disabled"} />
           <span class="choice-card-text">
             <span class="choice-card-title">Lier un compte existant</span>
-            <span class="choice-card-desc">${hasEligible ? "Associer un compte déjà présent." : "Aucun compte éligible pour ce club."}</span>
+            <span class="choice-card-desc">${existingModeUsable ? "Associer un compte déjà présent." : "Aucun compte éligible pour ce club."}</span>
           </span>
         </label>
       </div>
@@ -18282,10 +18335,13 @@ ${esc(bodyText)}</pre>
           ${field("displayName", "Nom affiché du compte", suggestedDisplayName, "text", `placeholder="Ex : ${esc(suggestedDisplayName || "Prénom Nom")}"`)}
         </div>
         <div data-manager-access-panel="existing" hidden>
+          ${candidates ? `<p class="muted manager-access-existing-intro">Un compte ne peut être associé qu'à un seul Responsable dans ce club. Les comptes déjà associés restent affichés ci-dessous et peuvent être réaffectés explicitement.</p>
+          <p class="muted manager-access-existing-count">${effectiveEligibleUsers.length} disponible${effectiveEligibleUsers.length > 1 ? "s" : ""} sur ${nonSystemCandidateCount} compte${nonSystemCandidateCount > 1 ? "s" : ""}</p>` : ""}
           <label>Compte existant<select name="existingUserId" data-manager-access-user-field data-club-id="${esc(clubId)}">
             <option value="">Choisir un compte…</option>
             ${existingOptionsHtml}
           </select></label>
+          ${allCandidateRows.length ? `<ul class="manager-access-candidate-list">${allCandidateRows.map((c) => managerAccessCandidateRowHtml(clubId, manager.id, c)).join("")}</ul>` : ""}
         </div>
         <div data-manager-access-role-wrapper>
           <label>Profil d'accès<select name="role" data-manager-access-role-field>${roleOptionsHtml}</select></label>
@@ -18366,7 +18422,12 @@ ${esc(bodyText)}</pre>
     }
     const eligibleUsers = eligibleUsersForManagerLink(cid, mid);
     const suggestedRole = suggestedMembershipRoleForManagerFunction(manager.role);
-    const body = managerAccessDialogBodyHtml(cid, manager, eligibleUsers, suggestedRole);
+    // Lot UX Comptes d'accès — candidates (classification complète, jamais un filtrage silencieux)
+    // transmise en 5e paramètre : managerAccessDialogBodyHtml en dérive la liste réellement
+    // sélectionnable ET la liste informative des comptes déjà associés à un autre Responsable,
+    // désactivés ou système. eligibleUsers reste transmis pour compatibilité de signature uniquement.
+    const candidates = managerAccessCandidates(cid, mid);
+    const body = managerAccessDialogBodyHtml(cid, manager, eligibleUsers, suggestedRole, candidates);
     showDialog("Créer un accès MonGestaClub", body, async (_data, form) => {
       // Revalidation COMPLÈTE au submit (§9/§10) : cid/mid restent ceux capturés à l'ouverture,
       // jamais relus depuis le DOM/le club actif — createUserAccessForManager revérifie de toute
@@ -34375,6 +34436,51 @@ ${esc(bodyText)}</pre>
       render();
       return;
     }
+    // Lot UX Comptes d'accès — « Réaffecter ce compte » depuis la liste informative du dialogue
+    // « Créer un accès MonGestaClub » (managerAccessCandidateRowHtml, src/16) : un compte déjà lié à
+    // un AUTRE Responsable de ce club peut être explicitement réaffecté au Responsable cible, plutôt
+    // que masqué silencieusement. clubId/userId/targetManagerId sont TOUS explicites (posés sur CE
+    // bouton au rendu, jamais activeClubId()/un état implicite) : garde stale AVANT toute lecture,
+    // ET revalidée après la confirmation asynchrone (le club actif peut changer PENDANT l'attente).
+    // Réutilise setUserMembershipResponsible telle quelle (Lot O-C, jamais modifiée pour ce besoin) :
+    // ne touche QUE membership.responsibleId, jamais role/permissionOverrides/User/autres clubs —
+    // revalide elle-même l'autorité Admin du club ciblé à l'instant de l'écriture.
+    if (action === "reassign-manager-access") {
+      const sourceClubId = asText(button.dataset.clubId);
+      if (!sourceClubId || activeClubId() !== sourceClubId) return;
+      const userId = asText(button.dataset.userId);
+      const targetManagerId = asText(button.dataset.targetManagerId);
+      const currentManagerId = asText(button.dataset.currentManagerId);
+      const store = userStore || normalizeUserStore(rawUserStoreFromStorage());
+      const user = store.users.find((row) => row.id === userId);
+      const currentManager = clubManagerById(sourceClubId, currentManagerId);
+      const targetManager = clubManagerById(sourceClubId, targetManagerId);
+      if (!user || !currentManager || !targetManager) return;
+      const confirmed = await requestConfirm({
+        title: "Réaffecter ce compte",
+        message: `${user.displayName} est actuellement associé à « ${clubManagerOptionLabel(currentManager)} ».\n\nVoulez-vous l'associer à « ${clubManagerOptionLabel(targetManager)} » à la place ?\n\nSon profil et ses permissions d'accès seront conservés.`,
+        confirmLabel: "Réaffecter le compte",
+        danger: false,
+      });
+      if (!confirmed) return;
+      // Revalidation stale APRÈS l'attente : le club actif a pu changer pendant la confirmation.
+      if (activeClubId() !== sourceClubId) return;
+      // Lot UX Comptes d'accès — R1 : compare-and-set (reassignUserMembershipResponsible, src/28)
+      // plutôt que setUserMembershipResponsible (simple set) — currentManagerId capturé AU RENDU
+      // doit encore correspondre à l'état RÉEL au moment de l'écriture ; sinon une autre action
+      // (réaffectation concurrente, dissociation) a déjà changé l'association et cet ancien contexte
+      // ne doit JAMAIS l'écraser. L'autorité (Admin du club ciblé) est revalidée À L'INTÉRIEUR de la
+      // primitive — jamais une confiance au seul état visuel du dialogue.
+      const result = reassignUserMembershipResponsible(sourceClubId, userId, currentManagerId, targetManagerId);
+      if (result.ok) {
+        ui.saveMessage = "Compte réaffecté";
+        button.closest("dialog")?.close();
+      } else if (result.reason === "stale-association") {
+        alert("Cette association a été modifiée entre-temps.\n\nRouvrez le dialogue pour afficher la situation actuelle.");
+      }
+      render();
+      return;
+    }
     if (action === "new-user") return createUserFromPrompt();
     if (action === "rename-user") return renameUserFromPrompt(button.dataset.userId);
     if (action === "deactivate-user") return deactivateUserWithChecks(button.dataset.userId);
@@ -35384,10 +35490,24 @@ ${esc(bodyText)}</pre>
       return;
     }
     if (action === "open-display-settings") {
-      // Puce de mode (barre latérale) : ouvre Paramètres avec la bande « Affichage » dépliée.
-      // Ne bascule PAS le mode (l'utilisateur choisit dans la section).
+      // Puce de mode (barre latérale) et lien « Régler l'affichage du menu » (bande Fonctionnalités
+      // du club) : ouvre Paramètres avec la bande « Affichage » dépliée. Ne bascule PAS le mode
+      // (l'utilisateur choisit dans la section).
+      // Correctif Pix (bug UI signalé par Thierry) — le lien vit DANS Paramètres (ui.view est déjà
+      // "settings" au moment du clic) : navigateTo({view:"settings"}) devient alors un NO-OP
+      // silencieux (sameNavigationPoint, src/07, ne distingue pas les panneaux Paramètres, seulement
+      // la vue) — ui.settingsPanels.display passait bien à true en mémoire, mais AUCUN render()
+      // n'était jamais déclenché : rien ne bougeait visuellement. render() explicite et
+      // INCONDITIONNEL ci-dessous (même patron déjà éprouvé que configure-manager-access, src/21) :
+      // fonctionne aussi bien depuis la puce de la barre latérale (autre vue, navigateTo rend déjà)
+      // que depuis ce lien (même vue, navigateTo n'aurait rien fait seul). flashVigilanceTargets
+      // (même mécanisme déjà utilisé pour amener visuellement l'utilisateur sur une bande Paramètres
+      // précise) scrolle et surligne brièvement la bande réellement dépliée — jamais un nouveau
+      // mécanisme de scroll/focus.
       ui.settingsPanels = { ...(ui.settingsPanels || {}), display: true };
       navigateTo({ view: "settings" });
+      if (typeof flashVigilanceTargets === "function") flashVigilanceTargets('[data-action="toggle-settings-panel"][data-panel="display"]');
+      render();
       return;
     }
     if (action === "set-accounting-view") {
@@ -48982,6 +49102,35 @@ ${esc(bodyText)}</pre>
     });
   }
 
+  // Lot UX Comptes d'accès — classification de PRÉSENTATION de chaque compte pour le dialogue
+  // « Créer un accès MonGestaClub » > « Lier un compte existant » (doctrine : ne plus masquer
+  // silencieusement un compte existant, seulement expliquer pourquoi il n'est pas directement
+  // sélectionnable). Ne remplace PAS eligibleUsersForManagerLink : cette dernière reste la SEULE
+  // source de vérité métier consultée par createUserAccessForManager (jamais dupliquée ici) — cette
+  // fonction est une pure projection d'affichage, jamais utilisée pour une décision de mutation.
+  function managerAccessCandidateStatus(managerId, user, membership) {
+    if (user.isSystem) return "SYSTEM";
+    if (!user.active) return "INACTIVE";
+    if (!membership || !membership.responsibleId) return "AVAILABLE";
+    if (membership.responsibleId === managerId) return "ALREADY_LINKED_THIS_MANAGER";
+    return "ALREADY_LINKED_OTHER_MANAGER";
+  }
+
+  // Liste COMPLÈTE (aucun filtrage) des comptes du club, chacun avec son statut de présentation et,
+  // pour ALREADY_LINKED_OTHER_MANAGER, le Responsable actuellement lié (pour le libellé et le
+  // message de confirmation de réaffectation). Pure : ne mute rien, ne lit que userStore/managers.
+  function managerAccessCandidates(clubId, managerId) {
+    const cid = asText(clubId);
+    const mid = asText(managerId);
+    const store = userStore || normalizeUserStore(rawUserStoreFromStorage());
+    return store.users.map((user) => {
+      const membership = store.memberships.find((row) => row.userId === user.id && row.clubId === cid) || null;
+      const status = managerAccessCandidateStatus(mid, user, membership);
+      const linkedManager = status === "ALREADY_LINKED_OTHER_MANAGER" ? clubManagerById(cid, membership.responsibleId) : null;
+      return { user, membership, status, linkedManager };
+    });
+  }
+
   // Lot O-C — lie/dissocie un Responsable humain (club.managers[]) à la Membership userId+clubId.
   // RÈGLE ABSOLUE : ne modifie JAMAIS membership.role, ne touche jamais User.displayName (fonction
   // humaine ≠ droits logiciels — O-D construira les vrais profils). responsibleId:"" dissocie sans
@@ -49010,6 +49159,39 @@ ${esc(bodyText)}</pre>
     ui.saveMessage = nextId ? "Responsable lié" : "Responsable dissocié";
     render();
     return true;
+  }
+
+  // Lot UX Comptes d'accès — R1 (correction bloquante) — COMPARE-AND-SET dédié au bouton
+  // « Réaffecter ce compte » (dialogue "Créer un accès MonGestaClub"). setUserMembershipResponsible
+  // ci-dessus reste STRICTEMENT INCHANGÉE (son contrat historique — simple set, sans exigence sur
+  // l'état AVANT écriture — sert d'autres appelants, ex. le <select> Paramètres/P7, qui n'ont pas ce
+  // besoin) : jamais élargie pour ce lot. Un dialogue « Créer un accès » resté ouvert capture le
+  // Responsable ACTUEL au rendu (expectedResponsibleId) ; si l'association réelle a changé
+  // entre-temps (une autre action a déjà réaffecté ce compte ailleurs), confirmer l'ancien contexte
+  // ne doit JAMAIS écraser ce changement plus récent — TOTAL NO-OP, jamais un faux succès. Ne
+  // provoque aucun effet de bord UI (ui.saveMessage/render) : l'appelant (handleAction) décide de
+  // l'affichage selon le résultat, y compris le message spécifique en cas d'état périmé.
+  function reassignUserMembershipResponsible(clubId, userId, expectedResponsibleId, targetResponsibleId) {
+    // Autorité : Administrateur STRICT du club ciblé (requireAdminForClub/currentUserIsAdminForClub),
+    // EXACTEMENT la même doctrine que setUserMembershipResponsible — jamais clubSettings.manage, qui
+    // n'est l'autorité d'aucune donnée de ce flux (Responsable ↔ Compte, pas configuration du club).
+    if (!requireAdminForClub(clubId)) return { ok: false, reason: "forbidden" };
+    const store = normalizeUserStore(userStore || rawUserStoreFromStorage());
+    const membership = store.memberships.find((row) => row.userId === userId && row.clubId === clubId);
+    if (!membership) return { ok: false, reason: "not-found" };
+    // Compare-and-set : l'état RÉEL actuel doit correspondre EXACTEMENT à ce que le dialogue avait
+    // capturé au rendu. "" est une valeur d'attente valide (dissociation attendue) — jamais confondue
+    // avec "manager id absent/forgé" grâce à asText, qui normalise les deux côtés identiquement.
+    if (asText(membership.responsibleId) !== asText(expectedResponsibleId)) {
+      return { ok: false, reason: "stale-association" };
+    }
+    const nextId = asText(targetResponsibleId);
+    if (!nextId || !clubManagerById(clubId, nextId)) return { ok: false, reason: "unknown-manager" };
+    if (managerAlreadyLinked(clubId, nextId, userId)) return { ok: false, reason: "already-linked" };
+    membership.responsibleId = nextId;
+    membership.updatedAt = new Date().toISOString();
+    writeUserStore(store);
+    return { ok: true };
   }
 
   // Idempotente : répare une structure absente/partielle, garantit l'utilisateur système
