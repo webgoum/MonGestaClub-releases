@@ -8026,7 +8026,106 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
       // liste restent actionnables (bouton + champs actifs) ; les autres deviennent consultatives,
       // quel que soit leur statut (OK, Refusé, Annulé, vide). Voir compactPaymentEditor.
       actionableStatuses: options.actionableStatuses,
+      // Lot À faire — correctif Pix : simple préférence d'onglet actif, jamais de restriction (voir
+      // paymentDrawer). Absent partout ailleurs -> comportement historique inchangé au bit près.
+      focusPredicate: options.focusPredicate,
     });
+  }
+
+  // Lot À faire R2/R3 (correctif Pix, Bloqueur 1) — empreinte DÉTERMINISTE et TRANSITOIRE d'un
+  // paiement (jamais stockée sur l'objet, jamais un id fabriqué : recalculée à la volée au rendu ET
+  // au clic, uniquement pour COMPARER). Couvre tous les champs qui distinguent réellement deux
+  // paiements legacy sans id (montant/moyen/n° chèque/état/date/taux/avoir/allocations) — le statut
+  // SEUL (paymentStatus) ne suffit pas : deux paiements peuvent partager le même statut sans être le
+  // même objet métier. Deux paiements dont TOUS ces champs coïncident sont, par construction,
+  // strictement indiscernables l'un de l'autre — cibler l'un ou l'autre est alors sans conséquence
+  // observable.
+  //
+  // R3 — sérialisation CANONIQUE non ambiguë (jamais une concaténation libre par séparateur
+  // "|"/":"/","  : deux champs voisins de longueurs différentes peuvent produire la même chaîne
+  // concaténée, ex. check="ab"+checkNumber="c" ET check="a"+checkNumber="bc" donnent toutes deux
+  // "abc..."). JSON.stringify sur un tableau préserve exactement les frontières de champs (types +
+  // longueurs) : aucune collision de ce type n'est possible. encodeURIComponent rend le résultat sûr
+  // à porter tel quel dans data-payment-fingerprint="..." (aucun guillemet littéral). Allocations :
+  // tuples structurés [claimKey, amount] (jamais une chaîne "claimKey:amount" — même risque de
+  // collision si claimKey contient ":" ou ",") triés canoniquement par claimKey PUIS amount (l'ordre
+  // de saisie/lecture ne doit jamais faire varier l'empreinte d'un même contenu métier).
+  function paymentFingerprint(payment = {}) {
+    const allocations = (payment.allocations || [])
+      .map((a) => [asText(a?.claimKey), asNumber(a?.amount)])
+      .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : a[1] - b[1]));
+    const payload = [
+      asText(payment.check || ""),
+      asText(payment.checkNumber || ""),
+      asNumber(payment.amount),
+      asText(payment.state || ""),
+      asText(payment.date || ""),
+      asText(payment.taxRate ?? payment.vatRate ?? ""),
+      asText(payment.creditNoteId || ""),
+      allocations,
+    ];
+    return encodeURIComponent(JSON.stringify(payload));
+  }
+
+  // Lot À faire R1/R2 (correctif Pix, Bloquant A) — construit le focusPredicate (préférence d'onglet
+  // PURE présentation, jamais une restriction — voir paymentDrawer) à partir du descripteur posé sur
+  // le bouton « Ouvrir » d'une carte À faire (data-payment-id / data-payment-index / data-payment-
+  // segment / data-payment-fingerprint, src/11-dashboard-newsletter.js). Identité EXACTE, jamais le
+  // seul statut (deux paiements peuvent le partager) NI le seul index (peut devenir stale si le
+  // tableau est modifié entre le rendu et le clic — suppression/insertion/réordonnancement) :
+  //  - focus.id présent (rare : paiement déjà validé "Payé" puis rouvert, seul cas où payment.id
+  //    existe réellement — PAY-P0-2/F2) -> priorité ABSOLUE, stable quel que soit le segment/l'ordre/
+  //    un éventuel réordonnancement (un id ne se déplace jamais avec l'index).
+  //  - sinon focus.index + focus.fingerprint : locator déterministe FAIL-CLOSED. REVALIDÉ à chaque
+  //    ouverture (le prédicat s'évalue sur l'état FRAIS, jamais un snapshot) : si l'objet occupant
+  //    CET index n'a plus EXACTEMENT la même empreinte (résolu, modifié, ou un AUTRE paiement occupe
+  //    désormais cette position après suppression/insertion/permutation), le prédicat ne correspond
+  //    nulle part -> aucun focus forcé, jamais un faux focus sur un paiement différent. Deux paiements
+  //    réellement identiques restent indiscernables par construction (fail-safe assumé, jamais une
+  //    fausse identité inventée/persistée pour les départager).
+  //  - `segment` ("event"/"lodging", Stage uniquement) limite le locator par index/empreinte au SEUL
+  //    tiroir concerné : l'autre segment ne reçoit alors aucun prédicat (comportement par défaut,
+  //    inchangé). Sans objet, hors segment concerné pour l'id (qui reste valable partout, unique).
+  function buildPaymentFocusPredicate(focus, segment = "") {
+    if (!focus) return null;
+    if (focus.id) return (p) => asText(p?.id || "") === focus.id;
+    if (segment && focus.segment && focus.segment !== segment) return null;
+    if (Number.isInteger(focus.index) && focus.index >= 0 && focus.fingerprint) {
+      return (p, idx) => idx === focus.index && paymentFingerprint(p) === focus.fingerprint;
+    }
+    return null;
+  }
+
+  // Lot À faire R2 (correctif Pix, Bloqueur 2) — sélecteur CSS de la SECTION de paiement à amener à
+  // l'écran (jamais une ligne précise) : contrairement à l'identité d'une ligne (index/fingerprint,
+  // voir buildPaymentFocusPredicate), qui peut devenir périmée entre le rendu et le clic, le SEGMENT
+  // (quel tiroir : paiement unique, ou event/lodging pour Stage) ne l'est jamais — il découle de la
+  // structure même de l'objet ouvert, pas d'une position dans un tableau mutable. Faire défiler
+  // jusqu'à la SECTION reste donc TOUJOURS sûr, même quand focusPredicate échoue à cibler une ligne
+  // précise (repli fail-safe) : jamais un scroll vers un « faux paiement », seulement vers la bonne
+  // zone. `selector` est fourni par l'appelant (un seul par dialogue/segment, jamais deviné ici).
+  function paymentFocusScrollSelector(focus, selector, segment = "") {
+    if (!focus) return null;
+    if (segment && focus.segment && focus.segment !== segment) return null;
+    return selector;
+  }
+
+  // Lit le descripteur focus posé par taskRows() sur le bouton « Ouvrir » d'une carte À faire
+  // (data-payment-id/-index/-segment/-fingerprint/-status) — point de lecture UNIQUE, partagé par les
+  // 3 handlers edit-membership/view-order/edit-registration (src/21-handlers.js), pour ne jamais
+  // désynchroniser le nom des attributs entre le rendu (taskRows) et la lecture (ce helper).
+  // data-payment-status reste transporté (information secondaire/affichage), mais n'entre plus dans
+  // la revalidation d'identité (voir buildPaymentFocusPredicate) : trop faible seul (Bloqueur A R1),
+  // remplacé par data-payment-fingerprint (empreinte multi-champs, Bloqueur 1 R2).
+  function taskPaymentFocusFromButton(button) {
+    const index = button.dataset.paymentIndex !== undefined ? Number(button.dataset.paymentIndex) : -1;
+    return {
+      id: asText(button.dataset.paymentId || ""),
+      index: Number.isInteger(index) ? index : -1,
+      segment: asText(button.dataset.paymentSegment || ""),
+      status: asText(button.dataset.paymentStatus || ""),
+      fingerprint: asText(button.dataset.paymentFingerprint || ""),
+    };
   }
 
   function paymentDrawer(paymentRows, options = {}) {
@@ -8043,7 +8142,18 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
     const actionableIndex = Array.isArray(options.actionableStatuses)
       ? rows.slice(0, visibleCount).findIndex((p) => options.actionableStatuses.includes(paymentStatus(p)))
       : -1;
-    const activeIndex = actionableIndex >= 0
+    // Lot À faire — correctif Pix (routage « Ouvrir ») — focusPredicate est un prédicat de
+    // PRÉSENTATION pure (jamais de restriction/verrouillage, contrairement à actionableStatuses ci-
+    // dessus) : quand fourni (ouverture depuis une carte « À faire »/Vigilance ciblant un paiement
+    // précis), on préfère ouvrir l'onglet sur la première ligne qui y correspond RÉELLEMENT (ex. la
+    // ligne effectivement Refusée/en retard signalée), sans jamais verrouiller ni rendre les autres
+    // lignes non actionnables — comportement historique de actionableStatuses inchangé au bit près.
+    const focusIndex = typeof options.focusPredicate === "function"
+      ? rows.slice(0, visibleCount).findIndex(options.focusPredicate)
+      : -1;
+    const activeIndex = focusIndex >= 0
+      ? focusIndex
+      : actionableIndex >= 0
       ? actionableIndex
       : firstEmpty >= 0
       ? firstEmpty
@@ -11263,8 +11373,15 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
   function paymentAgendaRows(limit = null) {
     const rows = [];
     const push = (payments, module, person, amount, editAction, id, stageId = "") => {
+      // Lot À faire R1 (correctif Pix, Bloquant A) — `index` = position RÉELLE dans `payments`
+      // (le tableau tel que passé par l'appelant, jamais réordonné/tronqué ici) : seule donnée qui
+      // distingue deux paiements PARTAGEANT le même statut (ex. deux « Refusé »), que le statut seul
+      // ne peut jamais discriminer. `payment.id` n'est JAMAIS présent pour un paiement encore en
+      // attente/refusé/en retard (posé uniquement à la validation "Payé", cf. validatePayment
+      // §PAY-P0-2/F2, src/21-handlers.js) : il reste préservé ici quand il existe (paiement déjà
+      // validé puis réouvert), mais `index` est la SEULE identité disponible dans le cas courant.
       const pending = (payments || [])
-        .map((payment) => ({ payment, status: paymentStatus(payment) }))
+        .map((payment, index) => ({ payment, status: paymentStatus(payment), index }))
         .filter((row) => row.status && row.status !== "OK" && asNumber(row.payment?.amount) > 0);
       if (!pending.length && amount <= 0) return;
       const priority = ["Refusé", "A encaisser", "En cours"];
@@ -11285,6 +11402,16 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
         status: mainStatus || "Reste dû",
         date: dateInputValue(first.payment?.date || ""),
         payment: first.payment || {},
+        // Index global dans le tableau `payments` PASSÉ à push() — pour Discipline/Boutique, c'est
+        // directement l'index dans membership.payments/order.payments ; pour Stage, c'est l'index
+        // dans la concaténation event+lodging, traduit en segment+index local par l'appelant Stage
+        // juste après (paymentSegment/paymentSegmentIndex), jamais utilisé tel quel ailleurs.
+        paymentIndex: Number.isInteger(first.index) ? first.index : -1,
+        paymentId: asText(first.payment?.id || ""),
+        // Lot À faire R2 (correctif Pix, Bloqueur 1) — empreinte transitoire (jamais stockée), voir
+        // paymentFingerprint (09-payments-core.js) : revalidée au clic pour détecter un tableau
+        // modifié entre le rendu et l'ouverture (suppression/insertion/réordonnancement).
+        paymentFingerprint: paymentFingerprint(first.payment || {}),
         editAction,
         id,
         stageId,
@@ -11306,8 +11433,23 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
     for (const stage of state.tariffs.stages) {
       for (const registration of state.stageRegistrations[stage.id] || []) {
         const calc = calcRegistration(registration, stage.id);
-        const payments = [...(registration.event?.payments || []), ...(registration.lodging?.payments || [])];
+        const eventPayments = registration.event?.payments || [];
+        const lodgingPayments = registration.lodging?.payments || [];
+        const payments = [...eventPayments, ...lodgingPayments];
+        const rowsBefore = rows.length;
         push(payments, stage.name || "Stage", registration, calc.restDue, "edit-registration", registration.id, stage.id);
+        // Lot À faire R1 (correctif Pix, §4) — traduit l'index global (concaténation event+lodging,
+        // interne à push()) en segment RÉEL + index LOCAL à ce segment : c'est CE couple, jamais
+        // l'index global, qui identifie sans ambiguïté "event.payments[N]" vs "lodging.payments[N]"
+        // (deux segments peuvent partager le même index local ET le même statut).
+        if (rows.length > rowsBefore) {
+          const row = rows[rows.length - 1];
+          if (row.paymentIndex >= 0) {
+            const inEvent = row.paymentIndex < eventPayments.length;
+            row.paymentSegment = inEvent ? "event" : "lodging";
+            row.paymentSegmentIndex = inEvent ? row.paymentIndex : row.paymentIndex - eventPayments.length;
+          }
+        }
       }
     }
     return rows
@@ -11482,7 +11624,21 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
         tone: "late",
         postitType: "late",
         action: row.editAction,
-        attrs: `data-action="${esc(row.editAction)}" data-id="${esc(row.id)}" ${row.stageId ? `data-stage-id="${esc(row.stageId)}"` : ""}${clubAttr}`,
+        // Lot À faire R1/R2 (correctif Pix, Bloquant A/1) — identité EXACTE du paiement concerné,
+        // jamais seulement son statut (deux paiements peuvent le partager) ni le seul index (peut
+        // devenir périmé si le tableau change entre le rendu et le clic) :
+        // - data-payment-id : posé UNIQUEMENT si paymentAgendaRows a trouvé un id réel sur le paiement
+        //   (rare : un paiement déjà validé "Payé" puis rouvert — voir doctrine PAY-P0-2/F2, un
+        //   paiement Refusé/en retard/à encaisser n'a structurellement JAMAIS d'id) ; a priorité
+        //   absolue côté handler quand présent (stable même en cas de réordonnancement).
+        // - data-payment-index (+ data-payment-segment pour Stage, "event"/"lodging") + data-payment-
+        //   fingerprint (empreinte multi-champs, voir paymentFingerprint) : locator de repli
+        //   déterministe et FAIL-CLOSED, jamais fabriqué ni persisté — le SEUL identifiant disponible
+        //   dans le cas courant (pas d'id). Revalidé au clic (voir handlers 21-handlers.js) : jamais
+        //   utilisé sans reconfirmer que l'objet occupant cette position est encore EXACTEMENT le même
+        //   (empreinte identique) — sinon aucun focus forcé (voir buildPaymentFocusPredicate).
+        // - data-payment-status : information secondaire, n'entre plus dans la revalidation.
+        attrs: `data-action="${esc(row.editAction)}" data-id="${esc(row.id)}" data-payment-status="${esc(row.status)}"${row.paymentId ? ` data-payment-id="${esc(row.paymentId)}"` : ""}${row.paymentSegment ? ` data-payment-segment="${esc(row.paymentSegment)}" data-payment-index="${esc(row.paymentSegmentIndex)}"` : Number.isInteger(row.paymentIndex) && row.paymentIndex >= 0 ? ` data-payment-index="${esc(row.paymentIndex)}"` : ""}${row.paymentFingerprint ? ` data-payment-fingerprint="${esc(row.paymentFingerprint)}"` : ""} ${row.stageId ? `data-stage-id="${esc(row.stageId)}"` : ""}${clubAttr}`,
         reminder: true,
       });
     });
@@ -17592,7 +17748,7 @@ ${esc(bodyText)}</pre>
             </select>
           </label>
 
-          <div class="settings-subsection">
+          <div class="settings-subsection" data-display-menu-customization>
             <h4>Mode d'affichage</h4>
             <p class="muted">Choisissez la richesse de l'interface. Aucune donnée n'est supprimée. Ces réglages déterminent les pages proposées dans la navigation.</p>
             <div class="display-mode-row" style="display:flex;gap:8px;flex-wrap:wrap;margin:6px 0 2px">
@@ -22872,7 +23028,10 @@ ${esc(bodyText)}</pre>
   // chèque, ni statut, ni date, ni TVA. data-payment-module/data-payment-club-id sont posés sur le
   // conteneur englobant pour que validateFormPayment (21-handlers.js) puisse résoudre son contexte via
   // closest("[data-payment-module]") — ce bouton "form" ne porte pas ces attributs lui-même.
-  function paymentFields(prefix, payments = [], total = 0, defaultTaxRate = effectiveDefaultVatRate(), claimKey = "", module = "", clubId = "", canRead = true, canWrite = true) {
+  // focusPredicate (Lot À faire — correctif Pix) : prédicat de présentation optionnel, voir
+  // paymentDrawer (09-payments-core.js) — ouvre le tiroir sur la ligne réellement concernée par
+  // l'alerte cliquée (« Ouvrir » depuis une carte À faire), sans jamais restreindre les autres lignes.
+  function paymentFields(prefix, payments = [], total = 0, defaultTaxRate = effectiveDefaultVatRate(), claimKey = "", module = "", clubId = "", canRead = true, canWrite = true, focusPredicate = null) {
     if (!canRead) {
       return `<div class="dialog-section payment-form-compact"><h3>Paiements</h3><p class="muted">Vous n'avez pas accès à cette section.</p></div>`;
     }
@@ -22890,6 +23049,7 @@ ${esc(bodyText)}</pre>
         title: "Paiements",
         claimKey,
         canWrite,
+        focusPredicate,
       })}
     </div>`;
   }
@@ -24294,7 +24454,7 @@ ${esc(bodyText)}</pre>
   // dernier pending résolu (payé ou annulé), le titre redevient "Paiements" et le contenu reste
   // affiché mais purement consultatif (le moteur restreint, actionableStatuses, garantit qu'aucune
   // ligne OK n'y expose jamais "Annuler paiement", que ce soit au rendu initial ou après refresh).
-  function orderConsultPaymentZoneHtml(order = {}) {
+  function orderConsultPaymentZoneHtml(order = {}, focusPredicate = null) {
     const integrity = shopOrderIntegrityState(order);
     const calc = calcOrder(order);
     const title = integrity.hasPendingPayment ? "Paiement à traiter" : "Paiements";
@@ -24304,6 +24464,10 @@ ${esc(bodyText)}</pre>
         total: calc.total,
         defaultTaxRate: orderDefaultTaxRate(order),
         actionableStatuses: PENDING_PAYMENT_STATUSES,
+        // Lot À faire — correctif Pix : une ligne Refusée n'est jamais dans PENDING_PAYMENT_STATUSES
+        // (ci-dessus), donc jamais choisie par actionableIndex — focusPredicate reste la SEULE voie
+        // pour ouvrir le tiroir sur elle, sans toucher à la restriction actionable existante.
+        focusPredicate,
       })}
     </div>`;
   }
@@ -28206,9 +28370,16 @@ ${esc(bodyText)}</pre>
     "legalGuardianEmail", "parentalAuthorization", "imageRights", "rulesSigned",
   ];
 
-  function openMembershipDialog(row = {}) {
+  function openMembershipDialog(row = {}, opts = {}) {
     // Lot O-E2-B2 — club ciblé mémorisé à l'ouverture, revérifié au save (dialogue asynchrone, §5/§29).
     const openedClubId = activeClubId();
+    // Lot À faire R1 (correctif Pix, Bloquant A) — opts.focusPayment (posé par le handler
+    // "edit-membership", src/21-handlers.js, depuis data-payment-id/-index/-status de la carte À
+    // faire cliquée) n'est JAMAIS une restriction : simple préférence d'onglet actif dans le tiroir de
+    // paiement, construite par buildPaymentFocusPredicate (identité exacte, jamais le seul statut —
+    // voir 09-payments-core.js). Absent pour tout autre appelant historique de cette fonction
+    // (add-membership, fiche contact, assistant...) -> comportement inchangé au bit près.
+    const focusPredicate = buildPaymentFocusPredicate(opts.focusPayment);
     // Ouvrir une inscription EXISTANTE révèle ses données : exige memberships.read (§8). Une
     // CRÉATION ne révèle rien ; la garde réelle vit au save (memberships.write, §8).
     if (row.id && !ensureUserPermission("memberships.read", openedClubId)) return;
@@ -28319,7 +28490,7 @@ ${esc(bodyText)}</pre>
       field("discount", "Remise", row.discount || "", "number", 'step="0.01"'),
       `<div class="dialog-alert-list" data-membership-alerts></div>`,
       membershipTariffSummary(row),
-      paymentFields("payment", row.payments || [], membershipTariffValues(row).total, membershipDefaultTaxRate(row), row.id ? `membership:${row.id}` : "", "membership", openedClubId, paymentsReadableAtOpen, paymentsWritableAtOpen),
+      paymentFields("payment", row.payments || [], membershipTariffValues(row).total, membershipDefaultTaxRate(row), row.id ? `membership:${row.id}` : "", "membership", openedClubId, paymentsReadableAtOpen, paymentsWritableAtOpen, focusPredicate),
     ].join("");
     const footer = contactLinkAction(row);
     setNextWindowKey(row.id ? `membership:${row.id}` : null);
@@ -28587,6 +28758,12 @@ ${esc(bodyText)}</pre>
       form.elements.medicalCertificate?.addEventListener("change", update);
       form.elements.discount?.addEventListener("input", update);
       update();
+      // Lot À faire R2 (correctif Pix, Bloqueur 2) — venant d'une carte À faire (opts.focusPayment),
+      // amène visuellement la zone Paiements à l'écran : jamais une ligne précise (voir
+      // paymentFocusScrollSelector/09-payments-core.js — toujours la SECTION, sûre même si le focus
+      // exact d'une ligne a échoué à se revalider). L'utilisateur ne doit pas faire défiler lui-même.
+      const membershipPaymentScroll = paymentFocusScrollSelector(opts.focusPayment, '[data-payment-prefix="payment"]');
+      if (membershipPaymentScroll) form.querySelector(membershipPaymentScroll)?.scrollIntoView({ block: "center", behavior: "smooth" });
     }, footer, () => {}, "Enregistrer", { readOnly });
   }
 
@@ -28737,7 +28914,7 @@ ${esc(bodyText)}</pre>
   // seule si la commande n'est pas modifiable (facture émise, paiement validé / en cours / à
   // encaisser) ; sinon formulaire d'édition normal. En lecture seule : aucune mutation, aucun
   // historique, aucune facturation — seulement l'affichage.
-  function openOrderForConsult(order = {}, openedClubId = "") {
+  function openOrderForConsult(order = {}, openedClubId = "", opts = {}) {
     // Lot O-E2-B5 (§10) — openedClubId EXPLICITE, aucun fallback interne vers activeClubId().
     if (!openedClubId) return;
     if (activeClubId() !== openedClubId) return;
@@ -28750,11 +28927,17 @@ ${esc(bodyText)}</pre>
     // de shopOrderIntegrityState() ci-dessous doit lui aussi porter sur l'état RÉEL, pas un vieux clone.
     const liveOrder = state.shopOrders.find((row) => row.id === order.id);
     if (!liveOrder) return;
-    return openOrderDialog(liveOrder, { readOnly: shopOrderIntegrityState(liveOrder).editBlocked }, openedClubId);
+    // Lot À faire R1 (correctif Pix) — opts.focusPayment traverse la consultation (readOnly) exactement
+    // comme l'édition (voir openOrderDialog) — même doctrine, même origine.
+    return openOrderDialog(liveOrder, { readOnly: shopOrderIntegrityState(liveOrder).editBlocked, focusPayment: opts.focusPayment }, openedClubId);
   }
 
   function openOrderDialog(row = {}, opts = {}, openedClubId = "") {
     const readOnly = Boolean(opts.readOnly);
+    // Lot À faire R1 (correctif Pix, Bloquant A) — voir openMembershipDialog : simple préférence
+    // d'onglet actif (identité exacte, jamais le seul statut), jamais de restriction, absent pour
+    // tout appelant historique.
+    const focusPredicate = buildPaymentFocusPredicate(opts.focusPayment);
     // Lot O-E2-B5 (§10) — openedClubId EXPLICITE, AUCUN fallback interne vers activeClubId() : même
     // doctrine que les autres primitives durcies (openRegistrationDialog, openStageDialog...).
     if (!openedClubId) return;
@@ -28847,8 +29030,8 @@ ${esc(bodyText)}</pre>
     // "Paiements") s'adapte à hasPendingPayment. En édition normale (readOnly=false), comportement
     // historique inchangé au bit près : paymentFields() ("form").
     const paymentSectionHtml = readOnly
-      ? orderConsultPaymentZoneHtml(row)
-      : paymentFields("payment", row.payments || [], calc.total, orderDefaultTaxRate(row), row.id ? `order:${row.id}` : "", "order", openedClubId, paymentsReadableAtOpen, paymentsWritableAtOpen);
+      ? orderConsultPaymentZoneHtml(row, focusPredicate)
+      : paymentFields("payment", row.payments || [], calc.total, orderDefaultTaxRate(row), row.id ? `order:${row.id}` : "", "order", openedClubId, paymentsReadableAtOpen, paymentsWritableAtOpen, focusPredicate);
     const body = [
       readOnlyNote,
       `<div class="dialog-section shop-sale-steps">
@@ -28994,6 +29177,12 @@ ${esc(bodyText)}</pre>
         orderInvoiceFollowUpId: next.id,
       };
     }, (form) => {
+      // Lot À faire R2 (correctif Pix, Bloqueur 2) — AVANT le repli readOnly ci-dessous : la
+      // destination visuelle doit fonctionner aussi bien en consultation qu'en édition. Sélecteur
+      // différent selon la zone RÉELLEMENT rendue (voir paymentSectionHtml plus haut) — jamais une
+      // ligne précise, toujours la SECTION (voir paymentFocusScrollSelector, 09-payments-core.js).
+      const orderPaymentScroll = paymentFocusScrollSelector(opts.focusPayment, readOnly ? "[data-order-consult-payment-zone]" : '[data-payment-prefix="payment"]');
+      if (orderPaymentScroll) form.querySelector(orderPaymentScroll)?.scrollIntoView({ block: "center", behavior: "smooth" });
       // Consultation : aucun listener d'édition (recalcul de résumé, changement de client,
       // suppression de ligne, sélecteur d'articles). showDialog neutralise déjà les contrôles.
       if (readOnly) return;
@@ -29339,10 +29528,17 @@ ${esc(bodyText)}</pre>
     showFloatingDialog(dialog, "select[name='stageId']");
   }
 
-  function openRegistrationDialog(stageId, row = {}, openedClubId = "") {
+  function openRegistrationDialog(stageId, row = {}, openedClubId = "", opts = {}) {
     // Lot O-E2-B4R2 (§3-4) — openedClubId EXPLICITE, AUCUN fallback interne vers activeClubId() :
     // même doctrine que les autres primitives durcies en B4R (openStageDialog, openGroupDialog...).
     if (!openedClubId) return;
+    // Lot À faire R1 (correctif Pix, Bloquant A/§4) — voir openMembershipDialog : simple préférence
+    // d'onglet actif, jamais de restriction. Un prédicat DISTINCT par segment (event/lodging) — voir
+    // buildPaymentFocusPredicate — puisque paymentAgendaRows() agrège les deux tableaux en une seule
+    // ligne « Stage » : sans cette distinction, un paiement "Refusé" côté événement ET un autre côté
+    // hébergement (même statut, DEUX tableaux différents) focaliseraient à tort les DEUX tiroirs.
+    const eventFocusPredicate = buildPaymentFocusPredicate(opts.focusPayment, "event");
+    const lodgingFocusPredicate = buildPaymentFocusPredicate(opts.focusPayment, "lodging");
     if (activeClubId() !== openedClubId) return;
     // Lot O-E2-B4R2 (§4) — Stage existant obligatoire, vérifié AVANT toute autre garde/lecture.
     const stageCheck = stageById(stageId);
@@ -29427,7 +29623,7 @@ ${esc(bodyText)}</pre>
         ${field("eventDiscount", "Remise", event.discount || "", "number", `step="0.01" ${identityFieldAttrs}`)}
         ${paymentsReadableAtOpen ? paymentDueField("eventPayment", eventTotal, event.payments || []) : ""}
       </div>`,
-      paymentFields("eventPayment", event.payments || [], eventTotal, stageDefaultTaxRate(stage), row.id ? `stage:${stageId}:${row.id}:event` : "", "registration", openedClubId, paymentsReadableAtOpen, paymentsWritableAtOpen),
+      paymentFields("eventPayment", event.payments || [], eventTotal, stageDefaultTaxRate(stage), row.id ? `stage:${stageId}:${row.id}:event` : "", "registration", openedClubId, paymentsReadableAtOpen, paymentsWritableAtOpen, eventFocusPredicate),
       `<div class="dialog-section"><h3>${esc(stage.lodgingName || "Hébergement")}</h3></div>`,
       `<div class="form-grid compact stage-price-line">
         ${field("lodgingQty", "Nbr", lodging.quantity || (asNumber(stage.lodgingUnitPrice) ? 1 : ""), "number", `step="1" min="0" ${identityFieldAttrs}`)}
@@ -29435,7 +29631,7 @@ ${esc(bodyText)}</pre>
         ${field("lodgingDiscount", "Remise", lodging.discount || "", "number", `step="0.01" ${identityFieldAttrs}`)}
         ${paymentsReadableAtOpen ? paymentDueField("lodgingPayment", lodgingTotal, lodging.payments || []) : ""}
       </div>`,
-      paymentFields("lodgingPayment", lodging.payments || [], lodgingTotal, lodgingDefaultTaxRate(stage), row.id ? `stage:${stageId}:${row.id}:lodging` : "", "registration", openedClubId, paymentsReadableAtOpen, paymentsWritableAtOpen),
+      paymentFields("lodgingPayment", lodging.payments || [], lodgingTotal, lodgingDefaultTaxRate(stage), row.id ? `stage:${stageId}:${row.id}:lodging` : "", "registration", openedClubId, paymentsReadableAtOpen, paymentsWritableAtOpen, lodgingFocusPredicate),
       registrationTotalSummary(eventTotal, lodgingTotal, stage),
     ].join("");
     const footerButtons = [
@@ -29582,6 +29778,13 @@ ${esc(bodyText)}</pre>
         input.addEventListener("change", () => updateRegistrationPaymentSplits(form, stage));
       });
       updateRegistrationPaymentSplits(form, stage);
+      // Lot À faire R2 (correctif Pix, Bloqueur 2) — segment EXACT (event/lodging) selon
+      // opts.focusPayment.segment, jamais deviné : voir paymentFocusScrollSelector
+      // (09-payments-core.js). Au plus un seul des deux sélectionne réellement une section.
+      const eventPaymentScroll = paymentFocusScrollSelector(opts.focusPayment, '[data-payment-prefix="eventPayment"]', "event");
+      const lodgingPaymentScroll = paymentFocusScrollSelector(opts.focusPayment, '[data-payment-prefix="lodgingPayment"]', "lodging");
+      const registrationPaymentScroll = eventPaymentScroll || lodgingPaymentScroll;
+      if (registrationPaymentScroll) form.querySelector(registrationPaymentScroll)?.scrollIntoView({ block: "center", behavior: "smooth" });
     }, footerButtons);
   }
 
@@ -35500,13 +35703,21 @@ ${esc(bodyText)}</pre>
       // n'était jamais déclenché : rien ne bougeait visuellement. render() explicite et
       // INCONDITIONNEL ci-dessous (même patron déjà éprouvé que configure-manager-access, src/21) :
       // fonctionne aussi bien depuis la puce de la barre latérale (autre vue, navigateTo rend déjà)
-      // que depuis ce lien (même vue, navigateTo n'aurait rien fait seul). flashVigilanceTargets
-      // (même mécanisme déjà utilisé pour amener visuellement l'utilisateur sur une bande Paramètres
-      // précise) scrolle et surligne brièvement la bande réellement dépliée — jamais un nouveau
-      // mécanisme de scroll/focus.
+      // que depuis ce lien (même vue, navigateTo n'aurait rien fait seul).
+      // Correctif Pix R2 (destination visuelle) — le premier correctif ouvrait la bande « Affichage »
+      // mais laissait l'utilisateur en HAUT du panneau (Disposition/Mode d'affichage hors écran sous
+      // le pli) : il devait encore défiler à la main jusqu'à « Mode d'affichage »/« Personnalisé »/
+      // « Visibilité du menu », le but réel du clic. flashVigilanceTargets (même mécanisme déjà
+      // utilisé ailleurs pour amener visuellement l'utilisateur sur une zone précise, aucun nouveau
+      // mécanisme de scroll/focus) cible désormais [data-display-menu-customization] — ancre
+      // sémantique minimale posée sur le conteneur "Mode d'affichage" (src/16-settings-themes.js),
+      // immédiatement suivi de « Visibilité du menu » dans le DOM : les deux restent visibles
+      // ensemble après un scrollIntoView({block:"center"}). Ne sélectionne/ne modifie JAMAIS le mode
+      // d'affichage lui-même (Simple/Avancé/Personnalisé inchangé) : ceci reste une navigation UI
+      // pure, le choix du mode reste entièrement à l'utilisateur.
       ui.settingsPanels = { ...(ui.settingsPanels || {}), display: true };
       navigateTo({ view: "settings" });
-      if (typeof flashVigilanceTargets === "function") flashVigilanceTargets('[data-action="toggle-settings-panel"][data-panel="display"]');
+      if (typeof flashVigilanceTargets === "function") flashVigilanceTargets("[data-display-menu-customization]");
       render();
       return;
     }
@@ -35998,7 +36209,11 @@ ${esc(bodyText)}</pre>
       const targetId = button.dataset.id || "";
       const row = state.memberships.find((r) => r.id === targetId);
       if (targetId && !row) return;
-      return openMembershipDialog(row);
+      // Lot À faire R1 — correctif Pix (identité EXACTE, jamais le seul statut) — taskPaymentFocusFromButton
+      // lit data-payment-id/-index/-segment/-status (posés uniquement par les cartes « Paiement en
+      // retard/refusé » de taskRows()) : absents pour toute autre origine de ce même data-action
+      // (document, fiche contact, création) -> descripteur vide -> comportement inchangé.
+      return openMembershipDialog(row, { focusPayment: taskPaymentFocusFromButton(button) });
     }
     // Depuis la fiche contact : ajoute toujours une NOUVELLE inscription (jamais celle déjà
     // ouverte via le raccourci "Disciplines", qui ne réaffiche que la première trouvée) — permet
@@ -37077,7 +37292,9 @@ ${esc(bodyText)}</pre>
       if (!shopClubId || activeClubId() !== shopClubId) return;
       const order = state.shopOrders.find((row) => row.id === button.dataset.id);
       if (!order) return;
-      return openOrderForConsult(order, shopClubId);
+      // Lot À faire — correctif Pix (routage « Ouvrir ») — même doctrine que edit-membership
+      // ci-dessus : absent pour toute autre origine de view-order (bouton commande, agenda…).
+      return openOrderForConsult(order, shopClubId, { focusPayment: taskPaymentFocusFromButton(button) });
     }
     if (action === "edit-order") {
       // Lot O-E2-B5 (§10/§22) — binding club DOM AVANT toute résolution d'objet.
@@ -37433,7 +37650,9 @@ ${esc(bodyText)}</pre>
       // dégénérerait en CRÉATION silencieuse (même doctrine que edit-group/edit-coach/edit-room).
       const registrationEdit = (state.stageRegistrations[button.dataset.stageId] || []).find((row) => row.id === button.dataset.id);
       if (!registrationEdit) return;
-      return openRegistrationDialog(button.dataset.stageId, registrationEdit, stageClubId);
+      // Lot À faire — correctif Pix (routage « Ouvrir ») — même doctrine que edit-membership
+      // ci-dessus : absent pour toute autre origine de edit-registration (liste des inscriptions…).
+      return openRegistrationDialog(button.dataset.stageId, registrationEdit, stageClubId, { focusPayment: taskPaymentFocusFromButton(button) });
     }
     if (action === "delete-current-registration") {
       // Lot O-E2-B4R (§13) — binding club DOM AVANT toute résolution/mutation.
