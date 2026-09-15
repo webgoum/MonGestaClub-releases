@@ -18396,36 +18396,96 @@ ${esc(bodyText)}</pre>
     syncManagerEmptyState(list);
   }
 
-  // Lot UX Comptes d'accès — une ligne informative pour CHAQUE compte listé dans le récapitulatif
-  // (tous statuts, y compris AVAILABLE : "Disponible", cf. exemples du protocole) sous le <select>
-  // "Compte existant". Jamais un filtrage silencieux : chaque compte pertinent reste visible avec la
-  // raison exacte. Seul ALREADY_LINKED_OTHER_MANAGER expose une action (« Réaffecter ce compte »,
-  // data-action="reassign-manager-access") — les autres statuts restent strictement informatifs
-  // (aucun bouton, doctrine §12/§13 : système et désactivé ne sont JAMAIS associables ; AVAILABLE se
-  // sélectionne via le <select> ci-dessus, jamais depuis cette ligne). currentManagerId sur le
-  // bouton sert UNIQUEMENT au libellé de confirmation ; setUserMembershipResponsible revalide l'état
-  // réel au moment de l'écriture, jamais une confiance en cette valeur figée au rendu.
-  function managerAccessCandidateRowHtml(clubId, managerId, candidate) {
+  // Lot UX-B — libellé "Prénom Nom · Fonction" du Responsable référencé par une ligne "Déjà associé"
+  // (jamais clubManagerOptionLabel, séparateur "—" + repli "Responsable" non désiré ici, §13 du
+  // mandat) : uniquement les données réelles du manager, jamais "undefined"/"—"/"Non renseigné".
+  function managerAccessLinkedManagerLabel(manager) {
+    if (!manager) return "";
+    const name = asText([manager.firstName, manager.lastName].filter(Boolean).join(" "));
+    const fn = asText(manager.function);
+    if (name && fn) return `${name} · ${fn}`;
+    return name || fn;
+  }
+
+  // Lot UX-B (§7 du mandat) — carte sélectionnable pour un compte AVAILABLE : réutilise TEL QUEL le
+  // pattern .choice-card (radio natif, sémantique/clavier/focus/état sélectionné déjà éprouvés par
+  // le choix de mode ci-dessus) — jamais un second mécanisme de sélection. name="existingUserId"
+  // EXACTEMENT comme l'ancien <select> : donnée métier inchangée, seule la présentation change.
+  function managerAccessAvailableCardHtml(clubId, candidate) {
+    const { user } = candidate;
+    return `<label class="choice-card manager-access-account-card">
+      <input type="radio" name="existingUserId" value="${esc(user.id)}" data-manager-access-user-field data-club-id="${esc(clubId)}" />
+      <span class="choice-card-text">
+        <span class="choice-card-title">${esc(user.displayName)}</span>
+      </span>
+      <span class="manager-access-status manager-access-status--available">Disponible</span>
+    </label>`;
+  }
+
+  // Lot UX-B (§11-15 du mandat) — ligne de lecture pour un compte déjà associé. ALREADY_LINKED_OTHER_
+  // MANAGER conserve EXACTEMENT le bouton « Réaffecter ce compte » existant (mêmes data-*, même
+  // handler data-action="reassign-manager-access", src/21-handlers.js jamais modifié).
+  // ALREADY_LINKED_THIS_MANAGER : robustesse défensive (openManagerAccessDialog refuse déjà d'ouvrir
+  // pour ce cas via managerAlreadyLinked, mais le renderer reste correct si ce statut apparaissait
+  // malgré tout) — la référence affichée est alors le Responsable CIBLE du dialogue (targetManager),
+  // jamais linkedManager qui vaut null pour ce statut (managerAccessCandidates, src/28).
+  function managerAccessLinkedRowHtml(clubId, targetManager, candidate) {
     const { user, status, linkedManager } = candidate;
-    const statusText = status === "AVAILABLE"
-      ? "Disponible"
-      : status === "ALREADY_LINKED_OTHER_MANAGER"
-        ? `Déjà associé à « ${esc(clubManagerOptionLabel(linkedManager))} »`
-        : status === "ALREADY_LINKED_THIS_MANAGER"
-          ? "Déjà associé à ce Responsable"
-          : status === "INACTIVE"
-            ? "Compte désactivé"
-            : "Compte système — non associable";
-    const reassignBtn = status === "ALREADY_LINKED_OTHER_MANAGER"
-      ? `<button type="button" class="small" data-action="reassign-manager-access" data-club-id="${esc(clubId)}" data-user-id="${esc(user.id)}" data-target-manager-id="${esc(managerId)}" data-current-manager-id="${esc(linkedManager ? linkedManager.id : "")}">Réaffecter ce compte</button>`
+    const isOtherManager = status === "ALREADY_LINKED_OTHER_MANAGER";
+    const subtitle = managerAccessLinkedManagerLabel(isOtherManager ? linkedManager : targetManager);
+    const reassignBtn = isOtherManager
+      ? `<button type="button" class="small" data-action="reassign-manager-access" data-club-id="${esc(clubId)}" data-user-id="${esc(user.id)}" data-target-manager-id="${esc(targetManager.id)}" data-current-manager-id="${esc(linkedManager ? linkedManager.id : "")}">Réaffecter ce compte</button>`
       : "";
-    return `<li class="manager-access-candidate-row" data-candidate-status="${esc(status)}">
-      <div class="manager-access-candidate-info">
+    return `<li class="manager-access-row manager-access-linked-row" data-candidate-status="${esc(status)}">
+      <div class="manager-access-row-main">
         <strong>${esc(user.displayName)}</strong>
-        <span class="muted">${statusText}</span>
+        <span class="manager-access-status manager-access-status--linked">Déjà associé</span>
       </div>
+      ${subtitle ? `<div class="manager-access-row-sub muted">${esc(subtitle)}</div>` : ""}
       ${reassignBtn}
     </li>`;
+  }
+
+  // Lot UX-B (§16-18 du mandat) — ligne de lecture pour un compte INACTIVE/SYSTEM : jamais de radio,
+  // jamais de bouton, jamais de tabindex artificiel. Badges distincts ("Désactivé" / "Compte
+  // système") même si regroupés visuellement dans la même section "Indisponibles".
+  function managerAccessUnavailableRowHtml(candidate) {
+    const { user, status } = candidate;
+    const isSystem = status === "SYSTEM";
+    const badgeLabel = isSystem ? "Compte système" : "Désactivé";
+    const badgeModifier = isSystem ? "system" : "inactive";
+    return `<li class="manager-access-row manager-access-unavailable-row" data-candidate-status="${esc(status)}">
+      <div class="manager-access-row-main">
+        <strong>${esc(user.displayName)}</strong>
+        <span class="manager-access-status manager-access-status--${badgeModifier}">${esc(badgeLabel)}</span>
+      </div>
+      ${isSystem ? `<div class="manager-access-row-sub muted">Non associable</div>` : ""}
+    </li>`;
+  }
+
+  // Lot UX Comptes d'accès (R3) — point d'entrée HISTORIQUE conservé (signature/nom inchangés :
+  // certains appelants/tests l'invoquent directement avec un candidat isolé, sans connaître le
+  // partitionnement par groupe). Pur dispatcher : AUCUNE logique de statut ici (status vient
+  // exclusivement de managerAccessCandidates, src/28, §34 du mandat UX-B), délègue à la carte/ligne
+  // correspondante selon le statut déjà calculé.
+  function managerAccessCandidateRowHtml(clubId, managerId, candidate) {
+    if (candidate.status === "AVAILABLE") return managerAccessAvailableCardHtml(clubId, candidate);
+    if (candidate.status === "ALREADY_LINKED_OTHER_MANAGER" || candidate.status === "ALREADY_LINKED_THIS_MANAGER") {
+      return managerAccessLinkedRowHtml(clubId, clubManagerById(clubId, managerId), candidate);
+    }
+    return managerAccessUnavailableRowHtml(candidate);
+  }
+
+  // Lot UX-B (§19-20 du mandat) — résumé synthétique en tête du panneau "existant", calculé
+  // UNIQUEMENT à partir des comptages déjà dérivés de `candidates` (managerAccessCandidates) : jamais
+  // une seconde classification. "disponible" reste toujours affiché (même à 0, §10 : explique pourquoi
+  // « Lier le compte » est désactivé) ; les trois autres segments sont omis quand leur compte est nul.
+  function managerAccessSummaryText({ available, linked, inactive, system }) {
+    const parts = [`${available} disponible${available > 1 ? "s" : ""}`];
+    if (linked > 0) parts.push(`${linked} déjà associé${linked > 1 ? "s" : ""}`);
+    if (inactive > 0) parts.push(`${inactive} désactivé${inactive > 1 ? "s" : ""}`);
+    if (system > 0) parts.push(`${system} compte${system > 1 ? "s" : ""} système`);
+    return parts.join(" · ");
   }
 
   // Lot R3 — corps du dialogue "Créer un accès MonGestaClub". Pur gabarit HTML (aucune mutation) :
@@ -18442,32 +18502,53 @@ ${esc(bodyText)}</pre>
   // fonction directement avec un tableau d'utilisateurs déjà filtré, sans connaître `candidates`.
   function managerAccessDialogBodyHtml(clubId, manager, eligibleUsers, suggestedRole, candidates = null) {
     const roleOptionsHtml = userRoleOptions().map(([value, label]) => `<option value="${esc(value)}" ${value === suggestedRole ? "selected" : ""}>${esc(label)}</option>`).join("");
-    const effectiveEligibleUsers = candidates ? candidates.filter((c) => c.status === "AVAILABLE").map((c) => c.user) : eligibleUsers;
-    const existingOptionsHtml = effectiveEligibleUsers.map((user) => `<option value="${esc(user.id)}">${esc(user.displayName)}</option>`).join("");
     const suggestedLabel = userRoleLabel(suggestedRole);
     // Lot R3-R1 (correction audit Pix §2) — nom PROPOSÉ pour le nouveau compte : uniquement
     // "Prénom Nom" (managerAccountDisplayName), jamais "Prénom Nom — Fonction" (clubManagerOptionLabel,
     // réservée à l'affichage informatif de la fonction ci-dessous). Si le Responsable n'a ni prénom ni
     // nom, le champ reste VIDE (jamais un repli "Responsable"/la fonction) : saisie manuelle requise.
     const suggestedDisplayName = managerAccountDisplayName(manager);
-    // Liste informative COMPLÈTE (tous statuts, y compris AVAILABLE = "Disponible") : la sélection
-    // réelle se fait via le <select> ci-dessus, cette liste ne fait QUE rendre visible et expliquer
-    // chaque compte — jamais un second mécanisme de sélection concurrent.
-    const allCandidateRows = candidates || [];
-    // Y du compteur "X disponible(s) sur Y" : exclut le compte système (jamais associable, purement
-    // technique) du décompte principal — décision UX du lot, cf. §4 du protocole.
-    const nonSystemCandidateCount = candidates ? candidates.filter((c) => c.status !== "SYSTEM").length : effectiveEligibleUsers.length;
+    // Lot UX-B (§2/§16/§34 du mandat) — partition en 3 groupes de PRÉSENTATION à partir de
+    // `candidates` (classification déjà calculée par managerAccessCandidates, src/28 : AUCUN statut
+    // recalculé ici). `candidates` absent (appel historique eligibleUsers seul, tests/r3-access-ui.js)
+    // -> un unique groupe Disponibles construit depuis eligibleUsers, aucun groupe Déjà associés/
+    // Indisponibles (aucune classification connue dans ce mode d'appel).
+    const available = candidates ? candidates.filter((c) => c.status === "AVAILABLE") : eligibleUsers.map((user) => ({ user, status: "AVAILABLE" }));
+    const linked = candidates ? candidates.filter((c) => c.status === "ALREADY_LINKED_OTHER_MANAGER" || c.status === "ALREADY_LINKED_THIS_MANAGER") : [];
+    const unavailable = candidates ? candidates.filter((c) => c.status === "INACTIVE" || c.status === "SYSTEM") : [];
+    // Décompte du dénominateur historique : exclut le compte système (jamais associable, purement
+    // technique) — décision UX déjà en vigueur, cf. §4 du protocole d'origine, reprise ici.
+    const nonSystemCandidateCount = candidates ? candidates.filter((c) => c.status !== "SYSTEM").length : available.length;
     // Le mode "Lier un compte existant" reste ouvrable dès qu'il y a QUELQUE CHOSE à expliquer
     // (un compte disponible OU un compte réaffectable/désactivé listé), jamais seulement quand un
     // compte est directement sélectionnable (§15 : ne jamais réduire à "Aucun compte disponible"
     // sans explication quand des comptes existent réellement).
-    const existingModeUsable = candidates ? nonSystemCandidateCount > 0 : effectiveEligibleUsers.length > 0;
+    const existingModeUsable = candidates ? nonSystemCandidateCount > 0 : available.length > 0;
     // Lot R3-R2 — refonte visuelle : le choix du mode passe par DEUX cartes entièrement cliquables
     // (label enveloppant un vrai <input type="radio">, sémantique et navigation clavier natives ;
     // l'état sélectionné vient du CSS via :has(input:checked), la carte désactivée reste inerte).
     // Les hooks fonctionnels (name="accessMode", data-manager-access-mode-field, value new/existing,
     // data-manager-access-panel, data-manager-access-role-wrapper…) sont STRICTEMENT conservés :
     // updateManagerAccessDialogVisibility et createUserAccessForManager sont inchangés.
+    // Lot UX-B (§3-9 du mandat) — le <select name="existingUserId"> a disparu : la section
+    // Disponibles ci-dessous est un <fieldset> de radios natifs partageant name="existingUserId",
+    // SEULE source de sélection (le navigateur garantit nativement une sélection unique, §9).
+    const availableSectionHtml = `<fieldset class="manager-access-group" data-manager-access-group="available">
+        <legend class="manager-access-group-title">Disponibles</legend>
+        ${available.length
+          ? `<div class="manager-access-cards">${available.map((c) => managerAccessAvailableCardHtml(clubId, c)).join("")}</div>`
+          : `<p class="manager-access-empty muted">Aucun compte disponible</p>`}
+      </fieldset>`;
+    // Groupes Déjà associés / Indisponibles : OMIS entièrement s'ils sont vides (§21 du mandat),
+    // jamais un titre de section sans aucune ligne dessous.
+    const linkedSectionHtml = linked.length ? `<div class="manager-access-group" data-manager-access-group="linked">
+        <p class="manager-access-group-title">Déjà associés</p>
+        <ul class="manager-access-row-list">${linked.map((c) => managerAccessLinkedRowHtml(clubId, manager, c)).join("")}</ul>
+      </div>` : "";
+    const unavailableSectionHtml = unavailable.length ? `<div class="manager-access-group" data-manager-access-group="unavailable">
+        <p class="manager-access-group-title">Indisponibles</p>
+        <ul class="manager-access-row-list">${unavailable.map((c) => managerAccessUnavailableRowHtml(c)).join("")}</ul>
+      </div>` : "";
     return `<div class="manager-access-dialog">
       <p class="manager-access-lede">Accès MonGestaClub pour <strong>${esc(clubManagerOptionLabel(manager))}</strong>.</p>
       <div class="choice-card-group" role="radiogroup" aria-label="Type d'accès">
@@ -18492,12 +18573,17 @@ ${esc(bodyText)}</pre>
         </div>
         <div data-manager-access-panel="existing" hidden>
           ${candidates ? `<p class="muted manager-access-existing-intro">Un compte ne peut être associé qu'à un seul Responsable dans ce club. Les comptes déjà associés restent affichés ci-dessous et peuvent être réaffectés explicitement.</p>
-          <p class="muted manager-access-existing-count">${effectiveEligibleUsers.length} disponible${effectiveEligibleUsers.length > 1 ? "s" : ""} sur ${nonSystemCandidateCount} compte${nonSystemCandidateCount > 1 ? "s" : ""}</p>` : ""}
-          <label>Compte existant<select name="existingUserId" data-manager-access-user-field data-club-id="${esc(clubId)}">
-            <option value="">Choisir un compte…</option>
-            ${existingOptionsHtml}
-          </select></label>
-          ${allCandidateRows.length ? `<ul class="manager-access-candidate-list">${allCandidateRows.map((c) => managerAccessCandidateRowHtml(clubId, manager.id, c)).join("")}</ul>` : ""}
+          <p class="muted manager-access-summary">${managerAccessSummaryText({
+            available: available.length,
+            linked: linked.length,
+            inactive: candidates.filter((c) => c.status === "INACTIVE").length,
+            system: candidates.filter((c) => c.status === "SYSTEM").length,
+          })}</p>` : ""}
+          <div class="manager-access-accounts-scroll">
+            ${availableSectionHtml}
+            ${linkedSectionHtml}
+            ${unavailableSectionHtml}
+          </div>
         </div>
         <div data-manager-access-role-wrapper>
           <label>Profil d'accès<select name="role" data-manager-access-role-field>${roleOptionsHtml}</select></label>
@@ -18506,6 +18592,16 @@ ${esc(bodyText)}</pre>
         <p class="muted" data-manager-access-existing-role-note hidden></p>
       </div>
     </div>`;
+  }
+
+  // Lot UX-B (§5-6 du mandat) — SEULE source de vérité pour lire le compte "existingUserId"
+  // sélectionné : le champ n'est plus un <select> unique mais plusieurs radios natifs partageant le
+  // même name/marker (data-manager-access-user-field). form.querySelector('[...]').value seul (sans
+  // :checked) retournerait potentiellement le PREMIER radio du DOM même non coché — jamais utilisé
+  // nulle part ailleurs pour ce champ (updateManagerAccessDialogVisibility ET le onSave de
+  // openManagerAccessDialog appellent tous deux ce helper, aucune seconde lecture divergente).
+  function selectedManagerAccessUserId(form) {
+    return asText(form?.querySelector('[data-manager-access-user-field]:checked')?.value);
   }
 
   // Lot R3 — bascule d'affichage du dialogue "Créer un accès MonGestaClub" (mode nouveau/existant,
@@ -18523,10 +18619,12 @@ ${esc(bodyText)}</pre>
     if (existingPanel) existingPanel.hidden = mode !== "existing";
     const roleWrapper = form.querySelector('[data-manager-access-role-wrapper]');
     const note = form.querySelector('[data-manager-access-existing-role-note]');
-    const existingSelect = form.querySelector('[data-manager-access-user-field]');
-    const existingUserId = mode === "existing" ? asText(existingSelect?.value) : "";
+    const existingUserId = mode === "existing" ? selectedManagerAccessUserId(form) : "";
     let existingMembership = null;
-    if (existingUserId) existingMembership = userMembershipForClub(existingUserId, existingSelect.dataset.clubId);
+    if (existingUserId) {
+      const checkedUserField = form.querySelector('[data-manager-access-user-field]:checked');
+      existingMembership = userMembershipForClub(existingUserId, checkedUserField?.dataset.clubId);
+    }
     if (roleWrapper) roleWrapper.hidden = Boolean(existingMembership);
     if (note) {
       note.hidden = !existingMembership;
@@ -18545,13 +18643,17 @@ ${esc(bodyText)}</pre>
   // data-manager-access-mode-field. L'ancien câblage NE S'EXÉCUTAIT DONC PAS quand ce dialogue
   // était le premier ouvert (bug capture Thierry). On attache les écouteurs DIRECTEMENT sur les
   // contrôles réels du formulaire (même patron que openDisciplineCreationDialog) + état initial.
+  // Lot UX-B (§35 du mandat) — le compte existant est maintenant PLUSIEURS radios (une par compte
+  // AVAILABLE) partageant data-manager-access-user-field : querySelectorAll (jamais querySelector
+  // seul, qui n'attacherait le listener qu'au premier).
   function wireManagerAccessDialog(form) {
     if (!form) return;
     form.querySelectorAll("[data-manager-access-mode-field]").forEach((radio) => {
       radio.addEventListener("change", () => updateManagerAccessDialogVisibility(form));
     });
-    const userField = form.querySelector("[data-manager-access-user-field]");
-    if (userField) userField.addEventListener("change", () => updateManagerAccessDialogVisibility(form));
+    form.querySelectorAll("[data-manager-access-user-field]").forEach((radio) => {
+      radio.addEventListener("change", () => updateManagerAccessDialogVisibility(form));
+    });
     updateManagerAccessDialogVisibility(form);
   }
 
@@ -18599,7 +18701,10 @@ ${esc(bodyText)}</pre>
       }
       const mode = form.querySelector('[name="accessMode"]:checked')?.value === "existing" ? "existing" : "new";
       const displayName = asText(form.querySelector('[name="displayName"]')?.value);
-      const existingUserId = asText(form.querySelector('[name="existingUserId"]')?.value);
+      // Lot UX-B (§4-5 du mandat) — même helper que updateManagerAccessDialogVisibility, seule
+      // source de vérité pour la sélection (plusieurs radios existingUserId, jamais un simple
+      // querySelector('[name="existingUserId"]') qui retournerait le premier du DOM même non coché).
+      const existingUserId = selectedManagerAccessUserId(form);
       const role = asText(form.querySelector('[name="role"]')?.value);
       if (mode === "existing" && !existingUserId) {
         alert("Choisissez un compte existant à lier.");
@@ -24317,10 +24422,17 @@ ${esc(bodyText)}</pre>
     return "";
   }
 
-  function contactLinkAction(row = {}, label = "Fiche contact / facture") {
+  // Lot Q5B (§6 du mandat) — sourceClubId (3e paramètre, OPTIONNEL) transporte le club source via
+  // data-search-club-id : le garde-fou GÉNÉRIQUE déjà en tête de handleAction (src/21-handlers.js,
+  // vérifié quelle que soit l'action) refuse alors tout clic après un changement de club actif,
+  // sans qu'aucun changement soit nécessaire dans handleAction lui-même. Absent (comportement de
+  // TOUS les appelants historiques — Membership/Commande/Stage), le bouton reste STRICTEMENT
+  // identique à avant ce lot (aucune régression).
+  function contactLinkAction(row = {}, label = "Fiche contact / facture", sourceClubId = "") {
     const contactLink = contactLinkForRow(row);
     if (!contactLink) return "";
-    return `<button type="button" data-action="open-linked-contact" data-contact-link="${esc(contactLink)}">${esc(label)}</button>`;
+    const clubAttr = sourceClubId ? ` data-search-club-id="${esc(sourceClubId)}"` : "";
+    return `<button type="button" data-action="open-linked-contact" data-contact-link="${esc(contactLink)}"${clubAttr}>${esc(label)}</button>`;
   }
 
   function shopOrderInvoiceSourcePrefix(orderId = "") {
@@ -25870,10 +25982,38 @@ ${esc(bodyText)}</pre>
       const marker = dlg.querySelector("[data-contact-dialog-kind][data-contact-dialog-id]");
       if (!marker) return;
       const kind = marker.dataset.contactDialogKind;
+      // Lot Q1.5 (§15) — club source figé À L'OUVERTURE (data-contact-dialog-club-id posé par
+      // openContactDialog), jamais un activeClubId() lu tardivement au moment du refresh.
+      // Pas de repli || "" ici : une chaîne vide EXPLICITE court-circuiterait le paramètre par défaut
+      // (sourceClubId = activeClubId()) de contactActivitySummary, faisant échouer TOUTES les
+      // permissions (clubId falsy) même quand la marge est simplement absente (anciens dialogues de
+      // test ne connaissant pas cet attribut). undefined laisse le défaut s'appliquer normalement.
+      const openedClubId = marker.dataset.contactDialogClubId;
+      // Lot Q2B (§7 correctif Pix) — collision d'id inter-club : state.contacts reflète TOUJOURS le
+      // club ACTUELLEMENT actif, pas forcément openedClubId. Si le club actif a changé depuis
+      // l'ouverture de cette fiche, state peut contenir un AUTRE contact portant le même id sous le
+      // nouveau club actif (ex. K1 existe à la fois en club A et en club B) : chercher "row.id ===
+      // marker.dataset.contactDialogId" dans ce state réhydraterait alors la fiche A avec les données
+      // de B. Fail-closed : si openedClubId est renseigné et diffère du club actif, on abandonne le
+      // refresh de CETTE fiche précise (son ancien contenu reste affiché tel quel) — jamais un
+      // remplacement par les données d'un autre club. Les autres dialogues empilés, eux, continuent
+      // d'être traités normalement (return ici ne sort que de CETTE itération de forEach).
+      if (openedClubId && activeClubId() !== openedClubId) return;
       const contact = state.contacts[kind]?.find((row) => row.id === marker.dataset.contactDialogId);
       if (!contact) return;
+      // Lot Q1.5 (§16) — le socle 360° (Phase Q, Lot Q1) n'était pas recalculé ici avant Q1.5 : une
+      // permission retirée pendant que la fiche restait ouverte laissait la section « Adhésion et
+      // activités » figée à son état d'ouverture. Même mécanique que .contact-recap ci-dessous, pas de
+      // cache ni de state parallèle : outerHTML recalculé depuis le contact courant + club source +
+      // permissions fraîches.
+      const overview = dlg.querySelector(".contact-360-dossier");
+      if (overview) {
+        const nextOverview = contact360OverviewHtml(kind, contact, openedClubId);
+        if (nextOverview) overview.outerHTML = nextOverview;
+        else overview.remove();
+      }
       const recap = dlg.querySelector(".contact-recap");
-      const nextRecap = contactActivitySummary(kind, contact);
+      const nextRecap = contactActivitySummary(kind, contact, openedClubId);
       if (recap && nextRecap) {
         recap.outerHTML = nextRecap;
       } else if (!recap && nextRecap) {
@@ -25947,12 +26087,18 @@ ${esc(bodyText)}</pre>
   // Lot 6a — Diagnostic mineur / responsable légal sur la fiche contact (AFFICHAGE SEUL).
   // Réutilise memberCategory (âge si date de naissance, sinon catégorie « Enfant »). Ne touche
   // ni aux factures, ni à contactInvoiceSnapshot, ni aux calculs, ni aux données.
-  function contactMinorGuardianHtml(contact = {}, kind = "members") {
+  // Lot Q1.5R (correctif Pix, Correction 4) — le NOM/téléphone/e-mail du responsable légal restent de
+  // la donnée CONTACT (contacts.read, déjà garanti par l'ouverture du dialogue). Mais l'ÉTAT de
+  // l'autorisation parentale (renseignée / non renseignée) est une information de conformité/document :
+  // exige documents.read EN PLUS, jamais exposée avec la seule lecture du contact. Défaut fail-closed
+  // (showDocuments = false) : un appel sans options n'affiche jamais cette mention.
+  function contactMinorGuardianHtml(contact = {}, kind = "members", options = {}) {
+    const { showDocuments = false } = options;
     if (kind !== "members") return "";                 // responsable légal = champs adhérent
     if (memberCategory(contact) !== "Enfant") return ""; // adulte / âge inconnu non-enfant -> rien
     const name = asText(contact.legalGuardianName);
     const coords = [asText(contact.legalGuardianPhone), asText(contact.legalGuardianEmail)].filter(Boolean).map(esc).join(" · ");
-    const auth = contact.parentalAuthorization ? ` <span class="muted">· Autorisation parentale renseignée</span>` : "";
+    const auth = (showDocuments && contact.parentalAuthorization) ? ` <span class="muted">· Autorisation parentale renseignée</span>` : "";
     const body = name
       ? `<div><strong>Responsable légal :</strong> ${esc(name)}${coords ? ` <span class="muted">(${coords})</span>` : ""}${auth}</div>`
       : `<div class="muted"><strong>⚠️ Responsable légal non renseigné</strong></div>`;
@@ -25962,19 +26108,713 @@ ${esc(bodyText)}</pre>
     </section>`;
   }
 
-  function contactActivitySummary(kind, contact = {}) {
+  // Phase Q — Lot Q1 (socle dossier membre 360°, READ-ONLY). Wrapper NEUF et séparé de
+  // contactActivitySummary : Q0 a confirmé que ce dernier affiche encore « Vous n'avez pas
+  // accès à cette section » au lieu d'omettre silencieusement une sous-section non autorisée
+  // (contraire à la doctrine visée ici). Plutôt que de retoucher contactActivitySummary (calculs
+  // financiers exclus de Q1), ce nouveau socle applique la doctrine stricte dès l'origine :
+  // section non lisible = section absente du DOM, jamais un message révélant son existence.
+  //
+  // Lot Q1R (correctif Pix, Problème 1) — NE PAS déléguer à contactModuleEntries/contactRecordMatches
+  // ici : ce couple retombe sur un fallback historique personKey(contact) === personKey(row) (jointure
+  // par nom/prénom) dès que membership.contactId ne correspond pas. Ce fallback est légitime pour
+  // contactActivitySummary/le reste de l'app (données legacy sans contactId), mais est EXPLICITEMENT
+  // interdit pour le dossier 360° : deux contacts homonymes ne doivent jamais partager une adhésion, et
+  // un membership legacy sans contactId ne doit jamais être rattaché par déduction textuelle. Filtre
+  // STRICT, id-only, aucun repli — contactRecordMatches lui-même reste intact et utilisé ailleurs.
+  function contactMembershipsFor360(contact = {}) {
+    if (!contact.id) return [];
+    return state.memberships.filter((membership) => membership.contactId === contact.id);
+  }
+
+  // Lot Q1R (correctif Pix, Problème 2) — rangée VOLONTAIREMENT non financière : ni calcMembership, ni
+  // contactRecapStatus/contactRecapAmounts, ni paymentStatus/claimFinancialState. memberships.read seul
+  // ne donne accès qu'aux données d'ADHÉSION (discipline), jamais aux données de PAIEMENT embarquées
+  // (parent read ≠ payments.read, même doctrine que currentUserCanReadEmbeddedPayment ailleurs dans
+  // l'app). Aucun statut métier d'adhésion indépendant des paiements n'existe dans le modèle actuel
+  // (audit Q1R) : la discipline seule est donc affichée, sans statut. Groupe/équipe/niveau/certificat
+  // relèvent de sport.read (§8 du mandat Q1) et n'ont pas leur place ici. Purement lecture, aucune
+  // action cliquable (la synthèse 360° n'est pas un point d'entrée d'édition, §13).
+  function contact360MembershipRowHtml(membership) {
+    const disciplineText = disciplineLabelFor(membership, state) || "Discipline non renseignée";
+    return `<article class="contact-recap-row">
+      <div class="contact-recap-main"><strong>${esc(disciplineText)}</strong></div>
+    </article>`;
+  }
+
+  // memberships.read gate ICI (avant toute construction HTML) : une section non autorisée doit être
+  // ABSENTE du DOM, jamais générée puis masquée (§9 du mandat Q1). openedClubId est celui capturé à
+  // l'ouverture du dialogue (jamais activeClubId() lu tardivement) — même doctrine O-E2-B4R que le
+  // reste du dialogue contact.
+  function contact360MembershipSummaryHtml(contact = {}, openedClubId) {
+    if (!currentUserHasPermission("memberships.read", openedClubId)) return "";
+    const entries = contactMembershipsFor360(contact);
+    return `<section class="contact-recap-section">
+      <div class="dialog-mini-title"><h4>Adhésion et activités</h4></div>
+      ${entries.length
+        ? `<div class="contact-recap-list">${entries.map(contact360MembershipRowHtml).join("")}</div>`
+        : `<p class="contact-recap-empty">Aucune adhésion enregistrée pour le moment.</p>`}
+    </section>`;
+  }
+
+  // Club COURANT (source de la fiche) uniquement — jamais les autres clubs éventuels de la même
+  // personne humaine (§6 du mandat Q1 : une personne dans plusieurs clubs = plusieurs Contacts
+  // indépendants dans l'architecture actuelle, Q1 ne change pas cela).
+  function contact360ClubLabel(openedClubId) {
+    const club = (clubStore?.clubs || []).find((row) => row.id === openedClubId);
+    return club ? asText(club.name) : "";
+  }
+
+  // ===========================================================================================
+  // Phase Q — Lot Q2B : vie sportive / planning / compétitions / assiduité (READ-ONLY).
+  // ===========================================================================================
+
+  // §6 du mandat Q2B — garde fail-closed commune à TOUS les selectors dynamiques Q2 : Groups/Teams/
+  // planningCourses/attendanceSessions viennent de `state`, ambiant et scopé au club ACTIF. Une fiche
+  // ouverte sous un club A ne doit JAMAIS lire ces collections si le club actif a changé depuis
+  // (activeClubId() !== sourceClubId) : dans ce cas, aucune lecture dynamique, quelle que soit la
+  // permission. sourceClubId manquant = fail-closed également.
+  function contact360SportContextIsCurrent(sourceClubId) {
+    return Boolean(sourceClubId) && activeClubId() === sourceClubId;
+  }
+
+  const CONTACT_360_NEXT_COURSE_HORIZON_DAYS = 92; // même borne que coursesShareAnyOccurrence (23-sport-modules.js)
+
+  // §4 du mandat Q2B — groupe(s) du contact, ID-only strict (contactMembershipsFor360, déjà sécurisé
+  // en Q1 : membership.contactId === contact.id, jamais contactModuleEntries/contactRecordMatches/
+  // personKey). Un groupe archivé reste identifiable (historique), il n'est simplement jamais filtré.
+  function memberGroupsFor360(contact, sourceClubId) {
+    if (!contact360SportContextIsCurrent(sourceClubId)) return [];
+    return contactMembershipsFor360(contact)
+      .map((membership) => ({ membership, group: membership.groupId ? getGroupById(membership.groupId) : null }))
+      .filter((entry) => entry.group);
+  }
+
+  // §5 du mandat Q2B — équipe(s) du contact via membership.teamIds[] (jamais de déduction inverse).
+  // Défense en profondeur : un Team au clubId EXPLICITE différent de sourceClubId est exclu ; un
+  // clubId legacy vide reste accepté (le contexte source lui-même est déjà validé ci-dessus).
+  function memberTeamsFor360(contact, sourceClubId) {
+    if (!contact360SportContextIsCurrent(sourceClubId)) return [];
+    return contactMembershipsFor360(contact)
+      .map((membership) => ({
+        membership,
+        teams: (Array.isArray(membership.teamIds) ? membership.teamIds : [])
+          .map((teamId) => getTeamById(teamId))
+          .filter((team) => team && (!asText(team.clubId) || team.clubId === sourceClubId)),
+      }))
+      .filter((entry) => entry.teams.length);
+  }
+
+  // §8-12 du mandat Q2B — prochain cours RÉEL d'une adhésion (un seul groupId). Réutilise
+  // exclusivement courseOccursOnDate/planningExceptionFor/resolveCourseForDate/timeToMinutes/
+  // dateInputValue (aucun second moteur de récurrence/date). Recherche BORNÉE à
+  // CONTACT_360_NEXT_COURSE_HORIZON_DAYS (précédent réel : coursesShareAnyOccurrence sonde 92 jours).
+  // `now` injectable (jamais new Date() interne au calcul lui-même) pour rester testable sans
+  // monkey-patcher l'horloge globale.
+  function memberNextCourseFor360(membership, sourceClubId, now = new Date()) {
+    if (!contact360SportContextIsCurrent(sourceClubId)) return null;
+    if (!membership || !membership.groupId) return null;
+    // Lot Q2BR (correctif Pix, Correction 2) — un groupe ARCHIVÉ peut rester affiché comme historique
+    // (« Groupe : ... (archivé) »), mais ne produit jamais de « Prochain cours » : même si un
+    // planningCourse incohérent référence encore ce groupId sans être lui-même archivé, l'existence
+    // d'un futur planning n'a plus de sens pour un groupe archivé. Groupe introuvable = même verdict
+    // (prudence : jamais de futur planning sur une référence qui ne résout plus rien).
+    const group = getGroupById(membership.groupId);
+    if (!group || group.archived) return null;
+    const candidates = (state.planningCourses || []).filter((course) => course.groupId === membership.groupId && !course.archived);
+    if (!candidates.length) return null;
+    const today = new Date(now);
+    today.setHours(0, 0, 0, 0);
+    const nowMinutes = now.getHours() * 60 + now.getMinutes();
+    // Lot Q2BR (correctif Pix, Correction 3) — borne EXACTE alignée sur le précédent canonique
+    // coursesShareAnyOccurrence (23-sport-modules.js : `for (i = 0; i < 92; i += 1)`, soit 92 dates
+    // sondées, jour 0 à jour 91). `offset <= 92` sondait par erreur 93 dates (0..92) : corrigé en `<`.
+    for (let offset = 0; offset < CONTACT_360_NEXT_COURSE_HORIZON_DAYS; offset += 1) {
+      const cursor = new Date(today);
+      cursor.setDate(cursor.getDate() + offset);
+      const dateInput = dateInputValue(cursor);
+      const occurrences = candidates
+        .filter((course) => courseOccursOnDate(course, dateInput))
+        .map((course) => {
+          // §10 — exception annulée : cette occurrence n'existe pas, on continue la recherche.
+          const exception = planningExceptionFor(course.id, dateInput);
+          if (exception && exception.cancelled) return null;
+          // §10 — exception horaire/coach/salle : occurrence RÉELLE affichée, jamais le créneau habituel.
+          return { course, dateInput, effective: resolveCourseForDate(course, dateInput) };
+        })
+        .filter(Boolean);
+      if (!occurrences.length) continue;
+      // §12 — plusieurs cours le même jour : tri par heure de début résolue, jamais l'ordre du tableau.
+      occurrences.sort((a, b) => {
+        const am = timeToMinutes(a.effective.startTime);
+        const bm = timeToMinutes(b.effective.startTime);
+        return (am === null ? Infinity : am) - (bm === null ? Infinity : bm);
+      });
+      if (offset === 0) {
+        // §11 — aujourd'hui : exclure les occurrences déjà terminées (cas C/D), garder les autres (A/B/E).
+        const stillRelevant = occurrences.filter((entry) => {
+          const endMin = timeToMinutes(entry.effective.endTime);
+          if (endMin !== null) return endMin > nowMinutes; // B (en cours) / C (terminé, exclu)
+          const startMin = timeToMinutes(entry.effective.startTime);
+          if (startMin !== null) return startMin > nowMinutes; // A (futur) / D (déjà passé, exclu)
+          return true; // E — aucune heure fiable : reste candidat
+        });
+        if (stillRelevant.length) return stillRelevant[0];
+        continue; // toutes terminées aujourd'hui -> jour suivant
+      }
+      return occurrences[0];
+    }
+    return null;
+  }
+
+  // §19 du mandat Q2B — une compétition candidate est-elle encore pertinente (en cours ou future) à
+  // l'instant `now` ? Dates/heures invalides ou absentes -> jamais candidate. Ne réécrit jamais
+  // competition.status (donnée métier explicite, doctrine M-B2 déjà en vigueur) : ceci ne fait que
+  // FILTRER un ensemble déjà restreint à status==="planned" par l'appelant.
+  function competition360IsRelevant(competition, now = new Date()) {
+    const start = parseDate(competition.startDate);
+    if (!start) return false;
+    const end = parseDate(competition.endDate) || start;
+    const today = new Date(now); today.setHours(0, 0, 0, 0);
+    const startDay = new Date(start); startDay.setHours(0, 0, 0, 0);
+    const endDay = new Date(end); endDay.setHours(0, 0, 0, 0);
+    if (endDay > today) return true;
+    if (endDay < today) return false;
+    const nowMinutes = now.getHours() * 60 + now.getMinutes();
+    const endMin = timeToMinutes(competition.endTime);
+    if (endMin !== null) return endMin > nowMinutes;
+    if (startDay.getTime() === today.getTime()) {
+      const startMin = timeToMinutes(competition.startTime);
+      if (startMin !== null) return startMin > nowMinutes;
+    }
+    return true; // aucune heure fiable pour un événement daté d'aujourd'hui : reste candidat
+  }
+
+  // Poids de tri (§21) : événement en cours avant les événements futurs, puis chronologie réelle.
+  function competition360SortWeight(competition, now = new Date()) {
+    const start = parseDate(competition.startDate);
+    const end = parseDate(competition.endDate) || start;
+    const today = new Date(now); today.setHours(0, 0, 0, 0);
+    const startDay = new Date(start); startDay.setHours(0, 0, 0, 0);
+    const endDay = new Date(end); endDay.setHours(0, 0, 0, 0);
+    const ongoing = startDay <= today && endDay >= today;
+    const startMinutes = timeToMinutes(competition.startTime);
+    return { ongoing: ongoing ? 0 : 1, timestamp: start.getTime() + (startMinutes === null ? 0 : startMinutes) * 60000 };
+  }
+
+  // §16-18 du mandat Q2B (correctif Pix) — jointure STRICTE convocation -> contact. parseContactLink()
+  // renvoie kind:"member"/"prospect" (SINGULIER) alors que kind ici vaut "members"/"prospects"
+  // (PLURIEL, même convention que openContactDialog) : comparaison normalisée EXPLICITE, jamais un
+  // contactInvoiceKind ni un fallback textuel. Filtre complet : !archived, status==="planned",
+  // clubId explicite = sourceClubId (defense-in-depth, clubId legacy vide accepté), convocation
+  // exacte du contact, convocation.status !== "declined", et pertinence temporelle (§19).
+  function memberCompetitionsFor360(contact, kind, sourceClubId, now = new Date()) {
+    if (!contact360SportContextIsCurrent(sourceClubId)) return [];
+    if (!contact || !contact.id) return [];
+    const expectedLinkKind = kind === "members" ? "member" : "prospect";
+    return (state.competitions || [])
+      .filter((competition) => !competition.archived)
+      .filter((competition) => competition.status === "planned")
+      .filter((competition) => !asText(competition.clubId) || competition.clubId === sourceClubId)
+      .map((competition) => {
+        const convocation = (competition.convocations || []).find((c) => {
+          const parsed = parseContactLink(c.contactLink);
+          return parsed.kind === expectedLinkKind && parsed.contactId === contact.id;
+        });
+        return convocation ? { competition, convocation } : null;
+      })
+      .filter(Boolean)
+      .filter((entry) => entry.convocation.status !== "declined")
+      .filter((entry) => competition360IsRelevant(entry.competition, now))
+      .sort((a, b) => {
+        const wa = competition360SortWeight(a.competition, now);
+        const wb = competition360SortWeight(b.competition, now);
+        return wa.ongoing - wb.ongoing || wa.timestamp - wb.timestamp;
+      });
+  }
+
+  // §20 du mandat Q2B — titre exact selon le type RÉEL de la compétition (jamais "match" par défaut).
+  function contact360NextCompetitionTitle(type) {
+    if (type === "match") return "Prochain match";
+    if (type === "tournament") return "Prochain tournoi";
+    if (type === "competition") return "Prochaine compétition";
+    return "Prochain événement sportif";
+  }
+
+  // ===========================================================================================
+  // Phase Q — Lot Q4B : navigation contextuelle READ-ONLY (§28 du mandat) — ce helper ne décide
+  // AUCUNE permission, ne résout AUCUNE donnée : il échappe/rend uniquement les attributs data-*
+  // d'un bouton dont l'action réelle est traitée par le dispatcher global data-action existant
+  // (src/21-handlers.js). sourceClubId est TOUJOURS porté explicitement (data-club-id) : c'est la
+  // garde stale-club commune (§6/§31 du mandat Q4B) qui protège chaque handler au clic.
+  // ===========================================================================================
+  function contact360ActionButtonHtml(action, label, sourceClubId, attrs = {}) {
+    const extra = Object.entries(attrs).map(([name, value]) => ` ${name}="${esc(value)}"`).join("");
+    return `<button type="button" data-action="${esc(action)}" data-club-id="${esc(sourceClubId)}"${extra}>${esc(label)}</button>`;
+  }
+
+  // Ligne d'affichage d'une adhésion dans la section Sport : discipline toujours en tête, puis
+  // uniquement les lignes réellement disponibles (§14 — aucun placeholder « Groupe : — »). Si RIEN
+  // n'est disponible pour cette adhésion (ni groupe, ni équipe, ni prochain cours), la carte entière
+  // est omise : Adhésion et activités (Q1) a déjà montré la discipline, ce socle Q2 n'ajoute rien ici.
+  function contact360SportMembershipCardHtml(membership, sourceClubId, now) {
+    // Lot Q2BR (correctif Pix, Correction 1) — deuxième niveau de défense : cette carte lit
+    // directement state (getGroupById/getTeamById) et memberNextCourseFor360. Fail-closed ICI aussi,
+    // indépendamment de la garde déjà posée par l'appelant (contact360SportSectionHtml) — un futur
+    // appel direct de cette fonction ne doit jamais pouvoir lire le mauvais club.
+    if (!contact360SportContextIsCurrent(sourceClubId)) return "";
+    const disciplineText = disciplineLabelFor(membership, state) || "Discipline non renseignée";
+    const group = membership.groupId ? getGroupById(membership.groupId) : null;
+    const teams = (Array.isArray(membership.teamIds) ? membership.teamIds : [])
+      .map((teamId) => getTeamById(teamId))
+      .filter((team) => team && (!asText(team.clubId) || team.clubId === sourceClubId));
+    const nextCourse = memberNextCourseFor360(membership, sourceClubId, now);
+    const lines = [];
+    if (group) lines.push(`<div>Groupe : ${esc(group.name)}${group.archived ? ` <span class="muted">(archivé)</span>` : ""}</div>`);
+    if (teams.length) {
+      const label = teams.length > 1 ? "Équipes" : "Équipe";
+      const names = teams.map((team) => `${esc(team.name)}${team.archived ? " (archivée)" : ""}`).join(" · ");
+      lines.push(`<div>${label} : ${names}</div>`);
+    }
+    if (nextCourse) {
+      const dayLabel = [dateDisplay(nextCourse.dateInput), [nextCourse.effective.startTime, nextCourse.effective.endTime].filter(Boolean).join("–")].filter(Boolean).join(" · ");
+      lines.push(`<div>Prochain cours : ${esc(dayLabel)}</div>`);
+      const roomLabel = courseRoomLabel(nextCourse.effective);
+      if (roomLabel) lines.push(`<div>Salle : ${esc(roomLabel)}</div>`);
+      // Lot Q4B (§15/§17 du mandat) — UNE SEULE action par carte sportive : « Ouvrir le créneau »,
+      // jamais « Ouvrir l'adhésion » en plus (pas de sapin de boutons). membership.contactId est
+      // garanti ID-only (contactMembershipsFor360, jamais personKey).
+      lines.push(contact360ActionButtonHtml("contact-360-open-course", "Ouvrir le créneau", sourceClubId, {
+        "data-course-id": nextCourse.course.id,
+        "data-course-date": nextCourse.dateInput,
+        "data-contact-id": membership.contactId,
+      }));
+    }
+    if (!lines.length) return "";
+    return `<article class="contact-recap-row"><div class="contact-recap-main"><strong>${esc(disciplineText)}</strong>${lines.join("")}</div></article>`;
+  }
+
+  // §1/§2 du mandat Q2B — section « Sport et planning » : exige memberships.read ET sport.read (la
+  // relation contact -> groupe/équipe/planning passe PAR la Membership ; sport.read seul ne doit
+  // jamais révéler l'existence d'une adhésion que memberships.read interdit de lire). Absente
+  // (jamais un message) si l'une des deux manque, ou si aucune carte n'a de contenu réel.
+  function contact360SportSectionHtml(contact, sourceClubId, now = new Date()) {
+    // Lot Q2BR (correctif Pix, Correction 1) — garde stale EN TÊTE, avant toute lecture dynamique
+    // (contactMembershipsFor360 lit state.memberships). refreshOpenContactDialog abandonne déjà le
+    // refresh d'une fiche stale (deuxième barrière), mais ce renderer doit être intrinsèquement
+    // fail-closed : un appel direct futur (test, autre point d'entrée) ne doit jamais résoudre de
+    // données depuis le mauvais club, même si cette barrière-là était contournée ou absente.
+    if (!contact360SportContextIsCurrent(sourceClubId)) return "";
+    if (!currentUserHasPermission("memberships.read", sourceClubId)) return "";
+    if (!currentUserHasPermission("sport.read", sourceClubId)) return "";
+    const cards = contactMembershipsFor360(contact)
+      .map((membership) => contact360SportMembershipCardHtml(membership, sourceClubId, now))
+      .filter(Boolean)
+      .join("");
+    if (!cards) return "";
+    return `<section class="contact-recap-section contact-360-sport">
+      <div class="dialog-mini-title"><h4>Sport et planning</h4></div>
+      <div class="contact-recap-list">${cards}</div>
+    </section>`;
+  }
+
+  // §15-18 du mandat Q2B — « prochain événement sportif » : exige UNIQUEMENT competitions.read (ni
+  // sport.read, ni memberships.read — la relation passe directement par convocations[].contactLink).
+  function contact360NextCompetitionHtml(contact, kind, sourceClubId, now = new Date()) {
+    if (!currentUserHasPermission("competitions.read", sourceClubId)) return "";
+    const candidates = memberCompetitionsFor360(contact, kind, sourceClubId, now);
+    if (!candidates.length) return "";
+    const { competition, convocation } = candidates[0];
+    const title = contact360NextCompetitionTitle(competition.type);
+    const dateLabel = [dateDisplay(competition.startDate), competition.startTime].filter(Boolean).join(" · ");
+    const convocationNote = convocation.status === "pending" ? "À confirmer" : convocation.status === "confirmed" ? "Confirmé" : "";
+    return `<section class="contact-recap-section contact-360-next-competition">
+      <div class="dialog-mini-title"><h4>${esc(title)}</h4></div>
+      <div><strong>${esc(competition.name)}</strong></div>
+      ${dateLabel ? `<div>${esc(dateLabel)}</div>` : ""}
+      ${convocationNote ? `<div class="muted">${esc(convocationNote)}</div>` : ""}
+      ${competition.id ? contact360ActionButtonHtml("contact-360-open-competition", "Ouvrir la compétition", sourceClubId, {
+        "data-competition-id": competition.id,
+        "data-contact-id": contact.id,
+      }) : ""}
+    </section>`;
+  }
+
+  // §23-24 du mandat Q2B — assiduité : sport.read SEUL (la donnée est directement liée à contact.id,
+  // aucune dépendance à memberships.read). Réutilise getAttendanceStats(contact.id) TEL QUEL (aucun
+  // recalcul, aucun fallback membership.id — strict ID-only). Absente si aucune séance enregistrée.
+  function contact360AttendanceHtml(contact, sourceClubId) {
+    if (!currentUserHasPermission("sport.read", sourceClubId)) return "";
+    if (!contact360SportContextIsCurrent(sourceClubId)) return "";
+    const stats = getAttendanceStats(contact.id);
+    if (!stats.total) return "";
+    const mainLine = `${intValue(stats.present)} présence${stats.present > 1 ? "s" : ""} / ${intValue(stats.total)} séance${stats.total > 1 ? "s" : ""} · ${intValue(stats.rate)} %`;
+    const extra = [];
+    if (stats.absent) extra.push(`${intValue(stats.absent)} absence${stats.absent > 1 ? "s" : ""}`);
+    if (stats.late) extra.push(`${intValue(stats.late)} retard${stats.late > 1 ? "s" : ""}`);
+    return `<section class="contact-recap-section contact-360-attendance">
+      <div class="dialog-mini-title"><h4>Assiduité</h4></div>
+      <div>${esc(mainLine)}</div>
+      ${extra.length ? `<div class="muted">${esc(extra.join(" · "))}</div>` : ""}
+    </section>`;
+  }
+
+  // ===========================================================================================
+  // Phase Q — Lot Q3B : finances / boutique / documents (READ-ONLY, résumé compact).
+  // ===========================================================================================
+
+  // Lot Q3B (§6 du mandat) — règle de tri canonique EXACTE de la page Factures (filteredInvoices,
+  // NON modifiée) : issuedAt || createdAt. Extraite ici en fonction pure pour que Q3 la réutilise
+  // sans dupliquer implicitement la règle ni toucher filteredInvoices.
+  function invoiceChronologicalSortValue(invoice = {}) {
+    return asText(invoice.issuedAt || invoice.createdAt);
+  }
+
+  // Lot Q3B (§4/§7 du mandat, doctrine anti-double-comptage confirmée par Q3A) — DONNÉES du bloc
+  // Finances. Chaque domaine (Factures / Adhésions / Boutique / Stages / Avoirs) reste un compteur
+  // INDÉPENDANT : aucune somme cross-domaine n'est jamais calculée ici (une facture peut déjà
+  // représenter le même claim qu'une adhésion/commande/stage — claimFinancialState/invoiceLiveTotals
+  // partagent la même donnée sous-jacente, cf. audit Q3A §1-4). Architecture DATA/HTML séparée :
+  // cette fonction ne produit aucun HTML, uniquement un objet dont chaque clé n'existe QUE si la
+  // permission correspondante est accordée (permission refusée -> donnée jamais calculée, jamais
+  // seulement jamais affichée — doctrine Q1.5R).
+  function contact360FinanceSummaryData(contact, sourceClubId) {
+    if (!contact360SportContextIsCurrent(sourceClubId)) return {};
+    const data = {};
+
+    // Factures — billing.read SEUL (§5 du mandat : jamais payments.read).
+    if (currentUserHasPermission("billing.read", sourceClubId)) {
+      const invoices = contactInvoices(contact, "members");
+      // Lot Q3BR2 (correctif Pix) — CANONICITÉ > micro-optimisation : "impayée"/"en retard" sont
+      // décidées EXCLUSIVEMENT par les helpers canoniques invoiceIsUnpaid/invoiceIsLate/
+      // computedInvoiceStatus (aucune réimplémentation locale de leur logique ni du seuil 0.005).
+      // invoiceLiveTotals peut être rappelé en interne par ces helpers ; ce n'est plus un objectif
+      // de ne l'invoquer qu'une fois par facture. Seul le besoin PROPRE à Q3 (ambiguous/restDue/total
+      // pour "Reste à payer facturé", cf. doctrine legacy ambiguous ci-dessous) justifie un appel
+      // direct supplémentaire à invoiceLiveTotals ici.
+      const unpaidInvoices = invoices.filter(invoiceIsUnpaid);
+      // §7 — cas legacy (claim fractionné sur plusieurs factures anciennes, claimFinancialState les
+      // marque ambiguous) : EXCLU explicitement de la somme "reste à payer facturé" (jamais un
+      // agrégat qui prétendrait être exact alors qu'il ne l'est pas), mais reste compté dans
+      // "Factures à régler" (invoiceIsUnpaid reste vrai, la facture existe bel et bien).
+      const unpaidNonAmbiguous = unpaidInvoices.filter((invoice) => !invoiceLiveTotals(invoice).ambiguous);
+      const restDueTotal = unpaidNonAmbiguous.reduce((sum, invoice) => sum + Math.max(0, asNumber(invoiceLiveTotals(invoice).restDue)), 0);
+      const sortedInvoices = invoices.slice().sort((a, b) => invoiceChronologicalSortValue(b).localeCompare(invoiceChronologicalSortValue(a)));
+      const lastInvoice = sortedInvoices[0] || null;
+      // Lot Q3BR (Correction 2) — date canonique (issuedAt || createdAt) de la dernière facture,
+      // affichée via dateDisplay (aucun second formatter). Omise si non exploitable, jamais un
+      // "date inconnue"/"—" dans ce résumé compact.
+      const lastDate = lastInvoice ? invoiceChronologicalSortValue(lastInvoice) : "";
+      data.invoices = {
+        unpaidCount: unpaidInvoices.length,
+        restDueTotal,
+        restDueAmbiguous: unpaidNonAmbiguous.length < unpaidInvoices.length,
+        lateCount: invoices.filter(invoiceIsLate).length,
+        last: lastInvoice ? {
+          // Lot Q4B (§6/§8 du mandat) — ID ajouté pour permettre l'action « Ouvrir la facture » :
+          // n'affecte AUCUN affichage financier existant (jamais interpolé dans le HTML monétaire).
+          id: lastInvoice.id,
+          number: asText(lastInvoice.number),
+          statusLabel: invoiceStatusLabel({ ...lastInvoice, status: computedInvoiceStatus(lastInvoice) }),
+          total: asNumber(invoiceLiveTotals(lastInvoice).total),
+          dateLabel: lastDate ? dateDisplay(lastDate) : "",
+        } : null,
+      };
+    }
+
+    // Avoirs — accounting.read SEUL. Réutilise creditNotesAvailableForContact TEL QUEL (déjà ID-only,
+    // déjà filtré "actif", déjà trié) — aucune reconstruction, aucun "restant partiel" inventé (un
+    // avoir est disponible en entier ou plus du tout, doctrine confirmée Q3A §12).
+    if (currentUserHasPermission("accounting.read", sourceClubId)) {
+      const notes = creditNotesAvailableForContact(contact.id);
+      if (notes.length) {
+        data.creditNotes = { count: notes.length, totalAvailable: notes.reduce((sum, cn) => sum + asNumber(cn.amount), 0) };
+      }
+    }
+
+    // Adhésions avec reste dû — memberships.read ET currentUserCanReadEmbeddedPayment("membership", ...).
+    // calcMembership n'est JAMAIS appelé si le paiement embarqué n'est pas lisible (§10/§27 du mandat).
+    if (currentUserHasPermission("memberships.read", sourceClubId) && currentUserCanReadEmbeddedPayment("membership", sourceClubId)) {
+      const count = contactMembershipsFor360(contact).filter((row) => asNumber(calcMembership(row).restDue) > 0).length;
+      if (count > 0) data.membershipsRestDueCount = count;
+    }
+
+    // Commandes avec reste dû — shop.read ET currentUserCanReadEmbeddedPayment("order", ...). ID-only
+    // strict via contactStrictModuleRows (Q1.5). calcOrder jamais appelé sans le paiement lisible.
+    if (currentUserHasPermission("shop.read", sourceClubId) && currentUserCanReadEmbeddedPayment("order", sourceClubId)) {
+      const count = contactStrictModuleRows(contact, "members", "boutique").filter((row) => asNumber(calcOrder(row).restDue) > 0).length;
+      if (count > 0) data.ordersRestDueCount = count;
+    }
+
+    // Stages avec reste dû — stages.read ET currentUserCanReadEmbeddedPayment("registration", ...).
+    // calcRegistration jamais appelé sans le paiement lisible.
+    if (currentUserHasPermission("stages.read", sourceClubId) && currentUserCanReadEmbeddedPayment("registration", sourceClubId)) {
+      const count = contactStrictModuleRows(contact, "members", "stages").filter(({ row, stageId }) => asNumber(calcRegistration(row, stageId).restDue) > 0).length;
+      if (count > 0) data.stageRegistrationsRestDueCount = count;
+    }
+
+    return data;
+  }
+
+  // Lot Q3B — HTML pur à partir des données ci-dessus, aucune logique de permission ici (déjà
+  // tranchée par contact360FinanceSummaryData). §3 : AUCUNE somme cross-domaine n'est jamais
+  // interpolée ici, chaque ligne reste explicitement son propre domaine.
+  function contact360FinanceSummaryHtml(data = {}, sourceClubId, contactId) {
+    const lines = [];
+    if (data.invoices) {
+      if (data.invoices.unpaidCount > 0) lines.push(`<div>Factures à régler : ${intValue(data.invoices.unpaidCount)}</div>`);
+      if (data.invoices.restDueTotal > 0) lines.push(`<div>Reste à payer facturé : ${money(data.invoices.restDueTotal)}${data.invoices.restDueAmbiguous ? ` <span class="muted">(partiel, une facture ancienne fractionnée n'est pas comptée)</span>` : ""}</div>`);
+      if (data.invoices.last) {
+        const lastParts = [asText(data.invoices.last.number) || "Brouillon", data.invoices.last.dateLabel, money(data.invoices.last.total), data.invoices.last.statusLabel].filter(Boolean);
+        lines.push(`<div>Dernière facture : ${esc(lastParts.join(" · "))}</div>`);
+        // Lot Q4B (§8-10 du mandat) — « Ouvrir la facture » : billing.read seul suffit (déjà garanti
+        // par la présence de data.invoices, jamais billing.write dupliqué ici — openInvoiceEditor
+        // décide lui-même de l'éditabilité). Pas de bouton « Encaisser » (§11 : une seule frontière).
+        // Lot Q4BR (Correction 1) — data-contact-id transporté pour que le handler puisse revalider
+        // AU CLIC que la facture LIVE appartient toujours à CE contact (jamais une confiance aveugle
+        // dans le seul invoiceId, qui pourrait avoir été réaffecté entre le rendu et le clic).
+        if (data.invoices.last.id) {
+          lines.push(contact360ActionButtonHtml("contact-360-open-invoice", "Ouvrir la facture", sourceClubId, {
+            "data-invoice-id": data.invoices.last.id,
+            "data-contact-id": contactId,
+          }));
+        }
+      }
+      if (data.invoices.lateCount > 0) lines.push(`<div>${intValue(data.invoices.lateCount)} facture${data.invoices.lateCount > 1 ? "s" : ""} en retard</div>`);
+    }
+    if (data.membershipsRestDueCount > 0) lines.push(`<div>Adhésions avec reste dû : ${intValue(data.membershipsRestDueCount)}</div>`);
+    if (data.ordersRestDueCount > 0) lines.push(`<div>Commandes avec reste dû : ${intValue(data.ordersRestDueCount)}</div>`);
+    if (data.stageRegistrationsRestDueCount > 0) lines.push(`<div>Stages avec reste dû : ${intValue(data.stageRegistrationsRestDueCount)}</div>`);
+    if (data.creditNotes) lines.push(`<div>Avoir disponible : ${money(data.creditNotes.totalAvailable)}</div>`);
+    if (!lines.length) return "";
+    return `<section class="contact-recap-section contact-360-finance">
+      <div class="dialog-mini-title"><h4>Finances</h4></div>
+      ${lines.join("")}
+    </section>`;
+  }
+
+  // Lot Q3B (§14-17 du mandat) — Boutique : shop.read SEUL, compteur fiable de commandes (jamais un
+  // "dernier achat" : ShopOrder n'a aucun champ date métier normalisé fiable, cf. audit Q3A §6-7 —
+  // ni l'ordre du tableau, ni un parsing de l'id, ni firstPaymentDate ne sont utilisés). ID-only
+  // strict via contactStrictModuleRows (Q1.5).
+  function contact360ShopSummaryData(contact, sourceClubId) {
+    if (!contact360SportContextIsCurrent(sourceClubId)) return {};
+    if (!currentUserHasPermission("shop.read", sourceClubId)) return {};
+    const orders = contactStrictModuleRows(contact, "members", "boutique");
+    // Lot Q3BR (correctif Pix, Correction 1) — aucune donnée réelle -> aucune propriété métier :
+    // la sémantique "rien à montrer" est portée par le DATA selector, jamais reconstruite côté HTML.
+    // Un contact sans commande n'a pas de bloc Boutique du tout (jamais "Boutique : 0 commande").
+    if (!orders.length) return {};
+    const data = { orderCount: orders.length };
+    // Lot Q4B (§12-13 du mandat) — cible UNIQUEMENT si une seule commande existe : ShopOrder n'a
+    // aucune date métier fiable, donc AUCUNE sélection arbitraire (orders[0]/dernier id/etc.) parmi
+    // plusieurs commandes. 2+ commandes -> compteur seul, jamais de bouton.
+    if (orders.length === 1) data.singleOrderId = orders[0].id;
+    return data;
+  }
+
+  function contact360ShopSummaryHtml(data = {}, sourceClubId, contactId) {
+    if (typeof data.orderCount !== "number") return "";
+    const button = data.singleOrderId
+      ? contact360ActionButtonHtml("contact-360-open-order", "Ouvrir la commande", sourceClubId, {
+        "data-order-id": data.singleOrderId,
+        "data-contact-id": contactId,
+      })
+      : "";
+    return `<section class="contact-recap-section contact-360-shop">
+      <div class="dialog-mini-title"><h4>Boutique</h4></div>
+      <div>Boutique : ${intValue(data.orderCount)} commande${data.orderCount > 1 ? "s" : ""}</div>
+      ${button}
+    </section>`;
+  }
+
+  // Lot Q3B (§18-24 du mandat) — Documents : deux propriétaires JAMAIS fusionnés (contact.documents
+  // vs membership.documents, même normalizer, doctrine Q0/Q3A inchangée). Conformité CONTACT
+  // (autorisation parentale) sous documents.read SEUL (contact déjà connu, contacts.read garanti par
+  // l'ouverture du dialogue). Conformité MEMBERSHIP (certificat médical) sous documents.read ET
+  // memberships.read (§19/§22 — jamais getMissingDocuments/contactForMembership : leur fallback
+  // personKey violerait la doctrine ID-only du dossier 360°, contact déjà connu ici sans lui ;
+  // réutilise seulement memberCategory/isMinor par équivalence — le contact est ici DÉJÀ ID-only).
+  function contact360DocumentsSummaryData(contact, sourceClubId) {
+    if (!contact360SportContextIsCurrent(sourceClubId)) return {};
+    if (!currentUserHasPermission("documents.read", sourceClubId)) return {};
+    const data = {};
+
+    // Lot Q3BR (correctif Pix, Correction 1) — "Documents du contact : 0" ne serait qu'un
+    // placeholder : la ligne n'existe que s'il y a réellement au moins un document.
+    const contactDocs = normalizeContactDocuments(contact.documents);
+    if (contactDocs.length) data.contactDocuments = { count: contactDocs.length };
+
+    // §21 — conformité CONTACT : documents.read seul. Autorisation parentale affichée UNIQUEMENT si
+    // le contact est réellement mineur (jamais signalée "manquante" pour un adulte).
+    if (memberCategory(contact) === "Enfant") {
+      data.parentalAuthorization = { present: Boolean(contact.parentalAuthorization) };
+    }
+
+    // §19/§22 — documents et conformité MEMBERSHIP : documents.read ET memberships.read, sinon
+    // absents (jamais un nombre de memberships/documents d'inscription révélé sans memberships.read).
+    if (currentUserHasPermission("memberships.read", sourceClubId)) {
+      const memberships = contactMembershipsFor360(contact);
+      const membershipDocCount = memberships.reduce((sum, row) => sum + normalizeContactDocuments(row.documents).length, 0);
+      // Lot Q3BR (correctif Pix, Correction 1) — même doctrine : "Documents des inscriptions : 0"
+      // n'existe que s'il y a réellement au moins un document d'inscription.
+      if (membershipDocCount > 0) data.membershipDocuments = { count: membershipDocCount };
+      // §23 — multi-discipline : agrégat exact "N / M renseigné(s)", jamais un booléen unique qui
+      // masquerait qu'une seule inscription sur plusieurs est en règle.
+      if (memberships.length) {
+        const certified = memberships.filter((row) => row.medicalCertificate === true).length;
+        data.medicalCertificates = { certified, total: memberships.length };
+      }
+      // Lot Q4B (§21 du mandat) — IDs des memberships sans certificat, EXCLUSIVEMENT à partir de
+      // contactMembershipsFor360 (ID-only strict, memberships déjà filtré ci-dessus) : aucun
+      // personKey, aucun contactForMembership, aucun getMissingDocuments. Absent (jamais tableau
+      // vide exposé) si tout est certifié, même doctrine "aucune donnée réelle -> aucune propriété".
+      const missingIds = memberships.filter((row) => row.medicalCertificate !== true).map((row) => row.id);
+      if (missingIds.length) data.missingMedicalCertificateMembershipIds = missingIds;
+    }
+
+    return data;
+  }
+
+  function contact360DocumentsSummaryHtml(data = {}, sourceClubId, contactId) {
+    const lines = [];
+    if (data.contactDocuments) lines.push(`<div>Documents du contact : ${intValue(data.contactDocuments.count)}</div>`);
+    if (data.membershipDocuments) lines.push(`<div>Documents des inscriptions : ${intValue(data.membershipDocuments.count)}</div>`);
+    if (data.medicalCertificates) lines.push(`<div>Certificats médicaux : ${intValue(data.medicalCertificates.certified)} / ${intValue(data.medicalCertificates.total)} renseigné${data.medicalCertificates.total > 1 ? "s" : ""}</div>`);
+    // Lot Q4B (§22 du mandat) — « Compléter le certificat » UNIQUEMENT si une seule Membership est
+    // concernée : jamais de sélection arbitraire parmi plusieurs IDs manquants (0 ou 2+ -> pas de bouton).
+    if (data.missingMedicalCertificateMembershipIds && data.missingMedicalCertificateMembershipIds.length === 1) {
+      lines.push(contact360ActionButtonHtml("contact-360-open-certificate-membership", "Compléter le certificat", sourceClubId, {
+        "data-membership-id": data.missingMedicalCertificateMembershipIds[0],
+        "data-contact-id": contactId,
+      }));
+    }
+    if (data.parentalAuthorization) lines.push(`<div>Autorisation parentale : ${data.parentalAuthorization.present ? "renseignée" : "manquante"}</div>`);
+    if (!lines.length) return "";
+    return `<section class="contact-recap-section contact-360-documents">
+      <div class="dialog-mini-title"><h4>Documents</h4></div>
+      ${lines.join("")}
+    </section>`;
+  }
+
+  // Socle visuel du dossier membre 360° (Phase Q, Lot Q1). Uniquement pour kind === "members" et un
+  // contact déjà persisté (row.id) : la fiche Prospect n'en gagne aucun (§12), et un nouveau contact
+  // pas encore enregistré n'a par construction ni club "d'ouverture" révélateur ni adhésion à
+  // synthétiser. L'identité (nom/prénom/âge/catégorie/date de naissance) n'exige aucune permission
+  // supplémentaire ici : elle est déjà protégée par la garde contacts.read à l'ouverture du dialogue
+  // (openContactDialog, §5 du mandat Q1 — write n'implique jamais read, contacts.write seul ne permet
+  // jamais d'atteindre ce code puisque le dialogue entier ne s'ouvre pas).
+  function contact360OverviewHtml(kind, contact = {}, openedClubId) {
+    if (kind !== "members" || !contact.id) return "";
+    const subtitleParts = ["Adhérent", memberCategory(contact), memberAgeLabel(contact)].filter(Boolean);
+    const clubName = contact360ClubLabel(openedClubId);
+    return `<div class="dialog-section contact-360-dossier" data-tour="contact-360">
+      <div class="contact-recap-head">
+        <div>
+          <h3>Dossier membre</h3>
+          <p>${esc(personLabel(contact) || "Contact")} · ${esc(subtitleParts.join(" · "))}</p>
+        </div>
+      </div>
+      <dl>
+        <div><dt>Club</dt><dd>${clubName ? esc(clubName) : `<span class="muted">Non renseigné</span>`}</dd></div>
+        <div><dt>Date de naissance</dt><dd>${dateDisplay(contact.birthDate) || `<span class="muted">Non renseignée</span>`}</dd></div>
+      </dl>
+      ${contact360MembershipSummaryHtml(contact, openedClubId)}
+      ${contact360SportSectionHtml(contact, openedClubId)}
+      ${contact360NextCompetitionHtml(contact, kind, openedClubId)}
+      ${contact360AttendanceHtml(contact, openedClubId)}
+      ${contact360FinanceSummaryHtml(contact360FinanceSummaryData(contact, openedClubId), openedClubId, contact.id)}
+      ${contact360ShopSummaryHtml(contact360ShopSummaryData(contact, openedClubId), openedClubId, contact.id)}
+      ${contact360DocumentsSummaryHtml(contact360DocumentsSummaryData(contact, openedClubId), openedClubId, contact.id)}
+    </div>`;
+  }
+
+  // Lot Q1.5 (correctif Pix §3-4) — jointure STRICTE par identifiant, propre au récapitulatif contact
+  // sécurisé : jamais de repli personKey/nom/prénom/email/téléphone. contactRecordMatches (utilisé
+  // par contactModuleEntries, resté INTACT) conserve son fallback historique pour le reste de l'app —
+  // non touché ici, aucun changement de sa sémantique globale (§4 du mandat Q1.5). Un enregistrement
+  // legacy sans contactId/prospectContactId reste NON RATTACHÉ plutôt que reconstruit par déduction
+  // textuelle : sécurité > reconstruction approximative legacy.
+  function contactStrictModuleRows(contact = {}, kind = "members", module = "") {
+    if (!contact.id) return [];
+    const isMemberKind = contactInvoiceKind(kind) === "members";
+    if (module === "disciplines") {
+      if (!isMemberKind) return []; // Adhésions non applicables au prospect (§3).
+      return state.memberships.filter((row) => row.contactId === contact.id);
+    }
+    if (module === "boutique") {
+      return state.shopOrders.filter((row) => (isMemberKind ? row.contactId : row.prospectContactId) === contact.id);
+    }
+    if (module === "stages") {
+      return state.tariffs.stages.flatMap((stage) => (state.stageRegistrations[stage.id] || [])
+        .filter((row) => (isMemberKind ? row.contactId : row.prospectContactId) === contact.id)
+        .map((row) => ({ row, stageId: stage.id })));
+    }
+    return [];
+  }
+
+  // Lot Q1.5R (correctif Pix, Correction 2) — sélection ID-only PURE, SANS calcul financier : le calcul
+  // (calcMembership/calcOrder/calcRegistration) était auparavant TOUJOURS effectué ici, même quand
+  // seul memberships.read/shop.read/stages.read était accordé (sans payments.read) — contraire à la
+  // doctrine « permission refusée -> donnée financière jamais calculée pour ce rendu », même si le
+  // résultat n'était ensuite pas interpolé dans le DOM. Retourne désormais {row}/{row, stageId} SEULS ;
+  // le calcul financier est ajouté par l'appelant (contactActivitySummary), UNIQUEMENT dans la branche
+  // où le paiement embarqué correspondant est lisible (cf. §7 du mandat Q1.5 / attachCalcIfReadable
+  // ci-dessous).
+  function contactRecapModuleEntries(contact = {}, kind = "members", module = "") {
+    const rows = contactStrictModuleRows(contact, kind, module);
+    if (module === "disciplines") return rows.map((row) => ({ row }));
+    if (module === "boutique") return rows.map((row) => ({ row }));
+    if (module === "stages") return rows.map(({ row, stageId }) => ({ row, stageId }));
+    return [];
+  }
+
+  // Lot Q1.5R — n'exécute calcMembership/calcOrder/calcRegistration QUE si `enabled` est vrai (paiement
+  // embarqué de CE domaine réellement lisible). Réutilise les calc* canoniques tels quels (§22 du
+  // mandat Q1 : aucune formule réécrite) ; ne fait que différer l'APPEL, jamais son résultat.
+  function attachCalcIfReadable(entries, enabled, calcFn) {
+    if (!enabled) return entries;
+    return entries.map((entry) => ({ ...entry, calc: calcFn(entry) }));
+  }
+
+  // Lot Q1.5 — contactActivitySummary devient PERMISSION-AWARE par construction (§1 du mandat) :
+  // permission refusée -> donnée jamais récupérée pour le rendu concerné -> section jamais construite
+  // -> absente du DOM. Plus aucun message « Vous n'avez pas accès à cette section » (révélait
+  // l'existence d'une section interdite) ni fallback personKey. sourceClubId = club source déjà
+  // capturé à l'ouverture du dialogue (openedClubId, §15) ; défaut activeClubId() pour compat avec les
+  // appelants historiques qui l'invoquaient sans club explicite (même patron que
+  // contactDocumentsSection).
+  function contactActivitySummary(kind, contact = {}, sourceClubId = activeClubId()) {
     if (!contact.id && !asText(contact.lastName) && !asText(contact.firstName)) return "";
-    const memberships = contactModuleEntries(contact, "disciplines");
-    const orders = contactModuleEntries(contact, "boutique");
-    const registrations = contactModuleEntries(contact, "stages");
+    // §2 du mandat Q1.5 — matrice exacte des domaines. currentUserCanReadEmbeddedPayment est LE
+    // helper canonique existant (payments.read + lecture du parent) : jamais réimplémenté ici.
+    const canReadMemberships = currentUserHasPermission("memberships.read", sourceClubId);
+    const canReadSport = currentUserHasPermission("sport.read", sourceClubId);
+    const canReadDocuments = currentUserHasPermission("documents.read", sourceClubId);
+    const canReadMembershipPayments = currentUserCanReadEmbeddedPayment("membership", sourceClubId);
+    const canReadShop = currentUserHasPermission("shop.read", sourceClubId);
+    const canReadShopPayments = currentUserCanReadEmbeddedPayment("order", sourceClubId);
+    const canReadStages = currentUserHasPermission("stages.read", sourceClubId);
+    const canReadStagePayments = currentUserCanReadEmbeddedPayment("registration", sourceClubId);
+    const canReadBilling = currentUserHasPermission("billing.read", sourceClubId);
+    const canReadAccounting = currentUserHasPermission("accounting.read", sourceClubId);
+
+    // Récupération conditionnée à la permission de LECTURE du domaine (jamais récupéré si refusé).
+    // Lot Q1.5R (Correction 2) — le calcul financier (calcMembership/calcOrder/calcRegistration) n'est
+    // attaché QUE si le paiement embarqué du domaine est lisible : canReadMembershipPayments/
+    // canReadShopPayments/canReadStagePayments sont exactement les mêmes flags qui autorisent le KPI
+    // global (§12) — si celui-ci est autorisé, les trois calc sont donc déjà tous présents.
+    const memberships = canReadMemberships
+      ? attachCalcIfReadable(contactRecapModuleEntries(contact, kind, "disciplines"), canReadMembershipPayments, (entry) => calcMembership(entry.row))
+      : [];
+    const orders = canReadShop
+      ? attachCalcIfReadable(contactRecapModuleEntries(contact, kind, "boutique"), canReadShopPayments, (entry) => calcOrder(entry.row))
+      : [];
+    const registrations = canReadStages
+      ? attachCalcIfReadable(contactRecapModuleEntries(contact, kind, "stages"), canReadStagePayments, (entry) => calcRegistration(entry.row, entry.stageId))
+      : [];
     const all = [...memberships, ...orders, ...registrations];
-    const totals = all.reduce((acc, item) => {
-      acc.total += asNumber(item.calc.total);
-      acc.paid += asNumber(item.calc.paid);
-      acc.due += Math.max(0, asNumber(item.calc.restDue));
-      return acc;
-    }, { total: 0, paid: 0, due: 0 });
-    const invoiceRows = contactInvoices(contact, kind);
+    const invoiceRows = canReadBilling ? contactInvoices(contact, kind) : [];
     const invoiceTotals = invoiceRows.reduce((acc, invoice) => {
       const totalsValue = invoiceLiveTotals(invoice);
       acc.total += asNumber(totalsValue.total);
@@ -25983,39 +26823,51 @@ ${esc(bodyText)}</pre>
       return acc;
     }, { total: 0, paid: 0, due: 0 });
     const empty = !all.length ? `<div class="contact-recap-empty">Aucune activité enregistrée pour ce contact.</div>` : "";
-    // Lot O-E2-B2 (§12) — vue mixte : ce récapitulatif reste accessible avec la seule contacts.read
-    // (garde d'ouverture du dialogue), mais la sous-section Disciplines expose des données du domaine
-    // Adhésions et exige donc memberships.read pour elle-même.
-    // Lot O-E2-B3B-2 (§16) — même doctrine pour la sous-section Factures : contacts.read (déjà acquis
-    // pour ouvrir la fiche) + billing.read pour CETTE sous-section précise. Les KPI agrégés ci-dessus
-    // (totals) restent des Adhésions/Boutique/Stages, hors Factures — non concernés.
-    // Lot O-E2-B3B-3 (§36) — même doctrine pour « Avoirs disponibles » : contacts.read (déjà acquis)
-    // + accounting.read pour CETTE sous-section précise (contactAvailableCreditNotesHtml n'a aucune
-    // garde interne, elle dépend entièrement de ce point d'appel unique).
-    const canReadMemberships = currentUserHasPermission("memberships.read", activeClubId());
-    const canReadBilling = currentUserHasPermission("billing.read", activeClubId());
-    const canReadAccounting = currentUserHasPermission("accounting.read", activeClubId());
+
+    // §12 du mandat Q1.5 — KPI financiers globaux (Total attendu/Réglé/Reste dû) : uniquement si
+    // l'utilisateur peut lire l'INTÉGRALITÉ des domaines agrégés ET leurs paiements embarqués (jamais
+    // un agrégat partiel présenté comme la totalité). Sinon : « Activités visibles : N », où N ne
+    // compte que les domaines réellement lus ci-dessus (jamais une donnée interdite comptée en douce).
+    const canShowGlobalFinancialKpis = kind === "members"
+      ? (canReadMembershipPayments && canReadShopPayments && canReadStagePayments)
+      : (canReadShopPayments && canReadStagePayments);
+    const totals = canShowGlobalFinancialKpis
+      ? all.reduce((acc, item) => {
+        acc.total += asNumber(item.calc.total);
+        acc.paid += asNumber(item.calc.paid);
+        acc.due += Math.max(0, asNumber(item.calc.restDue));
+        return acc;
+      }, { total: 0, paid: 0, due: 0 })
+      : null;
+
+    // Lot Q1.5R (Correction 3) — sourceClubId propagé jusqu'au renderer sport (sportCategoryAssignmentLabel),
+    // jamais un activeClubId() lu tardivement dans contactRecapMembership.
+    const membershipRenderOptions = { showSport: canReadSport, showDocuments: canReadDocuments, showPayments: canReadMembershipPayments, sourceClubId };
+    const orderRenderOptions = { showPayments: canReadShopPayments };
+    const registrationRenderOptions = { showPayments: canReadStagePayments };
+
     return `<div class="dialog-section contact-recap" data-tour="contact-recap">
       <div class="contact-recap-head">
         <div>
           <h3>Récapitulatif du contact</h3>
           <p>Lecture seule : activités actives et paiements liés à cette personne.</p>
         </div>
-        <div class="contact-recap-total ${totals.due > 0 ? "has-due" : ""}">
+        ${totals ? `<div class="contact-recap-total ${totals.due > 0 ? "has-due" : ""}">
           <span>Reste dû</span>
           <strong>${money(totals.due)}</strong>
-        </div>
+        </div>` : ""}
       </div>
-      <div class="contact-recap-kpis">
+      ${totals
+        ? `<div class="contact-recap-kpis">
         <div><span>Total attendu</span><strong>${money(totals.total)}</strong></div>
         <div><span>Réglé</span><strong>${money(totals.paid)}</strong></div>
         <div><span>Activités</span><strong>${intValue(all.length)}</strong></div>
-      </div>
+      </div>`
+        : `<div class="contact-recap-kpis"><div><span>Activités visibles</span><strong>${intValue(all.length)}</strong></div></div>`}
       ${empty}
-      ${contactMinorGuardianHtml(contact, kind)}
-      ${!canReadMemberships
-        ? `<section class="contact-recap-section"><div class="dialog-mini-title"><h4>Disciplines</h4></div><p class="muted">Vous n'avez pas accès à cette section.</p></section>`
-        : kind === "members" && isViewVisible("disciplines")
+      ${contactMinorGuardianHtml(contact, kind, { showDocuments: canReadDocuments })}
+      ${canReadMemberships
+        ? (kind === "members" && isViewVisible("disciplines")
           // Disciplines sort ici du mécanisme générique contactRecapSection (qui masque toute la
           // section, bouton d'ajout compris, dès que la liste est vide) : un adhérent sans discipline
           // doit quand même voir le bouton d'ajout et comprendre comment en ajouter une,
@@ -26027,15 +26879,14 @@ ${esc(bodyText)}</pre>
           ? `<section class="contact-recap-section">
               <div class="dialog-mini-title"><h4>Disciplines</h4>${(contact.id && hasFeature("memberships")) ? `<button type="button" data-action="add-contact-membership" data-contact-link="${esc(`member:${contact.id}`)}" title="Ajouter une nouvelle inscription discipline/groupe pour ce contact">+ Ajouter une inscription</button>` : ""}</div>
               ${memberships.length
-                ? `<p class="muted">Un adhérent peut avoir plusieurs disciplines, tant que les horaires ne se chevauchent pas.</p><div class="contact-recap-list">${memberships.map(contactRecapMembership).join("")}</div>`
+                ? `<p class="muted">Un adhérent peut avoir plusieurs disciplines, tant que les horaires ne se chevauchent pas.</p><div class="contact-recap-list">${memberships.map((entry) => contactRecapMembership(entry, membershipRenderOptions)).join("")}</div>`
                 : `<p class="contact-recap-empty">Aucune discipline enregistrée pour le moment.</p>`}
             </section>`
-          : contactRecapSection("Disciplines", memberships, contactRecapMembership)}
-      ${contactRecapSection("Boutique", orders, contactRecapOrder, hasFeature("shop") ? "" : "Module désactivé — historique conservé. Réactivez le module pour ajouter de nouvelles données.")}
-      ${contactRecapSection("Stages", registrations, contactRecapRegistration, hasFeature("stages") ? "" : "Module désactivé — historique conservé. Réactivez le module pour ajouter de nouvelles données.")}
-      ${!canReadBilling
-        ? `<section class="contact-recap-section"><h4>Factures</h4><p class="muted">Vous n'avez pas accès à cette section.</p></section>`
-        : (invoiceRows.length ? `<section class="contact-recap-section">
+          : contactRecapSection("Disciplines", memberships, (entry) => contactRecapMembership(entry, membershipRenderOptions)))
+        : ""}
+      ${contactRecapSection("Boutique", orders, (entry) => contactRecapOrder(entry, orderRenderOptions), hasFeature("shop") ? "" : "Module désactivé — historique conservé. Réactivez le module pour ajouter de nouvelles données.")}
+      ${contactRecapSection("Stages", registrations, (entry) => contactRecapRegistration(entry, registrationRenderOptions), hasFeature("stages") ? "" : "Module désactivé — historique conservé. Réactivez le module pour ajouter de nouvelles données.")}
+      ${invoiceRows.length ? `<section class="contact-recap-section">
         <h4>Factures</h4>
         <div class="contact-recap-kpis">
           <div><span>Facturé</span><strong>${money(invoiceTotals.total)}</strong></div>
@@ -26043,10 +26894,8 @@ ${esc(bodyText)}</pre>
           <div><span>Reste à payer</span><strong class="${invoiceTotals.due > 0 ? "due" : ""}">${money(invoiceTotals.due)}</strong></div>
         </div>
         <div class="contact-recap-list">${invoiceRows.map(contactRecapInvoice).join("")}</div>
-      </section>` : "")}
-      ${!canReadAccounting
-        ? `<section class="contact-recap-section"><h4>Avoirs disponibles</h4><p class="muted">Vous n'avez pas accès à cette section.</p></section>`
-        : contactAvailableCreditNotesHtml(contact)}
+      </section>` : ""}
+      ${canReadAccounting ? contactAvailableCreditNotesHtml(contact) : ""}
     </div>`;
   }
 
@@ -26085,22 +26934,40 @@ ${esc(bodyText)}</pre>
     </div>`;
   }
 
-  function contactRecapMembership(entry) {
+  // Lot Q1.5R (correctif Pix, Correction 1) — renderer paramétré par domaine de permission. Défauts
+  // FAIL-CLOSED (false) : un appel sans options (oubli, appel direct, futur appelant) ne doit JAMAIS
+  // devenir « tout afficher ». Le seul appelant réel de l'app (contactActivitySummary) transmet
+  // TOUJOURS des valeurs explicites calculées depuis les permissions fraîches (§1). Les appels directs
+  // de test qui veulent le rendu complet (sport-category-assignment, group-age-warnings,
+  // group-age-policy, demo-multisport) doivent désormais fournir explicitement {showSport:true,
+  // showDocuments:true, showPayments:true} — on adapte les tests au contrat sécurisé, jamais l'inverse.
+  // sourceClubId (Correction 3) : par défaut activeClubId() pour ces mêmes appels directs isolés,
+  // MAIS contactActivitySummary transmet TOUJOURS son propre sourceClubId explicite, jamais implicite.
+  function contactRecapMembership(entry, options = {}) {
+    const { showSport = false, showDocuments = false, showPayments = false, sourceClubId = activeClubId() } = options;
     const row = entry.row;
     // Lot V1 Niveaux — "Niveau" reste une note libre sans automatisme (cf. audit
     // Niveaux/Groupes/Disciplines) : simple affichage si renseigné, rien sinon, propre à
     // cette inscription (pas une donnée globale du contact, une autre inscription du même
     // contact peut avoir un niveau différent ou vide).
+    // §6/§7 du mandat Q1.5 — Certificat = donnée DOCUMENTAIRE (documents.read) ; Assurance porte un
+    // MONTANT (donnée de paiement, currentUserCanReadEmbeddedPayment("membership", ...)) : memberships.read
+    // seul ne doit exposer ni l'une ni l'autre.
+    // Lot Q1.5R2 (correctif Pix, Correction 1) — « Niveau » est une donnée SPORTIVE de l'inscription
+    // (au même titre que groupe/catégorie/équipe) : exige sport.read en plus de memberships.read,
+    // jamais exposée avec la seule lecture de l'adhésion.
     const subtitle = [
-      asText(row.level) ? `Niveau : ${asText(row.level)}` : "",
-      row.insuranceChoice ? `Assurance ${membershipInsurancePrice(row) ? money(membershipInsurancePrice(row)) : ""}` : "",
-      row.medicalCertificate ? "Certificat OK" : "Certificat non renseigné",
+      showSport && asText(row.level) ? `Niveau : ${asText(row.level)}` : "",
+      showPayments && row.insuranceChoice ? `Assurance ${membershipInsurancePrice(row) ? money(membershipInsurancePrice(row)) : ""}` : "",
+      showDocuments ? (row.medicalCertificate ? "Certificat OK" : "Certificat non renseigné") : "",
     ].filter(Boolean).join(" · ");
     // Un contact peut avoir plusieurs inscriptions (memberships) : le groupe est affiché à côté
     // de la discipline pour que la fiche distingue clairement chaque inscription (ex. "Judo —
     // Judo enfants" vs "Self-défense — Self-défense ados"), sans quoi deux inscriptions à la
     // même discipline mais des groupes différents seraient indiscernables.
-    const group = getGroupById(row.groupId);
+    // §5 du mandat Q1.5 — groupe/catégorie sportive/équipe/alerte d'âge exigent sport.read EN PLUS de
+    // memberships.read : jamais récupérés (getGroupById/sportCategoryAssignmentLabel) si showSport=false.
+    const group = showSport ? getGroupById(row.groupId) : null;
     // Lot 3B-2C — la catégorie affectée s'affiche à côté de la discipline (« Football · U11 »), pour
     // qu'elle soit lisible sans rouvrir l'inscription. Recalculée à chaque rendu : un renommage du
     // catalogue se propage à l'affichage, une archivée s'annonce comme telle, et aucune référence
@@ -26109,7 +26976,10 @@ ${esc(bodyText)}</pre>
     // ci-dessus), repli sur le texte historique seulement si l'identifiant est absent/introuvable :
     // un renommage de la discipline se propage désormais ici aussi, au lieu d'un texte figé au
     // moment de l'inscription.
-    const categoryLabel = sportCategoryAssignmentLabel(row.sportCategoryId, row.disciplineId, state, activeClubId());
+    // Lot Q1.5R (Correction 3) — sourceClubId (propagé depuis contactActivitySummary), jamais
+    // activeClubId() lu tardivement ici : une fiche ouverte sous le club A doit résoudre son catalogue
+    // sportif SELON A, même si l'utilisateur bascule ensuite sur un club B avant un refresh.
+    const categoryLabel = showSport ? sportCategoryAssignmentLabel(row.sportCategoryId, row.disciplineId, state, sourceClubId) : "";
     const disciplineText = [disciplineLabelFor(row, state) || "Discipline non renseignée", categoryLabel].filter(Boolean).join(" · ");
     const titleText = [disciplineText, group?.name || ""].filter(Boolean).join(" — ");
     // Bouton "Retirer" imbriqué dans la ligne cliquable (edit-membership) : le delegate de clic
@@ -26131,14 +27001,18 @@ ${esc(bodyText)}</pre>
         <span>${esc(subtitle || "Inscription discipline")}</span>
         ${hasFeature("memberships") ? `<button type="button" class="contact-recap-remove-btn" data-action="delete-membership" data-id="${esc(row.id)}" title="Retirer cette discipline de la fiche">Retirer</button>` : ""}
       </div>
-      ${contactRecapStatus(entry.calc)}
-      ${contactRecapAmounts(entry.calc)}
+      ${showPayments ? contactRecapStatus(entry.calc) : ""}
+      ${showPayments ? contactRecapAmounts(entry.calc) : ""}
       ${ageWarningHtml}
     </article>`;
   }
 
-  function contactRecapOrder(entry) {
+  // Lot Q1.5R (Correction 1) — défaut FAIL-CLOSED (false), même doctrine que contactRecapMembership.
+  function contactRecapOrder(entry, options = {}) {
+    const { showPayments = false } = options;
     const details = orderItemDetails(entry.row);
+    // §8 du mandat Q1.5 — articles/quantités/tailles restent des données de COMMANDE (shop.read
+    // seul, déjà garanti par l'appelant), jamais de montant ici : rien à conditionner par showPayments.
     const itemText = details.length
       ? details.map((item) => `${item.article.name || "Article"}${item.sizesText ? ` (${item.sizesText})` : ""} x${intValue(item.quantity)}`).join(" · ")
       : "Aucun article détaillé";
@@ -26147,26 +27021,37 @@ ${esc(bodyText)}</pre>
         <strong>Commande boutique</strong>
         <span>${esc(itemText)}</span>
       </div>
-      ${statusPill(shopOrderStatus(entry.row, entry.calc))}
-      ${contactRecapAmounts(entry.calc)}
+      ${showPayments ? statusPill(shopOrderStatus(entry.row, entry.calc)) : ""}
+      ${showPayments ? contactRecapAmounts(entry.calc) : ""}
     </article>`;
   }
 
-  function contactRecapRegistration(entry) {
+  // Lot Q1.5R (Correction 1) — défaut FAIL-CLOSED (false), même doctrine que contactRecapMembership.
+  function contactRecapRegistration(entry, options = {}) {
+    const { showPayments = false } = options;
     const stage = stageById(entry.stageId);
-    const event = calcStageSegment(entry.row.event || {});
-    const lodging = calcStageSegment(entry.row.lodging || {});
-    const parts = [
-      event.subtotal ? `Stage ${money(event.subtotal)}` : "",
-      lodging.subtotal ? `Hébergement ${money(lodging.subtotal)}` : "",
-    ].filter(Boolean).join(" · ");
+    // Lot Q1.5R2 (correctif Pix, Correction 2) — calcStageSegment(event/lodging) est un calcul
+    // FINANCIER (subtotal) : ne plus l'exécuter DU TOUT quand showPayments est faux (donnée financière
+    // jamais calculée, pas seulement jamais affichée — même doctrine que Q1.5R pour calcMembership/
+    // calcOrder/calcRegistration). Repli sur « Inscription stage » (nom du stage seul reste visible
+    // via <strong>) sans avoir calculé le moindre sous-total.
+    const parts = showPayments
+      ? (() => {
+        const event = calcStageSegment(entry.row.event || {});
+        const lodging = calcStageSegment(entry.row.lodging || {});
+        return [
+          event.subtotal ? `Stage ${money(event.subtotal)}` : "",
+          lodging.subtotal ? `Hébergement ${money(lodging.subtotal)}` : "",
+        ].filter(Boolean).join(" · ");
+      })()
+      : "";
     return `<article class="contact-recap-row">
       <div class="contact-recap-main">
         <strong>${esc(stage.name || "Stage")}</strong>
         <span>${esc(parts || "Inscription stage")}</span>
       </div>
-      ${contactRecapStatus(entry.calc)}
-      ${contactRecapAmounts(entry.calc)}
+      ${showPayments ? contactRecapStatus(entry.calc) : ""}
+      ${showPayments ? contactRecapAmounts(entry.calc) : ""}
     </article>`;
   }
 
@@ -27232,9 +28117,26 @@ ${esc(bodyText)}</pre>
     const displayPayments = locked ? invoicePaymentsForDisplay(invoice) : null;
     const previewPayments = locked ? displayPayments.payments : selectedInvoicePayments(previewLines, billables);
     const title = locked ? `Facture ${invoice.number || ""}` : "Créer / éditer une facture";
+    // Lot Q5B (§4-8 du mandat) — « Ouvrir le membre » depuis la facture : UNIQUEMENT à partir de
+    // invoice.contactId/invoice.contactKind (les champs d'identité RÉELS de la facture elle-même,
+    // jamais contact.id/contactSnapshot qui peuvent être un gel historique sans contact résolvable
+    // aujourd'hui). contactInvoiceKind normalise "members"/"prospects" vers member:/prospect: — le
+    // SEUL helper déjà canonique pour cette conversion, aucune table ad hoc. Le contact doit
+    // EXISTER RÉELLEMENT en direct (invoiceContact) : sans cela, aucun lien, jamais de repli.
+    const invoiceContactRow = invoice.contactId
+      ? (contactInvoiceKind(invoice.contactKind) === "prospects" ? { prospectContactId: invoice.contactId } : { contactId: invoice.contactId })
+      : {};
+    // §3 du mandat Q5B — contacts.read contrôle le RENDU (jamais seulement le clic) : sans cette
+    // permission, aucun bouton n'est produit, jamais un lien qui échouerait silencieusement au clic.
+    const invoiceContactResolvesLive = invoice.contactId
+      && currentUserHasPermission("contacts.read", targetClubId)
+      && Boolean(invoiceContact(invoice.contactKind, invoice.contactId));
+    const invoiceContactLinkHtml = invoiceContactResolvesLive
+      ? contactLinkAction(invoiceContactRow, "Fiche contact / facture", targetClubId)
+      : "";
     const body = `<div class="dialog-section invoice-editor" data-invoice-editor data-tour="invoice-dialog" data-invoice-editor-id="${esc(invoice.id)}">
         <div class="invoice-editor-head" data-tour="invoice-contact">
-          <div data-invoice-editor-head>${invoiceBillingHeadHtml(invoice, contact)}</div>
+          <div data-invoice-editor-head>${invoiceBillingHeadHtml(invoice, contact)}${invoiceContactLinkHtml}</div>
           <div data-tour="invoice-status">${invoiceStatusPill(invoice)}${invoice.number ? `<strong>${esc(invoice.number)}</strong>` : ""}${locked ? `<span class="invoice-status" title="Facture actuellement affichée">Facture affichée</span>` : ""}</div>
         </div>
         <div data-invoice-editor-summary data-tour="invoice-total">${invoiceEditorSummary(invoice, previewLines, previewPayments)}</div>
@@ -28110,7 +29012,15 @@ ${esc(bodyText)}</pre>
     // pas de reconstruire depuis un formulaire qui ne les a jamais montrés.
     const documentsReadableAtOpen = currentUserHasPermission("documents.read", openedClubId);
     const body = [
-      row.id ? `<div hidden data-contact-dialog-kind="${esc(kind)}" data-contact-dialog-id="${esc(row.id)}"></div>` : "",
+      // Lot Q1.5 (§15) — club source (data-contact-dialog-club-id) posé ici pour que
+      // refreshOpenContactDialog puisse recalculer le récapitulatif ET le socle 360° avec CE club,
+      // jamais un activeClubId() lu tardivement au moment du refresh.
+      row.id ? `<div hidden data-contact-dialog-kind="${esc(kind)}" data-contact-dialog-id="${esc(row.id)}" data-contact-dialog-club-id="${esc(openedClubId)}"></div>` : "",
+      // Phase Q — Lot Q1 : socle du dossier membre 360°, placé tout en haut de la fiche pour devenir
+      // le point d'entrée naturel (§4 du mandat Q1). isMember && row.id déjà garanti (contact360OverviewHtml
+      // revérifie kind/contact.id en interne à titre défensif, cf. §16 — helper autonome et sûr par
+      // construction, indépendamment de son appelant).
+      isMember && row.id ? contact360OverviewHtml(kind, row, openedClubId) : "",
       identityPhotoSection(row),
       identityAvatarChoiceField(row),
       field("lastName", "Nom *", row.lastName, "text", 'required data-tour="contact-lastname"'),
@@ -28128,7 +29038,7 @@ ${esc(bodyText)}</pre>
       isMember ? field("birthPlace", "Lieu de naissance", row.birthPlace) : "",
       isMember ? field("nationality", "Nationalité", row.nationality) : "",
       contactDocumentsSection(row),
-      contactActivitySummary(kind, row),
+      contactActivitySummary(kind, row, openedClubId),
       row.id ? `<div class="dialog-section contact-dialog-actions" data-tour="contact-delete">
         <button class="danger" type="button" data-action="delete-contact" data-kind="${esc(kind)}" data-id="${esc(row.id)}">${isMember ? "Supprimer l'adhérent" : "Supprimer le contact"}</button>
       </div>` : "",
@@ -35860,6 +36770,112 @@ ${esc(bodyText)}</pre>
       }
       return openContactModule(button);
     }
+    // ===========================================================================================
+    // Phase Q — Lot Q4B : navigation contextuelle READ-ONLY depuis le dossier membre 360°. Ces
+    // handlers n'exécutent JAMAIS de mutation (aucun state.xxx=, aucun persist()) : ils revalident
+    // la permission READ, re-résolvent l'entité LIVE par son ID exact, vérifient sa relation au
+    // contact, puis délèguent entièrement au workflow canonique existant (openInvoiceEditor,
+    // openOrderForConsult, openCourseDialog, openCompetitionDialog, openMembershipDialog). Garde
+    // stale-club obligatoire AVANT toute résolution (§31 du mandat Q4B) : sourceClubId absent ou
+    // différent du club actif -> return immédiat, jamais state.xxx.find(...) exécuté entre-temps.
+    // ===========================================================================================
+    if (action === "contact-360-open-invoice") {
+      const sourceClubId = button.dataset.clubId || "";
+      if (!sourceClubId || activeClubId() !== sourceClubId) return;
+      if (!currentUserHasPermission("billing.read", sourceClubId)) return;
+      const invoiceId = button.dataset.invoiceId || "";
+      const contactId = button.dataset.contactId || "";
+      if (!invoiceId || !contactId) return;
+      const liveInvoice = state.invoices.find((invoice) => invoice.id === invoiceId);
+      if (!liveInvoice) return;
+      // Défense club supplémentaire : une facture legacy sans clubId reste acceptée, mais un clubId
+      // explicite incohérent avec sourceClubId (collision d'id inter-club) est un refus immédiat.
+      if (asText(liveInvoice.clubId) && liveInvoice.clubId !== sourceClubId) return;
+      // Lot Q4BR (Correction 1) — la facture LIVE doit TOUJOURS appartenir à CE contact au clic :
+      // même sémantique EXACTE que contactInvoices (contactId + contactKind via contactInvoiceKind,
+      // jamais une valeur "members"/"member" inventée). Sans cette vérification, une facture
+      // réaffectée à un autre contact entre le rendu et le clic resterait ouvrable via l'ancien bouton.
+      if (liveInvoice.contactId !== contactId || liveInvoice.contactKind !== contactInvoiceKind("members")) return;
+      // openInvoiceEditor décide LUI-MÊME (billing.write) si l'édition est possible : jamais dupliqué
+      // ici (§10 du mandat Q4B — Q4 ne duplique jamais une décision déjà prise par le canonique).
+      openInvoiceEditor(liveInvoice);
+      return;
+    }
+    if (action === "contact-360-open-order") {
+      const sourceClubId = button.dataset.clubId || "";
+      if (!sourceClubId || activeClubId() !== sourceClubId) return;
+      if (!currentUserHasPermission("shop.read", sourceClubId)) return;
+      const orderId = button.dataset.orderId || "";
+      const contactId = button.dataset.contactId || "";
+      if (!orderId || !contactId) return;
+      const liveOrder = state.shopOrders.find((order) => order.id === orderId);
+      if (!liveOrder) return;
+      // Relation ID-only stricte : jamais contactRecordMatches/personKey (§14 du mandat Q4B).
+      if (liveOrder.contactId !== contactId) return;
+      openOrderForConsult(liveOrder, sourceClubId);
+      return;
+    }
+    if (action === "contact-360-open-course") {
+      const sourceClubId = button.dataset.clubId || "";
+      if (!sourceClubId || activeClubId() !== sourceClubId) return;
+      if (!currentUserHasPermission("sport.read", sourceClubId)) return;
+      // Lot Q4BR (Correction 2) — la donnée « prochain cours » est dérivée de Contact -> Membership ->
+      // groupId -> PlanningCourse (doctrine Q2 verrouillée : memberships.read ET sport.read exigés
+      // pour révéler cette relation). memberships.read DOIT être revalidé ICI, AVANT toute lecture de
+      // state.memberships ci-dessous — sinon un ancien bouton survivrait à la révocation de
+      // memberships.read tant que sport.read seul reste vrai (WRITE n'implique jamais READ, §7/§20).
+      if (!currentUserHasPermission("memberships.read", sourceClubId)) return;
+      const courseId = button.dataset.courseId || "";
+      const courseDate = button.dataset.courseDate || "";
+      const contactId = button.dataset.contactId || "";
+      if (!courseId || !courseDate || !contactId) return;
+      const liveCourse = (state.planningCourses || []).find((course) => course.id === courseId);
+      if (!liveCourse) return;
+      // Le cours cible doit rester référencé par une Membership ID-only du contact source : jamais
+      // un cours devenu étranger au membre depuis le rendu (§16 du mandat Q4B). Cette lecture de
+      // state.memberships n'est atteinte que memberships.read déjà vérifié ci-dessus.
+      const stillLinked = state.memberships.some((row) => row.contactId === contactId && row.groupId === liveCourse.groupId);
+      if (!stillLinked) return;
+      openCourseDialog(liveCourse, courseDate, sourceClubId);
+      return;
+    }
+    if (action === "contact-360-open-competition") {
+      const sourceClubId = button.dataset.clubId || "";
+      if (!sourceClubId || activeClubId() !== sourceClubId) return;
+      if (!currentUserHasPermission("competitions.read", sourceClubId)) return;
+      const competitionId = button.dataset.competitionId || "";
+      const contactId = button.dataset.contactId || "";
+      if (!competitionId || !contactId) return;
+      const liveCompetition = (state.competitions || []).find((c) => c.id === competitionId);
+      if (!liveCompetition) return;
+      if (asText(liveCompetition.clubId) && liveCompetition.clubId !== sourceClubId) return;
+      // Convocation EXACTE du contact, ID-only (parseContactLink), jamais nom/snapshot (§19 mandat Q4B).
+      const stillConvoked = (liveCompetition.convocations || []).some((c) => {
+        const parsed = parseContactLink(c.contactLink);
+        return parsed.kind === "member" && parsed.contactId === contactId;
+      });
+      if (!stillConvoked) return;
+      openCompetitionDialog(liveCompetition, sourceClubId);
+      return;
+    }
+    if (action === "contact-360-open-certificate-membership") {
+      const sourceClubId = button.dataset.clubId || "";
+      if (!sourceClubId || activeClubId() !== sourceClubId) return;
+      if (!currentUserHasPermission("documents.read", sourceClubId) || !currentUserHasPermission("memberships.read", sourceClubId)) return;
+      const membershipId = button.dataset.membershipId || "";
+      const contactId = button.dataset.contactId || "";
+      if (!membershipId || !contactId) return;
+      const liveMembership = state.memberships.find((row) => row.id === membershipId);
+      if (!liveMembership) return;
+      if (liveMembership.contactId !== contactId) return;
+      // Certificat déjà complété depuis le rendu du bouton : on n'ouvre pas en prétendant qu'il
+      // reste manquant (§24 du mandat Q4B, préférence explicite : return plutôt qu'ouverture muette).
+      if (liveMembership.medicalCertificate === true) return;
+      // openMembershipDialog n'a pas de garde stale-club propre (audit Q4A §8) : la garde ci-dessus
+      // (sourceClubId === activeClubId()) EST la protection, appliquée avant toute résolution.
+      openMembershipDialog(liveMembership);
+      return;
+    }
     if (action === "add-order-article-row") {
       if (!ensureFeatureEnabledForMutation("shop")) return;
       return addOrderArticleRow(button);
@@ -40997,12 +42013,19 @@ ${esc(bodyText)}</pre>
     return tags.join("");
   }
 
-  function groupMembersDialogBody(groupId) {
+  // Lot Q5B (§13-15/§18 du mandat) — sourceClubId (paramètre requis, jamais un repli sur
+  // activeClubId() lu tardivement — même doctrine que courseEnrollmentDialogBodyHtml) sert
+  // UNIQUEMENT à poser data-search-club-id sur le nom cliquable de chaque membre (réutilise le
+  // garde-fou générique de handleAction, aucune modification de src/21-handlers.js). N'affecte
+  // aucune autre logique de ce corps (ajout/retrait, capacité, candidats) : ces gardes restent
+  // activeClubId(), strictement inchangées.
+  function groupMembersDialogBody(groupId, sourceClubId) {
     const group = getGroupById(groupId);
     if (!group) return `<p class="muted">Groupe introuvable.</p>`;
     // Lot O-E2-B4 (§15/§20) — sport.read suffit à VOIR le roster (noms/effectifs), jamais
     // memberships.read pour ce simple usage ; ajouter/retirer un membre exige sport.write.
     const canWriteSport = currentUserHasPermission("sport.write", activeClubId());
+    const canOpenContact = Boolean(sourceClubId) && currentUserHasPermission("contacts.read", sourceClubId);
     const members = getMembersByGroup(groupId);
     const cap = getGroupCapacityStatus(groupId);
     const candidates = groupMemberCandidates(group);
@@ -41034,18 +42057,27 @@ ${esc(bodyText)}</pre>
       : "";
 
     const membersHtml = members.length
-      ? `<div class="group-member-list">${members.map((m) => `
+      ? `<div class="group-member-list">${members.map((m) => {
+          // Lot Q5B (§13-15 du mandat) — le NOM devient le lien (pas de bouton supplémentaire à
+          // côté) : même découverte legacy tolérée que Planning (contactForMembership), mais le
+          // clic ne transporte jamais que contact.id — jamais personKey.
+          const groupMemberContact = typeof contactForMembership === "function" ? contactForMembership(m) : null;
+          const groupMemberNameHtml = (groupMemberContact && groupMemberContact.id && canOpenContact)
+            ? `<button type="button" class="contact-link-btn" data-action="edit-contact" data-kind="members" data-id="${esc(groupMemberContact.id)}" data-search-club-id="${esc(sourceClubId)}" title="Ouvrir la fiche contact">${esc(personLabel(m))}</button>`
+            : `<strong>${esc(personLabel(m))}</strong>`;
+          return `
           <div class="group-member-entry">
             <div class="group-member-row">
               <div class="group-member-id">
-                <strong>${esc(personLabel(m))}</strong>
+                ${groupMemberNameHtml}
                 <span class="muted">${groupMemberMetaLine(m)}</span>
                 ${groupConsistencyTagHtml(group, m) ? `<span class="group-add-tags group-member-tags">${groupConsistencyTagHtml(group, m)}</span>` : ""}
               </div>
               ${canWriteSport ? `<button type="button" class="danger small" data-action="remove-member-from-group" data-membership-id="${esc(m.id)}" data-sport-club-id="${esc(activeClubId())}">Retirer du groupe</button>` : ""}
             </div>
             ${groupAgeWarningBoxHtml(groupMemberAgeDecision(m, group))}
-          </div>`).join("")}</div>`
+          </div>`;
+        }).join("")}</div>`
       : `<p class="muted">Aucun membre dans ce groupe pour l'instant. Ajoute-en depuis la liste ci-dessous.</p>`;
 
     const capWarn = cap.max > 0 && cap.count >= cap.max
@@ -41074,7 +42106,7 @@ ${esc(bodyText)}</pre>
           ? `Aucun adhérent inscrit en « ${esc(wantDiscipline)} » n'est disponible. L'affectation à un groupe se fait par inscription : crée d'abord une inscription dans cette discipline depuis la fiche de l'adhérent.`
           : `Aucun adhérent disponible. Les membres rejoignent un groupe via leur inscription (fiche adhérent).`}</p>`;
 
-    return `<div data-group-members-dialog data-group-id="${esc(groupId)}">
+    return `<div data-group-members-dialog data-group-id="${esc(groupId)}" data-group-members-club-id="${esc(sourceClubId || "")}">
       ${groupAgeRangeConfigWarningHtml(group)}
       <div class="dialog-section group-members-current">
         <div class="group-members-head">
@@ -41157,17 +42189,22 @@ ${esc(bodyText)}</pre>
     if (!openedClubId || activeClubId() !== openedClubId) return;
     if (!currentUserHasPermission("sport.read", openedClubId)) return;
     const group = getGroupById(groupId);
-    showInfoDialog(group ? `${group.name}` : "Groupe", groupMembersDialogBody(groupId));
+    showInfoDialog(group ? `${group.name}` : "Groupe", groupMembersDialogBody(groupId, openedClubId));
     setupGroupMembersDialog();
   }
 
-  // Reconstruit le contenu du dialogue ouvert sans le refermer (après ajout/retrait).
+  // Reconstruit le contenu du dialogue ouvert sans le refermer (après ajout/retrait). Lot Q5B —
+  // sourceClubId relu depuis data-group-members-club-id (posé À L'OUVERTURE par
+  // groupMembersDialogBody elle-même), jamais activeClubId() : un changement de club actif pendant
+  // que ce dialogue reste ouvert ne doit jamais faire réapparaître le lien contact sous un club
+  // différent de celui d'origine.
   function refreshGroupMembersDialog() {
     const root = document.querySelector("[data-group-members-dialog]");
     if (!root) return;
     const groupId = root.dataset.groupId;
+    const sourceClubId = root.dataset.groupMembersClubId || "";
     const host = root.closest(".dialog-body") || root.parentElement;
-    if (host) host.innerHTML = groupMembersDialogBody(groupId);
+    if (host) host.innerHTML = groupMembersDialogBody(groupId, sourceClubId);
     setupGroupMembersDialog();
   }
 
@@ -41646,19 +42683,26 @@ ${esc(bodyText)}</pre>
   // refreshOpenCourseEnrollmentDialogs() pour remettre à jour un dialogue déjà ouvert (ajout/retrait
   // d'une discipline pendant que la fiche "Inscrits à la séance" reste affichée en dessous), sans
   // dupliquer la logique d'affichage ni changer le calcul des effectifs/inscrits.
-  function courseEnrollmentDialogBodyHtml(course, group, dateInput) {
+  // Lot Q5B (§9-12 du mandat) — sourceClubId AJOUTÉ (paramètre requis, jamais un repli sur
+  // activeClubId() lu tardivement) : seule faiblesse corrigée ici, le bouton edit-contact existant
+  // n'avait aucune garde stale-club. data-search-club-id réutilise le garde-fou GÉNÉRIQUE déjà en
+  // tête de handleAction (aucune modification de src/21-handlers.js). contacts.read contrôle en
+  // plus le RENDU (§12) : sans cette permission, le nom reste un texte non interactif, jamais un
+  // bouton qui échouerait au clic.
+  function courseEnrollmentDialogBodyHtml(course, group, dateInput, sourceClubId) {
     const shown = dateInput ? resolveCourseForDate(course, dateInput) : course;
     const dayLabel = [asText(course.day), dateInput ? dateDisplay(dateInput) : ""].filter(Boolean).join(" ");
     const timeLabel = [shown.startTime, shown.endTime].filter(Boolean).join("–");
     const members = getMembersByGroup(group.id);
+    const canOpenContact = Boolean(sourceClubId) && currentUserHasPermission("contacts.read", sourceClubId);
     const rows = members.map((m) => {
       const contactLine = [m.mobile || m.phone, m.email].filter((v) => asText(v)).map(esc).join(" · ");
       // Nom cliquable vers la fiche contact quand contactForMembership() (helper existant,
       // déjà utilisé pour le dossier sportif) le retrouve de façon fiable ; sinon texte simple,
       // jamais de correspondance approximative inventée ici.
       const contact = typeof contactForMembership === "function" ? contactForMembership(m) : null;
-      const nameHtml = contact && contact.id
-        ? `<button type="button" class="contact-link-btn" data-action="edit-contact" data-kind="members" data-id="${esc(contact.id)}" title="Ouvrir la fiche contact">${esc(personLabel(m))}</button>`
+      const nameHtml = (contact && contact.id && canOpenContact)
+        ? `<button type="button" class="contact-link-btn" data-action="edit-contact" data-kind="members" data-id="${esc(contact.id)}" data-search-club-id="${esc(sourceClubId)}" title="Ouvrir la fiche contact">${esc(personLabel(m))}</button>`
         : `<strong>${esc(personLabel(m))}</strong>`;
       return `<li class="course-enrollment-person">${nameHtml}${contactLine ? `<span class="course-enrollment-person-meta muted">${contactLine}</span>` : ""}</li>`;
     }).join("");
@@ -41684,9 +42728,13 @@ ${esc(bodyText)}</pre>
     if (!course) { alert("Créneau introuvable."); return; }
     const group = getGroupById(course.groupId);
     if (!group) { alert("Ce créneau n'est lié à aucun groupe."); return; }
-    const dlg = showInfoDialog("Inscrits à la séance", courseEnrollmentDialogBodyHtml(course, group, dateInput));
+    const dlg = showInfoDialog("Inscrits à la séance", courseEnrollmentDialogBodyHtml(course, group, dateInput, openedClubId));
     dlg.dataset.courseEnrollmentCourseId = courseId;
     dlg.dataset.courseEnrollmentDate = dateInput || "";
+    // Lot Q5B — club source figé À L'OUVERTURE (jamais activeClubId() relu tardivement par
+    // refreshOpenCourseEnrollmentDialogs, qui reconstruit ce même corps après une mutation externe
+    // pendant que ce dialogue reste ouvert et qu'un changement de club a pu survenir entre-temps).
+    dlg.dataset.courseEnrollmentClubId = openedClubId;
   }
 
   // Même besoin que refreshOpenContactDialog : si "Inscrits à la séance" reste ouvert (primaire ou
@@ -41702,7 +42750,7 @@ ${esc(bodyText)}</pre>
       if (!group) return;
       const bodyEl = dlg.querySelector(".dialog-body");
       if (!bodyEl) return;
-      bodyEl.innerHTML = courseEnrollmentDialogBodyHtml(course, group, dlg.dataset.courseEnrollmentDate || "");
+      bodyEl.innerHTML = courseEnrollmentDialogBodyHtml(course, group, dlg.dataset.courseEnrollmentDate || "", dlg.dataset.courseEnrollmentClubId || "");
       applyClickableTooltips(dlg);
     });
   }
@@ -42583,24 +43631,34 @@ ${esc(bodyText)}</pre>
       .sort((a, b) => personLabel(a).localeCompare(personLabel(b), "fr", { sensitivity: "base" }));
   }
 
-  function teamMembersDialogBody(teamId) {
+  // Lot Q5B (§13-15/§18 du mandat) — même doctrine EXACTE que groupMembersDialogBody : sourceClubId
+  // requis (jamais activeClubId() lu tardivement), utilisé UNIQUEMENT pour data-search-club-id sur
+  // le nom cliquable du roster ACTUEL (jamais la liste des candidats à ajouter, hors périmètre §13).
+  function teamMembersDialogBody(teamId, sourceClubId) {
     const team = getTeamById(teamId);
     if (!team) return `<p class="muted">Équipe introuvable.</p>`;
     const canWriteSport = currentUserHasPermission("sport.write", activeClubId());
     const members = membershipsReferencingTeam(teamId);
+    const canOpenContact = Boolean(sourceClubId) && currentUserHasPermission("contacts.read", sourceClubId);
     // Team archivée : l'UI reflète directement la règle moteur (add-member-to-team bloque déjà si
     // team.archived) — aucune candidate n'est proposée, jamais un bouton qui échouerait au clic.
     const candidates = team.archived ? [] : teamMemberCandidates(teamId);
 
     const membersHtml = members.length
-      ? `<div class="group-member-list team-member-list">${members.map((m) => `
+      ? `<div class="group-member-list team-member-list">${members.map((m) => {
+          const teamMemberContact = typeof contactForMembership === "function" ? contactForMembership(m) : null;
+          const teamMemberNameHtml = (teamMemberContact && teamMemberContact.id && canOpenContact)
+            ? `<button type="button" class="contact-link-btn" data-action="edit-contact" data-kind="members" data-id="${esc(teamMemberContact.id)}" data-search-club-id="${esc(sourceClubId)}" title="Ouvrir la fiche contact">${esc(personLabel(m))}</button>`
+            : `<strong>${esc(personLabel(m))}</strong>`;
+          return `
           <div class="group-member-row team-member-row">
             <div class="group-member-id team-member-id">
-              <strong>${esc(personLabel(m))}</strong>
+              ${teamMemberNameHtml}
               <span class="muted">${esc(m.discipline || "")}</span>
             </div>
             ${canWriteSport ? `<button type="button" class="danger small" data-action="remove-member-from-team" data-team-id="${esc(teamId)}" data-membership-id="${esc(m.id)}" data-sport-club-id="${esc(activeClubId())}">Retirer</button>` : ""}
-          </div>`).join("")}</div>`
+          </div>`;
+        }).join("")}</div>`
       : `<p class="muted">Aucun membre dans cette équipe pour l'instant.</p>`;
 
     const candidatesHtml = team.archived
@@ -42616,7 +43674,7 @@ ${esc(bodyText)}</pre>
             </div>`).join("")}</div>`
         : `<p class="muted">Aucun adhérent disponible pour cette discipline.</p>`);
 
-    return `<div data-team-members-dialog data-team-id="${esc(teamId)}">
+    return `<div data-team-members-dialog data-team-id="${esc(teamId)}" data-team-members-club-id="${esc(sourceClubId || "")}">
       <div class="dialog-section group-members-current team-members-current">
         <h3>Membres de l'équipe (${members.length})</h3>
         ${membersHtml}
@@ -42632,15 +43690,17 @@ ${esc(bodyText)}</pre>
     if (!openedClubId || activeClubId() !== openedClubId) return;
     if (!hasFeature("teams") || !currentUserHasPermission("sport.read", openedClubId)) return;
     const team = getTeamById(teamId);
-    showInfoDialog(team ? `${team.name}` : "Équipe", teamMembersDialogBody(teamId));
+    showInfoDialog(team ? `${team.name}` : "Équipe", teamMembersDialogBody(teamId, openedClubId));
   }
 
   // Reconstruit le contenu du dialogue ouvert sans le refermer (après ajout/retrait) — précédent
-  // EXACT : refreshGroupMembersDialog.
+  // EXACT : refreshGroupMembersDialog. Lot Q5B — sourceClubId relu depuis data-team-members-club-id
+  // (posé À L'OUVERTURE), jamais activeClubId() : même doctrine que refreshGroupMembersDialog.
   function refreshTeamMembersDialog() {
     const root = document.querySelector("[data-team-members-dialog]");
     if (!root) return;
     const teamId = root.dataset.teamId;
+    const sourceClubId = root.dataset.teamMembersClubId || "";
     const host = root.closest(".dialog-body") || root.parentElement;
     if (host) host.innerHTML = teamMembersDialogBody(teamId);
   }
@@ -42712,11 +43772,24 @@ ${esc(bodyText)}</pre>
       .filter(Boolean);
   }
 
-  function competitionConvocationRowHtml(convocation, index) {
+  // Lot Q5B — le NOM devient ouvrable, strictement via parseContactLink(convocation.contactLink) +
+  // résolution vivante contactByLink (jamais snapshotName/name/email). member -> "members" (360°
+  // complet), prospect -> "prospects" (jamais forcé en member). Pas de bouton si contactLink
+  // absent/invalide OU contact non résolvable en direct OU contacts.read absent sur sourceClubId :
+  // repli texte, jamais un bouton mort.
+  function competitionConvocationRowHtml(convocation, index, sourceClubId) {
     const statuses = ["pending", "confirmed", "declined"];
+    const link = parseContactLink(convocation.contactLink);
+    const liveContact = link.kind ? contactByLink(convocation.contactLink) : null;
+    const canOpenContact = Boolean(sourceClubId) && Boolean(liveContact && liveContact.id)
+      && currentUserHasPermission("contacts.read", sourceClubId);
+    const contactsKind = link.kind === "prospect" ? "prospects" : "members";
+    const nameHtml = canOpenContact
+      ? `<button type="button" class="contact-link-btn" data-action="edit-contact" data-kind="${esc(contactsKind)}" data-id="${esc(liveContact.id)}" data-search-club-id="${esc(sourceClubId)}" title="Ouvrir la fiche contact">${esc(convocation.name || "Personne")}</button>`
+      : `<strong>${esc(convocation.name || "Personne")}</strong>`;
     return `<div class="group-member-row competition-convocation-row">
       <div class="group-member-id">
-        <strong>${esc(convocation.name || "Personne")}</strong>
+        ${nameHtml}
       </div>
       <select name="convocationStatus__${index}">
         ${statuses.map((s) => `<option value="${esc(s)}" ${convocation.status === s ? "selected" : ""}>${esc(competitionConvocationStatusLabel(s))}</option>`).join("")}
@@ -42803,7 +43876,7 @@ ${esc(bodyText)}</pre>
     return `<label>Équipe<select name="teamId">${`<option value="" ${selectedTeamId ? "" : "selected"}>— Aucune —</option>` + orphanOption + options}</select></label>`;
   }
 
-  function competitionDialogBody(competition) {
+  function competitionDialogBody(competition, sourceClubId = "") {
     const candidates = competitionContactCandidates();
     const existingLinks = new Set((competition.convocations || []).map((c) => c.contactLink));
     const addCandidates = candidates.filter((c) => !existingLinks.has(c.contactLink));
@@ -42831,7 +43904,7 @@ ${esc(bodyText)}</pre>
       </fieldset>
       <fieldset class="dialog-section"><legend>Convocations</legend>
         ${!competition.id ? `<label class="settings-check compact-check"><input type="checkbox" name="convokeTeamRoster" value="1" /><span>Convoquer l'effectif actuel de l'équipe choisie</span></label>` : ""}
-        ${(competition.convocations || []).length ? `<div class="group-member-list team-member-list">${(competition.convocations || []).map((c, i) => competitionConvocationRowHtml(c, i)).join("")}</div>` : `<p class="muted">Aucune convocation pour l'instant.</p>`}
+        ${(competition.convocations || []).length ? `<div class="group-member-list team-member-list">${(competition.convocations || []).map((c, i) => competitionConvocationRowHtml(c, i, sourceClubId)).join("")}</div>` : `<p class="muted">Aucune convocation pour l'instant.</p>`}
         <label>Ajouter des convocations<select name="addConvocation" multiple size="6">${addCandidates.map((c) => `<option value="${esc(c.contactLink)}">${esc(c.name)}</option>`).join("")}</select></label>
       </fieldset>
       <fieldset class="dialog-section"><legend>Résultat</legend>
@@ -42856,7 +43929,7 @@ ${esc(bodyText)}</pre>
     const readOnly = Boolean(competition.id) && !canWriteCompetition;
     const previousConvocations = Array.isArray(competition.convocations) ? competition.convocations : [];
     setNextWindowKey(competition.id ? `competition:${competition.id}` : null);
-    showDialog(readOnly ? "Consulter la rencontre" : (competition.id ? "Modifier la rencontre" : "Nouvelle rencontre"), competitionDialogBody(competition), (data, form) => {
+    showDialog(readOnly ? "Consulter la rencontre" : (competition.id ? "Modifier la rencontre" : "Nouvelle rencontre"), competitionDialogBody(competition, openedClubId), (data, form) => {
       if (activeClubId() !== openedClubId) { alert("Le club actif a changé depuis l'ouverture de ce formulaire. Rouvrez-le pour continuer."); return false; }
       if (!ensureFeatureEnabledForMutation("competitions")) return false;
       if (!ensureUserPermission("competitions.write", openedClubId)) return false;
@@ -45972,15 +47045,22 @@ ${esc(bodyText)}</pre>
       // Statut informatif UNIQUEMENT (§22 : aucun bouton de gestion de compte dans P6) — le vrai
       // écran Comptes d'accès (P7) reste seul responsable de créer/configurer/désactiver un compte.
       const nameLine = [manager.firstName, manager.lastName].filter(Boolean).join(" ") || "(sans nom renseigné)";
+      // Lot UX-C — même carte structurée que Comptes d'accès (§27 : réutilisation du langage visuel
+      // UX-B) : fonction/nom en tête (hiérarchie 1/2), coordonnées secondaires regroupées et
+      // séparées par « · » (jamais un téléphone qui casse au milieu), actions à droite/dessous. La
+      // classe .club-manager-summary-row est CONSERVÉE (comptée par plusieurs tests existants,
+      // tests/setup-responsables.test.js notamment) : seule la structure INTERNE change.
+      const metaParts = [];
+      if (manager.email) metaParts.push(`<span>${esc(manager.email)}</span>`);
+      if (manager.phone) metaParts.push(`<span>${esc(manager.phone)}</span>`);
+      if (linked) metaParts.push(`<span>Compte d'accès lié</span>`);
       return `<li class="club-manager-summary-row" data-responsible-id="${esc(manager.id)}">
-        <div class="club-manager-summary-info">
+        <div class="club-manager-summary-info setup-manager-main">
           <strong>${esc(manager.function || "Responsable")}</strong>
-          <span>${esc(nameLine)}</span>
-          ${manager.email ? `<span class="muted">${esc(manager.email)}</span>` : ""}
-          ${manager.phone ? `<span class="muted">${esc(manager.phone)}</span>` : ""}
-          ${linked ? `<span class="muted">Compte d'accès lié</span>` : ""}
+          <span class="setup-manager-name">${esc(nameLine)}</span>
         </div>
-        ${canEdit ? `<div class="inline-actions">
+        ${metaParts.length ? `<div class="setup-manager-meta muted">${metaParts.join("")}</div>` : ""}
+        ${canEdit ? `<div class="inline-actions setup-manager-actions">
           <button type="button" class="secondary" data-action="open-responsible-dialog" data-setup-club-id="${esc(clubId)}" data-responsible-id="${esc(manager.id)}">Modifier</button>
           <button type="button" class="danger" data-action="delete-responsible" data-setup-club-id="${esc(clubId)}" data-responsible-id="${esc(manager.id)}">Supprimer</button>
         </div>` : ""}
@@ -45988,10 +47068,10 @@ ${esc(bodyText)}</pre>
     }).join("");
     return `<div class="club-manager-grid">
       ${canEdit ? "" : `<p class="muted">La gestion des responsables nécessite l'autorisation « Gérer les responsables du club ».</p>`}
-      <ul class="club-manager-summary-list">
+      <ul class="club-manager-summary-list setup-manager-list">
         ${rows || `<li class="muted">Aucun responsable enregistré pour ce club.</li>`}
       </ul>
-      ${canEdit ? `<button type="button" class="secondary" data-action="open-responsible-dialog" data-setup-club-id="${esc(clubId)}">Ajouter un responsable</button>` : ""}
+      ${canEdit ? `<button type="button" class="secondary setup-manager-add" data-action="open-responsible-dialog" data-setup-club-id="${esc(clubId)}">Ajouter un responsable</button>` : ""}
     </div>`;
   }
 
@@ -46024,14 +47104,20 @@ ${esc(bodyText)}</pre>
         const user = store.users.find((u) => u.id === membership.userId);
         if (!user || user.isSystem) return "";
         const manager = membership.responsibleId ? clubManagerById(clubId, membership.responsibleId) : null;
+        // Lot UX-C (§8-11 du mandat) — nom du compte en niveau principal, rôle en badge séparé
+        // (réutilise .manager-access-status du lot UX-B, jamais réinventé), ligne « Responsable lié »
+        // CONSERVÉE inconditionnellement (testée explicitement, ex. SETUP-P7-08 : « Lié à : … »).
+        // Redondance visée par le mandat : le SEUL doublon réel était la légende visible du <select>
+        // ("Responsable lié") répétant cette même ligne juste au-dessus — raccourcie en "Responsable"
+        // (jamais membershipResponsibleFieldHtml elle-même, src/28, jamais modifiée).
         return `<li class="club-manager-summary-row" data-user-id="${esc(user.id)}">
-          <div class="club-manager-summary-info">
+          <div class="club-manager-summary-info setup-account-main">
             <strong>${esc(user.displayName)}</strong>
-            <span class="muted">${esc(userRoleLabel(membership.role))}</span>
-            <span class="muted">${manager ? `Lié à : ${esc(clubManagerOptionLabel(manager))}` : "Aucun responsable lié"}</span>
+            <span class="manager-access-status">${esc(userRoleLabel(membership.role))}</span>
           </div>
-          ${canManage ? `<div class="inline-actions">
-            <label class="club-manager-responsible-inline">Responsable lié${membershipResponsibleFieldHtml(user, club, membership, canManage, { setupClubId: clubId })}</label>
+          <div class="setup-account-sub muted">${manager ? `Lié à : ${esc(clubManagerOptionLabel(manager))}` : "Aucun responsable lié"}</div>
+          ${canManage ? `<div class="inline-actions setup-account-actions">
+            <label class="club-manager-responsible-inline setup-account-select">Responsable${membershipResponsibleFieldHtml(user, club, membership, canManage, { setupClubId: clubId })}</label>
             <button type="button" data-action="configure-manager-access" data-setup-club-id="${esc(clubId)}" data-club-id="${esc(clubId)}" data-user-id="${esc(user.id)}">Configurer l'accès</button>
           </div>` : ""}
         </li>`;
@@ -46046,19 +47132,19 @@ ${esc(bodyText)}</pre>
       .map((manager) => ({ manager, linked: typeof managerAlreadyLinked === "function" && managerAlreadyLinked(clubId, manager.id) }))
       .filter(({ manager, linked }) => responsibleShouldAppearInSetup(manager, linked) && !linked)
       .map(({ manager }) => `<li class="club-manager-summary-row" data-responsible-id="${esc(manager.id)}">
-        <div class="club-manager-summary-info">
+        <div class="club-manager-summary-info setup-account-main">
           <strong>${esc(manager.function || "Responsable")}</strong>
-          <span class="muted">${esc([manager.firstName, manager.lastName].filter(Boolean).join(" ") || "(sans nom renseigné)")}</span>
+          <span class="setup-account-name">${esc([manager.firstName, manager.lastName].filter(Boolean).join(" ") || "(sans nom renseigné)")}</span>
         </div>
         ${clubManagerAccessBlockHtml(clubId, manager)}
       </li>`).join("");
     return `<div class="club-manager-grid">
       ${canManage ? "" : `<p class="muted">La gestion des comptes d'accès nécessite d'être Administrateur de ce club.</p>`}
       <h3>Comptes d'accès du club</h3>
-      <ul class="club-manager-summary-list">
+      <ul class="club-manager-summary-list setup-account-list">
         ${accountRows || `<li class="muted">Aucun compte d'accès pour ce club.</li>`}
       </ul>
-      ${unlinkedRows ? `<h3>Responsables sans compte</h3><ul class="club-manager-summary-list">${unlinkedRows}</ul>` : ""}
+      ${unlinkedRows ? `<h3>Responsables sans compte</h3><ul class="club-manager-summary-list setup-account-list">${unlinkedRows}</ul>` : ""}
     </div>`;
   }
 
@@ -46212,17 +47298,20 @@ ${esc(bodyText)}</pre>
       ? String(disciplinesList().filter((discipline) => discipline.archived !== true).length)
       : "Non accessible";
     const enabledModules = screenFeatures().filter((def) => hasFeature(def.key));
+    // Lot UX-C (§14-17 du mandat) — structure sémantique réelle (dl/dt/dd), jamais une concaténation
+    // de texte : chaque libellé et sa valeur sont deux éléments DISTINCTS, jamais collés visuellement
+    // ("ClubClub Démo…"). Séparateur « · » pour les modules (jamais une simple virgule collée).
     return `<div class="settings-panel club-setup-reglages-panel">
       <p class="muted">Vérifiez votre configuration avant de la terminer.</p>
       <div class="dialog-section club-setup-recap">
         <h3>Récapitulatif</h3>
-        <ul class="club-setup-recap-list">
-          <li><strong>Club</strong><span>${esc(club.name)}</span></li>
-          <li><strong>Responsables</strong><span>${responsablesCount}</span></li>
-          <li><strong>Comptes d'accès</strong><span>${accountsCount}</span></li>
-          <li><strong>Activités</strong><span>${esc(activitiesLine)}</span></li>
-          <li><strong>Modules activés</strong><span>${enabledModules.length ? enabledModules.map((def) => esc(def.label)).join(", ") : "Aucun"}</span></li>
-        </ul>
+        <dl class="setup-summary">
+          <div class="setup-summary-row"><dt>Club</dt><dd>${esc(club.name)}</dd></div>
+          <div class="setup-summary-row"><dt>Responsables</dt><dd>${responsablesCount}</dd></div>
+          <div class="setup-summary-row"><dt>Comptes d'accès</dt><dd>${accountsCount}</dd></div>
+          <div class="setup-summary-row"><dt>Activités</dt><dd>${esc(activitiesLine)}</dd></div>
+          <div class="setup-summary-row"><dt>Modules activés</dt><dd>${enabledModules.length ? enabledModules.map((def) => esc(def.label)).join(" · ") : "Aucun"}</dd></div>
+        </dl>
       </div>
     </div>`;
   }
@@ -46318,11 +47407,31 @@ ${esc(bodyText)}</pre>
     const clubId = activeClubId();
     const stepId = clubSetupCurrentStepId();
     const idx = SETUP_STEP_IDS.indexOf(stepId);
-    return `<section class="band club-setup-card">
-      <div class="band-title"><h2>Configuration du club</h2></div>
-      <p>Quelques réglages restent à finaliser pour préparer votre club.</p>
-      <p class="muted">Étape ${idx + 1} sur ${SETUP_STEP_IDS.length} · ${esc(SETUP_STEP_LABELS[stepId])}</p>
-      <button type="button" class="primary" data-action="open-club-setup" data-setup-club-id="${esc(clubId)}">Continuer la configuration</button>
+    const total = SETUP_STEP_IDS.length;
+    const stepNum = idx + 1;
+    const stepLabel = SETUP_STEP_LABELS[stepId];
+    // Lot UX-C (§20-24 du mandat) — carte compacte : compteur numérique en tête, nom de l'étape
+    // courante distinct de la barre, <progress> RÉEL reflétant stepNum/total (jamais une valeur
+    // statique). Même action/dataset que l'ancien bouton, seule la présentation change.
+    // Micro-correctif UX-C-R1 — le contenu sous le titre était collé aux bords de la carte (.band
+    // n'a lui-même aucun padding). Même convention déjà en place ailleurs dans l'assistant
+    // (.assistant-section-body, .band-body) : un conteneur "-body" dédié porte le padding et
+    // l'espacement interne, jamais la section elle-même.
+    return `<section class="band club-setup-card setup-progress-card">
+      <div class="band-title setup-progress-card-header">
+        <h2>Configuration du club</h2>
+        <span class="setup-progress-card-count" aria-hidden="true">${stepNum} / ${total}</span>
+      </div>
+      <div class="setup-progress-card-body">
+        <p class="muted">Quelques réglages restent à finaliser pour préparer votre club.</p>
+        <div class="setup-progress-card-step">
+          <span class="setup-progress-card-step-label">${esc(stepLabel)}</span>
+          <progress class="setup-progress-bar" value="${stepNum}" max="${total}" aria-label="Configuration du club, étape ${stepNum} sur ${total} : ${esc(stepLabel)}"></progress>
+        </div>
+        <div class="setup-progress-card-actions">
+          <button type="button" class="primary" data-action="open-club-setup" data-setup-club-id="${esc(clubId)}">Continuer la configuration</button>
+        </div>
+      </div>
     </section>`;
   }
 

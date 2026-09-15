@@ -454,6 +454,15 @@ button.icon {
   line-height: 1;
 }
 
+/* Lot Pré-Phase P — R3A-1 (§CSS) — centrage scopé au seul bouton Supprimer des cartes Responsables
+   (qui porte désormais un <svg class="mgc-icon">, display:block) : ne touche jamais la règle
+   générique button.icon ni les autres boutons .icon (×, ✎) de l'application. */
+.club-manager-card-header button.icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
 /* Lot Accessibilité — état désactivé fiable sur tous les thèmes : couleurs explicites
    (pas d'opacité, qui ferait disparaître le bouton en thème sombre plutôt que le rendre
    simplement inactif) via les variables déjà utilisées pour le texte/fond secondaires.
@@ -2394,6 +2403,34 @@ tfoot td {
 
 .contextual-note-row + .contextual-note-row {
   border-top: 1px solid var(--line);
+}
+
+/* Lot R3 — cadre des notes contextuelles selon la priorité. Le bord gauche reprend la couleur de
+   la pastille : Important = bleu (même famille que .status.wait -> --accent), Urgent = rouge (même
+   famille que .status.late -> --danger). Teinte de fond très légère (7-8 %) : le contraste
+   texte/fond reste celui d'une note normale. --accent et --danger sont redéfinis par chaque thème
+   -> rendu cohérent en clair comme en sombre. Normale/Archive : aucune règle -> rendu inchangé. */
+.contextual-note-row.note-prio-important,
+.contextual-note-row.note-prio-urgent {
+  padding-inline: 10px;
+  border-left: 3px solid transparent;
+  border-radius: var(--radius-sm);
+}
+
+.contextual-note-row.note-prio-important {
+  border-left-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 7%, var(--surface));
+}
+
+.contextual-note-row.note-prio-urgent {
+  border-left-color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 8%, var(--surface));
+}
+
+/* Un rang coloré porte déjà sa propre séparation visuelle : pas de double filet en plus. */
+.contextual-note-row.note-prio-important + .contextual-note-row,
+.contextual-note-row.note-prio-urgent + .contextual-note-row {
+  border-top-color: transparent;
 }
 
 .contextual-note-row strong {
@@ -9004,6 +9041,265 @@ small.email-variable-chip:hover {
   grid-column: 1 / -1;
 }
 
+/* ===== Lot R3-R2 — cartes de choix génériques + dialogue « Créer un accès MonGestaClub » =====
+   Une .choice-card est un <label> enveloppant un vrai <input type="radio"> : toute la carte est
+   cliquable, la navigation clavier et la sémantique du radio restent natives. L'état sélectionné
+   est purement CSS (:has(input:checked)) ; --accent est theme-aware -> rendu cohérent clair/sombre. */
+.choice-card-group {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.choice-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  background: var(--surface);
+  cursor: pointer;
+  transition: border-color 0.12s ease, background-color 0.12s ease, box-shadow 0.12s ease;
+}
+
+.choice-card:hover {
+  border-color: var(--accent);
+}
+
+/* Le radio d'une .choice-card doit rester un petit bouton natif. La règle globale
+   `input, select, textarea { width: 100%; min-height: 36px; border; background: #fff; padding }`
+   (pensée pour les champs de SAISIE) n'a pas d'exception pour `input[type="radio"]` — seul
+   `input[type="checkbox"]` en a une : sans ce reset, le radio devenait une grande boîte pleine
+   largeur de 36 px de haut, écrasant le titre et la description mot par mot (bug capture Thierry).
+   Même traitement que la règle input[type="checkbox"]. .choice-card est aujourd'hui le SEUL
+   `type="radio"` de l'application : reset volontairement scopé, pas de règle globale. */
+.choice-card > input[type="radio"] {
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  min-height: 18px;
+  margin: 1px 0 0;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  box-shadow: none;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.choice-card-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.choice-card-title {
+  font-size: 0.9rem;
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.choice-card-desc {
+  font-size: 0.82rem;
+  color: var(--muted);
+}
+
+.choice-card:has(input:checked) {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, var(--surface));
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+.choice-card:has(input:focus-visible) {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.choice-card.is-disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+  background: var(--surface-2);
+}
+
+.choice-card.is-disabled:hover {
+  border-color: var(--line-strong);
+}
+
+.manager-access-dialog {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.manager-access-lede {
+  margin: 0;
+  color: var(--muted);
+}
+
+.manager-access-lede strong {
+  color: var(--ink);
+}
+
+.manager-access-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.manager-access-hint {
+  margin: 6px 0 0;
+}
+
+/* ===== Lot UX-B — refonte "Lier un compte existant" =====
+   Le <select existingUserId> a disparu : les comptes AVAILABLE deviennent des .choice-card radio
+   (réutilisées telles quelles, seul l'espacement interne diffère via .manager-access-account-card).
+   Déjà associés / Indisponibles utilisent .manager-access-row, une variante TRÈS légère de
+   .contact-recap-row (domaine différent, jamais réutilisée telle quelle) : titre + badge sur une
+   ligne, sous-ligne Responsable optionnelle, action Réaffecter en dessous (jamais posée "au milieu"
+   du texte). Une seule zone scrollable dédiée (.manager-access-accounts-scroll) garde Profil d'accès
+   et le footer proches, quel que soit le nombre de comptes. */
+.manager-access-summary {
+  margin: 0;
+}
+
+.manager-access-accounts-scroll {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  max-height: min(38vh, 360px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-right: 2px;
+}
+
+.manager-access-group {
+  display: grid;
+  gap: 8px;
+  border: 0;
+  margin: 0;
+  padding: 0;
+}
+
+.manager-access-group-title {
+  margin: 0;
+  padding: 0;
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+.manager-access-cards {
+  display: grid;
+  gap: 8px;
+}
+
+/* La carte de compte réutilise .choice-card intégralement (radio natif, :has(input:checked),
+   :focus-visible) : seul l'alignement vertical diffère (pas de description sous le titre, le badge
+   « Disponible » occupe la place, aligné avec le titre plutôt qu'en haut de carte). */
+.manager-access-account-card {
+  align-items: center;
+}
+
+.manager-access-empty {
+  margin: 0;
+  padding: 10px;
+  border: 1px dashed var(--line);
+  border-radius: calc(var(--radius) - 2px);
+}
+
+.manager-access-status {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 9px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-size: 0.74rem;
+  font-weight: 700;
+  background: var(--surface-2);
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.manager-access-status--available {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--line));
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, var(--surface));
+}
+
+.manager-access-status--linked {
+  color: var(--ink);
+  background: var(--surface-2);
+}
+
+.manager-access-status--inactive,
+.manager-access-status--system {
+  color: var(--muted);
+  background: var(--surface-2);
+}
+
+.manager-access-row-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.manager-access-row {
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: calc(var(--radius) - 2px);
+  background: color-mix(in srgb, var(--surface) 92%, transparent);
+  display: grid;
+  gap: 4px;
+}
+
+.manager-access-row-main {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.manager-access-row-main > strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.manager-access-row-sub {
+  font-size: 0.8rem;
+}
+
+/* Indisponibles (désactivé/système) : clairement secondaires (opacity légère), jamais illisibles. */
+.manager-access-unavailable-row {
+  opacity: 0.72;
+}
+
+@media (max-width: 560px) {
+  .choice-card-group {
+    grid-template-columns: 1fr;
+  }
+
+  .manager-access-row-main {
+    flex-wrap: wrap;
+  }
+
+  .manager-access-linked-row button[data-action="reassign-manager-access"] {
+    width: 100%;
+  }
+}
+
 .dialog {
   width: min(940px, calc(100vw - 24px));
   position: relative;
@@ -10327,10 +10623,101 @@ summary {
   font-size: 0.88rem;
 }
 
-.users-settings .user-card-list {
+/* Lot UI Pré-Phase P (§7-9) — layout master/detail : liste compacte à gauche, fiche détaillée à
+   droite. Sous ~860px, une seule colonne (liste au-dessus, fiche en dessous), aucun défilement
+   horizontal. */
+.users-master-detail {
   display: grid;
+  grid-template-columns: minmax(220px, 280px) minmax(0, 1fr);
+  gap: 18px;
+  align-items: start;
+  margin-top: 10px;
+}
+
+.users-master-list {
+  display: grid;
+  gap: 8px;
+  align-content: start;
+}
+
+.user-list {
+  display: grid;
+  gap: 6px;
+}
+
+.user-list-item {
+  display: flex;
+  align-items: center;
   gap: 10px;
-  margin: 8px 0 18px;
+  width: 100%;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+}
+
+.user-list-item.selected {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, var(--surface));
+}
+
+/* Lot UI Pré-Phase P — R1 (§6) — avatar PUREMENT VISUEL (initiales calculées à la volée, aucune
+   image, aucune donnée persistée) pour identifier plus vite chaque ligne de la liste. */
+.user-list-item-avatar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--accent) 18%, var(--surface));
+  color: var(--accent);
+  font-size: 0.76rem;
+  font-weight: 800;
+}
+
+.user-list-item.selected .user-list-item-avatar {
+  background: var(--accent);
+  color: var(--surface);
+}
+
+.user-list-item-body {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.user-list-item-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 700;
+}
+
+.user-list-item-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+
+.users-detail-pane {
+  min-width: 0;
+}
+
+@media (max-width: 860px) {
+  .users-master-detail {
+    grid-template-columns: 1fr;
+  }
 }
 
 .user-card {
@@ -10353,22 +10740,116 @@ summary {
   gap: 8px;
 }
 
+/* Lot UI Pré-Phase P — R1 (§7) — vrai sous-titre de section, pas un second cadre : sépare
+   visuellement "Nom + badges + actions" (identité du profil) de "Accès aux clubs" (une bordure
+   par ligne club, jamais une bordure supplémentaire autour du groupe entier). */
+.user-card-subtitle {
+  margin: 4px 0 0;
+  padding-top: 6px;
+  border-top: 1px solid var(--line);
+  font-size: 0.82rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--muted);
+}
+
 .user-memberships {
   display: grid;
-  gap: 6px;
+  gap: 8px;
   margin-top: 4px;
 }
 
+/* Lot UI Pré-Phase P (§11) / R1 (§8) — chaque club est une carte compacte à hiérarchie verticale :
+   nom du club en titre, puis les deux champs (côte à côte si la largeur le permet, empilés sinon),
+   puis la zone Personnaliser les droits. Une seule bordure (celle de la carte elle-même). */
 .user-membership-row {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
   font-size: 0.88rem;
+}
+
+.user-membership-row > span {
+  font-weight: 700;
+}
+
+.user-membership-fields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+}
+
+.user-membership-fields label {
+  flex: 1 1 220px;
+  min-width: 0;
 }
 
 .user-membership-row select {
   min-width: 160px;
+  max-width: 100%;
+}
+
+.user-membership-permissions-cta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+.user-permissions-custom-badge {
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 16%, var(--surface));
+  color: var(--accent);
+  font-size: 0.74rem;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+/* Lot UI Pré-Phase P (§12-15) — contenu du dialogue "Personnaliser les droits". Principe : une seule
+   bordure forte par niveau logique (le dialogue lui-même) ; les groupes de permissions se séparent
+   par un simple filet, jamais un second cadre complet ; les 30 cases perdent leur encadrement
+   individuel (hérité de .settings-check, pensé pour quelques cases isolées, illisible à cette
+   échelle) pour rester scannables en une fois. */
+.user-permissions-dialog-body {
+  display: grid;
+  gap: 6px;
+}
+
+.user-permissions-dialog-meta {
+  margin: 0 0 4px;
+}
+
+.user-permissions-groups {
+  display: grid;
+  gap: 2px;
+}
+
+.user-permissions-dialog-body fieldset.user-permissions-group {
+  border: none;
+  padding: 10px 0;
+  margin: 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.user-permissions-dialog-body fieldset.user-permissions-group:last-of-type {
+  border-bottom: none;
+}
+
+.user-permissions-dialog-body fieldset.user-permissions-group legend {
+  padding: 0 0 6px;
+  font-weight: 700;
+  font-size: 0.9rem;
+}
+
+.user-permissions-dialog-body .settings-check {
+  border: none;
+  padding: 4px 0;
+  grid-template-columns: 18px minmax(0, 1fr);
 }
 
 .club-cards {
@@ -10462,6 +10943,13 @@ summary {
   gap: 18px;
   max-width: 1480px;
   margin-inline: auto;
+  /* Lot UI Pré-Phase P (§6) — la barre d'actions étant sticky en bas du formulaire, la dernière
+     carte doit pouvoir défiler ENTIÈREMENT au-dessus d'elle avant la fin réelle du défilement :
+     sans cet espace réservé, la barre recouvre visuellement la fin de page (défaut signalé). La
+     valeur couvre largement la hauteur réelle de la barre (padding 14px*2 + bouton ~40px + marge),
+     hauteur constante à toutes les largeurs (aucune règle responsive ne la réduit ailleurs).
+     R1 (§12) — fusionné ici pour éviter une seconde déclaration du même sélecteur dans ce fichier. */
+  padding-bottom: 84px;
 }
 
 .club-settings-form > .band:first-child > p {
@@ -10666,18 +11154,48 @@ summary {
 
 .club-manager-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-  gap: 12px;
+  /* Lot UI Pré-Phase P — R2 (§4-5) — 320px (R1) laissait encore passer 3 colonnes tassées à des
+     largeurs où chaque carte restait en réalité inconfortable (Supprimer comprimé contre le
+     select). 420px force un container réellement plus large avant d'ajouter une colonne : auto-fit
+     reste honnête sur son minimum (jamais moins de 420px par carte), donc 3 colonnes n'apparaissent
+     que si chacune est vraiment confortable, 2 en desktop normal, 1 en fenêtre étroite — toujours
+     sans point de rupture arbitraire ni overflow horizontal. */
+  grid-template-columns: repeat(auto-fit, minmax(420px, 1fr));
+  gap: 14px;
   padding: 16px;
 }
 
 .club-manager-card {
   display: grid;
-  gap: 7px;
-  padding: 12px;
+  gap: 8px;
+  padding: 14px;
   border: 1px solid var(--line);
   border-radius: var(--radius);
   background: color-mix(in srgb, var(--surface) 88%, var(--surface-2));
+}
+
+/* Lot UI Pré-Phase P — R2 (§1-2) — le select "Fonction prédéfinie" et le bouton Supprimer ne sont
+   plus jamais en concurrence sur la même largeur : grille 2 colonnes (contenu / action). Le <label>
+   (déjà en 2 lignes internes : texte puis select, via la règle générique `label{display:grid}`)
+   occupe toute la colonne de gauche — le select y prend TOUTE la largeur utile, jamais partagée
+   avec le bouton. Le bouton Supprimer occupe une colonne dédiée de largeur `auto` (fixée par
+   .icon à 34px, jamais par le texte) et reste aligné en haut, indépendamment de la hauteur du
+   select — il ne peut donc plus rétrécir, déborder, ni chevaucher quoi que ce soit. */
+.club-manager-card-header {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: start;
+  gap: 8px;
+}
+
+/* Lot UI Pré-Phase P — R2 — la règle historique `.club-form-section label{grid-column:1/-1
+   !important}` (≤760px, écrite pour les champs Nom/Prénom/Email... de .form-grid.compact)
+   s'applique aussi à CE <label>, plus profondément imbriqué : sans cette exception, il fusionnerait
+   les deux colonnes de l'en-tête et repousserait le bouton Supprimer sur une ligne séparée (défaut
+   R2 reproduit et corrigé ici). Spécificité (2 classes) + !important nécessaires pour l'emporter,
+   à toutes les largeurs, sur cette règle héritée. */
+.club-manager-card .club-manager-card-header label {
+  grid-column: auto !important;
 }
 
 .club-manager-card input,
@@ -10712,7 +11230,9 @@ summary {
   padding: 12px;
   border: 1px solid var(--line);
   border-radius: var(--radius);
-  background: color-mix(in srgb, var(--surface) 94%, transparent);
+  /* Lot UI Pré-Phase P (§6) — fond plus opaque (94% -> 97%) : lisibilité au-dessus du contenu qui
+     défile en dessous, jamais un simple voile transparent. */
+  background: color-mix(in srgb, var(--surface) 97%, transparent);
   backdrop-filter: blur(12px);
 }
 
@@ -10730,6 +11250,218 @@ summary {
 .dialog-body .settings-check-grid {
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   padding: 14px;
+}
+
+/* ===== Lot UX-C — assistant de configuration (Responsables / Comptes d'accès / Récapitulatif /
+   carte accueil). .club-manager-summary-row/-list/-info restent les classes EXISTANTES (comptées
+   par des tests, jamais renommées) : seule leur structure interne et ce CSS additif changent.
+   .manager-access-status (badge, Lot UX-B) est réutilisée telle quelle pour les rôles/fonctions. */
+.club-manager-summary-row {
+  display: grid;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: calc(var(--radius) - 2px);
+  background: color-mix(in srgb, var(--surface) 92%, transparent);
+}
+
+.setup-manager-main,
+.setup-account-main {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.setup-manager-main > strong {
+  font-size: 0.85rem;
+  color: var(--ink);
+}
+
+.setup-manager-name,
+.setup-account-name {
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.setup-manager-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  font-size: 0.82rem;
+}
+
+.setup-manager-actions,
+.setup-account-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.setup-account-sub {
+  font-size: 0.82rem;
+}
+
+.setup-account-select {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1 1 220px;
+}
+
+.setup-account-select select {
+  flex: 1 1 auto;
+}
+
+.setup-manager-add {
+  margin-top: 4px;
+}
+
+@media (max-width: 560px) {
+  .setup-manager-main,
+  .setup-account-main {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 2px;
+  }
+  .setup-manager-actions,
+  .setup-account-actions {
+    justify-content: flex-start;
+  }
+  .setup-manager-actions button,
+  .setup-account-actions button {
+    flex: 1 1 auto;
+  }
+  .setup-account-select {
+    flex: 1 1 100%;
+  }
+}
+
+/* Récapitulatif (étape Réglages essentiels) : structure réelle dl/dt/dd, jamais un texte collé. */
+.club-setup-reglages-panel {
+  display: grid;
+  gap: 10px;
+}
+
+.club-setup-reglages-panel > p.muted {
+  margin: 0;
+}
+
+.club-setup-reglages-panel .club-setup-recap {
+  margin-top: 4px;
+  padding-top: 10px;
+}
+
+.club-setup-reglages-panel .club-setup-recap h3 {
+  margin: 0 0 8px;
+}
+
+.setup-summary {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+}
+
+.setup-summary-row {
+  display: grid;
+  grid-template-columns: 160px 1fr;
+  gap: 4px 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: calc(var(--radius) - 2px);
+  background: color-mix(in srgb, var(--surface) 92%, transparent);
+}
+
+.setup-summary-row dt {
+  margin: 0;
+  font-weight: 700;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.setup-summary-row dd {
+  margin: 0;
+  color: var(--ink);
+}
+
+@media (max-width: 560px) {
+  .setup-summary-row {
+    grid-template-columns: 1fr;
+    gap: 2px;
+  }
+}
+
+/* Carte accueil "Configuration du club" : compteur + nom d'étape + progression RÉELLE (currentStep/6). */
+.setup-progress-card {
+  display: grid;
+}
+
+/* Micro-correctif UX-C-R1 — conteneur dédié au padding interne (même convention que
+   .assistant-section-body/.band-body ailleurs dans l'assistant) : .band lui-même n'a aucun padding,
+   sans ce conteneur le contenu touchait les bords de la carte. */
+.setup-progress-card-body {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+}
+
+.setup-progress-card-body > p.muted {
+  margin: 0;
+}
+
+.setup-progress-card-count {
+  color: var(--muted);
+  font-size: 0.85rem;
+  font-weight: 700;
+  flex: none;
+}
+
+.setup-progress-card-step {
+  display: grid;
+  gap: 4px;
+}
+
+.setup-progress-card-step-label {
+  font-weight: 600;
+  font-size: 0.88rem;
+  color: var(--ink);
+}
+
+.setup-progress-bar {
+  width: 100%;
+  height: 8px;
+  border: 0;
+  border-radius: 999px;
+  appearance: none;
+}
+
+.setup-progress-bar::-webkit-progress-bar {
+  background: var(--surface-2);
+  border-radius: 999px;
+}
+
+.setup-progress-bar::-webkit-progress-value {
+  background: var(--accent);
+  border-radius: 999px;
+}
+
+.setup-progress-bar::-moz-progress-bar {
+  background: var(--accent);
+  border-radius: 999px;
+}
+
+.setup-progress-card-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+@media (max-width: 560px) {
+  .setup-progress-card-actions button {
+    width: 100%;
+  }
 }
 
 input[type="checkbox"],
