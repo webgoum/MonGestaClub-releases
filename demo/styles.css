@@ -9393,13 +9393,51 @@ small.email-variable-chip:hover {
 
 /* Dialogue ouvert en modal (showModal) : ancré au viewport, pas au document,
    pour ne pas faire défiler la page en haut à l'ouverture. Le scroll interne
-   reste géré par .dialog-body ; overflow visible conservé pour la photo
-   d'identité qui déborde du cadre. */
+   reste géré par .dialog-body ; overflow visible conservé sur .dialog (pas
+   touché ici) pour la photo d'identité qui déborde du cadre — .identity-
+   photo-corner (position:absolute) résout son bloc englobant sur .dialog
+   (position:relative) en sautant .dialog-body/le wrapper <form>, qui n'ont
+   ni l'un ni l'autre de position déclarée : AUCUNE des règles ci-dessous
+   n'ajoute de position à .dialog-body ou au wrapper, pour ne jamais casser
+   ce mécanisme (cf. MOB-2B).
+   Correctif MOB-2B (audit MOB-2A) : le commentaire MOB-1E plus bas
+   ("largeur/hauteur déjà correctes à toutes les largeurs cibles") ne
+   portait que sur la LARGEUR et l'absence de débordement horizontal —
+   jamais testé avec un footer inhabituellement haut ou une hauteur de
+   viewport réduite (clavier). Mesuré : .dialog-body avait une hauteur
+   FIXE (min(74vh,780px)) indépendante de la hauteur réelle du header et
+   du footer ; dès que header+footer dépassaient le ~26vh implicitement
+   supposé (footer à boutons contextuels multiples, ou clavier réduisant
+   le viewport), le footer se retrouvait entièrement hors du cadre du
+   dialogue SANS AUCUN moyen de scroll pour l'atteindre (.dialog a
+   overflow:visible, .dialog-body ne contient pas le footer — un sibling).
+   Corrigé en colonne flex : le header et le footer gardent leur hauteur
+   NATURELLE (jamais recalculée), .dialog-body absorbe SEULEMENT l'espace
+   réellement restant (flex:1 1 auto + min-height:0), quels que soient le
+   contenu du footer et la hauteur du viewport. */
 .dialog:modal {
   position: fixed;
   inset: 0;
   margin: auto;
-  max-height: calc(100vh - 24px);
+  max-height: calc(100vh - 24px); /* repli navigateurs sans dvh */
+  max-height: calc(100dvh - 24px); /* suit la hauteur RÉELLEMENT visible sur mobile (barre d'adresse Safari dynamique, clavier) */
+  display: flex;
+  flex-direction: column;
+}
+
+/* Le contenu réel (header/body/footer) est soit un DIRECT enfant de .dialog
+   (ex. openUserPermissionsDialog), soit enveloppé dans un <form> (la
+   majorité : showDialog, menu-customizer-form, password-confirm-form...),
+   soit dans un <div> nu sans classe (showInfoDialog). Ce sélecteur couvre
+   les deux cas d'enveloppe SANS jamais leur donner de `position` (cf.
+   commentaire ci-dessus sur la photo d'identité). */
+.dialog > form,
+.dialog > div:not(.dialog-header):not(.dialog-body):not(.dialog-footer) {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1 1 auto;
+  width: 100%;
 }
 
 .dialog.has-identity-photo .dialog-header h2 {
@@ -9580,6 +9618,9 @@ small.email-variable-chip:hover {
   justify-content: space-between;
   gap: 12px;
   border-bottom: 1px solid var(--line);
+  /* MOB-2B : hauteur toujours NATURELLE (jamais compressés), .dialog-body absorbe seul la
+     réduction d'espace. Sans effet quand le parent n'est pas un conteneur flex. */
+  flex: 0 0 auto;
 }
 
 .dialog-header {
@@ -9823,7 +9864,17 @@ small.email-variable-chip:hover {
 
 .dialog-body {
   padding: 14px;
-  max-height: min(74vh, 780px);
+  /* MOB-2B (audit MOB-2A, P1) : l'ancien max-height:min(74vh,780px) calculait sa propre
+     hauteur INDÉPENDAMMENT du header/footer réels, en supposant implicitement qu'ils
+     occupaient ensemble ~26vh — faux dès qu'un footer a des boutons contextuels
+     supplémentaires (ex. "Nouveau contact", footer à 229px) ou que le viewport se réduit
+     (clavier iOS). .dialog:modal est désormais display:flex;flex-direction:column, donc
+     .dialog-body n'a plus besoin de calculer sa propre limite : flex:1 1 auto + min-height:0
+     lui laisse absorber EXACTEMENT l'espace réellement restant après un header/footer à
+     hauteur naturelle, quel que soit leur contenu. */
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: none;
   overflow: auto;
 }
 
@@ -13684,9 +13735,12 @@ td.due,
   }
 
   /* Lot MOB-1E — dialogues/modales mobile.
-     .dialog / .dialog:modal / .dialog-body : largeur/hauteur déjà correctes à toutes les largeurs
-     cibles (audit confirmé, cf. rapport) — AUCUNE règle ajoutée ici pour elles, conformément à la
-     doctrine "ne pas réécrire ce qui fonctionne déjà". */
+     .dialog / .dialog:modal / .dialog-body : LARGEUR déjà correcte à toutes les largeurs cibles
+     (audit confirmé à l'époque, cf. rapport MOB-1E) — AUCUNE règle ajoutée ici pour elles.
+     Mise à jour MOB-2B (audit MOB-2A) : la HAUTEUR, elle, ne l'était pas — cf. le correctif
+     flex-column sur .dialog:modal/.dialog-body/.dialog-header/.dialog-footer, hors media query
+     (s'applique à toutes les largeurs, pas seulement mobile : le bug touchait aussi le desktop
+     en théorie, simplement moins souvent atteint faute de hauteur réduite). */
 
   /* Tableaux internes (.dialog-table-wrap/.dialog-table-scroll, src/11-dashboard-newsletter.js,
      src/12-shop-contacts-render.js, src/19-contact-dialogs.js, src/23-sport-modules.js) :
