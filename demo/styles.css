@@ -6126,6 +6126,24 @@ td .assistant-empty * { white-space: normal; }
 .coach-toolbar select { min-width: 150px; }
 /* Grille de cartes des pages "annuaire" (Coachs/Salles) : même retrait latéral que le bloc filtres. */
 .directory-grid { margin: 0 16px 16px; }
+
+/* Lot MOB-2D — cause racine du débordement Coachs/Salles à 320-340px (audit MOB-2A, P1) :
+   .group-grid utilise `grid-template-columns: repeat(auto-fill, minmax(280px, 1fr))` (ligne ~5456),
+   qui GARANTIT une piste d'au moins 280px même quand le conteneur réel (.directory-grid, retiré de
+   16px de chaque côté, lui-même dans .view au padding mobile 16px) descend sous ce seuil — mesuré :
+   277px de large à 340px (carte 281px → 4px de débordement), 257px à 320px (24px de débordement).
+   À 360px et au-delà, le conteneur (≥297px) reste TOUJOURS < 280px*2+gap de toute façon : auto-fill
+   n'y affiche déjà qu'UNE seule colonne, identique avant/après ce correctif — cette règle ne change
+   donc RIEN entre 361 et 768px (aucune perte de densité tablette), elle laisse seulement la carte se
+   contracter sous son minimum artificiel de 280px quand la place manque réellement, au lieu de
+   déborder. Scoping le plus étroit possible (361px marque la dernière largeur mesurée sans
+   débordement), jamais un forçage 1-colonne généralisé qui casserait l'affichage 2 colonnes des
+   écrans plus larges. */
+@media (max-width: 360px) {
+  .group-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
 /* Listes de disponibilités/indisponibilités (coachs & salles) : pleine largeur dans la modale */
 .dialog-body .form-grid > [data-coach-avail-list],
 .dialog-body .form-grid > [data-coach-unav-list],
@@ -9656,6 +9674,20 @@ small.email-variable-chip:hover {
 .membership-identity-left {
   flex: 1 1 auto;
   min-width: 0;
+}
+
+/* Lot UX-CONTACT-1B — respiration intérieure des accordéons Contact. Même doctrine que
+   .settings-collapsible-band .collapsible-inner (padding: 16px) et .shop-collapsible-band
+   .collapsible-inner (padding: 10px) déjà existantes ailleurs dans ce fichier : un padding SCOPÉ
+   par bande, jamais une modification de la règle .collapsible-inner de base (partagée par
+   Paramètres/Boutique/Stock/Tarifs — casserait leur mise en page). .contact-section, posée sur
+   CHAQUE bande de la fiche Contact (cf. contactSectionHtml, src/19-contact-dialogs.js), est le
+   crochet le plus propre : aucun autre dialogue ni aucune autre page ne porte cette classe. Avant ce
+   lot : padding hérité de .collapsible-inner de base, c'est-à-dire AUCUN (contenu collé aux bords).
+   12px/14px choisis pour rester dans la fourchette demandée (12-14px horizontal / 10-12px vertical)
+   sans changer hauteur de titre, rayons, couleurs ni flèches (aucune de ces propriétés touchée ici). */
+.contact-section .collapsible-inner {
+  padding: 12px 14px;
 }
 
 /* Les adaptations mobiles (≤768px, ≤390px) de la fiche Contact vivent dans le bloc @media canonique
@@ -14251,6 +14283,12 @@ td.due,
   .identity-photo-inline .identity-photo-frame {
     width: 96px;
     height: 122px;
+  }
+
+  /* UX-CONTACT-1B — respiration intérieure des accordéons Contact, resserrée à 10px sous 768px
+     (même principe que le desktop, accolée ici pour la même raison de motif greedy). */
+  .contact-section .collapsible-inner {
+    padding: 10px;
   }
 }
 
