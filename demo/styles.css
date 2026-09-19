@@ -13303,16 +13303,17 @@ td.due,
      inchangé, indépendant de la navigation. */
   .topbar-title-row > .sidebar-toggle:not(.topbar-collapse) { display: none; }
 
-  /* Correctif MOB-1L (bug n°2, vidéo de Thierry) : le mécanisme desktop settings.topbarHidden
-     (chevron .topbar-collapse, resté joignable sur mobile) + son bouton flottant .topbar-show-btn
-     gardaient leur effet sur mobile : ils masquaient .mobile-toolbar-bar (enfant DOM de .topbar via
-     topToolbar(), cf. src/10-calcs-shell.js) et, une fois "réaffiché", laissaient réapparaître
-     .topbar-title-row (ligne de titre desktop), produisant le bandeau confus vu en vidéo. Sémantique
-     desktop (>768px) strictement inchangée : ces 4 règles ne s'appliquent qu'ici. */
+  /* Correctif MOB-1M (bandeau mobile unique) : depuis ce lot, .mobile-toolbar-bar n'est plus un
+     enfant DOM de .topbar — elle est rendue par mobileNavChromeHtml, comme 3e enfant de
+     .mobile-topbar (cf. src/10-calcs-shell.js). .topbar desktop (titre + toolbar desktop) n'a donc
+     plus AUCUNE raison d'être visible sur mobile, que topbarHidden soit vrai ou faux : les
+     correctifs MOB-1L qui le "réaffichaient" pour laisser passer .mobile-toolbar-bar (devenus morts
+     depuis qu'elle n'y vit plus) sont supprimés et remplacés par un masquage inconditionnel.
+     Sémantique desktop (>768px) strictement inchangée : ces règles ne s'appliquent qu'ici. */
   .topbar-title-row { display: none; }
   .content.topbar-hidden > .topbar-show-btn { display: none; }
-  .content.topbar-hidden > .topbar { display: flex; }
-  .shell-classic-top .content.topbar-hidden > .topbar > .mobile-toolbar-bar { display: flex; }
+  .topbar { display: none; }
+  .shell-classic-top .content.topbar-hidden > .topbar { display: none; }
 
   /* Lot MOB-1D — la barre d'outils globale desktop (souvent plusieurs lignes à cette largeur,
      cf. audit MOB-1A) est remplacée par la présentation compacte .mobile-toolbar-bar ci-dessous.
@@ -13326,7 +13327,17 @@ td.due,
   html[data-mobile-nav-open="open"] { overflow: hidden; }
 
   .mobile-topbar {
+    /* Correctif MOB-1M : "grid blowout" — 5e occurrence du même schéma que .dialog-section
+       (MOB-1E), .view (MOB-1G), .vigilance-card (MOB-1I). .mobile-topbar est un enfant direct de
+       .shell (grille 1 colonne dès 980px, "1fr" sans minmax) : sans min-width:0, la taille
+       automatique minimale de la piste de grille se cale sur le min-content du conteneur flex
+       (calculé AVANT toute réduction par flex-shrink/min-width:0 internes), forçant .mobile-topbar
+       — et donc toute la page — à déborder de ~15px à 320px malgré .mobile-topbar-title déjà
+       correctement réductible. Mesuré : 335px de large dans un viewport de 320px avant correctif ;
+       320px pile après. */
+    min-width: 0;
     display: flex;
+    flex-wrap: nowrap;
     align-items: center;
     gap: 10px;
     min-height: 44px;
@@ -13345,6 +13356,14 @@ td.due,
     top: 0;
     z-index: 496;
   }
+  /* Correctif MOB-1M (bandeau unique) : .mobile-toolbar-bar est maintenant le 3e enfant flex de
+     .mobile-topbar (burger | titre | toolbar), sur la même ligne, la même surface sticky. .flex-wrap:
+     nowrap ci-dessus + flex:0 0 auto sur .mobile-toolbar-bar (ci-dessous) garantissent qu'AUCUN
+     élément ne bascule sur une 2e ligne : seul .mobile-topbar-title (flex:1 1 auto, min-width:0)
+     absorbe le manque de place en se tronquant (ellipsis), jamais les boutons d'action. Mesuré :
+     burger(44) + gaps(2x10) + padding(2x10) + barre d'outils compacte (~196 : 3 boutons 44px +
+     gaps + bouton "⋯" 44px) = 280px de contenu fixe ; à 320px il reste 40px pour le titre (tronqué,
+     comportement accepté par le mandat), à 390px 110px (confortable). */
   .mobile-nav-toggle {
     display: inline-flex;
     align-items: center;
@@ -13360,6 +13379,10 @@ td.due,
     line-height: 1;
   }
   .mobile-topbar-title {
+    /* Correctif MOB-1M : seule partie flexible du bandeau unique (flex:1 1 auto) — absorbe tout
+       l'espace restant entre le burger et la barre d'outils compacte, et se tronque en premier
+       (min-width:0 + ellipsis) plutôt que de forcer un retour à la ligne ou un débordement. */
+    flex: 1 1 auto;
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -13536,19 +13559,24 @@ td.due,
   }
 
   /* Lot MOB-1D — barre d'outils mobile compacte : actions prioritaires directement visibles +
-     bouton "⋯" ouvrant les actions secondaires. .mobile-toolbar-bar est positionné en relative
-     pour ancrer .mobile-toolbar-overflow juste en dessous (position:absolute; top:100%), même
-     technique que .topmenu-dropdown (mode classique), jamais un calcul JS de hauteur. Le backdrop
-     et le panneau overflow sont des ENFANTS de cette barre (voir .mobile-toolbar-more plus bas pour
-     le correctif de recouvrement qui en découle). */
+     bouton "⋯" ouvrant les actions secondaires. Correctif MOB-1M (bandeau unique) : cette barre
+     n'est plus une rangée autonome (fond/bordure/padding retirés — .mobile-topbar les porte déjà
+     pour l'ensemble du bandeau) mais le 3e enfant flex de .mobile-topbar (flex:0 0 auto : jamais
+     compressée, seul le titre absorbe le manque de place). Elle n'est plus elle-même "position:
+     relative" : .mobile-toolbar-overflow (position:absolute; top:100%) ancre désormais sur
+     .mobile-topbar (position:sticky, ancêtre positionné le plus proche), pour s'ouvrir sous le
+     bandeau COMPLET (burger+titre+actions) et non sous ce seul groupe de boutons — cf.
+     .mobile-toolbar-overflow plus bas (left/right:10px désormais relatifs au bandeau entier). Le
+     backdrop et le panneau overflow restent des ENFANTS de cette barre (voir .mobile-toolbar-more
+     plus bas pour le correctif de recouvrement qui en découle, toujours valable : leurs z-index
+     comparent désormais dans le contexte d'empilement de .mobile-topbar au lieu de celui, alors
+     hérité, de .topbar — strictement au-dessus de .mobile-nav-backdrop=490 au lieu d'en dessous,
+     aucune régression). */
   .mobile-toolbar-bar {
     display: flex;
     align-items: center;
     gap: 8px;
-    padding: 8px 10px;
-    background: var(--surface);
-    border-bottom: 1px solid var(--line);
-    position: relative;
+    flex: 0 0 auto;
   }
   .mobile-toolbar-priority {
     display: flex;
@@ -13861,5 +13889,119 @@ td.due,
   }
   .vigilance-resolve-btn {
     width: 100%;
+  }
+
+  /* Lot MOB-1M (partie B, vidéo de Thierry) — bulles de résumé Paramètres (.collapsible-meta).
+     Cause : .collapsible-meta a une hauteur FIXE (height:26px, pas min-height) et aucun
+     white-space:normal explicite ; un résumé de 2 lignes ("Minimum : avertir · Maximum : avertir",
+     "6 disciplines · 7 catégories"...) ne peut physiquement pas tenir dedans, le texte dépasse
+     visuellement le fond arrondi de la bulle. Mesuré (scrollHeight vs clientHeight de .collapsible-
+     meta, preuve la plus fiable d'un texte réellement coupé) : débordement sur 5 des 8 panneaux
+     testés à 320px (features, sport-categories, group-age-policy, menu-order, smtp), 2 à 375px, 1 à
+     390px — un bug déjà présent à la largeur "normale" de bien des iPhone. Corrigé en repliant le
+     résumé sur sa propre ligne pleine largeur (order:3 + flex-basis:100%, .collapsible-title-row
+     passe en flex-wrap:wrap) plutôt qu'en le comprimant davantage : "Titre  >" sur la 1re ligne,
+     résumé complet juste en dessous. Layout desktop (>768px) non touché : .collapsible-title-row
+     n'a pas de flex-wrap hors de ce breakpoint, .collapsible-meta garde sa hauteur fixe. */
+  .collapsible-title-row {
+    flex-wrap: wrap;
+    row-gap: 6px;
+  }
+  .collapsible-title-row h2 {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+  .collapsible-title-row .collapsible-arrow {
+    order: 2;
+  }
+  .collapsible-title-row .collapsible-meta {
+    order: 3;
+    flex: 1 1 100%;
+    width: 100%;
+    max-width: 100%;
+    height: auto;
+    min-height: 26px;
+    display: block;
+    text-align: left;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    padding: 4px 12px;
+    border-radius: 12px;
+  }
+
+  /* Lot MOB-1M (partie B) — section Logo (.settings-logo-preview), colonne texte trop comprimée
+     à côté du logo 96px (mesuré : 128px de large restants à 320px pour le formulaire + les 3
+     boutons — pas un débordement dur grâce à minmax(0,1fr)/form-grid déjà en 1 colonne dès 980px/
+     inline-actions déjà flex-wrap, mais ergonomiquement écrasé, cf. vidéo). Le logo passe au-dessus,
+     centré, et la colonne de texte/formulaire/actions récupère toute la largeur en dessous. */
+  .settings-logo-preview {
+    grid-template-columns: 1fr;
+  }
+  .settings-logo-preview img {
+    justify-self: center;
+  }
+
+  /* Lot MOB-1M (partie B) — audit de containment (§7 du mandat) : trouvé par balayage automatique
+     à 320px, .users-master-list débordait de 17px de son parent .settings-panel (panneau "Comptes
+     d'accès"), entraînant son enfant .inline-actions (bouton "Créer un compte d'accès") avec elle —
+     alors que le bouton lui-même, mesuré isolément, tenait très bien dans l'espace réellement
+     disponible. Diagnostic affiné par mesure directe (getComputedStyle) : ce n'est PAS
+     .users-master-detail (déjà minmax-safe via son passage à 1 seule colonne sous 860px, confirmé
+     correctement dimensionné à 252px) — c'est la propre piste de grille IMPLICITE de
+     .users-master-list (display:grid, aucun grid-template-columns : même schéma que
+     .email-template-list/.email-template-card ci-dessous) qui se calait sur le min-content de ses
+     enfants (269px calculés contre 252px disponibles). Corrigé en fixant explicitement cette piste
+     à minmax(0, 1fr). */
+  .users-master-list {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  /* Même schéma un niveau plus profond : .user-list (chaque bouton de la liste des comptes,
+     display:grid, aucun grid-template-columns) débordait encore de 17px indépendamment du
+     correctif ci-dessus. */
+  .user-list {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  /* Résidus mineurs (2-4px) trouvés par le même audit de containment, même schéma générique
+     (display:grid sans grid-template-columns explicite ou floor auto-fit trop large) : panneau
+     "Fonctionnalités du club" (.features-club-panel) et bloc "Variables personnalisables du
+     modèle" (.email-custom-variable-grid, dans les modèles personnalisés). */
+  .features-club-panel {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .email-custom-variable-grid {
+    grid-template-columns: 1fr;
+  }
+
+  /* Lot MOB-1M (partie B) — audit de containment : .email-template-card débordait de 34px à 320px
+     (panneau "Messages e-mail"), cascadant sur la quasi-totalité de ses descendants (toolbar, titre,
+     objet, texte...). Fausse piste initiale : .email-template-toolbar avait déjà sa propre règle
+     grid-template-columns:1fr sous @media(max-width:760px) (préexistante, hors phase mobile) — pas
+     la cause. Vraie cause mesurée, variante inédite du même problème récurrent cette phase : ici ce
+     n'est pas .email-template-list qui a besoin de rétrécir en tant qu'ITEM d'un parent flex/grid
+     (min-width:0 sur elle-même n'a mesurément AUCUN effet : elle se redimensionne déjà correctement
+     comme bloc normal), c'est SA PROPRE piste de grille interne (display:grid, aucun
+     grid-template-columns : piste implicite unique auto-dimensionnée sur le min-content de
+     .email-template-card) qui dépasse la largeur de .email-template-list elle-même (286px de piste
+     calculée pour 262px de large réellement disponibles). Corrigé en fixant explicitement cette
+     piste à minmax(0, 1fr) plutôt qu'auto. */
+  .email-template-list {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  /* Une fois .email-template-list corrigée, .email-template-toolbar débordait encore de son
+     propre parent .email-template-card (19px) : la règle préexistante (hors phase mobile,
+     @media max-width:760px) "grid-template-columns: 1fr;" utilise un "1fr" SEUL, qui — comme
+     .vigilance-grid en MOB-1I — conserve un minimum automatique basé sur le contenu (pas 0). Notre
+     media query (768px) vient après celle à 760px dans le fichier : à spécificité égale, cette
+     règle la emporte sur toute la plage de largeurs testée et la remplace par minmax(0, 1fr). */
+  .email-template-toolbar {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  /* Même schéma une 3e fois, un niveau plus profond : .email-template-card lui-même (display:grid,
+     ses lignes = toolbar/tête/indice/légende/champs) n'a pas non plus de grid-template-columns
+     explicite (piste implicite auto-dimensionnée à 256px mesurés, contre 252px réellement
+     disponibles) — c'est ELLE qui contraignait .email-template-toolbar à rester large même après
+     son propre correctif ci-dessus. */
+  .email-template-card {
+    grid-template-columns: minmax(0, 1fr);
   }
 }

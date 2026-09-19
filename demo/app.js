@@ -9646,10 +9646,19 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
     // affiche désormais le nom de l'APPLICATION ("MonGestaClub"), plus settings.clubName : le
     // switcher Club juste en dessous affiche déjà le club actif, éviter la redondance des deux noms.
     const mobileNavEntriesHtml = visibleMain.map(([key, label]) => menuEntryHtml(key, label, "mobile-nav-group", "mobile-nav-dropdown")).join("");
+    // Lot MOB-1M — un seul bandeau mobile (burger + titre + actions) : la toolbar mobile
+    // (mobileToolbarHtml) vivait auparavant dans topToolbar()/.topbar (chrome DESKTOP), donc sur
+    // une surface DOM distincte de .mobile-topbar (chrome mobile, ci-dessous) — d'où les deux
+    // bandeaux superposés vus en vidéo par Thierry (le second, resté enfant de .topbar, ne
+    // bénéficiait pas du position:sticky de MOB-1L et défilait/disparaissait). Elle est désormais
+    // rendue ICI, comme troisième enfant de .mobile-topbar, sur l'unique surface sticky. Mêmes
+    // boutons (toolbarButtons(), source unique, appelée aussi par topToolbar() pour le desktop) :
+    // aucune duplication de logique, mêmes data-action/permissions/handlers.
     const mobileNavChromeHtml = `
       <div class="mobile-topbar">
         <button type="button" class="mobile-nav-toggle" data-action="toggle-mobile-nav" aria-label="${ui.mobileNavOpen ? "Fermer le menu" : "Ouvrir le menu"}" aria-expanded="${ui.mobileNavOpen ? "true" : "false"}" title="${ui.mobileNavOpen ? "Fermer le menu" : "Ouvrir le menu"}">☰</button>
         <span class="mobile-topbar-title">${esc(title)}</span>
+        ${mobileToolbarHtml(toolbarButtons())}
       </div>
       <div class="mobile-nav-backdrop ${ui.mobileNavOpen ? "open" : ""}" data-action="close-mobile-nav"></div>
       <nav class="mobile-nav-drawer ${ui.mobileNavOpen ? "open" : ""}" aria-label="Menu principal mobile">
@@ -9760,6 +9769,12 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
     };
   }
 
+  // Lot MOB-1M — topToolbar() redevient strictement DESKTOP : la barre mobile compacte
+  // (mobileToolbarHtml) est désormais rendue par mobileNavChromeHtml, comme enfant de
+  // .mobile-topbar (bandeau unique sticky), jamais ici. .app-toolbar reste caché sur mobile
+  // (@media max-width:768px, inchangé depuis MOB-1D) : ce changement ne fait que retirer une
+  // seconde émission DOM devenue inutile (elle vivait, invisible en display mais bien présente,
+  // comme enfant de .topbar — surface distincte de .mobile-topbar, cause du double bandeau).
   function topToolbar() {
     const withLabels = Boolean(displaySettings().toolbarLabels);
     const b = toolbarButtons();
@@ -9792,7 +9807,7 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
         ${b.save}
       </div>
       <span class="save-state" role="status" aria-live="polite">${esc(ui.saveMessage)}</span>
-    </div>${mobileToolbarHtml(b)}`;
+    </div>`;
   }
 
   // Lot MOB-1D — présentation mobile compacte de la MÊME barre d'outils (aucune deuxième liste
