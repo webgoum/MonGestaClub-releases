@@ -2584,6 +2584,15 @@ tfoot td {
   .vigilance-grid { grid-template-columns: 1fr 1fr; }
   .vigilance-state { flex-wrap: wrap; }
 }
+/* Correctif MOB-1L (bug n°3, vidéo de Thierry) : la règle ci-dessus (préexistante, hors phase
+   mobile) impose 2 colonnes dès 640px, y compris sur téléphone. Mesuré par Playwright (contexte
+   iPhone réel) : le CTA le plus long ("Réapprovisionner →", 143px incompressible) déborde de sa
+   carte à 375px (150px de colonne) et 360px (142px), tout en tenant à 390px (157px, 14px de marge)
+   et au-delà — d'où un seuil choisi à 430px (marge de sécurité couvrant tous les iPhone/Android
+   testés, sans toucher aux 2 colonnes conservées à 600/768px comme demandé). */
+@media (max-width: 430px) {
+  .vigilance-grid { grid-template-columns: 1fr; }
+}
 
 .kpi {
   padding: 14px;
@@ -13294,6 +13303,17 @@ td.due,
      inchangé, indépendant de la navigation. */
   .topbar-title-row > .sidebar-toggle:not(.topbar-collapse) { display: none; }
 
+  /* Correctif MOB-1L (bug n°2, vidéo de Thierry) : le mécanisme desktop settings.topbarHidden
+     (chevron .topbar-collapse, resté joignable sur mobile) + son bouton flottant .topbar-show-btn
+     gardaient leur effet sur mobile : ils masquaient .mobile-toolbar-bar (enfant DOM de .topbar via
+     topToolbar(), cf. src/10-calcs-shell.js) et, une fois "réaffiché", laissaient réapparaître
+     .topbar-title-row (ligne de titre desktop), produisant le bandeau confus vu en vidéo. Sémantique
+     desktop (>768px) strictement inchangée : ces 4 règles ne s'appliquent qu'ici. */
+  .topbar-title-row { display: none; }
+  .content.topbar-hidden > .topbar-show-btn { display: none; }
+  .content.topbar-hidden > .topbar { display: flex; }
+  .shell-classic-top .content.topbar-hidden > .topbar > .mobile-toolbar-bar { display: flex; }
+
   /* Lot MOB-1D — la barre d'outils globale desktop (souvent plusieurs lignes à cette largeur,
      cf. audit MOB-1A) est remplacée par la présentation compacte .mobile-toolbar-bar ci-dessous.
      Aucune action supprimée : mêmes boutons, réutilisés tels quels dans la barre compacte + le
@@ -13313,12 +13333,16 @@ td.due,
     padding: 0 10px;
     background: var(--surface);
     border-bottom: 1px solid var(--line-strong);
-    /* Correctif MOB-1D (régression latente de MOB-1B, trouvée en validation Playwright réelle du
-       même défaut sur le menu "⋯") : sans position/z-index, .mobile-nav-backdrop (fixed, z-index
-       490) recouvre le bouton hamburger une fois le tiroir ouvert, empêchant de le refermer par un
-       second tap dessus (la croix interne .mobile-nav-close, elle, reste cliquable — d'où l'absence
-       de détection lors de la validation visuelle MOB-1B, qui ne re-testait pas le hamburger). */
-    position: relative;
+    /* Correctif MOB-1L (bug réel constaté sur iPhone, vidéo de Thierry) : position:relative
+       laissait la barre défiler avec le reste de la page — le hamburger disparaissait dès ~44px
+       de scroll, rendant le menu mobile injoignable en cours de page. .shell passe déjà en grille
+       à une seule colonne dès 980px (règle préexistante, non MOB-1L), donc .mobile-topbar (enfant
+       direct de .shell) n'est jamais coincé dans une rangée de grille indépendante : le sticky agit
+       normalement par rapport au viewport (aucun ancêtre body/html/.content/.shell n'a overflow
+       restreint). z-index conservé au-dessus de .mobile-nav-backdrop (490) pour garder le hamburger
+       cliquable tiroir ouvert (cf. commentaire MOB-1D ci-dessus, toujours valable). */
+    position: sticky;
+    top: 0;
     z-index: 496;
   }
   .mobile-nav-toggle {
@@ -13822,5 +13846,20 @@ td.due,
      ligne (768 à ~440px selon la carte). N'affecte que ce bouton, rien d'autre dans la carte. */
   .vigilance-card-cta {
     min-height: 40px;
+  }
+
+  /* Correctif MOB-1L (bug n°4, vidéo de Thierry) : dans les dialogues de résolution (ex. "Stock
+     faible", vigilanceResolverBodyHtml/groupResolverBodyHtml — src/11-dashboard-newsletter.js),
+     .vigilance-resolve-item alignait nom+stock/seuil et bouton CTA ("Réapprovisionner", etc.) sur
+     UNE SEULE ligne (justify-content:space-between, bouton flex:0 0 auto incompressible). Mesuré :
+     à 390px la colonne info tombe à 114px pour un bouton de 168px — texte écrasé, illisible en
+     vidéo. Empilé verticalement (nom+stock/seuil au-dessus, bouton pleine largeur en dessous) :
+     aucune logique/donnée changée (mêmes data-action, mêmes libellés), uniquement la présentation. */
+  .vigilance-resolve-item {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .vigilance-resolve-btn {
+    width: 100%;
   }
 }
