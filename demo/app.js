@@ -26679,22 +26679,39 @@ ${esc(bodyText)}</pre>
       // activités » figée à son état d'ouverture. Même mécanique que .contact-recap ci-dessous, pas de
       // cache ni de state parallèle : outerHTML recalculé depuis le contact courant + club source +
       // permissions fraîches.
+      // UX-CONTACT-1 (§19-20) — le socle 360° et le récapitulatif vivent maintenant tous deux dans la
+      // rubrique "Activités / dossier membre" (.contact-section[data-contact-section="activites"]),
+      // jamais dans le pied de page ni accolés à .contact-dialog-actions (qui a quitté le milieu de la
+      // fiche pour la zone Actions en fin de fiche, §22 — un ancrage sur cette classe ne serait plus
+      // au bon endroit). Insertion directe dans .collapsible-inner quand le bloc n'existait pas encore
+      // (contact vide à l'ouverture), puis la bande elle-même est montrée/masquée selon le contenu —
+      // elle reste TOUJOURS présente dans le DOM (contactSectionHtml), jamais recréée ici.
+      const activitiesBand = dlg.querySelector('.contact-section[data-contact-section="activites"]');
+      const activitiesInner = activitiesBand?.querySelector(".collapsible-inner");
       const overview = dlg.querySelector(".contact-360-dossier");
+      const nextOverview = contact360OverviewHtml(kind, contact, openedClubId);
       if (overview) {
-        const nextOverview = contact360OverviewHtml(kind, contact, openedClubId);
         if (nextOverview) overview.outerHTML = nextOverview;
         else overview.remove();
+      } else if (nextOverview) {
+        activitiesInner?.insertAdjacentHTML("afterbegin", nextOverview);
       }
       const recap = dlg.querySelector(".contact-recap");
       const nextRecap = contactActivitySummary(kind, contact, openedClubId);
-      if (recap && nextRecap) {
-        recap.outerHTML = nextRecap;
-      } else if (!recap && nextRecap) {
-        const actions = dlg.querySelector(".contact-dialog-actions");
-        actions?.insertAdjacentHTML("beforebegin", nextRecap);
+      if (recap) {
+        if (nextRecap) recap.outerHTML = nextRecap;
+        else recap.remove();
+      } else if (nextRecap) {
+        activitiesInner?.insertAdjacentHTML("beforeend", nextRecap);
       }
-      const footer = dlg.querySelector(".dialog-footer-left");
-      if (footer) footer.innerHTML = contactModuleLinks(kind, contact);
+      if (activitiesBand) activitiesBand.hidden = !(nextOverview || nextRecap);
+      const quickActionsInner = dlg.querySelector('.contact-section[data-contact-section="actions-rapides"] .collapsible-inner');
+      if (quickActionsInner) {
+        const nextLinks = contactModuleLinks(kind, contact);
+        quickActionsInner.innerHTML = nextLinks;
+        const quickActionsBand = quickActionsInner.closest(".contact-section");
+        if (quickActionsBand) quickActionsBand.hidden = !nextLinks.trim();
+      }
       applyClickableTooltips(dlg);
     });
   }
@@ -27401,19 +27418,11 @@ ${esc(bodyText)}</pre>
   // jamais d'atteindre ce code puisque le dialogue entier ne s'ouvre pas).
   function contact360OverviewHtml(kind, contact = {}, openedClubId) {
     if (kind !== "members" || !contact.id) return "";
-    const subtitleParts = ["Adhérent", memberCategory(contact), memberAgeLabel(contact)].filter(Boolean);
-    const clubName = contact360ClubLabel(openedClubId);
-    return `<div class="dialog-section contact-360-dossier" data-tour="contact-360">
-      <div class="contact-recap-head">
-        <div>
-          <h3>Dossier membre</h3>
-          <p>${esc(personLabel(contact) || "Contact")} · ${esc(subtitleParts.join(" · "))}</p>
-        </div>
-      </div>
-      <dl>
-        <div><dt>Club</dt><dd>${clubName ? esc(clubName) : `<span class="muted">Non renseigné</span>`}</dd></div>
-        <div><dt>Date de naissance</dt><dd>${dateDisplay(contact.birthDate) || `<span class="muted">Non renseignée</span>`}</dd></div>
-      </dl>
+    // UX-CONTACT-1 (§19) — le nom/sous-titre/Club/Date de naissance vivent désormais dans l'en-tête
+    // d'identité TOUJOURS visible de la fiche (contactIdentityHeaderHtml, 19-contact-dialogs.js) :
+    // retirés d'ici pour ne plus jamais les afficher deux fois. Le wrapper .contact-360-dossier est
+    // conservé tel quel (refreshOpenContactDialog le cible par cette classe).
+    return `<div class="contact-360-dossier" data-tour="contact-360">
       ${contact360MembershipSummaryHtml(contact, openedClubId)}
       ${contact360SportSectionHtml(contact, openedClubId)}
       ${contact360NextCompetitionHtml(contact, kind, openedClubId)}
@@ -29697,6 +29706,140 @@ ${esc(bodyText)}</pre>
     "imageRights", "rulesSigned",
   ];
 
+  // UX-CONTACT-1 — variante Contact-only du widget photo : mêmes attributs data-identity-photo-*
+  // que identityPhotoSection (05-security-identity.js), qui reste INTACTE et sert toujours
+  // openMembershipDialog + l'inscription stage (audit §7-8 : setIdentityPhotoInForm/openIdentityPhoto
+  // ne ciblent que ces attributs, jamais une classe). Différence unique : jamais
+  // .identity-photo-corner, donc jamais position:absolute ni offset négatif — la photo est un enfant
+  // normal du flux de l'en-tête d'identité, agrandie via .identity-photo-inline (styles.css).
+  function identityPhotoInlineHtml(row = {}, editable = true) {
+    const src = identityPhoto(row);
+    const displaySrc = src || identityAvatarSrc(row);
+    const defaultAvatarClass = src ? "" : "default-avatar";
+    return `<div class="identity-photo-inline" data-identity-photo-widget ${editable ? "" : "data-identity-photo-readonly"}>
+      <button class="identity-photo-frame ${defaultAvatarClass}" type="button" data-action="open-identity-photo" title="${src ? "Ouvrir la photo" : "Ouvrir la silhouette / ajouter une photo"}" data-avatar-src="${esc(displaySrc)}">
+        <img src="${esc(displaySrc)}" alt="${src ? "Photo" : "Silhouette"} de ${esc(personLabel(row) || "contact")}" data-identity-photo-preview />
+      </button>
+      <input type="hidden" name="identityPhotoDataUrl" value="${esc(src)}" data-identity-photo-value />
+    </div>`;
+  }
+
+  // UX-CONTACT-1 — en-tête d'identité (niveau 1 du mandat, toujours visible, jamais dans un
+  // accordéon). Nom/Prénom restent les VRAIS champs éditables (§14 : toujours accessibles, y compris
+  // sur une création) ; la Date de naissance est aussi le VRAI champ birthDate (data-birth-date),
+  // stylée pour ressembler à une cellule d'info plutôt qu'à un champ de formulaire classique — un
+  // seul et même input, jamais dupliqué. category reste un input caché (type="hidden", non
+  // "disabled", donc toujours transmis par FormData) : sa valeur continue d'être calculée par
+  // updateBirthCategoryFields ; l'affichage visible équivalent est désormais le texte de statut
+  // (data-contact-status-line), rafraîchi par ce même mécanisme (cf. plus bas).
+  function contactIdentityHeaderHtml(kind, row = {}, openedClubId, readOnly) {
+    const isMember = kind === "members";
+    const isNew = !row.id;
+    const kicker = isNew ? "Nouveau contact" : (isMember ? "Dossier membre" : "Fiche contact");
+    const subtitleParts = [isMember ? "Adhérent" : "Contact", memberCategory(row), memberAgeLabel(row)].filter(Boolean);
+    const clubName = isMember && row.id ? contact360ClubLabel(openedClubId) : "";
+    return `<div class="contact-identity-header">
+      <div class="contact-identity-main">
+        <p class="contact-identity-kicker">${esc(kicker)}</p>
+        <div class="contact-identity-name-fields">
+          ${field("lastName", "Nom *", row.lastName, "text", 'required data-tour="contact-lastname"')}
+          ${field("firstName", "Prénom *", row.firstName, "text", 'required data-tour="contact-firstname"')}
+        </div>
+        <p class="contact-identity-status-line" data-contact-status-line>${esc(subtitleParts.join(" · "))}</p>
+        <input type="hidden" name="category" value="${esc(memberCategory(row))}" data-birth-category />
+        <div class="contact-identity-meta-grid">
+          <div class="contact-identity-meta-cell${clubName ? "" : " is-empty"}">
+            <span>Club</span>
+            <strong>${clubName ? esc(clubName) : "Non renseigné"}</strong>
+          </div>
+          <div class="contact-identity-meta-cell contact-identity-birthdate-cell">
+            <span>Date de naissance</span>
+            <input name="birthDate" type="date" value="${esc(dateInputValue(row.birthDate))}" data-birth-date />
+            <small class="contact-identity-empty-hint" data-birthdate-empty-hint ${row.birthDate ? "hidden" : ""}>Non renseignée</small>
+          </div>
+        </div>
+      </div>
+      ${identityPhotoInlineHtml(row, !readOnly)}
+    </div>`;
+  }
+
+  // UX-CONTACT-1 — accordéon générique de la fiche Contact (niveau 2 du mandat). Réutilise VERBATIM
+  // .band/.collapsible-band/.band-title/.collapsible-title-row/.collapsible-arrow/
+  // .collapsible-content/.collapsible-inner (Lot MOB-1M, Paramètres) pour une cohérence visuelle
+  // totale (§11) : aucune règle CSS propre à la bascule n'est nécessaire, purement piloté par la
+  // classe .open — toggle DIRECT en JS (bindContactSectionToggles ci-dessous), jamais le cycle
+  // ui/render() des accordéons de page (un dialogue est construit une fois via innerHTML puis
+  // manipulé en direct, cf. audit). La bande reste TOUJOURS présente dans le DOM (juste "hidden" si
+  // son contenu est vide) plutôt que d'être absente/recréée : refreshOpenContactDialog n'a alors
+  // qu'à mettre à jour .collapsible-inner et basculer "hidden", jamais à réinsérer toute la bande.
+  function contactSectionHtml(id, title, innerHtml, { open = false } = {}) {
+    const empty = !asText(innerHtml).trim();
+    const isOpen = open && !empty;
+    return `<div class="band collapsible-band contact-section ${isOpen ? "open" : ""}" data-contact-section="${esc(id)}" ${empty ? "hidden" : ""}>
+      <div class="band-title collapsible-title-row" role="button" tabindex="0" aria-expanded="${isOpen ? "true" : "false"}">
+        <h2>${esc(title)}</h2>
+        <span class="collapsible-arrow" aria-hidden="true">›</span>
+      </div>
+      <div class="collapsible-content">
+        <div class="collapsible-inner">${innerHtml}</div>
+      </div>
+    </div>`;
+  }
+
+  // UX-CONTACT-1 — bascule des accordéons : mono-ouverture EXCLUSIVE en mobile (≤768px, même seuil
+  // que MOB-1M), multi-ouverture libre en desktop. Écouteur DÉLÉGUÉ sur le <form> entier (pas un
+  // écouteur par en-tête) : survit à un remplacement DOM partiel via outerHTML (refreshOpenContactDialog)
+  // et à la réduction/restauration de fenêtre (le <form> vivant est déplacé, jamais recréé — cf.
+  // showDialog/ensureMinimizedStash). Retourne openSection() pour être réutilisée par focusField.
+  function bindContactSectionToggles(form) {
+    const openSection = (band) => {
+      if (!band || band.hidden || band.classList.contains("open")) return;
+      if (window.matchMedia("(max-width: 768px)").matches) {
+        form.querySelectorAll(".contact-section.open").forEach((other) => {
+          if (other === band) return;
+          other.classList.remove("open");
+          other.querySelector(".collapsible-title-row")?.setAttribute("aria-expanded", "false");
+        });
+      }
+      band.classList.add("open");
+      band.querySelector(".collapsible-title-row")?.setAttribute("aria-expanded", "true");
+    };
+    const toggle = (row) => {
+      const band = row.closest(".contact-section");
+      if (!band) return;
+      if (band.classList.contains("open")) {
+        band.classList.remove("open");
+        row.setAttribute("aria-expanded", "false");
+      } else {
+        openSection(band);
+      }
+    };
+    form.addEventListener("click", (event) => {
+      const row = event.target.closest(".contact-section > .collapsible-title-row");
+      if (row) toggle(row);
+    });
+    form.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      const row = event.target.closest(".contact-section > .collapsible-title-row");
+      if (!row) return;
+      event.preventDefault();
+      toggle(row);
+    });
+    return { openSection };
+  }
+
+  // UX-CONTACT-1 — associe un champ (paramètre focusField historique, ex. "parentalAuthorization")
+  // à l'accordéon qui le contient désormais, pour l'ouvrir automatiquement avant le scroll/focus.
+  // lastName/firstName/birthDate/category vivent dans l'en-tête (toujours visible) : absents
+  // volontairement de cette table, aucune ouverture d'accordéon n'est nécessaire pour eux.
+  const CONTACT_SECTION_BY_FIELD = {
+    email: "coordonnees", mobile: "coordonnees", phone: "coordonnees", city: "coordonnees",
+    postalCode: "coordonnees", address: "coordonnees",
+    birthPlace: "informations", nationality: "informations", identityAvatarChoice: "informations",
+    legalGuardianName: "responsable", legalGuardianPhone: "responsable", legalGuardianEmail: "responsable",
+    parentalAuthorization: "responsable", imageRights: "responsable", rulesSigned: "responsable",
+  };
+
   function openContactDialog(kind, row = {}, focusField = "") {
     const isMember = kind === "members";
     // Lot O-E2-B2 — club ciblé mémorisé à l'ouverture, revérifié au save (dialogue asynchrone, §5/§29).
@@ -29722,35 +29865,46 @@ ${esc(bodyText)}</pre>
     // documents invisibles. write n'implique jamais read (§7) : même documents.write=true ne permet
     // pas de reconstruire depuis un formulaire qui ne les a jamais montrés.
     const documentsReadableAtOpen = currentUserHasPermission("documents.read", openedClubId);
+    // UX-CONTACT-1 — refonte complète : en-tête d'identité toujours visible (nom/prénom/statut/
+    // Club/Date de naissance/photo) + accordéons thématiques (§10-13 du mandat), au lieu de champs
+    // disparates. Nom/Prénom/birthDate/category ont migré dans contactIdentityHeaderHtml (mêmes VRAIS
+    // champs, jamais dupliqués). contactModuleLinks a quitté le pied de page pour une section
+    // "Actions rapides" en corps de fiche (§20) ; le bouton Supprimer a quitté le milieu de la fiche
+    // pour une zone Actions clairement séparée en fin de fiche (§22).
     const body = [
       // Lot Q1.5 (§15) — club source (data-contact-dialog-club-id) posé ici pour que
       // refreshOpenContactDialog puisse recalculer le récapitulatif ET le socle 360° avec CE club,
       // jamais un activeClubId() lu tardivement au moment du refresh.
       row.id ? `<div hidden data-contact-dialog-kind="${esc(kind)}" data-contact-dialog-id="${esc(row.id)}" data-contact-dialog-club-id="${esc(openedClubId)}"></div>` : "",
-      // Phase Q — Lot Q1 : socle du dossier membre 360°, placé tout en haut de la fiche pour devenir
-      // le point d'entrée naturel (§4 du mandat Q1). isMember && row.id déjà garanti (contact360OverviewHtml
-      // revérifie kind/contact.id en interne à titre défensif, cf. §16 — helper autonome et sûr par
-      // construction, indépendamment de son appelant).
-      isMember && row.id ? contact360OverviewHtml(kind, row, openedClubId) : "",
-      identityPhotoSection(row),
-      identityAvatarChoiceField(row),
-      field("lastName", "Nom *", row.lastName, "text", 'required data-tour="contact-lastname"'),
-      field("firstName", "Prénom *", row.firstName, "text", 'required data-tour="contact-firstname"'),
-      field("email", "E-mail", row.email, "email", 'data-tour="contact-email"'),
-      field("mobile", "Portable", row.mobile, "text", 'data-tour="contact-mobile"'),
-      field("phone", "Téléphone fixe", row.phone),
-      field("city", "Ville", row.city, "text"),
-      field("postalCode", "CP", row.postalCode, "text"),
-      field("address", "Adresse", row.address, "text", 'data-tour="contact-address"'),
-      field("birthDate", "Date de naissance", dateInputValue(row.birthDate), "date", "data-birth-date"),
-      field("category", "Adulte / Enfant", memberCategory(row), "text", "readonly data-birth-category"),
-      contactLegalGuardianSectionHtml(row),
-      contactAdminInfoSectionHtml(row),
-      isMember ? field("birthPlace", "Lieu de naissance", row.birthPlace) : "",
-      isMember ? field("nationality", "Nationalité", row.nationality) : "",
-      contactDocumentsSection(row),
-      contactActivitySummary(kind, row, openedClubId),
-      row.id ? `<div class="dialog-section contact-dialog-actions" data-tour="contact-delete">
+      contactIdentityHeaderHtml(kind, row, openedClubId, readOnly),
+      contactSectionHtml("coordonnees", "Coordonnées", `<div class="form-grid compact">
+        ${field("email", "E-mail", row.email, "email", 'data-tour="contact-email"')}
+        ${field("mobile", "Portable", row.mobile, "text", 'data-tour="contact-mobile"')}
+        ${field("phone", "Téléphone fixe", row.phone)}
+        ${field("city", "Ville", row.city, "text")}
+        ${field("postalCode", "CP", row.postalCode, "text")}
+        ${field("address", "Adresse", row.address, "text", 'data-tour="contact-address"')}
+      </div>`, { open: true }),
+      contactSectionHtml("informations", "Informations personnelles", `
+        ${isMember ? `<div class="form-grid compact">
+          ${field("birthPlace", "Lieu de naissance", row.birthPlace)}
+          ${field("nationality", "Nationalité", row.nationality)}
+        </div>` : ""}
+        ${identityAvatarChoiceField(row)}
+      `),
+      contactSectionHtml("responsable", "Responsable légal & administratif", `
+        ${contactLegalGuardianSectionHtml(row)}
+        ${contactAdminInfoSectionHtml(row)}
+      `),
+      contactSectionHtml("documents", "Documents", contactDocumentsSection(row)),
+      // Phase Q — Lot Q1 : socle du dossier membre 360° + récapitulatif d'activité, regroupés dans une
+      // même rubrique (§19 : le nom/sous-titre/Club/Date de naissance de contact360OverviewHtml sont
+      // désormais dans l'en-tête d'identité ci-dessus, retirés de son propre rendu pour éviter toute
+      // duplication). contactSectionHtml masque la bande d'elle-même si les deux sont vides (nouveau
+      // contact sans aucune donnée) — jamais de rubrique visible mais vide (§13).
+      contactSectionHtml("activites", "Activités / dossier membre", `${contact360OverviewHtml(kind, row, openedClubId)}${contactActivitySummary(kind, row, openedClubId)}`),
+      contactSectionHtml("actions-rapides", "Actions rapides", contactModuleLinks(kind, row)),
+      row.id ? `<div class="contact-danger-zone contact-dialog-actions" data-tour="contact-delete">
         <button class="danger" type="button" data-action="delete-contact" data-kind="${esc(kind)}" data-id="${esc(row.id)}">${isMember ? "Supprimer l'adhérent" : "Supprimer le contact"}</button>
       </div>` : "",
     ].join("");
@@ -29830,17 +29984,22 @@ ${esc(bodyText)}</pre>
       return `${row.id ? "Modification" : "Création"} de la fiche contact de ${personLabel(next)}`;
     }, (form) => {
       updateBirthCategoryFields(form);
-      // Lot Dossier incomplet — scroll posé APRÈS updateBirthCategoryFields (qui peut démasquer le
-      // bloc "Responsable légal"/autorisation parentale selon la date de naissance) : le champ ciblé
-      // est donc déjà dans son état d'affichage final au moment du scroll. Le FOCUS clavier lui-même
-      // est délégué à options.focusSelector ci-dessous (mécanisme showFloatingDialog/
+      // UX-CONTACT-1 — accordéons : bascule mono-ouverture mobile / multi-ouverture desktop, jamais
+      // le cycle ui/render() (§10-13, cf. bindContactSectionToggles). focusField ouvre désormais
+      // l'accordéon qui contient le champ ciblé AVANT le scroll (posé APRÈS updateBirthCategoryFields,
+      // qui peut démasquer le bloc "Responsable légal"/autorisation parentale selon la date de
+      // naissance : le champ ciblé est donc déjà dans son état d'affichage final). Le FOCUS clavier
+      // lui-même reste délégué à options.focusSelector ci-dessous (mécanisme showFloatingDialog/
       // focusDialogControl déjà existant, avec son jeton anti-course et ses tentatives différées) :
       // le poser ici en plus l'aurait fait perdre cette course, showFloatingDialog s'exécutant après
       // ce rappel et reprenant la main sur le focus initial du dialogue.
+      const { openSection } = bindContactSectionToggles(form);
       if (!focusField) return;
+      const sectionId = CONTACT_SECTION_BY_FIELD[focusField];
+      if (sectionId) openSection(form.querySelector(`.contact-section[data-contact-section="${sectionId}"]`));
       const target = form.querySelector(`[name="${focusField}"]`);
-      target?.closest(".dialog-section")?.scrollIntoView({ block: "center" });
-    }, contactModuleLinks(kind, row), () => {}, "Enregistrer", { focusSelector: focusField ? `[name="${focusField}"]` : "", readOnly });
+      target?.closest(".contact-section, .contact-identity-header")?.scrollIntoView({ block: "center" });
+    }, "", () => {}, "Enregistrer", { focusSelector: focusField ? `[name="${focusField}"]` : "", readOnly });
   }
 
   // Lot O-E2-B2 — partagée par openContactDialog et openMembershipDialog : la permission de LECTURE
@@ -30045,10 +30204,21 @@ ${esc(bodyText)}</pre>
     // l'alerte « Autorisation parentale manquante » (jamais pour un adulte ni un âge inconnu).
     const dossierAge = getMemberAge(row);
     const isConfirmedAdult = dossierAge !== null && dossierAge >= 18;
+    // Complément UX-CONTACT-1 (fiche Discipline) — même variante de photo INTÉGRÉE que la fiche
+    // Contact (identityPhotoInlineHtml, mutualisée telle quelle : même cadre/rayons/object-fit/
+    // tailles responsive), jamais .identityPhotoSection()/.identity-photo-corner (réservée
+    // désormais à la SEULE inscription Stage, openRegistrationDialog, strictement inchangée).
+    // Contrairement à Contact, cette fiche reste un formulaire à plat (aucun accordéon, aucune
+    // réorganisation MÉTIER — hors périmètre de ce complément) : seul customerSelectField change de
+    // POSITION visuelle (même champ, même name, même comportement, même ordre logique juste avant
+    // Nom/Prénom) pour se placer à gauche de la photo plutôt que seul sur sa propre ligne, évitant un
+    // grand vide à droite ; identityAvatarChoiceField reste juste après, inchangé.
     const body = [
-      identityPhotoSection(row),
+      `<div class="membership-identity-row">
+        <div class="membership-identity-left">${customerSelectField(row, "Contact enregistré", "Nouvel adhérent / saisir une fiche")}</div>
+        ${identityPhotoInlineHtml(row, !readOnly)}
+      </div>`,
       identityAvatarChoiceField(row),
-      customerSelectField(row, "Contact enregistré", "Nouvel adhérent / saisir une fiche"),
       field("lastName", "Nom *", row.lastName, "text", "required"),
       field("firstName", "Prénom *", row.firstName, "text", "required"),
       field("email", "E-mail *", row.email, "email", "required"),
@@ -30895,6 +31065,12 @@ ${esc(bodyText)}</pre>
         const parental = form.querySelector("[data-contact-parental]");
         if (parental) parental.hidden = !isChild;
       }
+      // UX-CONTACT-1 — la cellule "Date de naissance" de l'en-tête d'identité affiche "Non
+      // renseignée" (comme la cellule Club) tant qu'aucune date n'est saisie, sans dupliquer le
+      // champ birthDate lui-même (un seul et même input, jamais deux) : l'astuce disparaît dès
+      // qu'une valeur existe, réévaluée à chaque changement au même titre que le reste ci-dessus.
+      const emptyHint = form.querySelector("[data-birthdate-empty-hint]");
+      if (emptyHint) emptyHint.hidden = Boolean(birthDate);
     };
     form.querySelectorAll("[data-birth-date]").forEach((input) => {
       input.addEventListener("input", update);

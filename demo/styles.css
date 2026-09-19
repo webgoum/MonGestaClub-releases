@@ -9444,6 +9444,17 @@ small.email-variable-chip:hover {
   padding-left: 88px;
 }
 
+/* UX-CONTACT-1 puis complément Discipline — Contact ET la fiche Discipline (openMembershipDialog)
+   repositionnent désormais leur photo DANS le flux (.identity-photo-inline, jamais
+   .identity-photo-corner) : le décalage du titre du dialogue n'a plus lieu d'être pour AUCUN des
+   deux. Seule l'inscription Stage (openRegistrationDialog) garde .identity-photo-corner inchangée,
+   donc garde aussi ce padding-left (règle .has-identity-photo ci-dessus, toujours active pour elle).
+   Basé sur la classe de la photo elle-même (pas sur .contact-identity-header, propre à Contact) pour
+   couvrir les deux dialogues avec une seule règle. */
+.dialog:has(.identity-photo-inline) .dialog-header h2 {
+  padding-left: 0;
+}
+
 .identity-photo-corner {
   position: absolute;
   top: -52px;
@@ -9485,6 +9496,181 @@ small.email-variable-chip:hover {
 
 .identity-avatar-choice small {
   line-height: 1.35;
+}
+
+/* ===== UX-CONTACT-1 — refonte de la fiche Contact =====
+   En-tête d'identité (niveau 1, toujours visible) : nom/prénom (champs réels, jamais dans un
+   accordéon), statut/catégorie/âge calculé, Club + Date de naissance (cellules alignées), photo —
+   variante Contact-only, JAMAIS .identity-photo-corner (réservé à openMembershipDialog et
+   l'inscription stage, cf. audit §7-8) : enfant normal du flux, aucun position:absolute, aucun
+   offset négatif. Accordéons (niveau 2) : réutilisent VERBATIM .band/.collapsible-band/.band-title/
+   .collapsible-title-row/.collapsible-arrow/.collapsible-content/.collapsible-inner (Lot MOB-1M) —
+   seule .contact-section sert de crochet JS (bascule mono-ouverture mobile / multi-ouverture
+   desktop, cf. bindContactSectionToggles dans 19-contact-dialogs.js), aucune règle visuelle propre. */
+.contact-identity-header,
+.contact-section,
+.contact-danger-zone {
+  grid-column: 1 / -1;
+}
+
+.contact-identity-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  padding-bottom: 18px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--line);
+}
+
+.contact-identity-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.contact-identity-kicker {
+  margin: 0;
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.contact-identity-name-fields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+}
+
+.contact-identity-name-fields label {
+  flex: 1 1 140px;
+  min-width: 0;
+}
+
+.contact-identity-name-fields input {
+  font-size: 1.15rem;
+  font-weight: 750;
+}
+
+.contact-identity-status-line {
+  margin: 0;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.contact-identity-meta-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 8px 16px;
+  margin-top: 2px;
+}
+
+.contact-identity-meta-cell {
+  min-width: 0;
+}
+
+.contact-identity-meta-cell > span {
+  display: block;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 2px;
+}
+
+.contact-identity-meta-cell strong {
+  display: block;
+  font-size: 0.92rem;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.contact-identity-meta-cell.is-empty strong {
+  color: var(--muted);
+  font-weight: 500;
+  font-style: italic;
+}
+
+/* La date de naissance est le VRAI champ birthDate (mêmes data-birth-date/updateBirthCategoryFields
+   qu'avant ce lot) — stylé pour se fondre dans la cellule d'info plutôt que ressembler à un champ
+   de formulaire classique. */
+.contact-identity-birthdate-cell input {
+  width: 100%;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 0.92rem;
+  font-weight: 600;
+}
+
+/* Même style "Non renseigné(e)" que la cellule Club (is-empty strong) tant qu'aucune date n'est
+   saisie — cf. updateBirthCategoryFields (19-contact-dialogs.js) qui bascule [hidden]. */
+.contact-identity-empty-hint {
+  display: block;
+  margin-top: 2px;
+  color: var(--muted);
+  font-weight: 500;
+  font-style: italic;
+  font-size: 0.78rem;
+}
+
+/* [hidden] et .contact-identity-empty-hint ont la même spécificité (0,1,0) : sans cette règle,
+   "display: block" ci-dessus l'emporterait sur le "display: none" de l'attribut hidden (posé/retiré
+   par updateBirthCategoryFields), laissant "Non renseignée" affiché même quand une date existe. */
+.contact-identity-empty-hint[hidden] {
+  display: none;
+}
+
+.identity-photo-inline {
+  flex: 0 0 auto;
+  display: grid;
+  justify-items: center;
+}
+
+.identity-photo-inline .identity-photo-frame {
+  width: 120px;
+  height: 150px;
+  border-width: 4px;
+}
+
+/* Complément UX-CONTACT-1 (fiche Discipline, openMembershipDialog) — contrairement à l'en-tête
+   Contact, cette fiche reste un simple .form-grid à plat (aucune restructuration, cf. mandat § "ne
+   pas refaire toute la fiche Discipline") : une seule rangée pleine largeur associe le sélecteur
+   "Contact enregistré" (déplacé ici, même champ/comportement) à gauche et la photo à droite, sans
+   toucher à aucun autre champ existant. */
+.membership-identity-row {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 4px;
+}
+
+.membership-identity-left {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* Les adaptations mobiles (≤768px, ≤390px) de la fiche Contact vivent dans le bloc @media canonique
+   du bandeau mobile (MOB-1x, plus bas dans ce fichier) plutôt que dans un second bloc @media (max-
+   width: 768px) séparé ici : plusieurs tests (ex. MOB-1G-01) extraient CE bloc canonique par un motif
+   greedy « premier @media (max-width: 768px) trouvé jusqu'à la fin du fichier » — un second bloc
+   portant EXACTEMENT le même seuil, placé plus haut dans le fichier, serait trouvé en premier et
+   ferait passer ces tests à côté du contenu réel. */
+
+.contact-danger-zone {
+  margin-top: 8px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+  display: flex;
+  justify-content: flex-end;
 }
 
 /* Option secondaire repliable dans un formulaire : une ligne discrète, le contenu apparaît au clic. */
@@ -14057,5 +14243,38 @@ td.due,
      son propre correctif ci-dessus. */
   .email-template-card {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  /* UX-CONTACT-1 — photo de l'en-tête d'identité de la fiche Contact, plus compacte sous 768px
+     (accolée au bloc canonique du bandeau mobile plutôt qu'un second @media (max-width: 768px)
+     séparé — cf. commentaire plus haut dans ce fichier, près de .identity-photo-inline). */
+  .identity-photo-inline .identity-photo-frame {
+    width: 96px;
+    height: 122px;
+  }
+}
+
+@media (max-width: 390px) {
+  .contact-identity-header {
+    gap: 12px;
+  }
+  .identity-photo-inline .identity-photo-frame {
+    width: 90px;
+    height: 115px;
+    border-width: 3px;
+  }
+  .contact-identity-name-fields input {
+    font-size: 1.02rem;
+  }
+}
+
+/* Complément UX-CONTACT-1 — à 320px, la cellule Date de naissance à 50% de largeur tronquait
+   l'affichage natif du <input type="date"> (année masquée par l'icône de calendrier, mesuré en
+   navigateur réel). Club/Date de naissance passent en 1 colonne pleine largeur UNIQUEMENT sous ce
+   seuil étroit (§6 du complément : « une légère adaptation est autorisée... à 320px »), jamais à
+   360/375/390px où les 2 colonnes restent lisibles (mesuré : aucun débordement, aucune troncature). */
+@media (max-width: 340px) {
+  .contact-identity-meta-grid {
+    grid-template-columns: 1fr;
   }
 }
