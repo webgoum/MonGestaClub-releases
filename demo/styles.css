@@ -3962,8 +3962,13 @@ tfoot td {
 }
 
 /* Bandeau discret de consultation (lecture seule) d'une commande dont le paiement/facture
-   empêche la modification. Informatif — jamais une erreur bloquante. */
-.order-readonly-note {
+   empêche la modification. Informatif — jamais une erreur bloquante.
+   Lot POST-Q R-UX1 — .readonly-note est l'alias GÉNÉRIQUE de ce même patron visuel (voir
+   readOnlyNoticeHtml, src/17-dialogs-forms.js) : mêmes règles, jamais dupliquées, pour expliquer
+   toute zone readonly/disabled par permission (Réglages, dialogues club, etc.), pas seulement les
+   commandes. */
+.order-readonly-note,
+.readonly-note {
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -3973,17 +3978,82 @@ tfoot td {
   border-radius: 10px;
   background: color-mix(in srgb, var(--accent) 10%, transparent);
 }
-.order-readonly-note strong {
+.order-readonly-note strong,
+.readonly-note strong {
   font-size: 0.82rem;
   text-transform: uppercase;
   letter-spacing: 0.05em;
   color: var(--accent);
 }
-.order-readonly-note p {
+.order-readonly-note p,
+.readonly-note p {
   margin: 0;
   font-size: 0.9rem;
   color: var(--text);
   line-height: 1.4;
+}
+
+/* Lot POST-Q R-UX2 (recentré par R-UX2B) — langage visuel commun modifiable/lecture seule
+   (permissionSurfaceClass, src/17-dialogs-forms.js). PRÉSENTATION UNIQUEMENT : ces classes ne sont
+   jamais l'autorité, seulement la traduction visuelle d'un droit déjà déterminé par le resolver de
+   permissions (aucune mutation ne dépend jamais de leur présence).
+   R-UX2B — retour Pix/Thierry : le FOND coloré appliqué à des surfaces entières de Paramètres (bandes,
+   sections de « Modifier le club »…) rendait ces grandes fiches presque entièrement rougeâtres/
+   verdâtres — trop envahissant pour un simple signal. Seul l'ACCENT de bordure gauche est conservé ici
+   pour ces surfaces générales (discret, cf. doctrine §10 du lot) ; le langage complet fond+bordure est
+   désormais réservé aux groupes de la fiche « Personnaliser les droits » (.user-permissions-group--*
+   ci-dessous), seul endroit où il apporte une information immédiate que le texte seul ne donne pas.
+   Distincte de .security-status (réservée aux confirmations PONCTUELLES, cf. R-ACC1 — jamais réutilisée
+   pour un état permanent) et de .readonly-note (message textuel, toujours conservé À L'INTÉRIEUR de la
+   surface lecture seule, jamais remplacé par la seule couleur). color-mix() avec --success/--danger +
+   --line-strong : s'adapte automatiquement à CHAQUE thème déclaré, jamais une couleur codée en dur. */
+.permission-surface.permission-surface--editable {
+  border-left: 4px solid color-mix(in srgb, var(--success) 55%, var(--line-strong)) !important;
+}
+.permission-surface.permission-surface--readonly {
+  border-left: 4px solid color-mix(in srgb, var(--danger) 55%, var(--line-strong)) !important;
+}
+
+/* Micro-UX — retour Pix/Thierry (capture réelle « Paramètres > Fonctionnalités du club ») : cette
+   règle ne pose qu'un border-left, jamais de padding ; or .settings-panel (ligne ~6538) n'a lui-même
+   AUCUN padding horizontal propre, contrairement à .club-form-section qui en hérite déjà un généreux
+   via ses enfants directs (.form-grid, cf. règle plus bas) — d'où le texte/bouton "collés" à l'accent
+   sur les surfaces .settings-panel uniquement (Fonctionnalités du club, Paiement en plusieurs fois,
+   Logo, SMTP, Politique d'âge, Catégories sportives). Sélecteur volontairement restreint à
+   .settings-panel.permission-surface : ne touche JAMAIS .club-form-section (déjà correctement espacé,
+   aucune régression à y créer) ni les .settings-panel SANS permission-surface (Affichage, Ordre du
+   menu, Sécurité, Comptes d'accès, Données, Licence… inchangés). 12px choisi pour aligner le texte sur
+   le padding déjà existant de .feature-card (ligne ~6614), juste en dessous dans ce même panneau. */
+.settings-panel.permission-surface {
+  padding-left: 12px;
+}
+
+/* Lot R-UX2B — langage visuel réservé à la fiche « Personnaliser les droits » (Paramètres > Comptes
+   d'accès > compte > Accès aux clubs > Personnaliser les droits). Chaque groupe fonctionnel (Contacts,
+   Adhésions, Facturation, Comptabilité, Sport, Documents, Newsletter, Stages, Rencontres, Boutique,
+   Notes, Paramètres club, Responsables, Comptes d'accès…) répond individuellement à « qu'est-ce que ce
+   compte peut faire dans ce club ? » — c'est ici, et seulement ici, que l'unité visuelle (un fieldset =
+   un groupe réel du registre, jamais une case isolée) justifie le fond coloré.
+   Lot R-UX2C — retour Pix/Thierry après test réel : la bordure gauche + le fond coloré POSÉS SUR le
+   fond gris existant (le fieldset au-dessus, chaque case .settings-check gardant en dessous son propre
+   fond var(--surface-2)) donnaient une impression de carte colorée empilée sur une structure grise
+   ("fond général gris + bloc rouge/vert + structure interne grise"). Ce lot REMPLACE le fond gris de la
+   surface du groupe par la teinte au lieu de l'ajouter par-dessus : le fond neutre gris de base
+   (identique à l'ancien fond de .settings-check, simplement promu du niveau case au niveau groupe, cf.
+   règle plus bas) reste la valeur par défaut ; éditable/lecture seule le REMPLACENT directement par un
+   vert/rouge très léger — jamais superposés. Bordure gauche RETIRÉE (testée visuellement : elle
+   accentuait l'effet « carte rapportée » que Thierry ne voulait pas) ; le fond seul porte le signal ici.
+   Sélecteur à DEUX classes chaînées (.user-permissions-group.user-permissions-group--editable, toujours
+   les deux présentes ensemble dans le HTML) : spécificité volontairement supérieure à la règle de base
+   du fieldset (une seule classe, définie plus bas dans ce fichier) sans avoir besoin de !important. */
+.user-permissions-dialog-body fieldset.user-permissions-group.user-permissions-group--editable {
+  background: color-mix(in srgb, var(--success) 10%, var(--surface));
+}
+.user-permissions-dialog-body fieldset.user-permissions-group.user-permissions-group--readonly {
+  background: color-mix(in srgb, var(--danger) 10%, var(--surface));
+}
+.user-permissions-dialog-body fieldset.user-permissions-group.user-permissions-group--neutral {
+  background: var(--surface-2);
 }
 
 .shop-sale-steps {
@@ -10570,11 +10640,27 @@ summary {
   min-height: 0;
 }
 
+/* Lot V-UX1C — largeur alignée sur .nav button, hauteur réduite (audit) : .nav n'ajoute AUCUNE marge
+   horizontale propre (.nav button hérite juste du padding:18px de .sidebar, cf. .nav/.sidebar) alors
+   que .club-switcher/.user-switcher ajoutaient CHACUN 18px de marge horizontale EN PLUS de ce même
+   padding:18px du .sidebar — d'où un cadre visiblement plus étroit (mesuré : 192px vs 226px de large
+   pour un bouton .nav, dans un même .sidebar de 260px). Marge horizontale retirée (0) : ces deux blocs
+   utilisent désormais exactement la même largeur que les entrées du menu, sans coller aux bords de la
+   fenêtre pour autant (le padding:18px du .sidebar reste la seule "respiration" externe, partagée avec
+   .nav — jamais une marge redondante propre à ces deux blocs). Marge verticale (haut de club-switcher,
+   bas de user-switcher) retirée pour la même raison : le gap:18px du grid .sidebar (entre .brand /
+   .side-switchers / .nav) fournissait déjà cette respiration, une marge locale l'ajoutait en double
+   (18+8/10px). Seule reste une petite marge de séparation INTERNE entre les deux blocs (club-switcher
+   margin-bottom), .side-switchers n'ayant pas de gap propre. Lot V-UX1B — gap/padding déjà réduits une
+   première fois (6px/10-14px/8-10px -> 4px/8-10px/6-8px) ; ce lot les réduit encore (padding vertical,
+   gap) sans toucher au padding horizontal (10px, cohérent avec le padding interne ~12px des .nav
+   button). Le vrai gain de hauteur vient de la variante .compact (pas de <select>) — inchangée dans
+   son principe, seulement plus resserrée elle aussi (gap/padding partagés avec le conteneur). */
 .club-switcher {
   display: grid;
-  gap: 6px;
-  margin: 10px 18px 14px;
-  padding: 10px;
+  gap: 3px;
+  margin: 0 0 6px;
+  padding: 6px 10px;
   border: 1px solid var(--line);
   border-radius: var(--radius);
   background: color-mix(in srgb, var(--surface) 84%, transparent);
@@ -10587,17 +10673,31 @@ summary {
   text-transform: uppercase;
 }
 
+/* Hauteur/padding de select LOCALE à ces deux blocs uniquement (jamais la règle générique
+   select/input/textarea, ~36px/7px 9px, qui reste inchangée partout ailleurs dans l'application —
+   Lot V-UX1C, IMPORTANT explicite de Pix). 30px conserve une zone de clic correcte (comparable au
+   régime compact ≤1240px déjà existant pour button, 32px). */
 .club-switcher select,
 .club-switcher button {
   width: 100%;
   min-width: 0;
+  min-height: 30px;
+  padding: 4px 8px;
+}
+
+.club-switcher.compact {
+  gap: 2px;
+}
+
+.club-switcher.compact strong {
+  font-size: 0.92rem;
 }
 
 .user-switcher {
   display: grid;
-  gap: 6px;
-  margin: 0 18px 14px;
-  padding: 8px 10px;
+  gap: 3px;
+  margin: 0;
+  padding: 5px 10px;
   border: 1px solid var(--line);
   border-radius: var(--radius);
   background: color-mix(in srgb, var(--surface) 78%, transparent);
@@ -10613,6 +10713,8 @@ summary {
 .user-switcher select {
   width: 100%;
   min-width: 0;
+  min-height: 30px;
+  padding: 4px 8px;
 }
 
 .user-switcher.compact {
@@ -10621,6 +10723,17 @@ summary {
 
 .user-switcher.compact strong {
   font-size: 0.88rem;
+}
+
+/* Lot V-UX1B — rôle affiché sous le nom/sélecteur (utilisateur actif x club actif, cf.
+   membershipRoleSummaryLabel) : texte discret, jamais un badge en pilule (réservé à .club-card-role
+   plus bas, ligne dédiée des cartes clubs) — cohérent avec l'esprit "compact" de ces deux blocs. */
+.club-switcher .switcher-role,
+.user-switcher .switcher-role {
+  font-style: normal;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--muted);
 }
 
 /* Lot UI Pré-Phase P (§7-9) — layout master/detail : liste compacte à gauche, fiche détaillée à
@@ -10826,18 +10939,25 @@ summary {
 
 .user-permissions-groups {
   display: grid;
-  gap: 2px;
+  gap: 8px;
 }
 
+/* Lot R-UX2B — padding HORIZONTAL ajouté (10px 0 -> 10px 14px) : chaque fieldset porte désormais un
+   fond coloré (voir .user-permissions-group--* plus haut), donc le texte/les cases ne doivent plus
+   toucher ses bords comme c'était le cas quand ce fieldset n'était qu'un simple séparateur horizontal
+   sans encadrement propre. border-bottom retiré : la couleur du groupe sépare désormais visuellement
+   les blocs, un double trait serait redondant.
+   Lot R-UX2C — fond gris neutre (var(--surface-2)) + arrondi ajoutés ICI, au niveau du GROUPE : c'est
+   la valeur par défaut (état neutre) que --editable/--readonly remplacent plus haut (sélecteur à deux
+   classes chaînées, plus spécifique). Avant ce lot, ce fond gris vivait sur CHAQUE case individuelle
+   (.settings-check, cf. règle ci-dessous) : le fieldset n'avait donc lui-même aucune surface propre, et
+   la teinte ajoutée par R-UX2B semblait posée par-dessus une structure grise plutôt que la remplacer. */
 .user-permissions-dialog-body fieldset.user-permissions-group {
   border: none;
-  padding: 10px 0;
+  padding: 10px 14px;
   margin: 0;
-  border-bottom: 1px solid var(--line);
-}
-
-.user-permissions-dialog-body fieldset.user-permissions-group:last-of-type {
-  border-bottom: none;
+  background: var(--surface-2);
+  border-radius: var(--radius-sm);
 }
 
 .user-permissions-dialog-body fieldset.user-permissions-group legend {
@@ -10846,11 +10966,68 @@ summary {
   font-size: 0.9rem;
 }
 
+/* Lot R-UX2C — fond individuel de la case RETIRÉ (transparent) : la surface visuelle est désormais
+   portée UNIQUEMENT par le groupe (fieldset) qui l'englobe, jamais par la case elle-même — sans ce
+   retrait, chaque case restait un petit carré gris opaque flottant par-dessus la couleur du groupe
+   (l'effet « carte dans une carte » exactement signalé par Thierry). */
 .user-permissions-dialog-body .settings-check {
   border: none;
   padding: 4px 0;
   grid-template-columns: 18px minmax(0, 1fr);
+  background: transparent;
 }
+
+/* Lot R-UX2D — DEUX axes strictement distincts, jamais fusionnés :
+    1. la couleur du GROUPE (fieldset .user-permissions-group--*) = les droits du COMPTE ÉDITÉ, jamais
+       ceux de l'acteur connecté (cf. userPermissionsLegendHtml, src/28-users.js) ;
+    2. l'état DISABLED d'une case = la possibilité pour l'acteur connecté d'agir depuis cette fiche
+       (canManage, Fonctionnalité désactivée, verrou users.manage) — un axe purement visuel de CONTRÔLE,
+       jamais rendu par la couleur du groupe. Une case active sur un groupe rouge est un cas NORMAL et
+       volontaire (« Darius n'a pas ce droit, mais vous pouvez le lui accorder ») ; seule une case
+       RÉELLEMENT disabled reçoit ce traitement, quelle que soit la couleur du groupe qui la contient. */
+.user-permissions-dialog-body .settings-check:has(input:disabled) {
+  opacity: 0.55;
+}
+.user-permissions-dialog-body .settings-check input:disabled {
+  cursor: not-allowed;
+}
+
+/* Lot R-UX2D — légende « Droits de X dans ce club » + explication des 3 couleurs, en toutes lettres
+   (jamais un adjectif seul comme « modifiable »/« verrouillé », ambigu sur le possesseur du droit).
+   Pastille pleine (contrairement au fond très léger des groupes) : à cette taille, un mélange à 10%
+   serait invisible ; la légende reste un simple repère, jamais appliquée à une surface large. */
+.user-permissions-legend {
+  margin: 0 0 10px;
+  display: grid;
+  gap: 6px;
+}
+.user-permissions-legend-title {
+  margin: 0;
+  font-weight: 700;
+}
+.user-permissions-legend-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 4px;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+.user-permissions-legend-list li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.user-permissions-legend-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex: none;
+}
+.user-permissions-legend-dot--editable { background: var(--success); }
+.user-permissions-legend-dot--readonly { background: var(--danger); }
+.user-permissions-legend-dot--neutral { background: var(--muted); }
 
 .club-cards {
   display: grid;
@@ -10866,6 +11043,16 @@ summary {
   border: 1px solid var(--line);
   border-radius: var(--radius);
   background: var(--surface);
+  /* Lot V-UX1A — clubCardHtml() rend 2 à 6 boutons selon les droits ADMIN de l'utilisateur actif
+     sur CE club précis (Dupliquer/Peupler avec la démo/Archiver ou Réactiver/Supprimer). La
+     largeur de carte dépend du nombre de colonnes réellement affichées par .club-cards
+     (grid-template-columns: repeat(auto-fit, minmax(280px,1fr))), jamais seulement de la largeur
+     de la fenêtre : une media query viewport ne peut donc pas suivre précisément le nombre de
+     lignes de boutons réellement nécessaire. container-type expose la largeur RÉELLE de CETTE
+     carte aux @container ci-dessous (.club-card .inline-actions), sans rien changer d'autre à
+     la mise en page de la carte elle-même (inline-size seul : le bloc reste libre en hauteur).
+  */
+  container-type: inline-size;
 }
 
 .club-card.active {
@@ -10921,6 +11108,46 @@ summary {
   color: var(--muted);
 }
 
+/* Lot V-UX1B (point 3, corrigé) — Actif et Archivé ne sont JAMAIS vrais simultanément pour le MÊME
+   club dans les chemins réels de l'application (analyse de code, pas une supposition) :
+   - archiveClub() (src/16-settings-themes.js) réassigne explicitement workingStore.activeClubId
+     loin du club qu'il vient d'archiver, s'il en était la cible ;
+   - switchActiveClub() refuse d'activer un club dont .archived est vrai (alerte explicite) ;
+   - normalizeClubStore() (src/03-startup-store.js, appelée par writeClubStore et donc par TOUT
+     import/restauration) invalide de force tout activeClubId pointant vers un club archivé, et
+     retombe sur le premier club NON archivé. Un club archivé + actif simultanément ne peut donc
+     survivre à aucune écriture de clubStore.
+   (Résidu théorique hors périmètre, signalé sans y toucher : si un store corrompu avait TOUS ses
+   clubs archivés, normalizeClubStore retomberait sur clubs[0] même archivé — état qu'aucun chemin UI
+   normal ne peut produire, archiveClub refusant déjà d'archiver le dernier club non archivé.)
+   Au plus UN badge de statut à la fois dans ce 3e slot `auto` de .club-card-head — retour au
+   marquage plat d'origine, sans conteneur ni réservation de hauteur : Actif/Archivé sont des
+   propriétés du CLUB (stables d'un rendu à l'autre pour un même club), jamais du compte actif,
+   donc aucun risque de saut de hauteur ici. Le rôle (qui LUI dépend du compte actif) est déplacé
+   dans .club-card-role ci-dessous, une ligne dédiée en pleine largeur de carte. */
+
+/* Lot V-UX1B (point 2, corrigé) — le rôle vivait dans la 3e colonne `auto` de .club-card-head : un
+   libellé long ("Responsable administratif · droits personnalisés") y écrasait la colonne
+   minmax(0,1fr) du nom/sous-titre jusqu'à 0px de large (mesuré Chrome headless, cartes 280-421px) —
+   nom illisible, tête de carte gonflée à 144px. Ligne dédiée en pleine largeur de carte (jamais en
+   concurrence avec le nom/l'image pour l'espace) : le rôle le plus long testé ("Responsable
+   administratif · droits personnalisés") tient sur 1 ligne dès 340px de carte, sur 2 lignes en
+   dessous (280/311px) — jamais plus (mesuré : Range.getClientRects(), pas une supposition).
+   min-height réservé à ces 2 lignes (mesuré : 30px, 2×15px sans espace supplémentaire entre lignes)
+   et rendu INCONDITIONNEL (texte vide sinon, jamais absent du DOM) : le rôle apparaît/disparaît/
+   change de longueur selon le compte actif — sans cette réserve constante, un aller-retour entre
+   comptes avec des rôles de longueurs différentes ferait varier la hauteur de la carte (doctrine
+   V-UX1A). Jamais de white-space:nowrap : un rôle trop long revient proprement à la ligne plutôt que
+   d'être tronqué ou de déborder. */
+.club-card-role {
+  display: flex;
+  align-items: center;
+  min-height: 30px;
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
 .club-card-meta {
   display: flex;
   flex-wrap: wrap;
@@ -10932,6 +11159,40 @@ summary {
   padding: 5px 8px;
   border: 1px solid var(--line);
   border-radius: 999px;
+}
+
+/* Lot V-UX1A — réservation de hauteur de .club-card .inline-actions calée sur les seuils EXACTS
+   (balayage Chrome headless, pas de 1px) où le pire cas réel (Admin, 6 boutons) passe de 4 à 3,
+   3 à 2 puis 2 à 1 lignes, mesurés sur la largeur RÉELLE de la carte (border-box) : 311px, 421px,
+   709px. En dessous de 311px (jusqu'au plancher réel de la grille .club-cards,
+   minmax(280px,1fr)), 4 lignes restent nécessaires. Objectif : AUCUN vide résiduel notable aux
+   largeurs réelles — la réservation suit le nombre de lignes RÉELLEMENT nécessaire à CETTE
+   largeur de carte précise, jamais un seul chiffre unique pour tout le desktop. N'affecte que
+   .club-card .inline-actions, jamais la règle générique .inline-actions (bande "Club démo", hors
+   périmètre de ce lot).
+   IMPORTANT — @container mesure la CONTENT-BOX du conteneur (jamais son border-box) : .club-card
+   a 14px de padding + 1px de bordure de chaque côté (28px + 2px = 30px au total), donc les seuils
+   ci-dessous valent 30px de MOINS que les largeurs de carte (border-box) mesurées ci-dessus
+   (311-30=281, 421-30=391, 709-30=679) — vérifié empiriquement (Chrome headless, sonde
+   --tier + getComputedStyle) : sans ce décalage, les seuils ne se déclenchaient que ~30px trop
+   tard, laissant un vide résiduel ponctuel juste après chaque transition réelle. */
+.club-card .inline-actions { min-block-size: 168px; } /* défaut : jusqu'à 4 lignes, boutons 36px */
+@container (min-width: 281px) { .club-card .inline-actions { min-block-size: 124px; } } /* 3 lignes (carte ≥311px) */
+@container (min-width: 391px) { .club-card .inline-actions { min-block-size: 80px; } }  /* 2 lignes (carte ≥421px) */
+@container (min-width: 679px) { .club-card .inline-actions { min-block-size: 36px; } }  /* 1 ligne (carte ≥709px) */
+
+/* `button { min-height: 36px }` devient `min-height: 32px` sous `@media (max-width: 1240px)`
+   (mode compact existant, ligne ~10374) : ce bloc reprend les 4 MÊMES seuils avec les hauteurs
+   de ligne réduites en conséquence (bouton 32px + 8px de gap). Placé ICI (après la règle
+   inconditionnelle ci-dessus, jamais avant) : à spécificité égale, une règle @media qui
+   apparaîtrait plus TÔT dans le fichier serait silencieusement écrasée par la règle
+   inconditionnelle plus tardive, quel que soit l'état réel du viewport — piège vérifié lors de
+   ce lot (une première tentative plus haut dans le fichier ne s'appliquait jamais). */
+@media (max-width: 1240px) {
+  .club-card .inline-actions { min-block-size: 152px; } /* défaut : jusqu'à 4 lignes, boutons 32px */
+  @container (min-width: 281px) { .club-card .inline-actions { min-block-size: 112px; } } /* 3 lignes (carte ≥311px) */
+  @container (min-width: 391px) { .club-card .inline-actions { min-block-size: 72px; } }  /* 2 lignes (carte ≥421px) */
+  @container (min-width: 679px) { .club-card .inline-actions { min-block-size: 32px; } }  /* 1 ligne (carte ≥709px) */
 }
 
 .club-form-section .band-title,
@@ -12509,6 +12770,68 @@ td.due,
 }
 /* ===== fin Enregistrer sur la ligne du titre ===== */
 
+/* ===== Lot V-UX1D — contrôle de contexte (club/compte) en mode classique =====
+   Cause exacte de l'absence de switchers en mode classique (audit) : shell() n'appelait
+   clubSwitcherHtml()/userSwitcherHtml() QUE dans sa branche sidebar (.side-switchers) — la branche
+   settings.layout === "classic" ne les appelait jamais du tout, sidebar comprise, donc aucun moyen
+   de changer de club/compte n'existait dans ce mode. .topbar-context regroupe les deux items
+   produits par clubSwitcherHtml(club,"classic")/userSwitcherHtml("classic") : MÊME donnée (club
+   actif, clubs visibles, compte actif, comptes sélectionnables, rôle via
+   membershipRoleSummaryLabel), MÊME <select data-club-switch>/data-user-switch que la sidebar — le
+   handler délégué sur #app (src/20-demo-export.js, target.dataset.clubSwitch/.userSwitch) est déjà
+   indépendant de l'emplacement DOM, réutilisé strictement, aucune seconde logique métier. Le mode
+   sidebar (.club-switcher/.user-switcher, V-UX1B/C validés Pix) n'est pas concerné par ce bloc.
+   margin-left:auto pousse le bloc à droite du titre quand il reste de la place (même patron que
+   .topbar-title-row .save-group juste au-dessus) ; flex-wrap (sur .topbar-context ET sur
+   .topbar-title-row, scopé au SEUL mode classique via .shell-classic-top) permet un repli propre —
+   club/compte l'un sous l'autre, rôle sous le select — plutôt qu'un débordement horizontal, mesuré
+   Chrome headless jusqu'à 700px de fenêtre sans overflow (rapport Pix). */
+.shell-classic-top .topbar-title-row {
+  flex-wrap: wrap;
+  row-gap: 4px;
+}
+.topbar-context {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 14px;
+  margin-left: auto;
+  min-width: 0;
+}
+.topbar-context-item {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 6px;
+  min-width: 0;
+  font-size: 0.82rem;
+  color: var(--ink);
+}
+.topbar-context-label {
+  font-size: 0.68rem;
+  color: var(--muted);
+  font-weight: 700;
+  text-transform: uppercase;
+}
+.topbar-context-item strong {
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+.topbar-context-item .switcher-role::before {
+  content: "· ";
+}
+/* Hauteur/largeur du <select> LOCALES à ce contrôle uniquement (jamais la règle générique
+   select/input/textarea, 36px, cf. doctrine V-UX1C : ne jamais la modifier globalement) — cohérent
+   avec les autres contrôles déjà compactés de la barre du haut (.tool-button/.sidebar-toggle, 32px,
+   "Variante B" ci-dessus). */
+.topbar-context-item select {
+  min-height: 32px;
+  width: auto;
+  max-width: 170px;
+  padding: 2px 6px;
+}
+/* ===== fin contrôle de contexte classique ===== */
+
 /* ===== Boutons d'action de la barre : plats (sans cadre) sur tous les thèmes ===== */
 :root[data-theme] .app-toolbar .tool-button {
   border-color: transparent;
@@ -12943,4 +13266,561 @@ td.due,
 @media (max-width: 560px) {
   .discipline-summary-name { font-size: 1.15rem; }
   .profile-function-table select { min-width: 0; width: 100%; }
+}
+
+/* ===== Lot MOB-1B — Navigation mobile commune (sidebar ET classique) =====
+   Nouveau breakpoint GLOBAL (aucun n'existait avant ce lot — cf. audit MOB-1A) : gouverne
+   UNIQUEMENT le shell/la navigation. Les anciens breakpoints ponctuels (980/860/760/720/640/
+   620/560/520/500/480/460/380) restent inchangés et ne sont pas touchés ici.
+   Hors de ce breakpoint, tout est display:none par défaut (règle inconditionnelle ci-dessous) :
+   zéro impact desktop, additif et scopé mobile par construction. */
+.mobile-topbar,
+.mobile-nav-backdrop,
+.mobile-nav-drawer,
+.mobile-toolbar-bar,
+.mobile-toolbar-backdrop,
+.mobile-toolbar-overflow {
+  display: none;
+}
+
+@media (max-width: 768px) {
+  /* La sidebar desktop et le topmenu classique ne servent plus de navigation mobile : ils
+     deviennent visuellement absents (jamais un simple rétrécissement/scroll horizontal). */
+  .shell > .sidebar { display: none; }
+  .topmenu { display: none; }
+  /* Le bouton bascule "sidebar" desktop (☰/⟨, settings.sidebarHidden) n'a plus aucun effet
+     visuel une fois la sidebar masquée ci-dessus : le cacher évite un second "☰" trompeur à côté
+     du vrai bouton hamburger mobile. Le bouton "Masquer la barre du haut" (topbar-collapse) reste
+     inchangé, indépendant de la navigation. */
+  .topbar-title-row > .sidebar-toggle:not(.topbar-collapse) { display: none; }
+
+  /* Lot MOB-1D — la barre d'outils globale desktop (souvent plusieurs lignes à cette largeur,
+     cf. audit MOB-1A) est remplacée par la présentation compacte .mobile-toolbar-bar ci-dessous.
+     Aucune action supprimée : mêmes boutons, réutilisés tels quels dans la barre compacte + le
+     menu "⋯" (mobileToolbarHtml, src/10-calcs-shell.js). */
+  .app-toolbar { display: none; }
+
+  /* Verrouille le scroll de la page derrière pendant que le tiroir est ouvert, sans jamais
+     provoquer de décalage de scroll permanent à la fermeture (overflow:hidden ne modifie pas la
+     position de scroll, contrairement à un position:fixed sur body). */
+  html[data-mobile-nav-open="open"] { overflow: hidden; }
+
+  .mobile-topbar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-height: 44px;
+    padding: 0 10px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--line-strong);
+    /* Correctif MOB-1D (régression latente de MOB-1B, trouvée en validation Playwright réelle du
+       même défaut sur le menu "⋯") : sans position/z-index, .mobile-nav-backdrop (fixed, z-index
+       490) recouvre le bouton hamburger une fois le tiroir ouvert, empêchant de le refermer par un
+       second tap dessus (la croix interne .mobile-nav-close, elle, reste cliquable — d'où l'absence
+       de détection lors de la validation visuelle MOB-1B, qui ne re-testait pas le hamburger). */
+    position: relative;
+    z-index: 496;
+  }
+  .mobile-nav-toggle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+    width: 44px;
+    height: 44px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--surface);
+    color: var(--ink);
+    font-size: 1.25rem;
+    line-height: 1;
+  }
+  .mobile-topbar-title {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-weight: 600;
+    font-size: 0.95rem;
+  }
+
+  .mobile-nav-backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 490;
+    background: rgba(0, 0, 0, 0.4);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.2s ease;
+  }
+  .mobile-nav-backdrop.open {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  .mobile-nav-drawer {
+    display: flex;
+    flex-direction: column;
+    position: fixed;
+    top: 0;
+    left: 0;
+    z-index: 500;
+    width: min(86vw, 320px);
+    max-width: 320px;
+    height: 100vh;
+    height: 100dvh;
+    background: var(--surface);
+    border-right: 1px solid var(--line-strong);
+    box-shadow: 4px 0 20px rgba(0, 0, 0, 0.2);
+    overflow-y: auto;
+    transform: translateX(-100%);
+    transition: transform 0.22s ease;
+  }
+  .mobile-nav-drawer.open {
+    transform: translateX(0);
+  }
+  .mobile-nav-drawer-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 12px 14px;
+    border-bottom: 1px solid var(--line);
+    font-size: 0.95rem;
+  }
+  .mobile-nav-close {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+    width: 40px;
+    height: 40px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--surface);
+    color: var(--ink);
+    font-size: 1.05rem;
+  }
+
+  /* Lot MOB-1C — Club/Compte/Rôle en tête du tiroir, AVANT la navigation. Même variables de thème
+     que le reste du tiroir (aucune couleur en dur) ; noms longs contenus par ellipsis, jamais de
+     débordement horizontal même à 320px (box-sizing:border-box + largeur 100% du tiroir). */
+  .mobile-nav-context {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 12px 14px;
+    border-bottom: 1px solid var(--line-strong);
+    background: var(--surface-2);
+  }
+  .mobile-context-field {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+  }
+  .mobile-context-label {
+    font-size: 0.68rem;
+    color: var(--muted);
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.02em;
+  }
+  .mobile-context-field select,
+  .mobile-context-value {
+    display: block;
+    box-sizing: border-box;
+    width: 100%;
+    min-height: 44px;
+    padding: 0 10px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--surface);
+    color: var(--ink);
+    font-size: 0.92rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .mobile-context-value {
+    display: flex;
+    align-items: center;
+  }
+  .mobile-context-role {
+    font-size: 0.8rem;
+    color: var(--muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .mobile-nav-drawer-list {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 6px;
+  }
+  .mobile-nav-drawer-list > button,
+  .mobile-nav-group > summary {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    min-height: 44px;
+    padding: 0 12px;
+    border: 0;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--ink);
+    font-size: 0.92rem;
+    text-align: left;
+    list-style: none;
+    cursor: default;
+  }
+  .mobile-nav-group > summary::-webkit-details-marker { display: none; }
+  .mobile-nav-group > summary::marker { content: ""; }
+  .mobile-nav-drawer-list > button.active,
+  .mobile-nav-group > summary.active {
+    background: color-mix(in srgb, var(--accent) 18%, var(--surface));
+    font-weight: 600;
+  }
+  .mobile-nav-dropdown {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding-left: 20px;
+  }
+  .mobile-nav-dropdown button {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    min-height: 40px;
+    padding: 0 12px;
+    border: 0;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--ink);
+    font-size: 0.88rem;
+    text-align: left;
+    cursor: default;
+  }
+  .mobile-nav-dropdown button.active {
+    background: color-mix(in srgb, var(--accent) 14%, var(--surface));
+    font-weight: 600;
+  }
+
+  /* Lot MOB-1D — barre d'outils mobile compacte : actions prioritaires directement visibles +
+     bouton "⋯" ouvrant les actions secondaires. .mobile-toolbar-bar est positionné en relative
+     pour ancrer .mobile-toolbar-overflow juste en dessous (position:absolute; top:100%), même
+     technique que .topmenu-dropdown (mode classique), jamais un calcul JS de hauteur. Le backdrop
+     et le panneau overflow sont des ENFANTS de cette barre (voir .mobile-toolbar-more plus bas pour
+     le correctif de recouvrement qui en découle). */
+  .mobile-toolbar-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 10px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--line);
+    position: relative;
+  }
+  .mobile-toolbar-priority {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+  }
+  /* Cible tactile >=44px pour les actions prioritaires, SANS toucher à .tool-button générique
+     (32px, desktop, cf. audit MOB-1A) : override scopé à ce seul conteneur mobile. */
+  .mobile-toolbar-priority .tool-button {
+    min-width: 44px;
+    min-height: 44px;
+    padding: 0 10px;
+    flex: 0 0 auto;
+  }
+  .mobile-toolbar-more {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+    width: 44px;
+    height: 44px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--surface);
+    color: var(--ink);
+    font-size: 1.3rem;
+    line-height: 1;
+    /* .mobile-toolbar-backdrop/.mobile-toolbar-overflow sont des ENFANTS de .mobile-toolbar-bar
+       (jamais des frères) : le z-index posé sur .mobile-toolbar-bar ne les départage pas entre eux.
+       Sans ceci, le backdrop (z-index:480) recouvre ce bouton une fois le menu ouvert (position/
+       z-index absents ici par défaut = auto, perdant face à 480) — trouvé en validation Playwright
+       réelle, le bouton devenait alors impossible à re-taper pour refermer le menu. */
+    position: relative;
+    z-index: 487;
+  }
+  .mobile-toolbar-backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 480;
+    background: rgba(0, 0, 0, 0.4);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.2s ease;
+  }
+  .mobile-toolbar-backdrop.open {
+    opacity: 1;
+    pointer-events: auto;
+  }
+  .mobile-toolbar-overflow {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    position: absolute;
+    top: 100%;
+    left: 10px;
+    right: 10px;
+    max-height: min(60vh, 420px);
+    overflow-y: auto;
+    background: var(--surface);
+    border: 1px solid var(--line-strong);
+    border-radius: 10px;
+    box-shadow: 0 12px 30px rgba(0, 0, 0, 0.22);
+    padding: 6px;
+    z-index: 485;
+    opacity: 0;
+    pointer-events: none;
+    transform: translateY(-6px);
+    transition: opacity 0.18s ease, transform 0.18s ease;
+  }
+  .mobile-toolbar-overflow.open {
+    opacity: 1;
+    pointer-events: auto;
+    transform: translateY(0);
+  }
+  /* Boutons secondaires : icône + libellé TOUJOURS visible (jamais dépendant du réglage desktop
+     settings.display.toolbarLabels/.show-labels, ni d'un simple tooltip au survol, cf. mandat §5). */
+  .mobile-toolbar-overflow .tool-button {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    min-height: 44px;
+    padding: 0 12px;
+    border: 0;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--ink);
+    font-size: 0.9rem;
+    text-align: left;
+  }
+  .mobile-toolbar-overflow .tool-label {
+    display: block;
+    max-width: none;
+    font-size: 0.9rem;
+    color: var(--ink);
+  }
+  .mobile-toolbar-overflow .tool-text-icon {
+    width: 20px;
+    text-align: center;
+    font-size: 0.75rem;
+  }
+
+  /* Lot MOB-1E — dialogues/modales mobile.
+     .dialog / .dialog:modal / .dialog-body : largeur/hauteur déjà correctes à toutes les largeurs
+     cibles (audit confirmé, cf. rapport) — AUCUNE règle ajoutée ici pour elles, conformément à la
+     doctrine "ne pas réécrire ce qui fonctionne déjà". */
+
+  /* Tableaux internes (.dialog-table-wrap/.dialog-table-scroll, src/11-dashboard-newsletter.js,
+     src/12-shop-contacts-render.js, src/19-contact-dialogs.js, src/23-sport-modules.js) :
+     .dialog-table-wrap est overflow:hidden et .dialog-table-scroll n'a qu'un overflow-y — un
+     tableau plus large que le dialogue (ex. .order-editor-table, min-width:820px) était donc
+     purement et simplement inaccessible au-delà de la largeur visible, jamais un simple
+     désagrément visuel. Ajout d'un scroll horizontal PROPRE sur le seul wrapper concerné, sans
+     toucher au wrapper vertical existant ni réduire aucune min-width de table (doctrine mandat :
+     pas de passage en cards, pas de réduction de colonnes dans ce lot). */
+  .dialog-table-scroll {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  /* Sans ceci, overflow-x:auto ci-dessus ne servait à RIEN : .dialog-section est un ITEM de
+     .form-grid (display:grid), qui garde un min-width:auto implicite (basé sur son contenu) même
+     si les colonnes de la grille sont déjà minmax(0,1fr) — classique "grid blowout" CSS. Le
+     tableau large (820px) forçait alors .dialog-section (et tout le .form-grid/.dialog-body
+     parents) à s'élargir à sa taille, et le scroll horizontal se produisait au niveau de
+     .dialog-body entier (tout le formulaire défilait de travers) plutôt que d'être isolé au seul
+     tableau — trouvé en validation Playwright réelle (mesure directe des largeurs calculées),
+     invisible dans une simple lecture du CSS. min-width:0 laisse .dialog-section se comprimer à la
+     largeur réellement disponible, pour que .dialog-table-scroll devienne le VRAI point de
+     débordement contrôlé. */
+  .dialog-section {
+    min-width: 0;
+  }
+
+  /* Footer de dialogue : .dialog-footer est un flex row SANS flex-wrap (seuls ses deux enfants,
+     .dialog-footer-left et .dialog-footer-actions, wrappent individuellement) — avec un footerLeft
+     réellement peuplé (ex. feuille d'appel : Imprimer/Supprimer/Appliquer + Annuler/Enregistrer),
+     les deux groupes pouvaient se retrouver comprimés côte à côte sans jamais passer à la ligne.
+     Un simple flex-wrap sur le PARENT suffit : les cas déjà bons (aucun footerLeft, 2 boutons
+     courts) restent inchangés (rien à wrapper), et margin-left:auto sur .dialog-footer-actions
+     continue de fonctionner normalement sur une ligne wrappée (aligne le groupe à droite de SA
+     propre ligne). Aucun hack basé sur le texte des boutons. */
+  .dialog-footer {
+    flex-wrap: wrap;
+  }
+
+  /* Cibles tactiles : les boutons de footer héritent de la règle générique button (32px sous
+     1240px, cf. audit MOB-1A) — override scopé au seul footer de dialogue, jamais la règle
+     générique desktop. Spécificité :root ajoutée délibérément : le mode classique impose déjà
+     ":root[data-layout='classic'] button { min-height:32px }" (même spécificité qu'un simple
+     ".dialog-footer button"), qui gagnerait sinon sur ce seul layout — trouvé en validation
+     Playwright réelle (boutons 32px en mode classique alors que 44px en mode sidebar). */
+  :root .dialog-footer button {
+    min-height: 44px;
+  }
+
+  /* .dialog-header { touch-action:none } sert uniquement au glisser-déposer desktop des fenêtres
+     flottantes (cursor:grab) : un pattern sans objet sur mobile (dialogue quasi plein écran, pas
+     de repositionnement de fenêtre). Restaure le comportement tactile par défaut sur cette seule
+     zone, jamais le comportement desktop (cursor/drag) qui reste inchangé hors breakpoint. */
+  .dialog-header {
+    touch-action: auto;
+  }
+
+  /* Lot MOB-1F — formulaires/grilles fixes mobile.
+     .contact-line et .registration-line : AUDIT confirmé (mesure réelle en navigateur, pas
+     seulement lecture du CSS) — .membership-card { grid-template-columns: 1fr; } (règle existante,
+     @media max-width:980px, styles.css ~ligne 10547) l'emporte DÉJÀ en cascade sur les colonnes
+     fixes de .contact-line/.registration-line (même spécificité, .membership-card déclarée plus
+     tard dans le fichier) : les deux passent déjà correctement en une seule colonne responsive à
+     <=980px, donc a fortiori à toutes les largeurs mobiles ciblées. Confirmé par mesure directe :
+     aucun débordement horizontal causé par ces deux classes elles-mêmes, aux 3 largeurs, dans les
+     2 layouts. AUCUNE règle ajoutée ici pour elles (rien à corriger). */
+
+  /* .tariff-summary-grid (résumé Total/Réglé/Reste dû, dans .dialog-section — dialogues commande/
+     adhésion/facture) : repeat(4, minmax(110px,1fr)) = ~470px minimum, confirmé en débordement réel
+     par MOB-1E. .dialog-section a déjà min-width:0 depuis MOB-1E (le "grid blowout" de l'ancêtre
+     est déjà réglé) : le seul problème restant est la grille elle-même. 2 colonnes suffisent aux
+     3 largeurs cibles (label court + montant court, ~140px/colonne à 320px, largement lisible) —
+     aucune donnée ni calcul touché, uniquement la disposition. */
+  .tariff-summary-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  /* .segmented (contrôle segmenté générique) : display:flex SANS flex-wrap — inoffensif pour de
+     courts groupes de 2-3 boutons, mais .stage-tabs (sélecteur de stage dans la page Stages,
+     réutilise .segmented) affiche des libellés longs ("Stage self-défense avec hébergement") sur
+     plusieurs boutons cote à cote : la ligne entière refusait de rétrécir, forçant .toolbar puis
+     toute la page à s'élargir au-delà du viewport (débordement horizontal du BODY entier, trouvé en
+     validation Playwright réelle en testant la page d'inscriptions/.registration-line). Un simple
+     flex-wrap sur le composant générique suffit ; les groupes courts qui tenaient déjà sur une
+     ligne ne changent pas de rendu (rien à wrapper). */
+  .segmented {
+    flex-wrap: wrap;
+  }
+
+  /* Lot MOB-1G — tableaux/listes principales mobile + débordement Factures.
+     Cause racine identifiée (test A/B empirique, en direct dans le navigateur, forçage puis retrait
+     de la règle) : .view (conteneur display:grid de CHAQUE page, sidebar ET classic — markup
+     partagé) ne définit AUCUN grid-template-columns, donc sa colonne implicite unique se dimensionne
+     en "auto" (= max-content de son plus large enfant) : exactement le même piège de "grid blowout"
+     que .shell (déjà protégé par minmax(0, 1fr) depuis toujours) et .dialog-section (protégé depuis
+     MOB-1E) — mais .view lui-même ne l'était PAS. Concrètement : dès qu'une page contient un enfant
+     assez large (7 boutons de filtre .segmented sur Factures, une rangée de KPI sur le Tableau de
+     bord...), .view grandit pour l'accueillir SANS jamais être contraint par le viewport, et comme
+     .view n'a pas overflow:hidden, ce surplus déborde visuellement de .content/.shell jusqu'à faire
+     scroller le BODY entier — indépendamment de .segmented (confirmé par le test A/B de MOB-1F :
+     wrap/nowrap sur .segmented ne changeait RIEN, la cause était toujours en amont, dans .view).
+     Vérifié par mesure réelle : Factures passe de .toolbar/.left/.segmented=703px (body en
+     débordement) à 343px (body correct, 3 lignes de filtres) dès l'ajout de cette seule règle ;
+     Tableau de bord passe de 382px à 375px (plus aucun débordement) de la même façon, SANS toucher
+     .kpi ni .dynamic-grid (déjà protégés individuellement par leurs propres minmax(0,1fr) : une fois
+     que .view ne les force plus à s'élargir, ils se contractent normalement, testé et confirmé
+     séparément). Comportement desktop identique au principe déjà appliqué à .shell : minmax(0, 1fr)
+     ne change rien tant que le contenu tient déjà dans l'espace disponible — aucune régression. */
+  .view {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  /* Lot MOB-1H — Planning, vue Semaine.
+     Audit MOB-1A confirmé par mesure réelle en navigateur (Playwright/Chromium) : .planning-week
+     (grid desktop repeat(7, 1fr)) ne provoque AUCUN débordement du body (.planning-week-col a déjà
+     min-width:0 de longue date, MOB-1G n'ajoute rien de plus ici) — mais les 7 colonnes deviennent
+     réellement inutilisables sous ~430px : colonnes mesurées à 29-43px de large à 390/375/320px,
+     chaque mot du texte des créneaux (overflow-wrap:anywhere) éclate lettre par lettre sur toute la
+     hauteur de la page (confirmé visuellement par capture d'écran). Classification B de l'audit
+     MOB-1H : layout spécialisé réellement inutilisable, nécessitant un vrai changement de
+     présentation (pas seulement un ajustement de largeur).
+     Choix retenu : empilement vertical (lundi → dimanche, ordre chronologique inchangé), chaque
+     jour occupant toute la largeur — plutôt qu'un scroll horizontal à 7 colonnes — car les colonnes
+     de .planning-week sont des listes indépendantes (aucun alignement de rangées par créneau horaire
+     entre les jours, contrairement à un vrai calendrier grille) : empiler ne fait perdre aucune
+     lecture croisée qui n'existait pas déjà. AUCUN nouveau code JS, AUCUNE nouvelle fonction de
+     données : c'est EXACTEMENT le même HTML généré par planningWeekHtml() (mêmes 7
+     .planning-week-col, mêmes .planning-week-slot, mêmes data-action="edit-course", mêmes
+     gestionnaires, mêmes filtres Coach/Discipline/Groupe, même ordre chronologique) — seule la
+     PRÉSENTATION CSS change. La vue "Liste" existante (planningListHtml, appelée par le bouton
+     Liste/Semaine déjà présent) n'est ni appelée ni modifiée : aucune logique dupliquée. */
+  .planning-week {
+    grid-template-columns: 1fr;
+    gap: 16px;
+  }
+  .planning-week-head {
+    text-align: left;
+    font-size: 0.95rem;
+  }
+  .planning-week-slot {
+    font-size: 0.82rem;
+  }
+
+  /* Lot MOB-1I — polish final mobile : CTA Vigilance (Tableau de bord).
+     Défaut confirmé (MOB-1H, backlog) : ".vigilance-card-cta" ("Régulariser →") débordait légèrement
+     du viewport à 320px, sans provoquer de body overflow. Diagnostic précis en navigateur réel :
+     la carte elle-même (.vigilance-card) et son bouton ne sont PAS en cause (largeurs mesurées
+     cohérentes, white-space:normal déjà présent, flex-shrink:1 déjà présent) — la cause est un
+     "grid blowout" identique à celui déjà rencontré 2 fois dans cette phase (.dialog-section en
+     MOB-1E, .view en MOB-1G) : la règle préexistante (hors phase mobile) ".vigilance-grid {
+     grid-template-columns: 1fr 1fr; }" sous @media(max-width:640px) utilise "1fr" seul, qui
+     conserve un minimum automatique basé sur le contenu (pas 0) ; .vigilance-card n'ayant pas
+     min-width:0, son contenu (le bouton) forçait sa colonne à s'élargir au-delà de l'espace
+     disponible sur certaines rangées (mesuré : colonne à 172.8px + 149px + gap = 366px de bord
+     droit à 320px de viewport). Corrigé par le même remède minimal que les fois précédentes :
+     min-width:0 sur l'item de grille, ici .vigilance-card — la règle 1fr 1fr préexistante n'est pas
+     touchée. Résultat vérifié : plus aucun débordement du CTA à 320px, dans les 2 layouts ; le texte
+     du bouton passe sur 2 lignes quand la colonne est étroite (jamais réduit à une taille illisible,
+     conformément à la préférence explicite du mandat). Rien d'autre dans .vigilance-card n'est
+     modifié : icône, titre, compteur, verbe, qualificatif restent inchangés. */
+  .vigilance-card {
+    min-width: 0;
+  }
+
+  /* Lot MOB-1I — polish final mobile : formulaire de recherche (.search-page-form).
+     Trouvé au sweep global (Playwright, mesure réelle) : le bouton "Effacer" (Factures) débordait
+     du viewport à 320px, et "Rechercher" (page Recherche) débordait à 375px ET 320px. Cause :
+     .search-page-form { grid-template-columns: minmax(220px, 1fr) auto; } — la colonne de l'input
+     a un plancher DÉLIBÉRÉ de 220px (pas un "grid blowout" accidentel : réduire ce plancher
+     rendrait le champ de recherche inutilisable), donc 220px + bouton (jusqu'à 119px pour
+     "Rechercher") + gap + padding dépasse mécaniquement 320-375px de viewport. Corrigé en empilant
+     input puis bouton sur mobile (grid-template-columns: 1fr) plutôt qu'en réduisant le plancher de
+     220px : conforme à la préférence du mandat (nouvelle ligne plutôt que rétrécir), et cohérent
+     avec la doctrine "formulaire = reflow" déjà appliquée en MOB-1F. Un seul point d'ajout corrige
+     les deux boutons ("Effacer" et "Rechercher" partagent la même classe .search-page-form). */
+  .search-page-form {
+    grid-template-columns: 1fr;
+  }
+
+  /* Lot MOB-1I — cible tactile du CTA Vigilance, explicitement listée par le mandat (audit tactile).
+     Mesuré : 30px de haut à 768px (texte sur une ligne) — sous la doctrine ~40-44px. À 375/320px le
+     wrap sur 2 lignes (fix ci-dessus) dépasse déjà 40px naturellement ; min-height ne change alors
+     rien à ces largeurs (vérifié), mais devient nécessaire dès que le texte tient sur une seule
+     ligne (768 à ~440px selon la carte). N'affecte que ce bouton, rien d'autre dans la carte. */
+  .vigilance-card-cta {
+    min-height: 40px;
+  }
 }
