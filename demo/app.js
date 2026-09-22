@@ -29866,7 +29866,10 @@ ${esc(bodyText)}</pre>
           </div>
         </div>
       </div>
-      ${identityPhotoInlineHtml(row, !readOnly)}
+      <div class="contact-identity-photo-block">
+        ${identityPhotoInlineHtml(row, !readOnly)}
+        ${identityAvatarChoiceField(row)}
+      </div>
     </div>`;
   }
 
@@ -29992,12 +29995,15 @@ ${esc(bodyText)}</pre>
         ${field("postalCode", "CP", row.postalCode, "text")}
         ${field("address", "Adresse", row.address, "text", 'data-tour="contact-address"')}
       </div>`, { open: true }),
+      // CONTACT-HUB-1B — le choix de silhouette/avatar a déménagé dans l'en-tête d'identité
+      // (contactIdentityHeaderHtml, juste sous la photo, même bloc visuel) : il n'est plus rendu ici.
+      // Pour un prospect (isMember=false), cette bande n'a alors plus aucun contenu propre -> restera
+      // masquée d'elle-même (contactSectionHtml cache une bande vide), comportement inchangé pour elle.
       contactSectionHtml("informations", "Informations personnelles", `
         ${isMember ? `<div class="form-grid compact">
           ${field("birthPlace", "Lieu de naissance", row.birthPlace)}
           ${field("nationality", "Nationalité", row.nationality)}
         </div>` : ""}
-        ${identityAvatarChoiceField(row)}
       `),
       contactSectionHtml("responsable", "Responsable légal & administratif", `
         ${contactLegalGuardianSectionHtml(row)}
