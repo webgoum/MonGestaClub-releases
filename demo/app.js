@@ -27654,7 +27654,9 @@ ${esc(bodyText)}</pre>
     // Lot Q1.5R (Correction 3) — sourceClubId propagé jusqu'au renderer sport (sportCategoryAssignmentLabel),
     // jamais un activeClubId() lu tardivement dans contactRecapMembership.
     const membershipRenderOptions = { showSport: canReadSport, showDocuments: canReadDocuments, showPayments: canReadMembershipPayments, sourceClubId };
-    const orderRenderOptions = { showPayments: canReadShopPayments };
+    // CONTACT-HUB-1D — sourceClubId propagé jusqu'à la carte (data-shop-club-id), même doctrine que
+    // registrationRenderOptions ci-dessous : jamais un activeClubId() lu tardivement dans le rendu.
+    const orderRenderOptions = { showPayments: canReadShopPayments, sourceClubId };
     // CONTACT-HUB-1C — sourceClubId propagé jusqu'à la carte (data-stage-club-id), même doctrine que
     // membershipRenderOptions ci-dessus : jamais un activeClubId() lu tardivement dans le rendu.
     const registrationRenderOptions = { showPayments: canReadStagePayments, sourceClubId };
@@ -27697,7 +27699,23 @@ ${esc(bodyText)}</pre>
             </section>`
           : contactRecapSection("Disciplines", memberships, (entry) => contactRecapMembership(entry, membershipRenderOptions)))
         : ""}
-      ${contactRecapSection("Boutique", orders, (entry) => contactRecapOrder(entry, orderRenderOptions), hasFeature("shop") ? "" : "Module désactivé — historique conservé. Réactivez le module pour ajouter de nouvelles données.")}
+      ${canReadShop
+        ? (isViewVisible("boutique")
+          // CONTACT-HUB-1D (§2/§3 du mandat) — même sortie du mécanisme générique contactRecapSection
+          // que Stages/Disciplines ci-dessus, même raison : un contact sans commande doit quand même
+          // voir "+ Nouvelle commande" ; une commande EXISTANTE ne doit plus jamais empêcher d'en créer
+          // une autre. Fail-closed explicite sur shop.write (§6 du mandat) : contactCanCreateOrder,
+          // même doctrine que contactCanCreateStageRegistration (shop.write interdit dans ce fichier,
+          // STRUCT-B2-05E — helper pur dans 19-contact-dialogs.js, seul fichier légitime avec 21/20).
+          ? `<section class="contact-recap-section">
+              <div class="dialog-mini-title"><h4>Boutique</h4>${(contact.id && contactCanCreateOrder(sourceClubId)) ? `<button type="button" data-action="add-order" data-contact-link="${esc(`member:${contact.id}`)}" data-shop-club-id="${esc(sourceClubId)}" title="Créer une nouvelle commande pour ce contact">+ Nouvelle commande</button>` : ""}</div>
+              ${!hasFeature("shop") ? `<p class="muted">Module désactivé — historique conservé. Réactivez le module pour ajouter de nouvelles données.</p>` : ""}
+              ${orders.length
+                ? `<div class="contact-recap-list">${orders.map((entry) => contactRecapOrder(entry, orderRenderOptions)).join("")}</div>`
+                : `<p class="contact-recap-empty">Aucune commande boutique pour le moment.</p>`}
+            </section>`
+          : contactRecapSection("Boutique", orders, (entry) => contactRecapOrder(entry, orderRenderOptions), hasFeature("shop") ? "" : "Module désactivé — historique conservé. Réactivez le module pour ajouter de nouvelles données."))
+        : ""}
       ${canReadStages
         ? (isViewVisible("stages")
           // CONTACT-HUB-1C (§2/§3 du mandat) — même sortie du mécanisme générique que Disciplines
@@ -27841,14 +27859,19 @@ ${esc(bodyText)}</pre>
 
   // Lot Q1.5R (Correction 1) — défaut FAIL-CLOSED (false), même doctrine que contactRecapMembership.
   function contactRecapOrder(entry, options = {}) {
-    const { showPayments = false } = options;
+    const { showPayments = false, sourceClubId = activeClubId() } = options;
     const details = orderItemDetails(entry.row);
     // §8 du mandat Q1.5 — articles/quantités/tailles restent des données de COMMANDE (shop.read
     // seul, déjà garanti par l'appelant), jamais de montant ici : rien à conditionner par showPayments.
     const itemText = details.length
       ? details.map((item) => `${item.article.name || "Article"}${item.sizesText ? ` (${item.sizesText})` : ""} x${intValue(item.quantity)}`).join(" · ")
       : "Aucun article détaillé";
-    return `<article class="contact-recap-row">
+    // CONTACT-HUB-1D — carte cliquable (même patron que contactRecapMembership/contactRecapRegistration)
+    // : ouvre directement CETTE commande via data-action="view-order", déjà existant et déjà protégé
+    // (stale-club via data-shop-club-id, consultation toujours autorisée, lecture seule automatique si
+    // non modifiable via openOrderForConsult) — AUCUNE nouvelle logique d'ouverture, aucune heuristique
+    // de type "s'il n'y en a qu'une".
+    return `<article class="contact-recap-row clickable-card" data-action="view-order" data-id="${esc(entry.row.id)}" data-shop-club-id="${esc(sourceClubId)}" title="Ouvrir cette commande">
       <div class="contact-recap-main">
         <strong>Commande boutique</strong>
         <span>${esc(itemText)}</span>
@@ -31600,6 +31623,14 @@ ${esc(bodyText)}</pre>
   // appeler pour cette décision d'affichage.
   function contactCanCreateStageRegistration(clubId) {
     return hasFeature("stages") && currentUserHasPermission("stages.write", clubId);
+  }
+
+  // CONTACT-HUB-1D — même doctrine que contactCanCreateStageRegistration ci-dessus : shop.write est
+  // interdit dans 18-contacts-invoices.js (STRUCT-B2-05E), ce helper pur (déjà légitime ici, cf.
+  // SHOP_WRITE_LEGITIMATE_B2_FILES) sert d'unique point d'accès pour le bouton « + Nouvelle commande »
+  // de la fiche Contact.
+  function contactCanCreateOrder(clubId) {
+    return hasFeature("shop") && currentUserHasPermission("shop.write", clubId);
   }
 
   function openRegistrationStageChoiceDialog(options = {}, openedClubId = "") {
@@ -39634,7 +39665,16 @@ ${esc(bodyText)}</pre>
       if (!shopClubId || activeClubId() !== shopClubId) return;
       if (!ensureFeatureEnabledForMutation("shop")) return;
       if (!ensureUserPermission("shop.write", shopClubId)) return;
-      return openOrderDialog({}, {}, shopClubId);
+      // CONTACT-HUB-1D — data-contact-link (posé UNIQUEMENT par le bouton "+ Nouvelle commande" de la
+      // fiche Contact, cf. contactActivitySummary) préremplit le contact dans la commande créée
+      // ensuite (openOrderDialog résout déjà tous les autres champs depuis contactId/prospectContactId
+      // via contactForOrder/prospectForOrder, aucune duplication de champ ici) ; absent pour le bouton
+      // historique du module Boutique (sa liste), qui garde alors exactement son comportement d'origine.
+      const link = parseContactLink(button.dataset.contactLink || "");
+      return openOrderDialog({
+        contactId: link.kind === "member" ? link.contactId : "",
+        prospectContactId: link.kind === "prospect" ? link.contactId : "",
+      }, {}, shopClubId);
     }
     if (action === "sell-article") {
       const shopClubId = button.dataset.shopClubId || "";
