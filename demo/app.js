@@ -27201,14 +27201,19 @@ ${esc(bodyText)}</pre>
     return asText(invoice.issuedAt || invoice.createdAt);
   }
 
-  // Lot Q3B (§4/§7 du mandat, doctrine anti-double-comptage confirmée par Q3A) — DONNÉES du bloc
-  // Finances. Chaque domaine (Factures / Adhésions / Boutique / Stages / Avoirs) reste un compteur
-  // INDÉPENDANT : aucune somme cross-domaine n'est jamais calculée ici (une facture peut déjà
-  // représenter le même claim qu'une adhésion/commande/stage — claimFinancialState/invoiceLiveTotals
-  // partagent la même donnée sous-jacente, cf. audit Q3A §1-4). Architecture DATA/HTML séparée :
-  // cette fonction ne produit aucun HTML, uniquement un objet dont chaque clé n'existe QUE si la
-  // permission correspondante est accordée (permission refusée -> donnée jamais calculée, jamais
-  // seulement jamais affichée — doctrine Q1.5R).
+  // Lot Q3B (§4/§7 du mandat, doctrine anti-double-comptage confirmée par Q3A), révisée par
+  // CONTACT-HUB-1A — DONNÉES du bloc Finances. La règle qui tient toujours : AUCUNE somme
+  // ACTIVITÉS + FACTURES n'est jamais calculée ici (une facture peut déjà représenter le même claim
+  // qu'une adhésion/commande/stage — claimFinancialState/invoiceLiveTotals partagent la même donnée
+  // sous-jacente, cf. audit Q3A §1-4) : "Reste activités" et "Reste sur factures" restent deux figures
+  // séparées, jamais additionnées. Ce qui a changé (CONTACT-HUB-1A) : les 3 domaines d'ACTIVITÉ
+  // (Adhésions/Boutique/Stages) entre eux N'ONT PAS ce problème (claimKeys disjoints par construction,
+  // membership:/order:/stage:) — leur somme (activitiesRestDueTotal, via contactActivitiesRestDueTotal,
+  // formule partagée avec contactActivitySummary) est donc désormais calculée, sous garde TOUT-OU-RIEN
+  // (les 3 domaines + leurs paiements embarqués lisibles, jamais un total partiel). Architecture
+  // DATA/HTML séparée inchangée : cette fonction ne produit aucun HTML, uniquement un objet dont
+  // chaque clé n'existe QUE si la permission correspondante est accordée (permission refusée ->
+  // donnée jamais calculée, jamais seulement jamais affichée — doctrine Q1.5R).
   function contact360FinanceSummaryData(contact, sourceClubId) {
     if (!contact360SportContextIsCurrent(sourceClubId)) return {};
     const data = {};
@@ -27239,6 +27244,10 @@ ${esc(bodyText)}</pre>
       data.invoices = {
         unpaidCount: unpaidInvoices.length,
         restDueTotal,
+        // Lot CONTACT-HUB-1A — nombre de factures qui COMPOSENT restDueTotal (mêmes lignes que la
+        // somme, jamais unpaidCount qui inclut aussi les factures ambiguës exclues de la somme) :
+        // affiché en secondaire à côté du montant ("165,00 € · 1 facture"), jamais recalculé ailleurs.
+        restDueCount: unpaidNonAmbiguous.filter((invoice) => asNumber(invoiceLiveTotals(invoice).restDue) > 0).length,
         restDueAmbiguous: unpaidNonAmbiguous.length < unpaidInvoices.length,
         lateCount: invoices.filter(invoiceIsLate).length,
         last: lastInvoice ? {
@@ -27263,26 +27272,49 @@ ${esc(bodyText)}</pre>
       }
     }
 
-    // Adhésions avec reste dû — memberships.read ET currentUserCanReadEmbeddedPayment("membership", ...).
-    // calcMembership n'est JAMAIS appelé si le paiement embarqué n'est pas lisible (§10/§27 du mandat).
-    if (currentUserHasPermission("memberships.read", sourceClubId) && currentUserCanReadEmbeddedPayment("membership", sourceClubId)) {
-      const count = contactMembershipsFor360(contact).filter((row) => asNumber(calcMembership(row).restDue) > 0).length;
-      if (count > 0) data.membershipsRestDueCount = count;
+    // Lot CONTACT-HUB-1A (§2 du mandat) — les 3 domaines d'activité passent de compteurs à
+    // montants + nombre secondaire ; même patron d'entrées que contactActivitySummary
+    // (contactRecapModuleEntries + attachCalcIfReadable, AUCUNE formule réécrite) pour que
+    // contactActivitiesRestDueTotal ci-dessous puisse sommer les MÊMES entrées calc-attachées.
+    // Chaque domaine garde sa garde de permission INDÉPENDANTE (doctrine inchangée §12/§27) : la
+    // ventilation par domaine reste visible même quand un des trois domaines est interdit — seul le
+    // total global "Reste activités" exige les trois (garde tout-ou-rien, voir plus bas).
+    const canReadMembershipsRestDue = currentUserHasPermission("memberships.read", sourceClubId) && currentUserCanReadEmbeddedPayment("membership", sourceClubId);
+    const membershipEntries = canReadMembershipsRestDue
+      ? attachCalcIfReadable(contactRecapModuleEntries(contact, "members", "disciplines"), true, (entry) => calcMembership(entry.row))
+      : [];
+    if (canReadMembershipsRestDue) {
+      // Lot 3A (FIN-ABS-2) — un tarif ABSENT (hasGrossTotal:false) est "Non calculable", jamais un
+      // montant : exclu de ce décompte (même doctrine que contactRecapAmounts), même si son claim
+      // porte malgré tout un restDue résiduel. N'affecte PAS activitiesRestDueTotal plus bas, qui
+      // reste la somme brute déjà utilisée par contactActivitySummary (formule inchangée).
+      const due = membershipEntries.filter((entry) => entry.calc.hasGrossTotal !== false && asNumber(entry.calc.restDue) > 0);
+      if (due.length) data.membershipsRestDue = { count: due.length, total: due.reduce((sum, entry) => sum + asNumber(entry.calc.restDue), 0) };
     }
 
-    // Commandes avec reste dû — shop.read ET currentUserCanReadEmbeddedPayment("order", ...). ID-only
-    // strict via contactStrictModuleRows (Q1.5). calcOrder jamais appelé sans le paiement lisible.
-    if (currentUserHasPermission("shop.read", sourceClubId) && currentUserCanReadEmbeddedPayment("order", sourceClubId)) {
-      const count = contactStrictModuleRows(contact, "members", "boutique").filter((row) => asNumber(calcOrder(row).restDue) > 0).length;
-      if (count > 0) data.ordersRestDueCount = count;
+    const canReadOrdersRestDue = currentUserHasPermission("shop.read", sourceClubId) && currentUserCanReadEmbeddedPayment("order", sourceClubId);
+    const orderEntries = canReadOrdersRestDue
+      ? attachCalcIfReadable(contactRecapModuleEntries(contact, "members", "boutique"), true, (entry) => calcOrder(entry.row))
+      : [];
+    if (canReadOrdersRestDue) {
+      const due = orderEntries.filter((entry) => asNumber(entry.calc.restDue) > 0);
+      if (due.length) data.ordersRestDue = { count: due.length, total: due.reduce((sum, entry) => sum + asNumber(entry.calc.restDue), 0) };
     }
 
-    // Stages avec reste dû — stages.read ET currentUserCanReadEmbeddedPayment("registration", ...).
-    // calcRegistration jamais appelé sans le paiement lisible.
-    if (currentUserHasPermission("stages.read", sourceClubId) && currentUserCanReadEmbeddedPayment("registration", sourceClubId)) {
-      const count = contactStrictModuleRows(contact, "members", "stages").filter(({ row, stageId }) => asNumber(calcRegistration(row, stageId).restDue) > 0).length;
-      if (count > 0) data.stageRegistrationsRestDueCount = count;
+    const canReadStagesRestDue = currentUserHasPermission("stages.read", sourceClubId) && currentUserCanReadEmbeddedPayment("registration", sourceClubId);
+    const registrationEntries = canReadStagesRestDue
+      ? attachCalcIfReadable(contactRecapModuleEntries(contact, "members", "stages"), true, (entry) => calcRegistration(entry.row, entry.stageId))
+      : [];
+    if (canReadStagesRestDue) {
+      const due = registrationEntries.filter((entry) => asNumber(entry.calc.restDue) > 0);
+      if (due.length) data.stageRegistrationsRestDue = { count: due.length, total: due.reduce((sum, entry) => sum + asNumber(entry.calc.restDue), 0) };
     }
+
+    // "Reste activités" (§1/§2 du mandat) — garde TOUT-OU-RIEN identique à canShowGlobalFinancialKpis
+    // de contactActivitySummary (les 3 domaines ET leurs paiements embarqués) : jamais un total
+    // partiel qui omettrait silencieusement un domaine interdit. Formule partagée, voir sa doctrine.
+    const canShowActivitiesTotal = canReadMembershipsRestDue && canReadOrdersRestDue && canReadStagesRestDue;
+    data.activitiesRestDueTotal = contactActivitiesRestDueTotal([...membershipEntries, ...orderEntries, ...registrationEntries], canShowActivitiesTotal);
 
     return data;
   }
@@ -27290,11 +27322,45 @@ ${esc(bodyText)}</pre>
   // Lot Q3B — HTML pur à partir des données ci-dessus, aucune logique de permission ici (déjà
   // tranchée par contact360FinanceSummaryData). §3 : AUCUNE somme cross-domaine n'est jamais
   // interpolée ici, chaque ligne reste explicitement son propre domaine.
+  // Lot CONTACT-HUB-1A — un domaine d'activité ("Adhésions"/"Stages"/"Boutique") : montant en
+  // information PRINCIPALE, nombre d'éléments en secondaire (§2 du mandat). Jamais de mot suggérant
+  // un statut de facturation ("à facturer") : ce domaine peut déjà être facturé ou non, ce bloc ne le
+  // sait pas et ne doit rien prétendre à ce sujet (cf. "Reste sur factures" plus bas, séparé).
+  function contact360FinanceActivityCardHtml(label, restDue, singular, plural = `${singular}s`) {
+    if (!restDue) return "";
+    return `<div><span>${esc(label)}</span><strong>${money(restDue.total)}</strong><small class="muted">${intValue(restDue.count)} ${restDue.count > 1 ? esc(plural) : esc(singular)}</small></div>`;
+  }
+
+  // Lot Q3B puis CONTACT-HUB-1A — HTML pur à partir des données ci-dessus, aucune logique de
+  // permission ici (déjà tranchée par contact360FinanceSummaryData). §3 : AUCUNE somme cross-domaine
+  // n'est jamais interpolée ici (le "Reste activités" ci-dessous ne fait déjà QUE sommer les 3
+  // domaines d'activité, jamais les factures — cf. doctrine contactActivitiesRestDueTotal). Le "Reste
+  // sur factures" (déjà facturé) et le "Reste activités" (facturé ou non) restent deux blocs
+  // VISUELLEMENT séparés, jamais additionnés ni soustraits l'un de l'autre, jamais un avoir déduit
+  // automatiquement d'un reste — l'utilisateur affecte lui-même un avoir, ce bloc ne le fait jamais.
   function contact360FinanceSummaryHtml(data = {}, sourceClubId, contactId) {
     const lines = [];
+    const activityCards = [
+      contact360FinanceActivityCardHtml("Adhésions", data.membershipsRestDue, "adhésion"),
+      contact360FinanceActivityCardHtml("Stages", data.stageRegistrationsRestDue, "stage"),
+      contact360FinanceActivityCardHtml("Boutique", data.ordersRestDue, "commande"),
+    ].filter(Boolean);
+    if (typeof data.activitiesRestDueTotal === "number" && data.activitiesRestDueTotal > 0) {
+      // Total tout-ou-rien (les 3 domaines lisibles) : affiché avec sa ventilation juste en dessous.
+      lines.push(`<div class="contact-recap-total has-due"><span>Reste activités</span><strong>${money(data.activitiesRestDueTotal)}</strong></div>`);
+      if (activityCards.length) lines.push(`<div class="contact-recap-kpis">${activityCards.join("")}</div>`);
+    } else if (activityCards.length) {
+      // Un des 3 domaines est interdit (garde tout-ou-rien non satisfaite) : la ventilation des
+      // domaines LISIBLES reste affichée (doctrine §12/§27, jamais masquée par la garde du total),
+      // simplement sans le total global qui serait alors partiel/trompeur.
+      lines.push(`<div class="contact-recap-kpis">${activityCards.join("")}</div>`);
+    }
     if (data.invoices) {
       if (data.invoices.unpaidCount > 0) lines.push(`<div>Factures à régler : ${intValue(data.invoices.unpaidCount)}</div>`);
-      if (data.invoices.restDueTotal > 0) lines.push(`<div>Reste à payer facturé : ${money(data.invoices.restDueTotal)}${data.invoices.restDueAmbiguous ? ` <span class="muted">(partiel, une facture ancienne fractionnée n'est pas comptée)</span>` : ""}</div>`);
+      if (data.invoices.restDueTotal > 0) {
+        lines.push(`<div class="contact-recap-total"><span>Reste sur factures</span><strong>${money(data.invoices.restDueTotal)}</strong></div>`);
+        lines.push(`<div><small class="muted">${intValue(data.invoices.restDueCount)} facture${data.invoices.restDueCount > 1 ? "s" : ""}${data.invoices.restDueAmbiguous ? " · partiel, une facture ancienne fractionnée n'est pas comptée" : ""}</small></div>`);
+      }
       if (data.invoices.last) {
         const lastParts = [asText(data.invoices.last.number) || "Brouillon", data.invoices.last.dateLabel, money(data.invoices.last.total), data.invoices.last.statusLabel].filter(Boolean);
         lines.push(`<div>Dernière facture : ${esc(lastParts.join(" · "))}</div>`);
@@ -27313,14 +27379,21 @@ ${esc(bodyText)}</pre>
       }
       if (data.invoices.lateCount > 0) lines.push(`<div>${intValue(data.invoices.lateCount)} facture${data.invoices.lateCount > 1 ? "s" : ""} en retard</div>`);
     }
-    if (data.membershipsRestDueCount > 0) lines.push(`<div>Adhésions avec reste dû : ${intValue(data.membershipsRestDueCount)}</div>`);
-    if (data.ordersRestDueCount > 0) lines.push(`<div>Commandes avec reste dû : ${intValue(data.ordersRestDueCount)}</div>`);
-    if (data.stageRegistrationsRestDueCount > 0) lines.push(`<div>Stages avec reste dû : ${intValue(data.stageRegistrationsRestDueCount)}</div>`);
+    // Lot CONTACT-HUB-1A (§2 du mandat) — "ne jamais soustraire automatiquement un avoir non affecté" :
+    // affiché tel quel, jamais combiné à aucun reste ci-dessus. Libellé/format INCHANGÉS (Q3B).
     if (data.creditNotes) lines.push(`<div>Avoir disponible : ${money(data.creditNotes.totalAvailable)}</div>`);
     if (!lines.length) return "";
+    // Lot CONTACT-HUB-1A (§4 du mandat) — note de non-cumul, UNIQUEMENT quand les deux figures
+    // pourraient sembler s'additionner (le total Reste activités ET un reste sur factures sont tous
+    // deux affichés) : une activité déjà facturée porte le MÊME reste dans les deux blocs (même
+    // claim), jamais un montant supplémentaire à ajouter.
+    const doubleCountNote = (data.activitiesRestDueTotal > 0 && data.invoices?.restDueTotal > 0)
+      ? `<p class="muted contact-360-finance-note">Une activité déjà facturée porte le même reste dans « Reste activités » et « Reste sur factures » — ces deux montants ne s'additionnent pas.</p>`
+      : "";
     return `<section class="contact-recap-section contact-360-finance">
       <div class="dialog-mini-title"><h4>Finances</h4></div>
       ${lines.join("")}
+      ${doubleCountNote}
     </section>`;
   }
 
@@ -27500,6 +27573,18 @@ ${esc(bodyText)}</pre>
     return entries.map((entry) => ({ ...entry, calc: calcFn(entry) }));
   }
 
+  // Lot CONTACT-HUB-1A — somme UNIQUE du reste dû sur les 3 domaines d'ACTIVITÉ (adhésions/commandes/
+  // stages), JAMAIS les factures : une facture peut représenter le même claim qu'une activité
+  // (claimFinancialState/invoiceLiveTotals partagent la donnée sous-jacente, doctrine Q3B) — les
+  // additionner redonnerait le même montant compté deux fois. Garde TOUT-OU-RIEN (`canShow`) : jamais
+  // un agrégat partiel présenté comme un total complet (même doctrine que canShowGlobalFinancialKpis
+  // ci-dessous). Appelée par contactActivitySummary (détail) ET contact360FinanceSummaryData
+  // (synthèse compacte) — UNE SEULE formule, jamais deux reduce indépendants qui pourraient diverger.
+  function contactActivitiesRestDueTotal(entries, canShow) {
+    if (!canShow) return null;
+    return entries.reduce((sum, entry) => sum + Math.max(0, asNumber(entry.calc.restDue)), 0);
+  }
+
   // Lot Q1.5 — contactActivitySummary devient PERMISSION-AWARE par construction (§1 du mandat) :
   // permission refusée -> donnée jamais récupérée pour le rendu concerné -> section jamais construite
   // -> absente du DOM. Plus aucun message « Vous n'avez pas accès à cette section » (révélait
@@ -27554,13 +27639,16 @@ ${esc(bodyText)}</pre>
     const canShowGlobalFinancialKpis = kind === "members"
       ? (canReadMembershipPayments && canReadShopPayments && canReadStagePayments)
       : (canReadShopPayments && canReadStagePayments);
+    // Lot CONTACT-HUB-1A — le "due" est désormais délégué à contactActivitiesRestDueTotal (formule
+    // UNIQUE partagée avec contact360FinanceSummaryData, cf. sa doctrine) ; total/paid restent leur
+    // propre reduce ici (le helper partagé ne porte que le "reste dû", seul besoin du bloc compact).
+    // Valeurs numériques strictement inchangées par rapport à l'ancien reduce combiné.
     const totals = canShowGlobalFinancialKpis
-      ? all.reduce((acc, item) => {
-        acc.total += asNumber(item.calc.total);
-        acc.paid += asNumber(item.calc.paid);
-        acc.due += Math.max(0, asNumber(item.calc.restDue));
-        return acc;
-      }, { total: 0, paid: 0, due: 0 })
+      ? {
+        total: all.reduce((sum, item) => sum + asNumber(item.calc.total), 0),
+        paid: all.reduce((sum, item) => sum + asNumber(item.calc.paid), 0),
+        due: contactActivitiesRestDueTotal(all, true),
+      }
       : null;
 
     // Lot Q1.5R (Correction 3) — sourceClubId propagé jusqu'au renderer sport (sportCategoryAssignmentLabel),
