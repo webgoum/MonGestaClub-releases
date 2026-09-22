@@ -8100,6 +8100,19 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
     if (!focus) return null;
     if (focus.id) return (p) => asText(p?.id || "") === focus.id;
     if (segment && focus.segment && focus.segment !== segment) return null;
+    // CONTACT-HUB-1F-1 (correctif Pix, focus "nouveau paiement") — intention explicite posée
+    // UNIQUEMENT par le bouton "Encaisser" de la fiche Contact (data-payment-new="1") : cible le
+    // premier créneau NON verrouillé (jamais Payé/OK, jamais Annulé), pour que l'onglet actif à
+    // l'ouverture permette réellement de saisir un NOUVEAU règlement, plutôt qu'un paiement historique
+    // déjà validé. UI pur, réutilise paymentStatus (aucune dette recalculée, aucune écriture) — le
+    // filtre segment ci-dessus s'applique déjà, jamais le mauvais tiroir Stage. Le segment déjà
+    // filtré ci-dessus garantit que ce prédicat ne s'applique jamais au tiroir Stage opposé.
+    if (focus.newPayment) {
+      return (p) => {
+        const status = paymentStatus(p);
+        return status !== "OK" && status !== "Annulé";
+      };
+    }
     if (Number.isInteger(focus.index) && focus.index >= 0 && focus.fingerprint) {
       return (p, idx) => idx === focus.index && paymentFingerprint(p) === focus.fingerprint;
     }
@@ -8142,14 +8155,20 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
     const id = asText(button.dataset.paymentId || "");
     const segment = asText(button.dataset.paymentSegment || "");
     const fingerprint = asText(button.dataset.paymentFingerprint || "");
+    // CONTACT-HUB-1F-1 (correctif Pix) — intention additive "nouveau paiement" (data-payment-new="1"),
+    // posée UNIQUEMENT par le bouton "Encaisser" de la fiche Contact : absente pour tout autre appelant
+    // historique (taskRows() ne pose jamais cet attribut), donc comportement historique strictement
+    // inchangé ailleurs.
+    const newPayment = button.dataset.paymentNew === "1";
     const hasIndex = Number.isInteger(index) && index >= 0;
-    if (!id && !segment && !fingerprint && !hasIndex) return null;
+    if (!id && !segment && !fingerprint && !hasIndex && !newPayment) return null;
     return {
       id,
       index: Number.isInteger(index) ? index : -1,
       segment,
       status: asText(button.dataset.paymentStatus || ""),
       fingerprint,
+      newPayment,
     };
   }
 
@@ -27691,6 +27710,29 @@ ${esc(bodyText)}</pre>
           .map((item) => item.paymentGroupKey),
       );
     }
+    // CONTACT-HUB-1F-1 — ensemble des claims actuellement encaissables (bouton "Encaisser") : ENCORE
+    // dus (claimFinancialState(...).restDue > 0, jamais un simple restDue local) ET NON représentés par
+    // une facture ÉMISE (billedClaimKeys — un brouillon ne bloque PAS, même doctrine que "Facturer").
+    // Indépendant de la permission Facturation : gouverné par currentUserCanWriteEmbeddedPayment (le
+    // SEUL helper canonique déjà existant pour l'écriture d'un paiement embarqué — payments.write +
+    // lecture du domaine, JAMAIS memberships.write/shop.write/stages.write).
+    const canWritePaymentsMembership = currentUserCanWriteEmbeddedPayment("membership", sourceClubId);
+    const canWritePaymentsShop = currentUserCanWriteEmbeddedPayment("order", sourceClubId);
+    const canWritePaymentsStage = currentUserCanWriteEmbeddedPayment("registration", sourceClubId);
+    const encaissableClaimKeys = new Set();
+    if (canWritePaymentsMembership || canWritePaymentsShop || canWritePaymentsStage) {
+      const billedClaimsForCashIn = billedClaimKeys("");
+      billableItemsForContact(contact, kind).forEach((item) => {
+        const claimKey = item.paymentGroupKey;
+        if (!claimKey || encaissableClaimKeys.has(claimKey) || billedClaimsForCashIn.has(claimKey)) return;
+        const domainAllowed = claimKey.startsWith("membership:") ? canWritePaymentsMembership
+          : claimKey.startsWith("order:") ? canWritePaymentsShop
+            : claimKey.startsWith("stage:") ? canWritePaymentsStage
+              : false;
+        if (!domainAllowed) return;
+        if (asNumber(claimFinancialState(claimKey).restDue) > 0.005) encaissableClaimKeys.add(claimKey);
+      });
+    }
 
     // Récupération conditionnée à la permission de LECTURE du domaine (jamais récupéré si refusé).
     // Lot Q1.5R (Correction 2) — le calcul financier (calcMembership/calcOrder/calcRegistration) n'est
@@ -27738,13 +27780,13 @@ ${esc(bodyText)}</pre>
 
     // Lot Q1.5R (Correction 3) — sourceClubId propagé jusqu'au renderer sport (sportCategoryAssignmentLabel),
     // jamais un activeClubId() lu tardivement dans contactRecapMembership.
-    const membershipRenderOptions = { showSport: canReadSport, showDocuments: canReadDocuments, showPayments: canReadMembershipPayments, sourceClubId, invoiceableClaimKeys };
+    const membershipRenderOptions = { showSport: canReadSport, showDocuments: canReadDocuments, showPayments: canReadMembershipPayments, sourceClubId, invoiceableClaimKeys, encaissableClaimKeys };
     // CONTACT-HUB-1D — sourceClubId propagé jusqu'à la carte (data-shop-club-id), même doctrine que
     // registrationRenderOptions ci-dessous : jamais un activeClubId() lu tardivement dans le rendu.
-    const orderRenderOptions = { showPayments: canReadShopPayments, sourceClubId, invoiceableClaimKeys };
+    const orderRenderOptions = { showPayments: canReadShopPayments, sourceClubId, invoiceableClaimKeys, encaissableClaimKeys };
     // CONTACT-HUB-1C — sourceClubId propagé jusqu'à la carte (data-stage-club-id), même doctrine que
     // membershipRenderOptions ci-dessus : jamais un activeClubId() lu tardivement dans le rendu.
-    const registrationRenderOptions = { showPayments: canReadStagePayments, sourceClubId, invoiceableClaimKeys };
+    const registrationRenderOptions = { showPayments: canReadStagePayments, sourceClubId, invoiceableClaimKeys, encaissableClaimKeys };
 
     return `<div class="dialog-section contact-recap" data-tour="contact-recap">
       <div class="contact-recap-head">
@@ -27888,7 +27930,7 @@ ${esc(bodyText)}</pre>
   }
 
   function contactRecapMembership(entry, options = {}) {
-    const { showSport = false, showDocuments = false, showPayments = false, sourceClubId = activeClubId(), invoiceableClaimKeys = null } = options;
+    const { showSport = false, showDocuments = false, showPayments = false, sourceClubId = activeClubId(), invoiceableClaimKeys = null, encaissableClaimKeys = null } = options;
     const row = entry.row;
     // Lot V1 Niveaux — "Niveau" reste une note libre sans automatisme (cf. audit
     // Niveaux/Groupes/Disciplines) : simple affichage si renseigné, rien sinon, propre à
@@ -27945,6 +27987,9 @@ ${esc(bodyText)}</pre>
         <span>${esc(subtitle || "Inscription discipline")}</span>
         ${hasFeature("memberships") ? `<button type="button" class="contact-recap-remove-btn" data-action="delete-membership" data-id="${esc(row.id)}" title="Retirer cette discipline de la fiche">Retirer</button>` : ""}
         ${contactInvoiceClaimButtonHtml(`membership:${row.id}`, contactLinkForRow(row), sourceClubId, invoiceableClaimKeys)}
+        ${(encaissableClaimKeys && encaissableClaimKeys.has(`membership:${row.id}`))
+          ? `<button type="button" class="contact-recap-cashin-btn" data-action="open-contact-payment" data-cashin-module="membership" data-cashin-club-id="${esc(sourceClubId)}" data-claim-key="${esc(`membership:${row.id}`)}" data-id="${esc(row.id)}" data-payment-new="1" title="Encaisser cette créance">Encaisser</button>`
+          : ""}
       </div>
       ${showPayments ? contactRecapStatus(entry.calc) : ""}
       ${showPayments ? contactRecapAmounts(entry.calc) : ""}
@@ -27954,7 +27999,7 @@ ${esc(bodyText)}</pre>
 
   // Lot Q1.5R (Correction 1) — défaut FAIL-CLOSED (false), même doctrine que contactRecapMembership.
   function contactRecapOrder(entry, options = {}) {
-    const { showPayments = false, sourceClubId = activeClubId(), invoiceableClaimKeys = null } = options;
+    const { showPayments = false, sourceClubId = activeClubId(), invoiceableClaimKeys = null, encaissableClaimKeys = null } = options;
     const details = orderItemDetails(entry.row);
     // §8 du mandat Q1.5 — articles/quantités/tailles restent des données de COMMANDE (shop.read
     // seul, déjà garanti par l'appelant), jamais de montant ici : rien à conditionner par showPayments.
@@ -27971,6 +28016,9 @@ ${esc(bodyText)}</pre>
         <strong>Commande boutique</strong>
         <span>${esc(itemText)}</span>
         ${contactInvoiceClaimButtonHtml(`order:${entry.row.id}`, contactLinkForRow(entry.row), sourceClubId, invoiceableClaimKeys)}
+        ${(encaissableClaimKeys && encaissableClaimKeys.has(`order:${entry.row.id}`) && !shopOrderIntegrityState(entry.row).editBlocked)
+          ? `<button type="button" class="contact-recap-cashin-btn" data-action="open-contact-payment" data-cashin-module="order" data-cashin-club-id="${esc(sourceClubId)}" data-claim-key="${esc(`order:${entry.row.id}`)}" data-id="${esc(entry.row.id)}" data-payment-new="1" title="Encaisser cette créance">Encaisser</button>`
+          : ""}
       </div>
       ${showPayments ? statusPill(shopOrderStatus(entry.row, entry.calc)) : ""}
       ${showPayments ? contactRecapAmounts(entry.calc) : ""}
@@ -27979,7 +28027,7 @@ ${esc(bodyText)}</pre>
 
   // Lot Q1.5R (Correction 1) — défaut FAIL-CLOSED (false), même doctrine que contactRecapMembership.
   function contactRecapRegistration(entry, options = {}) {
-    const { showPayments = false, sourceClubId = activeClubId(), invoiceableClaimKeys = null } = options;
+    const { showPayments = false, sourceClubId = activeClubId(), invoiceableClaimKeys = null, encaissableClaimKeys = null } = options;
     const stage = stageById(entry.stageId);
     // Lot Q1.5R2 (correctif Pix, Correction 2) — calcStageSegment(event/lodging) est un calcul
     // FINANCIER (subtotal) : ne plus l'exécuter DU TOUT quand showPayments est faux (donnée financière
@@ -28008,11 +28056,27 @@ ${esc(bodyText)}</pre>
       contactInvoiceClaimButtonHtml(`stage:${entry.stageId}:${entry.row.id}:event`, contactLink, sourceClubId, invoiceableClaimKeys, "Facturer le stage"),
       contactInvoiceClaimButtonHtml(`stage:${entry.stageId}:${entry.row.id}:lodging`, contactLink, sourceClubId, invoiceableClaimKeys, "Facturer l'hébergement"),
     ].filter(Boolean).join("");
+    // CONTACT-HUB-1F-1 — même granularité EXACTE que Facturer ci-dessus : événement/hébergement sont
+    // deux claims distincts, jusqu'à DEUX boutons "Encaisser" indépendants. data-action=
+    // "open-contact-payment" (correctif Pix, action dédiée qui revérifie TOUT au clic avant de
+    // déléguer à openRegistrationDialog) + data-payment-segment="event"|"lodging" (même convention que
+    // taskRows()/src/11-dashboard-newsletter.js, déjà lue par taskPaymentFocusFromButton et déjà
+    // distinguée par openRegistrationDialog via buildPaymentFocusPredicate/paymentFocusScrollSelector)
+    // pour focaliser le BON tiroir de paiement, jamais l'autre.
+    const cashInButtons = [
+      (encaissableClaimKeys && encaissableClaimKeys.has(`stage:${entry.stageId}:${entry.row.id}:event`))
+        ? `<button type="button" class="contact-recap-cashin-btn" data-action="open-contact-payment" data-cashin-module="registration" data-cashin-club-id="${esc(sourceClubId)}" data-claim-key="${esc(`stage:${entry.stageId}:${entry.row.id}:event`)}" data-stage-id="${esc(entry.stageId)}" data-id="${esc(entry.row.id)}" data-payment-segment="event" data-payment-new="1" title="Encaisser le stage">Encaisser le stage</button>`
+        : "",
+      (encaissableClaimKeys && encaissableClaimKeys.has(`stage:${entry.stageId}:${entry.row.id}:lodging`))
+        ? `<button type="button" class="contact-recap-cashin-btn" data-action="open-contact-payment" data-cashin-module="registration" data-cashin-club-id="${esc(sourceClubId)}" data-claim-key="${esc(`stage:${entry.stageId}:${entry.row.id}:lodging`)}" data-stage-id="${esc(entry.stageId)}" data-id="${esc(entry.row.id)}" data-payment-segment="lodging" data-payment-new="1" title="Encaisser l'hébergement">Encaisser l'hébergement</button>`
+        : "",
+    ].filter(Boolean).join("");
     return `<article class="contact-recap-row clickable-card" data-action="edit-registration" data-stage-id="${esc(entry.stageId)}" data-id="${esc(entry.row.id)}" data-stage-club-id="${esc(sourceClubId)}" title="Ouvrir cette inscription">
       <div class="contact-recap-main">
         <strong>${esc(stage.name || "Stage")}</strong>
         <span>${esc(parts || "Inscription stage")}</span>
         ${invoiceButtons}
+        ${cashInButtons}
       </div>
       ${showPayments ? contactRecapStatus(entry.calc) : ""}
       ${showPayments ? contactRecapAmounts(entry.calc) : ""}
@@ -39802,6 +39866,47 @@ ${esc(bodyText)}</pre>
       const contact = state.contacts[kind]?.find((row) => row.id === link.contactId);
       if (!contact) return;
       return openQuickInvoiceForClaim(contact, kind, button.dataset.claimKey || "", billingClubId);
+    }
+    if (action === "open-contact-payment") {
+      // CONTACT-HUB-1F-1 (correctif Pix, problème A) — action DÉDIÉE, distincte de edit-membership/
+      // view-order/edit-registration : ces trois handlers génériques ne revérifient AUCUNE condition
+      // financière (payments.write, restDue, facturé) au clic — un vieux bouton "Encaisser" resté à
+      // l'écran continuerait donc silencieusement d'ouvrir l'entité même si le claim est devenu soldé,
+      // facturé, ou si le droit a été retiré entre le rendu et le clic. Cette action revérifie TOUT
+      // (club, permission, existence du claim, reste dû réel, non-facturé) AVANT de déléguer aux
+      // primitives d'ouverture EXISTANTES (openMembershipDialog/openOrderForConsult/
+      // openRegistrationDialog) — aucune écriture, aucun paiement créé, aucune duplication du moteur.
+      const clubId = button.dataset.cashinClubId || "";
+      if (!clubId || activeClubId() !== clubId) return;
+      const module = button.dataset.cashinModule || "";
+      if (!currentUserCanWriteEmbeddedPayment(module, clubId)) return;
+      const claimKey = button.dataset.claimKey || "";
+      if (!claimKey || billedClaimKeys("").has(claimKey)) return;
+      if (asNumber(claimFinancialState(claimKey).restDue) <= 0.005) return;
+      const focusPayment = taskPaymentFocusFromButton(button);
+      if (module === "membership") {
+        const row = state.memberships.find((r) => r.id === button.dataset.id);
+        if (!row) return;
+        return openMembershipDialog(row, { focusPayment });
+      }
+      if (module === "order") {
+        const order = state.shopOrders.find((r) => r.id === button.dataset.id);
+        if (!order) return;
+        // Fail-closed Boutique (audit CONTACT-HUB-1F-1, §6) : une commande verrouillée entre le rendu
+        // et le clic (paiement validé/facture émise apparus entre-temps) ne doit jamais promettre une
+        // action impossible — même garde qu'au rendu, revérifiée ici à chaud.
+        if (shopOrderIntegrityState(order).editBlocked) return;
+        return openOrderForConsult(order, clubId, { focusPayment });
+      }
+      if (module === "registration") {
+        const stageId = button.dataset.stageId || "";
+        if (!ensureFeatureEnabledForMutation("stages")) return;
+        if (!currentUserHasPermission("stages.read", clubId)) return;
+        const registrationEdit = (state.stageRegistrations[stageId] || []).find((r) => r.id === button.dataset.id);
+        if (!registrationEdit) return;
+        return openRegistrationDialog(stageId, registrationEdit, clubId, { focusPayment });
+      }
+      return;
     }
     if (action === "view-order") {
       // Consultation : TOUJOURS autorisée, quel que soit l'état du paiement/facture ou de la
