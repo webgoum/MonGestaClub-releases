@@ -11553,7 +11553,11 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
           (isViewVisible("disciplines") && hasFeature("memberships") && canWriteMemberships) ? `<button class="primary" data-action="add-membership">Ajouter un adhérent</button>` : "",
           (isViewVisible("invoices") && canWriteBilling) ? `<button data-action="new-invoice">Créer une facture</button>` : "",
           (isViewVisible("due-payments") && can.payments) ? `<button data-action="show-payment-agenda">Encaisser un paiement</button>` : "",
-          (isViewVisible("stages") && canWriteStages) ? `<button data-action="add-stage">Créer un stage</button>` : "",
+          // BUG-STAGE-1 — le handler add-stage (21-handlers.js, doctrine O-E2-B4R §13) exige
+          // data-stage-club-id sur le bouton et quitte silencieusement en son absence ; ce raccourci
+          // d'accueil ne le portait pas (contrairement au bouton équivalent du module Stages), d'où
+          // un clic sans aucun effet visible ni erreur.
+          (isViewVisible("stages") && canWriteStages) ? `<button data-action="add-stage" data-stage-club-id="${esc(activeClubId())}">Créer un stage</button>` : "",
           (isViewVisible("boutique") && can.shop) ? `<button data-view="boutique">Accéder à la boutique</button>` : "",
         ].filter(Boolean).join("");
 
