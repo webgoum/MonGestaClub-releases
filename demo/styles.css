@@ -9533,6 +9533,7 @@ small.email-variable-chip:hover {
 
 .contact-identity-header {
   display: flex;
+  flex-wrap: wrap;
   align-items: flex-start;
   gap: 16px;
   padding-bottom: 18px;
@@ -9657,35 +9658,27 @@ small.email-variable-chip:hover {
   border-width: 4px;
 }
 
-/* CONTACT-HUB-1B — regroupe visuellement la photo et le choix de silhouette dans le MÊME bloc
-   (mandat : "le sélecteur doit clairement appartenir au même bloc visuel que la photo"), sans
-   dupliquer ni modifier identityAvatarChoiceField (partagé avec Discipline/Stage, JAMAIS touché) :
-   uniquement la mise en page de son conteneur, scopée .contact-identity-* (jamais une règle
-   générique sur .identity-avatar- ou .field-secondary, pour ne rien changer côté Discipline/Stage qui
-   n'ont pas ce wrapper). Largeur alignée sur celle de la photo (.identity-photo-frame) à chaque
-   palier ci-dessous, jamais plus large qu'elle — sinon le bloc élargirait le flex item et resserrait
-   .contact-identity-main (Nom/Prénom/Club/Date de naissance) sans raison. */
-.contact-identity-photo-block {
-  flex: 0 0 auto;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  width: 120px;
+/* IDENTITY-UX-1 (succède à CONTACT-HUB-1B, doctrine corrigée) — la photo redevient une zone
+   indépendante à droite (enfant direct de .contact-identity-header, ses propres dimensions
+   .identity-photo-frame, jamais contrainte par le choix de silhouette). Le choix de silhouette est
+   désormais une ligne À PART, scopée .contact-identity-avatar-row (jamais une règle générique sur
+   .identity-avatar- ou .field-secondary, pour ne rien changer côté Discipline/Stage) : flex-basis:100%
+   la fait passer sous main+photo (.contact-identity-header porte flex-wrap:wrap ci-dessus) et lui
+   donne TOUTE la largeur de l'en-tête — jamais la largeur étroite de la photo (bug CONTACT-HUB-1B :
+   un <select> ne peut pas rétrécir sous son contenu sans min-width:0, ce qui, combiné à un
+   conteneur limité à 90-120px, forçait un rendu "ratatiné"). min-width:0 conservé par prudence (même
+   raison qu'avant) mais n'a plus d'effet contraignant puisqu'aucun width fixe ne s'applique ici. */
+.contact-identity-avatar-row {
+  flex: 1 1 100%;
   min-width: 0;
 }
 
-/* min-width:0 nécessaire aux DEUX niveaux : .identity-avatar-details est l'ENFANT flex direct (sa
-   taille automatique minimale par défaut vaut sinon le contenu non cassé, ici le texte du résumé
-   replié), et le <select> lui-même a sa propre largeur minimale intrinsèque basée sur ses <option>
-   les plus longues — sans ces deux réinitialisations, "width: 120px/96px/90px" ci-dessus serait
-   silencieusement ignoré (le bloc s'élargirait pour accueillir tout le texte sur une seule ligne au
-   lieu de le laisser passer à la ligne dans sa largeur réellement disponible). */
-.contact-identity-photo-block .identity-avatar-details {
+.contact-identity-avatar-row .identity-avatar-details {
   width: 100%;
   min-width: 0;
 }
 
-.contact-identity-photo-block select {
+.contact-identity-avatar-row select {
   min-width: 0;
 }
 
@@ -9706,11 +9699,29 @@ small.email-variable-chip:hover {
 
 .membership-identity-header {
   display: flex;
+  flex-wrap: wrap;
   align-items: flex-start;
   gap: 16px;
   padding-bottom: 18px;
   margin-bottom: 4px;
   border-bottom: 1px solid var(--line);
+}
+
+/* IDENTITY-UX-1 — même logique que .contact-identity-avatar-row (cf. sa doctrine ci-dessus) : la
+   ligne Silhouette passe sous identité+photo (flex-wrap:wrap ci-dessus) et prend toute la largeur de
+   l'en-tête, jamais celle, étroite, de la photo. */
+.membership-identity-avatar-row {
+  flex: 1 1 100%;
+  min-width: 0;
+}
+
+.membership-identity-avatar-row .identity-avatar-details {
+  width: 100%;
+  min-width: 0;
+}
+
+.membership-identity-avatar-row select {
+  min-width: 0;
 }
 
 .membership-identity-main {
@@ -14405,11 +14416,6 @@ td.due,
     height: 122px;
   }
 
-  /* CONTACT-HUB-1B — même principe que ci-dessus, largeur du bloc alignée sur la photo à ce palier. */
-  .contact-identity-photo-block {
-    width: 96px;
-  }
-
   /* UX-CONTACT-1B — respiration intérieure des accordéons Contact, resserrée à 10px sous 768px
      (même principe que le desktop, accolée ici pour la même raison de motif greedy). */
   .contact-section .collapsible-inner {
@@ -14430,10 +14436,6 @@ td.due,
     width: 90px;
     height: 115px;
     border-width: 3px;
-  }
-  /* CONTACT-HUB-1B — même principe, largeur du bloc alignée sur la photo à ce palier. */
-  .contact-identity-photo-block {
-    width: 90px;
   }
   .contact-identity-name-fields input {
     font-size: 1.02rem;

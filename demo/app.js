@@ -29891,10 +29891,8 @@ ${esc(bodyText)}</pre>
           </div>
         </div>
       </div>
-      <div class="contact-identity-photo-block">
-        ${identityPhotoInlineHtml(row, !readOnly)}
-        ${identityAvatarChoiceField(row)}
-      </div>
+      ${identityPhotoInlineHtml(row, !readOnly)}
+      <div class="contact-identity-avatar-row">${identityAvatarChoiceField(row)}</div>
     </div>`;
   }
 
@@ -30329,6 +30327,7 @@ ${esc(bodyText)}</pre>
         </div>
       </div>
       ${identityPhotoInlineHtml(row, !readOnly)}
+      <div class="membership-identity-avatar-row">${identityAvatarChoiceField(row)}</div>
     </div>`;
   }
 
@@ -30518,6 +30517,9 @@ ${esc(bodyText)}</pre>
         groupSelectField("groupId", row),
         `<div class="form-error" hidden data-membership-group-block-error></div>`,
       ].join(""), { open: true }),
+      // IDENTITY-UX-1 — le choix de silhouette/avatar a déménagé dans l'en-tête d'identité
+      // (membershipIdentityHeaderHtml, sous la photo, même logique que Contact) : il n'est plus rendu
+      // ici.
       membershipSectionHtml("coordonnees", "Coordonnées & identité", [
         field("birthDate", "Date de naissance *", dateInputValue(row.birthDate), "date", "required data-birth-date"),
         field("email", "E-mail *", row.email, "email", "required"),
@@ -30525,7 +30527,6 @@ ${esc(bodyText)}</pre>
         field("address", "Adresse *", row.address, "text", "required"),
         field("postalCode", "CP *", row.postalCode, "text", "required"),
         field("city", "Ville *", row.city, "text", "required"),
-        identityAvatarChoiceField(row),
       ].join("")),
       membershipSectionHtml("dossier", "Dossier sportif", [
         selectField("medicalCertificate", "Certificat médical", row.medicalCertificate ? "Oui" : "Non", ["Non", "Oui"]),
