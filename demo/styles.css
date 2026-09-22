@@ -9657,23 +9657,105 @@ small.email-variable-chip:hover {
   border-width: 4px;
 }
 
-/* Complément UX-CONTACT-1 (fiche Discipline, openMembershipDialog) — contrairement à l'en-tête
-   Contact, cette fiche reste un simple .form-grid à plat (aucune restructuration, cf. mandat § "ne
-   pas refaire toute la fiche Discipline") : une seule rangée pleine largeur associe le sélecteur
-   "Contact enregistré" (déplacé ici, même champ/comportement) à gauche et la photo à droite, sans
-   toucher à aucun autre champ existant. */
-.membership-identity-row {
+/* ===== DISCIPLINE-1 — refonte de la fiche Discipline (openMembershipDialog) =====
+   Même LANGAGE visuel que UX-CONTACT-1 (en-tête d'identité toujours visible + accordéons
+   thématiques), mais classes dédiées .membership-identity-* / .membership-section (jamais
+   .contact-identity-* / .contact-section) : structure quasi identique (mêmes valeurs de padding/
+   gap/typo, pour la cohérence visuelle demandée au mandat) mais namespace propre, pour que toute
+   future retouche d'un des deux dialogues ne puisse jamais affecter l'autre par effet de bord —
+   même doctrine que .membership-identity-row/-left avant ce lot (déjà des classes séparées, jamais
+   une réutilisation de .contact-identity-*). Contenu différent de Contact par nature : les deux
+   cellules alignées affichent Discipline + Groupe (pas Club + Date de naissance), reflet de
+   l'identité métier propre à cette fiche (mandat DISCIPLINE-1 §5-7). */
+.membership-identity-header,
+.membership-section {
   grid-column: 1 / -1;
+}
+
+.membership-identity-header {
   display: flex;
   align-items: flex-start;
-  justify-content: space-between;
   gap: 16px;
+  padding-bottom: 18px;
   margin-bottom: 4px;
+  border-bottom: 1px solid var(--line);
+}
+
+.membership-identity-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.membership-identity-kicker {
+  margin: 0;
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
 }
 
 .membership-identity-left {
-  flex: 1 1 auto;
   min-width: 0;
+}
+
+.membership-identity-name-fields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+}
+
+.membership-identity-name-fields label {
+  flex: 1 1 140px;
+  min-width: 0;
+}
+
+.membership-identity-name-fields input {
+  font-size: 1.15rem;
+  font-weight: 750;
+}
+
+.membership-identity-status-line {
+  margin: 0;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.membership-identity-meta-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 8px 16px;
+  margin-top: 2px;
+}
+
+.membership-identity-meta-cell {
+  min-width: 0;
+}
+
+.membership-identity-meta-cell > span {
+  display: block;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 2px;
+}
+
+.membership-identity-meta-cell strong {
+  display: block;
+  font-size: 0.92rem;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.membership-identity-meta-cell.is-empty strong {
+  color: var(--muted);
+  font-weight: 500;
+  font-style: italic;
 }
 
 /* Lot UX-CONTACT-1B — respiration intérieure des accordéons Contact. Même doctrine que
@@ -9687,6 +9769,12 @@ small.email-variable-chip:hover {
    12px/14px choisis pour rester dans la fourchette demandée (12-14px horizontal / 10-12px vertical)
    sans changer hauteur de titre, rayons, couleurs ni flèches (aucune de ces propriétés touchée ici). */
 .contact-section .collapsible-inner {
+  padding: 12px 14px;
+}
+
+/* DISCIPLINE-1 — même doctrine, crochet dédié .membership-section (posée sur chaque bande de la
+   fiche Discipline, cf. membershipSectionHtml, src/19-contact-dialogs.js). */
+.membership-section .collapsible-inner {
   padding: 12px 14px;
 }
 
@@ -14290,6 +14378,11 @@ td.due,
   .contact-section .collapsible-inner {
     padding: 10px;
   }
+
+  /* DISCIPLINE-1 — même resserrement, crochet dédié .membership-section. */
+  .membership-section .collapsible-inner {
+    padding: 10px;
+  }
 }
 
 @media (max-width: 390px) {
@@ -14302,6 +14395,14 @@ td.due,
     border-width: 3px;
   }
   .contact-identity-name-fields input {
+    font-size: 1.02rem;
+  }
+
+  /* DISCIPLINE-1 — même resserrement que l'en-tête Contact ci-dessus, crochet dédié. */
+  .membership-identity-header {
+    gap: 12px;
+  }
+  .membership-identity-name-fields input {
     font-size: 1.02rem;
   }
 }

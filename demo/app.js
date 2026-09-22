@@ -8127,14 +8127,29 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
   // data-payment-status reste transporté (information secondaire/affichage), mais n'entre plus dans
   // la revalidation d'identité (voir buildPaymentFocusPredicate) : trop faible seul (Bloqueur A R1),
   // remplacé par data-payment-fingerprint (empreinte multi-champs, Bloqueur 1 R2).
+  // DISCIPLINE-1 (correctif Pix, contrôle complémentaire §8) — un bouton edit-membership/view-order/
+  // edit-registration SANS aucun attribut data-payment-* (cas : icône crayon d'une liste, carte À
+  // faire de famille "document") produisait quand même un descripteur {id:"",index:-1,segment:"",...}
+  // — un OBJET, donc toujours truthy pour `if (!focus)` en aval (buildPaymentFocusPredicate ET
+  // paymentFocusScrollSelector ci-dessus). paymentFocusScrollSelector renvoyait alors son `selector`
+  // sans condition dès que l'objet existait, faisant défiler CHAQUE ouverture normale du dialogue
+  // (pas seulement les vraies cartes de paiement) jusqu'à « Tarification & paiements », masquant
+  // l'en-tête et la rubrique Discipline pourtant censés rester visibles par défaut. Renvoyer `null`
+  // ICI quand aucun signal réel n'est présent restaure le comportement `!focus` déjà prévu en aval,
+  // sans toucher aux deux fonctions de lecture qui en dépendent.
   function taskPaymentFocusFromButton(button) {
     const index = button.dataset.paymentIndex !== undefined ? Number(button.dataset.paymentIndex) : -1;
+    const id = asText(button.dataset.paymentId || "");
+    const segment = asText(button.dataset.paymentSegment || "");
+    const fingerprint = asText(button.dataset.paymentFingerprint || "");
+    const hasIndex = Number.isInteger(index) && index >= 0;
+    if (!id && !segment && !fingerprint && !hasIndex) return null;
     return {
-      id: asText(button.dataset.paymentId || ""),
+      id,
       index: Number.isInteger(index) ? index : -1,
-      segment: asText(button.dataset.paymentSegment || ""),
+      segment,
       status: asText(button.dataset.paymentStatus || ""),
-      fingerprint: asText(button.dataset.paymentFingerprint || ""),
+      fingerprint,
     };
   }
 
@@ -30150,6 +30165,143 @@ ${esc(bodyText)}</pre>
     "legalGuardianEmail", "parentalAuthorization", "imageRights", "rulesSigned",
   ];
 
+  // DISCIPLINE-1 — en-tête d'identité de la fiche Discipline, même LANGAGE visuel que
+  // contactIdentityHeaderHtml (UX-CONTACT-1 : kicker/nom-prénom réels/ligne de statut/cellules
+  // alignées/photo), mais classes dédiées .membership-identity-* (cf. styles.css) et contenu propre
+  // à cette fiche : contrairement à Contact, la date de naissance N'EST PAS ici (elle reste un champ
+  // ordinaire de la rubrique "Coordonnées & identité" ci-dessous) et les deux cellules alignées
+  // affichent Discipline + Groupe — le fait métier le plus important de CETTE fiche — au lieu de
+  // Club/Date de naissance. Nom/Prénom et Contact enregistré restent les VRAIS champs éditables,
+  // jamais dupliqués (customerSelectField déplacé ici tel quel, même name/comportement qu'avant ce
+  // lot, cf. audit). category reste un input caché (data-birth-category, jamais disabled, donc
+  // toujours transmis par FormData) : sa valeur continue d'être calculée par updateBirthCategoryFields,
+  // inchangé. La ligne de statut et les cellules Discipline/Groupe sont rendues ici une première fois
+  // avec les valeurs d'OUVERTURE, puis rafraîchies en direct par refreshMembershipIdentitySummary
+  // (posée plus bas) à chaque changement pertinent — jamais figées après l'ouverture.
+  function membershipIdentityHeaderHtml(row = {}, readOnly) {
+    const kicker = row.id ? "Dossier discipline" : "Nouvelle inscription";
+    const subtitleParts = ["Discipline", memberCategory(row), memberAgeLabel(row)].filter(Boolean);
+    const disciplineLabel = asText(row.discipline);
+    const group = row.groupId ? getGroupById(row.groupId) : null;
+    const groupLabel = group ? asText(group.name) : "";
+    return `<div class="membership-identity-header">
+      <div class="membership-identity-main">
+        <p class="membership-identity-kicker">${esc(kicker)}</p>
+        <div class="membership-identity-left">${customerSelectField(row, "Contact enregistré", "Nouvel adhérent / saisir une fiche")}</div>
+        <div class="membership-identity-name-fields">
+          ${field("lastName", "Nom *", row.lastName, "text", "required")}
+          ${field("firstName", "Prénom *", row.firstName, "text", "required")}
+        </div>
+        <p class="membership-identity-status-line" data-membership-status-line>${esc(subtitleParts.join(" · "))}</p>
+        <input type="hidden" name="category" value="${esc(memberCategory(row))}" data-birth-category />
+        <div class="membership-identity-meta-grid">
+          <div class="membership-identity-meta-cell${disciplineLabel ? "" : " is-empty"}" data-membership-discipline-cell>
+            <span>Discipline</span>
+            <strong data-membership-discipline-label>${disciplineLabel ? esc(disciplineLabel) : "Non définie"}</strong>
+          </div>
+          <div class="membership-identity-meta-cell${groupLabel ? "" : " is-empty"}" data-membership-group-cell>
+            <span>Groupe</span>
+            <strong data-membership-group-label>${groupLabel ? esc(groupLabel) : "Aucun"}</strong>
+          </div>
+        </div>
+      </div>
+      ${identityPhotoInlineHtml(row, !readOnly)}
+    </div>`;
+  }
+
+  // DISCIPLINE-1 — rafraîchit en direct la ligne de statut et les cellules Discipline/Groupe de
+  // l'en-tête (posées ci-dessus), jamais recalculées une seule fois pour de bon à l'ouverture.
+  // Purement de l'affichage (textContent/classList) : ne touche à aucune donnée, aucun calcul
+  // métier, aucune validation. `form.elements.discipline`/`groupId` restent la source de vérité (le
+  // <select> Groupe est reconstruit par refreshGroupFieldForDiscipline lors d'un changement de
+  // discipline — lire sa valeur/option COURANTE ici, jamais mémoriser une référence DOM périmée).
+  function refreshMembershipIdentitySummary(form) {
+    const statusLine = form.querySelector("[data-membership-status-line]");
+    if (statusLine) {
+      const birthDate = form.elements.birthDate?.value || "";
+      const parts = ["Discipline", memberCategory({ birthDate }), memberAgeLabel({ birthDate })].filter(Boolean);
+      statusLine.textContent = parts.join(" · ");
+    }
+    const disciplineCell = form.querySelector("[data-membership-discipline-cell]");
+    if (disciplineCell) {
+      const select = form.elements.discipline;
+      const label = (select && select.value && select.selectedIndex >= 0) ? asText(select.options[select.selectedIndex]?.text) : "";
+      disciplineCell.classList.toggle("is-empty", !label);
+      const strong = disciplineCell.querySelector("[data-membership-discipline-label]");
+      if (strong) strong.textContent = label || "Non définie";
+    }
+    const groupCell = form.querySelector("[data-membership-group-cell]");
+    if (groupCell) {
+      const select = form.elements.groupId;
+      const label = (select && select.value && select.selectedIndex >= 0) ? asText(select.options[select.selectedIndex]?.text) : "";
+      groupCell.classList.toggle("is-empty", !label);
+      const strong = groupCell.querySelector("[data-membership-group-label]");
+      if (strong) strong.textContent = label || "Aucun";
+    }
+  }
+
+  // DISCIPLINE-1 — accordéon générique de la fiche Discipline, même principe que contactSectionHtml
+  // (UX-CONTACT-1) mais crochet dédié .membership-section (jamais .contact-section — cf. styles.css,
+  // même doctrine que les classes .membership-identity-* ci-dessus). Réutilise VERBATIM .band/
+  // .collapsible-band/.band-title/.collapsible-title-row/.collapsible-arrow/.collapsible-content/
+  // .collapsible-inner (Lot MOB-1M), aucune règle CSS propre à la bascule.
+  function membershipSectionHtml(id, title, innerHtml, { open = false } = {}) {
+    const empty = !asText(innerHtml).trim();
+    const isOpen = open && !empty;
+    return `<div class="band collapsible-band membership-section ${isOpen ? "open" : ""}" data-membership-section="${esc(id)}" ${empty ? "hidden" : ""}>
+      <div class="band-title collapsible-title-row" role="button" tabindex="0" aria-expanded="${isOpen ? "true" : "false"}">
+        <h2>${esc(title)}</h2>
+        <span class="collapsible-arrow" aria-hidden="true">›</span>
+      </div>
+      <div class="collapsible-content">
+        <div class="collapsible-inner">${innerHtml}</div>
+      </div>
+    </div>`;
+  }
+
+  // DISCIPLINE-1 — bascule des accordéons Discipline : mono-ouverture EXCLUSIVE en mobile
+  // (≤768px, même seuil que MOB-1M/UX-CONTACT-1), multi-ouverture libre en desktop. Écouteur
+  // DÉLÉGUÉ sur le <form> entier (survit à la reconstruction de sportCategoryId/groupId par
+  // refreshSportCategoryFieldForDiscipline/refreshGroupFieldForDiscipline, et à la réduction/
+  // restauration de fenêtre). Retourne openSection() pour l'ouverture automatique par focusPayment /
+  // l'échec de validation du groupe (cf. openMembershipDialog).
+  function bindMembershipSectionToggles(form) {
+    const openSection = (band) => {
+      if (!band || band.hidden || band.classList.contains("open")) return;
+      if (window.matchMedia("(max-width: 768px)").matches) {
+        form.querySelectorAll(".membership-section.open").forEach((other) => {
+          if (other === band) return;
+          other.classList.remove("open");
+          other.querySelector(".collapsible-title-row")?.setAttribute("aria-expanded", "false");
+        });
+      }
+      band.classList.add("open");
+      band.querySelector(".collapsible-title-row")?.setAttribute("aria-expanded", "true");
+    };
+    const toggle = (row) => {
+      const band = row.closest(".membership-section");
+      if (!band) return;
+      if (band.classList.contains("open")) {
+        band.classList.remove("open");
+        row.setAttribute("aria-expanded", "false");
+      } else {
+        openSection(band);
+      }
+    };
+    form.addEventListener("click", (event) => {
+      const row = event.target.closest(".membership-section > .collapsible-title-row");
+      if (row) toggle(row);
+    });
+    form.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      const row = event.target.closest(".membership-section > .collapsible-title-row");
+      if (!row) return;
+      event.preventDefault();
+      toggle(row);
+    });
+    return { openSection };
+  }
+
   function openMembershipDialog(row = {}, opts = {}) {
     // Lot O-E2-B2 — club ciblé mémorisé à l'ouverture, revérifié au save (dialogue asynchrone, §5/§29).
     const openedClubId = activeClubId();
@@ -30160,6 +30312,12 @@ ${esc(bodyText)}</pre>
     // voir 09-payments-core.js). Absent pour tout autre appelant historique de cette fonction
     // (add-membership, fiche contact, assistant...) -> comportement inchangé au bit près.
     const focusPredicate = buildPaymentFocusPredicate(opts.focusPayment);
+    // DISCIPLINE-1 — posée par le rappel onOpen (bindMembershipSectionToggles) avant tout appel du
+    // gestionnaire de sauvegarde ci-dessous (onOpen s'exécute toujours à l'ouverture, avant tout clic
+    // Enregistrer) : permet au chemin d'échec de validation du groupe (§ groupMemberAgeDecision plus
+    // bas) d'ouvrir la rubrique "Discipline & inscription" AVANT focusDialogControl, jamais un champ
+    // refusé invisible dans un accordéon resté fermé.
+    let membershipOpenSection = null;
     // Ouvrir une inscription EXISTANTE révèle ses données : exige memberships.read (§8).
     if (row.id && !ensureUserPermission("memberships.read", openedClubId)) return;
     // Lot R-UX3D — une CRÉATION (row.id absent) exige désormais la Feature ET memberships.write,
@@ -30204,58 +30362,60 @@ ${esc(bodyText)}</pre>
     // l'alerte « Autorisation parentale manquante » (jamais pour un adulte ni un âge inconnu).
     const dossierAge = getMemberAge(row);
     const isConfirmedAdult = dossierAge !== null && dossierAge >= 18;
-    // Complément UX-CONTACT-1 (fiche Discipline) — même variante de photo INTÉGRÉE que la fiche
-    // Contact (identityPhotoInlineHtml, mutualisée telle quelle : même cadre/rayons/object-fit/
-    // tailles responsive), jamais .identityPhotoSection()/.identity-photo-corner (réservée
-    // désormais à la SEULE inscription Stage, openRegistrationDialog, strictement inchangée).
-    // Contrairement à Contact, cette fiche reste un formulaire à plat (aucun accordéon, aucune
-    // réorganisation MÉTIER — hors périmètre de ce complément) : seul customerSelectField change de
-    // POSITION visuelle (même champ, même name, même comportement, même ordre logique juste avant
-    // Nom/Prénom) pour se placer à gauche de la photo plutôt que seul sur sa propre ligne, évitant un
-    // grand vide à droite ; identityAvatarChoiceField reste juste après, inchangé.
+    // DISCIPLINE-1 — refonte complète : en-tête d'identité toujours visible (Contact enregistré/
+    // Nom/Prénom/statut/Discipline/Groupe/photo, cf. membershipIdentityHeaderHtml) + accordéons
+    // thématiques (cf. mandat DISCIPLINE-1 §5-20), au lieu d'un formulaire à plat. Chaque champ migre
+    // de POSITION uniquement : même name, même comportement, même validation, même calcul qu'avant ce
+    // lot (cf. audit). Les alertes (tarif/certificat/assurance, updateMembershipFormAlerts) restent
+    // TOUJOURS VISIBLES entre l'en-tête et les accordéons, jamais dans une rubrique repliable : un
+    // signal métier ("tarif non défini", "certificat manquant"...) ne doit jamais pouvoir se
+    // retrouver masqué par un accordéon fermé. Groupe rejoint désormais Discipline/Catégorie sportive
+    // dans une même rubrique "Discipline & inscription" (regroupement déjà commandé par la
+    // reconstruction en place de sportCategoryId/groupId au changement de discipline, cf. audit) —
+    // avant ce lot, Groupe vivait sous l'intitulé "Dossier sportif" au milieu du formulaire à plat.
     const body = [
-      `<div class="membership-identity-row">
-        <div class="membership-identity-left">${customerSelectField(row, "Contact enregistré", "Nouvel adhérent / saisir une fiche")}</div>
-        ${identityPhotoInlineHtml(row, !readOnly)}
-      </div>`,
-      identityAvatarChoiceField(row),
-      field("lastName", "Nom *", row.lastName, "text", "required"),
-      field("firstName", "Prénom *", row.firstName, "text", "required"),
-      field("email", "E-mail *", row.email, "email", "required"),
-      field("mobile", "Téléphone *", row.mobile || row.phone, "text", "required"),
-      field("address", "Adresse *", row.address, "text", "required"),
-      field("postalCode", "CP *", row.postalCode, "text", "required"),
-      field("city", "Ville *", row.city, "text", "required"),
-      field("birthDate", "Date de naissance *", dateInputValue(row.birthDate), "date", "required data-birth-date"),
-      field("category", "Adulte / Enfant", memberCategory(row), "text", "readonly data-birth-category"),
-      // Lot 3A (clôture) — sélecteur PAR IDENTIFIANT (homonymes distincts, id inconnu préservé).
-      disciplineSelectField("discipline", "Discipline *", row),
-      // Lot 3B-2C — catégorie sportive, immédiatement après la discipline dont elle dépend.
-      // Purement sportive : aucun calcul financier ne lit ce champ.
-      sportCategorySelectField("sportCategoryId", row),
-      `<input type="hidden" name="frozenDiscipline" value="${esc(row.discipline || "")}" />
-       <input type="hidden" name="frozenDisciplinePrice" value="${esc(membershipDisciplinePricing(row).grossTotal)}" />
-       <input type="hidden" name="frozenDisciplineLicense" value="${esc(membershipDisciplinePricing(row).license)}" />
-       <input type="hidden" name="frozenHasSnapshot" value="${(row.id && membershipHasFrozenPrice(row)) ? "1" : ""}" />
-       <input type="hidden" name="frozenLegacyTotal" value="${esc(row.legacy?.total ?? "")}" />
-       <input type="hidden" name="frozenLegacyLicense" value="${esc(row.legacy?.license ?? "")}" />`,
-      selectField("medicalCertificate", "Certificat médical", row.medicalCertificate ? "Oui" : "Non", ["Non", "Oui"]),
-      textareaField("pathologies", "Pathologie(s)", row.pathologies || ""),
-      `<div class="dialog-section"><h3>Dossier sportif</h3></div>`,
-      // Lot 3B-2D — la liste est organisée par discipline : groupes de la discipline de
-      // l'inscription d'abord, groupes sans discipline ensuite, autres disciplines en dernier et
-      // marquées en clair. Aucun n'est masqué ni bloqué (§7.1/§7.2), et un groupe historique d'une
-      // autre discipline reste sélectionné avec son marquage (§7.3).
-      groupSelectField("groupId", row),
-      `<div class="form-error" hidden data-membership-group-block-error></div>`,
-      // Lot V1 Niveaux — note libre assumée (pas de select, pas d'automatisme, cf. audit
-      // Niveaux/Groupes/Disciplines) : libellé et placeholder rendent explicite qu'il s'agit
-      // d'une indication saisie librement, affichée ensuite dans le récap de cette inscription.
-      `<div class="form-grid compact">${field("level", "Niveau / grade (note libre)", row.level || "", "text", 'placeholder="Ex. Débutant, Confirmé, Ceinture jaune"')}${selectField("practiceType", "Type de pratique", row.practiceType || "", ["", "Loisir", "Compétition", "Stage", "Autre"])}</div>`,
-      `<div class="form-grid compact">${field("licenseNumber", "N° de licence", row.licenseNumber || "")}${field("licenseFederation", "Fédération", row.licenseFederation || "")}</div>`,
-      `<div class="form-grid compact">${field("licenseStartDate", "Licence — début", dateInputValue(row.licenseStartDate), "date")}${field("licenseEndDate", "Licence — expiration", dateInputValue(row.licenseEndDate), "date")}</div>`,
-      `<div class="form-grid compact">${field("medicalCertificateDate", "Certificat — date", dateInputValue(row.medicalCertificateDate), "date")}${field("medicalCertificateEndDate", "Certificat — expiration", dateInputValue(row.medicalCertificateEndDate), "date")}</div>`,
-      `<div class="form-grid compact">${field("emergencyName", "Urgence — nom", row.emergencyName || "")}${field("emergencyPhone", "Urgence — téléphone", row.emergencyPhone || "")}${field("emergencyRelation", "Urgence — lien", row.emergencyRelation || "")}</div>`,
+      membershipIdentityHeaderHtml(row, readOnly),
+      `<div class="dialog-alert-list" data-membership-alerts></div>`,
+      membershipSectionHtml("discipline", "Discipline & inscription", [
+        // Lot 3A (clôture) — sélecteur PAR IDENTIFIANT (homonymes distincts, id inconnu préservé).
+        disciplineSelectField("discipline", "Discipline *", row),
+        // Lot 3B-2C — catégorie sportive, immédiatement après la discipline dont elle dépend.
+        // Purement sportive : aucun calcul financier ne lit ce champ.
+        sportCategorySelectField("sportCategoryId", row),
+        `<input type="hidden" name="frozenDiscipline" value="${esc(row.discipline || "")}" />
+         <input type="hidden" name="frozenDisciplinePrice" value="${esc(membershipDisciplinePricing(row).grossTotal)}" />
+         <input type="hidden" name="frozenDisciplineLicense" value="${esc(membershipDisciplinePricing(row).license)}" />
+         <input type="hidden" name="frozenHasSnapshot" value="${(row.id && membershipHasFrozenPrice(row)) ? "1" : ""}" />
+         <input type="hidden" name="frozenLegacyTotal" value="${esc(row.legacy?.total ?? "")}" />
+         <input type="hidden" name="frozenLegacyLicense" value="${esc(row.legacy?.license ?? "")}" />`,
+        // Lot 3B-2D — la liste est organisée par discipline : groupes de la discipline de
+        // l'inscription d'abord, groupes sans discipline ensuite, autres disciplines en dernier et
+        // marquées en clair. Aucun n'est masqué ni bloqué (§7.1/§7.2), et un groupe historique d'une
+        // autre discipline reste sélectionné avec son marquage (§7.3).
+        groupSelectField("groupId", row),
+        `<div class="form-error" hidden data-membership-group-block-error></div>`,
+      ].join(""), { open: true }),
+      membershipSectionHtml("coordonnees", "Coordonnées & identité", [
+        field("birthDate", "Date de naissance *", dateInputValue(row.birthDate), "date", "required data-birth-date"),
+        field("email", "E-mail *", row.email, "email", "required"),
+        field("mobile", "Téléphone *", row.mobile || row.phone, "text", "required"),
+        field("address", "Adresse *", row.address, "text", "required"),
+        field("postalCode", "CP *", row.postalCode, "text", "required"),
+        field("city", "Ville *", row.city, "text", "required"),
+        identityAvatarChoiceField(row),
+      ].join("")),
+      membershipSectionHtml("dossier", "Dossier sportif", [
+        selectField("medicalCertificate", "Certificat médical", row.medicalCertificate ? "Oui" : "Non", ["Non", "Oui"]),
+        textareaField("pathologies", "Pathologie(s)", row.pathologies || ""),
+        // Lot V1 Niveaux — note libre assumée (pas de select, pas d'automatisme, cf. audit
+        // Niveaux/Groupes/Disciplines) : libellé et placeholder rendent explicite qu'il s'agit
+        // d'une indication saisie librement, affichée ensuite dans le récap de cette inscription.
+        `<div class="form-grid compact">${field("level", "Niveau / grade (note libre)", row.level || "", "text", 'placeholder="Ex. Débutant, Confirmé, Ceinture jaune"')}${selectField("practiceType", "Type de pratique", row.practiceType || "", ["", "Loisir", "Compétition", "Stage", "Autre"])}</div>`,
+        `<div class="form-grid compact">${field("licenseNumber", "N° de licence", row.licenseNumber || "")}${field("licenseFederation", "Fédération", row.licenseFederation || "")}</div>`,
+        `<div class="form-grid compact">${field("licenseStartDate", "Licence — début", dateInputValue(row.licenseStartDate), "date")}${field("licenseEndDate", "Licence — expiration", dateInputValue(row.licenseEndDate), "date")}</div>`,
+        `<div class="form-grid compact">${field("medicalCertificateDate", "Certificat — date", dateInputValue(row.medicalCertificateDate), "date")}${field("medicalCertificateEndDate", "Certificat — expiration", dateInputValue(row.medicalCertificateEndDate), "date")}</div>`,
+        `<div class="form-grid compact">${field("emergencyName", "Urgence — nom", row.emergencyName || "")}${field("emergencyPhone", "Urgence — téléphone", row.emergencyPhone || "")}${field("emergencyRelation", "Urgence — lien", row.emergencyRelation || "")}</div>`,
+      ].join("")),
       // Lot Contact/Discipline V2 — le contact est la source de vérité du responsable légal : ce
       // bloc n'a plus de champs éditables, seulement un résumé lecture seule (+ lien vers la fiche
       // contact), recalculé par updateDossierGuardianFields() à chaque changement de date de
@@ -30263,29 +30423,33 @@ ${esc(bodyText)}</pre>
       // Lot Contact/Dossier V2 — même principe étendu à l'autorisation parentale, au droit à
       // l'image, puis (lot règlement) au règlement signé : plus de cases éditables ici, résumé
       // lecture seule dans son propre bloc. Seule l'assurance reste éditable dans ce formulaire.
-      `<div class="dialog-section" data-dossier-guardian ${isConfirmedAdult ? "hidden" : ""}>
-         <h3>Responsable légal</h3>
-         <div data-dossier-guardian-body>${membershipGuardianSummaryHtml(row, contact)}</div>
-       </div>
-       <p class="muted dossier-adult-note" data-dossier-adult-note ${isConfirmedAdult ? "" : "hidden"}>Adhérent majeur : autorisation parentale et responsable légal non requis.</p>
-       <div class="dialog-section">
-         <h3>Informations administratives</h3>
-         <div data-dossier-admin-body>${membershipAdminInfoSummaryHtml(row, contact, isConfirmedAdult)}</div>
-       </div>`,
-      `<div class="form-check-grid">
-        <label class="form-check"><input type="checkbox" name="insurance" ${row.insurance ? "checked" : ""} /> Assurance</label>
-      </div>`,
-      contactDocumentsSection(row),
-      `<label>Assurance<select name="insuranceChoice">${insuranceChoiceOptions(membershipInsuranceChoice(row))}</select></label>`,
-      readonlyMoneyField("Prix assurance", membershipInsurancePrice(row), "data-membership-insurance-price"),
-      `<div class="dialog-section"><h3>Paiements discipline</h3></div>`,
-      // Lot 3A (clôture finale, FIN-ABS-1) — champ lecture seule affichant « Non défini » pour un tarif
-      // absent (jamais « 0,00 € »), aligné sur le résumé (updateMembershipTariffSummary le réactualise).
-      `<label>Prix discipline<input type="text" value="${esc(membershipTariffDisplay(membershipTariffValues(row)).grossText)}" readonly data-membership-discipline-price /></label>`,
-      field("discount", "Remise", row.discount || "", "number", 'step="0.01"'),
-      `<div class="dialog-alert-list" data-membership-alerts></div>`,
-      membershipTariffSummary(row),
-      paymentFields("payment", row.payments || [], membershipTariffValues(row).total, membershipDefaultTaxRate(row), row.id ? `membership:${row.id}` : "", "membership", openedClubId, paymentsReadableAtOpen, paymentsWritableAtOpen, focusPredicate),
+      membershipSectionHtml("responsable", "Responsable légal & administratif", `
+         <div class="dialog-section" data-dossier-guardian ${isConfirmedAdult ? "hidden" : ""}>
+           <h3>Responsable légal</h3>
+           <div data-dossier-guardian-body>${membershipGuardianSummaryHtml(row, contact)}</div>
+         </div>
+         <p class="muted dossier-adult-note" data-dossier-adult-note ${isConfirmedAdult ? "" : "hidden"}>Adhérent majeur : autorisation parentale et responsable légal non requis.</p>
+         <div class="dialog-section">
+           <h3>Informations administratives</h3>
+           <div data-dossier-admin-body>${membershipAdminInfoSummaryHtml(row, contact, isConfirmedAdult)}</div>
+         </div>`),
+      membershipSectionHtml("documents", "Documents", [
+        `<div class="form-check-grid">
+          <label class="form-check"><input type="checkbox" name="insurance" ${row.insurance ? "checked" : ""} /> Assurance</label>
+        </div>`,
+        contactDocumentsSection(row),
+      ].join("")),
+      membershipSectionHtml("paiements", "Tarification & paiements", [
+        `<label>Assurance<select name="insuranceChoice">${insuranceChoiceOptions(membershipInsuranceChoice(row))}</select></label>`,
+        readonlyMoneyField("Prix assurance", membershipInsurancePrice(row), "data-membership-insurance-price"),
+        // Lot 3A (clôture finale, FIN-ABS-1) — champ lecture seule affichant « Non défini » pour un
+        // tarif absent (jamais « 0,00 € »), aligné sur le résumé (updateMembershipTariffSummary le
+        // réactualise).
+        `<label>Prix discipline<input type="text" value="${esc(membershipTariffDisplay(membershipTariffValues(row)).grossText)}" readonly data-membership-discipline-price /></label>`,
+        field("discount", "Remise", row.discount || "", "number", 'step="0.01"'),
+        membershipTariffSummary(row),
+        paymentFields("payment", row.payments || [], membershipTariffValues(row).total, membershipDefaultTaxRate(row), row.id ? `membership:${row.id}` : "", "membership", openedClubId, paymentsReadableAtOpen, paymentsWritableAtOpen, focusPredicate),
+      ].join("")),
     ].join("");
     const footer = contactLinkAction(row);
     setNextWindowKey(row.id ? `membership:${row.id}` : null);
@@ -30478,6 +30642,9 @@ ${esc(bodyText)}</pre>
           if (decision.blocked) {
             const errorBox = formElement?.querySelector("[data-membership-group-block-error]");
             if (errorBox) { errorBox.hidden = false; errorBox.textContent = decision.detailText; }
+            // DISCIPLINE-1 — ouvre la rubrique "Discipline & inscription" AVANT le focus : sinon un
+            // refus de sauvegarde resterait invisible si l'utilisateur avait replié cette rubrique.
+            membershipOpenSection?.(formElement?.querySelector('.membership-section[data-membership-section="discipline"]'));
             focusDialogControl(formElement, "[name='groupId']");
             return false;
           }
@@ -30523,9 +30690,15 @@ ${esc(bodyText)}</pre>
         notice: `${personLabel(next)} est devenu adhérent.`,
       } : `${row.id ? "Modification de l'inscription" : "Inscription"} de ${personLabel(next)} à la discipline ${next.discipline}`;
     }, (form) => {
+      // DISCIPLINE-1 — bascule des accordéons (mono-ouverture mobile / multi-ouverture desktop,
+      // cf. bindMembershipSectionToggles) ; openSection mémorisée pour le chemin d'échec de
+      // validation du groupe (gestionnaire de sauvegarde ci-dessus) ET pour l'ouverture automatique
+      // de "Tarification & paiements" depuis une carte À faire (opts.focusPayment, plus bas).
+      membershipOpenSection = bindMembershipSectionToggles(form).openSection;
       const update = () => {
         updateMembershipTariffSummary(form);
         updateMembershipFormAlerts(form);
+        refreshMembershipIdentitySummary(form);
       };
       form.elements.contactLink?.addEventListener("change", () => {
         applyLinkedContactToForm(form);
@@ -30533,8 +30706,8 @@ ${esc(bodyText)}</pre>
       });
       updateBirthCategoryFields(form);
       // Recalcule l'affichage parental/responsable légal quand la date de naissance change.
-      form.elements.birthDate?.addEventListener("input", () => updateDossierGuardianFields(form, row));
-      form.elements.birthDate?.addEventListener("change", () => updateDossierGuardianFields(form, row));
+      form.elements.birthDate?.addEventListener("input", () => { updateDossierGuardianFields(form, row); refreshMembershipIdentitySummary(form); });
+      form.elements.birthDate?.addEventListener("change", () => { updateDossierGuardianFields(form, row); refreshMembershipIdentitySummary(form); });
       updateDossierGuardianFields(form, row); // état initial cohérent
       form.elements.discipline?.addEventListener("change", update);
       // Lot 3B-2C — la discipline pilote le catalogue de catégories : à chaque changement, le champ
@@ -30552,13 +30725,34 @@ ${esc(bodyText)}</pre>
       form.elements.insuranceChoice?.addEventListener("change", update);
       form.elements.medicalCertificate?.addEventListener("change", update);
       form.elements.discount?.addEventListener("input", update);
+      // DISCIPLINE-1 — le <select> Groupe est RECONSTRUIT (innerHTML) par
+      // refreshGroupFieldForDiscipline à chaque changement de discipline : un écouteur posé
+      // directement dessus serait perdu après reconstruction. Écouteur DÉLÉGUÉ sur le <form>
+      // (même doctrine que bindMembershipSectionToggles) pour rafraîchir la cellule "Groupe" de
+      // l'en-tête quel que soit l'élément DOM réellement présent au moment du changement.
+      form.addEventListener("change", (event) => {
+        if (event.target && event.target.name === "groupId") refreshMembershipIdentitySummary(form);
+      });
       update();
       // Lot À faire R2 (correctif Pix, Bloqueur 2) — venant d'une carte À faire (opts.focusPayment),
       // amène visuellement la zone Paiements à l'écran : jamais une ligne précise (voir
       // paymentFocusScrollSelector/09-payments-core.js — toujours la SECTION, sûre même si le focus
       // exact d'une ligne a échoué à se revalider). L'utilisateur ne doit pas faire défiler lui-même.
+      // DISCIPLINE-1 — la section "Tarification & paiements" doit d'abord être OUVERTE (sinon
+      // scrollIntoView cible une boîte à hauteur 0, cf. audit .collapsible-content) avant le scroll.
+      // L'ouverture de la bande est ANIMÉE (transition grid-template-rows, 0.24s, cf. styles.css) :
+      // un scrollIntoView lancé au même tick calcule la position sur la géométrie REPLIÉE (encore
+      // 0fr au moment de l'appel), pas sur la position finale dépliée — mesuré en Playwright réel
+      // (la cible restait hors écran malgré une bande "open"). Même doctrine de tentatives différées
+      // que focusDialogControl ci-dessus (générations/re-essais) : un second appel après la fin de la
+      // transition corrige la position, sans dépendre d'un minutage exact du navigateur.
       const membershipPaymentScroll = paymentFocusScrollSelector(opts.focusPayment, '[data-payment-prefix="payment"]');
-      if (membershipPaymentScroll) form.querySelector(membershipPaymentScroll)?.scrollIntoView({ block: "center", behavior: "smooth" });
+      if (membershipPaymentScroll) {
+        membershipOpenSection(form.querySelector('.membership-section[data-membership-section="paiements"]'));
+        const scrollToPayment = () => form.querySelector(membershipPaymentScroll)?.scrollIntoView({ block: "center", behavior: "smooth" });
+        scrollToPayment();
+        setTimeout(scrollToPayment, 280);
+      }
     }, footer, () => {}, "Enregistrer", { readOnly });
   }
 
