@@ -25372,6 +25372,73 @@ ${esc(bodyText)}</pre>
     printInvoice(printable);
   }
 
+  // CONTACT-HUB-1E — décide si UNE créance précise (claimKey = paymentGroupKey, granularité EXACTE du
+  // moteur : Adhésion entière / Commande entière / Stage événement / Stage hébergement, jamais fusionnés
+  // ni éclatés) est ENCORE facturable, en orchestrant UNIQUEMENT les primitives canoniques déjà
+  // utilisées par openInvoiceEditor pour griser ses propres lignes (billableItemsForContact pour la
+  // reconstruction, billedSourceKeys/billedClaimKeys — moteur P2 — pour savoir si le claim est déjà
+  // représenté sur une facture émise). AUCUNE formule financière, AUCUN calcul de reste/TVA recalculé
+  // ici. Un simple restDue>0 NE SUFFIT PAS : une créance peut déjà être intégralement représentée par
+  // une facture émise tout en conservant un reste dû non payé (cf. mandat CONTACT-HUB-1E, cas B).
+  function contactClaimIsInvoiceable(contact, kind, claimKey) {
+    const key = asText(claimKey);
+    if (!contact || !contact.id || !key) return false;
+    const billables = billableItemsForContact(contact, kind);
+    const claimBillables = billables.filter((item) => item.paymentGroupKey === key);
+    if (!claimBillables.length) return false;
+    const literallyBilled = billedSourceKeys("");
+    if (claimBillables.some((item) => literallyBilled.has(item.sourceKey))) return false;
+    return !billedClaimKeys("").has(key);
+  }
+
+  // CONTACT-HUB-1E — orchestration PURE : reconstruit les lignes de CE claim précis (jamais fusionné
+  // avec une créance sœur d'un autre claim, jamais éclaté) via billableItemsForContact, les ajoute à un
+  // brouillon existant du contact (draftInvoiceForContact — même doctrine de réutilisation que
+  // ensureDraftInvoiceForShopOrder/ensureDraftInvoiceForRegistration ci-dessus) ou à un nouveau
+  // brouillon, puis ouvre l'éditeur RÉEL (openInvoiceEditor). Ne crée et ne persiste AUCUNE facture
+  // elle-même : l'utilisateur doit utiliser le mécanisme normal de sauvegarde de l'éditeur.
+  function openQuickInvoiceForClaim(contact, kind, claimKey, openedClubId = "") {
+    if (!openedClubId || activeClubId() !== openedClubId) return;
+    if (!currentUserHasPermission("billing.write", openedClubId)) return;
+    if (!contactClaimIsInvoiceable(contact, kind, claimKey)) {
+      alert("Cette créance n'est plus facturable (déjà facturée, ou son contenu a changé).");
+      return;
+    }
+    const billables = billableItemsForContact(contact, kind);
+    const claimBillables = billables.filter((item) => item.paymentGroupKey === claimKey);
+    const invoiceKind = contactInvoiceKind(kind);
+    // Correctif Pix (2e passe) — NE réutilise JAMAIS l'identité (id) d'un brouillon persisté existant.
+    // Preuve par l'audit du save réel (saveInvoiceFromForm/selectedInvoiceLinesFromForm) :
+    // saveInvoiceFromForm ne lit QUE les cases "billableKeys" COCHÉES du formulaire au moment du save
+    // (+ complétion des lignes SŒURS d'un claim déjà représenté, completeClaimLines) — il ne relit
+    // JAMAIS sourceInvoice.lines pour préserver ce qui n'est pas coché. Réutiliser l'id d'un brouillon
+    // existant tout en ne précochant QUE le claim cliqué signifiait donc : si l'utilisateur sauvegarde
+    // sans recocher manuellement l'autre créance, upsertInvoice(next) REMPLACE l'enregistrement complet
+    // de ce brouillon (même id) par une version qui ne contient plus QUE le claim cliqué — perte
+    // SILENCIEUSE et réelle du contenu de l'autre créance. L'éditeur ne distingue pas "lignes
+    // persistées" de "lignes sélectionnées" (une seule notion : les cases cochées) : impossible de
+    // garantir à la fois "seul le claim cliqué est précoché" ET "rien n'est jamais perdu" en réutilisant
+    // cet id. Un brouillon temporaire NON PERSISTÉ (id neuf, jamais présent dans state.invoices avant
+    // sauvegarde) est donc systématiquement construit ici : l'éventuel brouillon existant du contact
+    // n'est ni lu ni référencé par cette fonction, donc structurellement jamais altérable par elle. Si
+    // l'utilisateur sauvegarde, un brouillon distinct est créé (wasNew=true côté saveInvoiceFromForm) ;
+    // le brouillon préexistant, jamais touché, reste strictement intact (id, lignes, tout).
+    const invoice = normalizeInvoice({ contactId: contact.id, contactKind: invoiceKind, status: "draft", clubId: openedClubId });
+    const nextLines = claimBillables.map((item) => invoiceLineFromBillable(item));
+    const nextPayments = selectedInvoicePayments(nextLines, billables);
+    const next = normalizeInvoice({
+      ...invoice,
+      contactId: contact.id,
+      contactKind: invoiceKind,
+      status: "draft",
+      lines: nextLines,
+      paymentsSnapshot: nextPayments,
+      totals: invoiceTotalsFromLines(nextLines, nextPayments),
+      updatedAt: new Date().toISOString(),
+    });
+    openInvoiceEditor(next);
+  }
+
   // Réparation unique (idempotente) des factures créées AVANT le correctif boutique : une commande
   // boutique avec remise dont la facture liée ne contient pas la ligne « Remise commande » -> total et
   // reste dû faux. On n'agit que sur la signature CERTAINE (le paiement reflète le net, pas de
@@ -27606,6 +27673,24 @@ ${esc(bodyText)}</pre>
     const canReadStagePayments = currentUserCanReadEmbeddedPayment("registration", sourceClubId);
     const canReadBilling = currentUserHasPermission("billing.read", sourceClubId);
     const canReadAccounting = currentUserHasPermission("accounting.read", sourceClubId);
+    // CONTACT-HUB-1E — ensemble des claims (créances) actuellement facturables pour CE contact, calculé
+    // UNE SEULE FOIS ici via les MÊMES primitives canoniques que l'éditeur de facture (jamais
+    // restDue>0 seul : une créance peut déjà être intégralement représentée par une facture émise
+    // tout en gardant un reste dû non payé). billing.read EN PLUS de billing.write : openInvoiceEditor
+    // lui-même exige billing.read pour s'ouvrir (§13 de sa propre doctrine) — un bouton visible avec
+    // billing.write seul échouerait silencieusement (alerte) au clic si billing.read manque. Sans l'un
+    // des deux : ensemble vide, aucun bouton "Facturer" nulle part (fail-closed dès le rendu).
+    const canWriteBilling = canReadBilling && currentUserHasPermission("billing.write", sourceClubId);
+    let invoiceableClaimKeys = new Set();
+    if (canWriteBilling) {
+      const literallyBilledSourceKeys = billedSourceKeys("");
+      const billedClaims = billedClaimKeys("");
+      invoiceableClaimKeys = new Set(
+        billableItemsForContact(contact, kind)
+          .filter((item) => !literallyBilledSourceKeys.has(item.sourceKey) && !billedClaims.has(item.paymentGroupKey))
+          .map((item) => item.paymentGroupKey),
+      );
+    }
 
     // Récupération conditionnée à la permission de LECTURE du domaine (jamais récupéré si refusé).
     // Lot Q1.5R (Correction 2) — le calcul financier (calcMembership/calcOrder/calcRegistration) n'est
@@ -27653,13 +27738,13 @@ ${esc(bodyText)}</pre>
 
     // Lot Q1.5R (Correction 3) — sourceClubId propagé jusqu'au renderer sport (sportCategoryAssignmentLabel),
     // jamais un activeClubId() lu tardivement dans contactRecapMembership.
-    const membershipRenderOptions = { showSport: canReadSport, showDocuments: canReadDocuments, showPayments: canReadMembershipPayments, sourceClubId };
+    const membershipRenderOptions = { showSport: canReadSport, showDocuments: canReadDocuments, showPayments: canReadMembershipPayments, sourceClubId, invoiceableClaimKeys };
     // CONTACT-HUB-1D — sourceClubId propagé jusqu'à la carte (data-shop-club-id), même doctrine que
     // registrationRenderOptions ci-dessous : jamais un activeClubId() lu tardivement dans le rendu.
-    const orderRenderOptions = { showPayments: canReadShopPayments, sourceClubId };
+    const orderRenderOptions = { showPayments: canReadShopPayments, sourceClubId, invoiceableClaimKeys };
     // CONTACT-HUB-1C — sourceClubId propagé jusqu'à la carte (data-stage-club-id), même doctrine que
     // membershipRenderOptions ci-dessus : jamais un activeClubId() lu tardivement dans le rendu.
-    const registrationRenderOptions = { showPayments: canReadStagePayments, sourceClubId };
+    const registrationRenderOptions = { showPayments: canReadStagePayments, sourceClubId, invoiceableClaimKeys };
 
     return `<div class="dialog-section contact-recap" data-tour="contact-recap">
       <div class="contact-recap-head">
@@ -27793,8 +27878,17 @@ ${esc(bodyText)}</pre>
   // showDocuments:true, showPayments:true} — on adapte les tests au contrat sécurisé, jamais l'inverse.
   // sourceClubId (Correction 3) : par défaut activeClubId() pour ces mêmes appels directs isolés,
   // MAIS contactActivitySummary transmet TOUJOURS son propre sourceClubId explicite, jamais implicite.
+  // CONTACT-HUB-1E — bouton "Facturer" partagé par les 3 cartes (Discipline/Boutique/Stage) : rendu
+  // UNIQUEMENT si invoiceableClaimKeys (calculé une seule fois par contactActivitySummary, moteur P2)
+  // contient CE claimKey précis. Bouton imbriqué dans la carte cliquable (même patron que "Retirer",
+  // data-action propre -> closest() l'intercepte avant la carte, aucun stopPropagation nécessaire).
+  function contactInvoiceClaimButtonHtml(claimKey, contactLink, sourceClubId, invoiceableClaimKeys, label = "Facturer") {
+    if (!invoiceableClaimKeys || !invoiceableClaimKeys.has(claimKey)) return "";
+    return `<button type="button" class="contact-recap-invoice-btn" data-action="quick-invoice-claim" data-claim-key="${esc(claimKey)}" data-contact-link="${esc(contactLink)}" data-billing-club-id="${esc(sourceClubId)}" title="Facturer cette créance">${esc(label)}</button>`;
+  }
+
   function contactRecapMembership(entry, options = {}) {
-    const { showSport = false, showDocuments = false, showPayments = false, sourceClubId = activeClubId() } = options;
+    const { showSport = false, showDocuments = false, showPayments = false, sourceClubId = activeClubId(), invoiceableClaimKeys = null } = options;
     const row = entry.row;
     // Lot V1 Niveaux — "Niveau" reste une note libre sans automatisme (cf. audit
     // Niveaux/Groupes/Disciplines) : simple affichage si renseigné, rien sinon, propre à
@@ -27850,6 +27944,7 @@ ${esc(bodyText)}</pre>
         <strong>${esc(titleText)}</strong>
         <span>${esc(subtitle || "Inscription discipline")}</span>
         ${hasFeature("memberships") ? `<button type="button" class="contact-recap-remove-btn" data-action="delete-membership" data-id="${esc(row.id)}" title="Retirer cette discipline de la fiche">Retirer</button>` : ""}
+        ${contactInvoiceClaimButtonHtml(`membership:${row.id}`, contactLinkForRow(row), sourceClubId, invoiceableClaimKeys)}
       </div>
       ${showPayments ? contactRecapStatus(entry.calc) : ""}
       ${showPayments ? contactRecapAmounts(entry.calc) : ""}
@@ -27859,7 +27954,7 @@ ${esc(bodyText)}</pre>
 
   // Lot Q1.5R (Correction 1) — défaut FAIL-CLOSED (false), même doctrine que contactRecapMembership.
   function contactRecapOrder(entry, options = {}) {
-    const { showPayments = false, sourceClubId = activeClubId() } = options;
+    const { showPayments = false, sourceClubId = activeClubId(), invoiceableClaimKeys = null } = options;
     const details = orderItemDetails(entry.row);
     // §8 du mandat Q1.5 — articles/quantités/tailles restent des données de COMMANDE (shop.read
     // seul, déjà garanti par l'appelant), jamais de montant ici : rien à conditionner par showPayments.
@@ -27875,6 +27970,7 @@ ${esc(bodyText)}</pre>
       <div class="contact-recap-main">
         <strong>Commande boutique</strong>
         <span>${esc(itemText)}</span>
+        ${contactInvoiceClaimButtonHtml(`order:${entry.row.id}`, contactLinkForRow(entry.row), sourceClubId, invoiceableClaimKeys)}
       </div>
       ${showPayments ? statusPill(shopOrderStatus(entry.row, entry.calc)) : ""}
       ${showPayments ? contactRecapAmounts(entry.calc) : ""}
@@ -27883,7 +27979,7 @@ ${esc(bodyText)}</pre>
 
   // Lot Q1.5R (Correction 1) — défaut FAIL-CLOSED (false), même doctrine que contactRecapMembership.
   function contactRecapRegistration(entry, options = {}) {
-    const { showPayments = false, sourceClubId = activeClubId() } = options;
+    const { showPayments = false, sourceClubId = activeClubId(), invoiceableClaimKeys = null } = options;
     const stage = stageById(entry.stageId);
     // Lot Q1.5R2 (correctif Pix, Correction 2) — calcStageSegment(event/lodging) est un calcul
     // FINANCIER (subtotal) : ne plus l'exécuter DU TOUT quand showPayments est faux (donnée financière
@@ -27904,10 +28000,19 @@ ${esc(bodyText)}</pre>
     // CETTE inscription via le handler edit-registration déjà existant et déjà protégé (stale-club
     // via data-stage-club-id, stages.read, résolution stricte stageId+id — aucune inscription
     // silencieusement recréée si elle a disparu) — AUCUNE nouvelle logique d'ouverture.
+    // CONTACT-HUB-1E — granularité EXACTE du moteur : Stage événement et Stage hébergement sont deux
+    // claims DISTINCTS (claimKeyFromSource), jamais fusionnés. Une même carte d'inscription peut donc
+    // porter jusqu'à DEUX boutons "Facturer" indépendants si les deux volets sont facturables.
+    const contactLink = contactLinkForRow(entry.row);
+    const invoiceButtons = [
+      contactInvoiceClaimButtonHtml(`stage:${entry.stageId}:${entry.row.id}:event`, contactLink, sourceClubId, invoiceableClaimKeys, "Facturer le stage"),
+      contactInvoiceClaimButtonHtml(`stage:${entry.stageId}:${entry.row.id}:lodging`, contactLink, sourceClubId, invoiceableClaimKeys, "Facturer l'hébergement"),
+    ].filter(Boolean).join("");
     return `<article class="contact-recap-row clickable-card" data-action="edit-registration" data-stage-id="${esc(entry.stageId)}" data-id="${esc(entry.row.id)}" data-stage-club-id="${esc(sourceClubId)}" title="Ouvrir cette inscription">
       <div class="contact-recap-main">
         <strong>${esc(stage.name || "Stage")}</strong>
         <span>${esc(parts || "Inscription stage")}</span>
+        ${invoiceButtons}
       </div>
       ${showPayments ? contactRecapStatus(entry.calc) : ""}
       ${showPayments ? contactRecapAmounts(entry.calc) : ""}
@@ -39682,6 +39787,21 @@ ${esc(bodyText)}</pre>
       if (!ensureFeatureEnabledForMutation("shop")) return;
       if (!ensureUserPermission("shop.write", shopClubId)) return;
       return openArticleSaleDialog(button.dataset.articleId, shopClubId);
+    }
+    if (action === "quick-invoice-claim") {
+      // CONTACT-HUB-1E — binding club DOM AVANT toute résolution (même doctrine que add-order/
+      // add-registration) : jamais activeClubId() en repli implicite. openQuickInvoiceForClaim
+      // (18-contacts-invoices.js) revérifie ENSUITE, au moment du clic, que la créance est encore
+      // facturable (moteur P2) — cette garde handler ne fait que le club + résoudre le contact.
+      const billingClubId = button.dataset.billingClubId || "";
+      if (!billingClubId || activeClubId() !== billingClubId) return;
+      if (!ensureUserPermission("billing.write", billingClubId)) return;
+      const link = parseContactLink(button.dataset.contactLink || "");
+      if (!link.kind || !link.contactId) return;
+      const kind = link.kind === "prospect" ? "prospects" : "members";
+      const contact = state.contacts[kind]?.find((row) => row.id === link.contactId);
+      if (!contact) return;
+      return openQuickInvoiceForClaim(contact, kind, button.dataset.claimKey || "", billingClubId);
     }
     if (action === "view-order") {
       // Consultation : TOUJOURS autorisée, quel que soit l'état du paiement/facture ou de la

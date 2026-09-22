@@ -10196,6 +10196,22 @@ small.email-variable-chip:hover {
   border-color: var(--accent-2, #b5443a);
 }
 
+/* CONTACT-HUB-1E — action "Facturer" imbriquée dans une carte Discipline/Boutique/Stage : même
+   traitement discret que .contact-recap-remove-btn (jamais un gros bouton pleine largeur), mais un
+   survol NEUTRE (--accent) plutôt que la couleur destructive de Retirer, car facturer n'est pas une
+   suppression. */
+.contact-recap-invoice-btn {
+  justify-self: start;
+  margin-top: 2px;
+  padding: 2px 8px;
+  font-size: 0.76rem;
+  color: var(--muted);
+}
+.contact-recap-invoice-btn:hover, .contact-recap-invoice-btn:focus-visible {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
 .contact-recap-amounts {
   display: flex;
   justify-content: flex-end;
