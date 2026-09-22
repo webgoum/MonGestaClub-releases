@@ -27655,7 +27655,9 @@ ${esc(bodyText)}</pre>
     // jamais un activeClubId() lu tardivement dans contactRecapMembership.
     const membershipRenderOptions = { showSport: canReadSport, showDocuments: canReadDocuments, showPayments: canReadMembershipPayments, sourceClubId };
     const orderRenderOptions = { showPayments: canReadShopPayments };
-    const registrationRenderOptions = { showPayments: canReadStagePayments };
+    // CONTACT-HUB-1C — sourceClubId propagé jusqu'à la carte (data-stage-club-id), même doctrine que
+    // membershipRenderOptions ci-dessus : jamais un activeClubId() lu tardivement dans le rendu.
+    const registrationRenderOptions = { showPayments: canReadStagePayments, sourceClubId };
 
     return `<div class="dialog-section contact-recap" data-tour="contact-recap">
       <div class="contact-recap-head">
@@ -27696,7 +27698,26 @@ ${esc(bodyText)}</pre>
           : contactRecapSection("Disciplines", memberships, (entry) => contactRecapMembership(entry, membershipRenderOptions)))
         : ""}
       ${contactRecapSection("Boutique", orders, (entry) => contactRecapOrder(entry, orderRenderOptions), hasFeature("shop") ? "" : "Module désactivé — historique conservé. Réactivez le module pour ajouter de nouvelles données.")}
-      ${contactRecapSection("Stages", registrations, (entry) => contactRecapRegistration(entry, registrationRenderOptions), hasFeature("stages") ? "" : "Module désactivé — historique conservé. Réactivez le module pour ajouter de nouvelles données.")}
+      ${canReadStages
+        ? (isViewVisible("stages")
+          // CONTACT-HUB-1C (§2/§3 du mandat) — même sortie du mécanisme générique que Disciplines
+          // ci-dessus, même raison : un contact sans inscription stage doit quand même voir "+
+          // Inscrire à un nouveau stage" ; et une inscription EXISTANTE ne doit plus empêcher d'en
+          // créer une autre (contactRecapSection masquerait tout dès que la liste est vide, mais ce
+          // n'est pas le problème ici — le vrai problème visé est que "+ Inscrire" doit apparaître
+          // QUEL QUE SOIT le nombre d'inscriptions déjà présentes, jamais conditionné à une liste vide).
+          // Fail-closed explicite sur stages.write (§6 du mandat, demandé nommément par Pix pour CE
+          // bouton) : contrairement au bouton Disciplines existant (hasFeature seul, doctrine
+          // "affichage ≠ permission" déjà en place ailleurs), un lecteur seul ne doit pas le voir ici.
+          ? `<section class="contact-recap-section">
+              <div class="dialog-mini-title"><h4>Stages</h4>${(contact.id && contactCanCreateStageRegistration(sourceClubId)) ? `<button type="button" data-action="add-registration" data-contact-link="${esc(`member:${contact.id}`)}" data-stage-club-id="${esc(sourceClubId)}" title="Inscrire ce contact à un nouveau stage">+ Inscrire à un nouveau stage</button>` : ""}</div>
+              ${!hasFeature("stages") ? `<p class="muted">Module désactivé — historique conservé. Réactivez le module pour ajouter de nouvelles données.</p>` : ""}
+              ${registrations.length
+                ? `<div class="contact-recap-list">${registrations.map((entry) => contactRecapRegistration(entry, registrationRenderOptions)).join("")}</div>`
+                : `<p class="contact-recap-empty">Aucune inscription stage pour le moment.</p>`}
+            </section>`
+          : contactRecapSection("Stages", registrations, (entry) => contactRecapRegistration(entry, registrationRenderOptions), hasFeature("stages") ? "" : "Module désactivé — historique conservé. Réactivez le module pour ajouter de nouvelles données."))
+        : ""}
       ${invoiceRows.length ? `<section class="contact-recap-section">
         <h4>Factures</h4>
         <div class="contact-recap-kpis">
@@ -27839,7 +27860,7 @@ ${esc(bodyText)}</pre>
 
   // Lot Q1.5R (Correction 1) — défaut FAIL-CLOSED (false), même doctrine que contactRecapMembership.
   function contactRecapRegistration(entry, options = {}) {
-    const { showPayments = false } = options;
+    const { showPayments = false, sourceClubId = activeClubId() } = options;
     const stage = stageById(entry.stageId);
     // Lot Q1.5R2 (correctif Pix, Correction 2) — calcStageSegment(event/lodging) est un calcul
     // FINANCIER (subtotal) : ne plus l'exécuter DU TOUT quand showPayments est faux (donnée financière
@@ -27856,7 +27877,11 @@ ${esc(bodyText)}</pre>
         ].filter(Boolean).join(" · ");
       })()
       : "";
-    return `<article class="contact-recap-row">
+    // CONTACT-HUB-1C — carte cliquable (même patron que contactRecapMembership) : ouvre directement
+    // CETTE inscription via le handler edit-registration déjà existant et déjà protégé (stale-club
+    // via data-stage-club-id, stages.read, résolution stricte stageId+id — aucune inscription
+    // silencieusement recréée si elle a disparu) — AUCUNE nouvelle logique d'ouverture.
+    return `<article class="contact-recap-row clickable-card" data-action="edit-registration" data-stage-id="${esc(entry.stageId)}" data-id="${esc(entry.row.id)}" data-stage-club-id="${esc(sourceClubId)}" title="Ouvrir cette inscription">
       <div class="contact-recap-main">
         <strong>${esc(stage.name || "Stage")}</strong>
         <span>${esc(parts || "Inscription stage")}</span>
@@ -31563,6 +31588,17 @@ ${esc(bodyText)}</pre>
         if (changes.length) audit.stageUpdated(next, changes);
       }
     }, () => {}, "", () => {}, "Enregistrer", { readOnly });
+  }
+
+  // CONTACT-HUB-1C — la fiche Contact (contactActivitySummary, 18-contacts-invoices.js) a besoin de
+  // savoir si "+ Inscrire à un nouveau stage" doit être visible, SANS jamais consulter stages.write
+  // elle-même (doctrine STRUCT-SPORT-04 : ce fichier reste indépendant de payments.write/billing.write,
+  // 18-contacts-invoices.js n'a JAMAIS le droit de contenir la chaîne "stages.write"). Ce petit
+  // helper PUR (aucune mutation, aucun rendu) vit ici, à côté des primitives Stage qui consultent
+  // déjà cette permission, et c'est la SEULE fonction que 18-contacts-invoices.js est autorisée à
+  // appeler pour cette décision d'affichage.
+  function contactCanCreateStageRegistration(clubId) {
+    return hasFeature("stages") && currentUserHasPermission("stages.write", clubId);
   }
 
   function openRegistrationStageChoiceDialog(options = {}, openedClubId = "") {
@@ -39959,7 +39995,11 @@ ${esc(bodyText)}</pre>
       }
       // Lot O-E2-B4R2 (§8) / B4R3 (§23) — bouton sans data-stage-id (choix du stage à venir) : le club
       // d'autorité est CELUI DU BOUTON (stageClubId), jamais un recalcul via activeClubId().
-      return openRegistrationStageChoiceDialog({}, stageClubId);
+      // CONTACT-HUB-1C — data-contact-link (posé UNIQUEMENT par le bouton "+ Inscrire à un nouveau
+      // stage" de la fiche Contact, cf. contactActivitySummary) préremplit le contact dans le
+      // dialogue d'inscription créé ensuite ; absent pour le bouton historique du module Stages (sa
+      // liste), qui garde alors exactement son comportement d'origine (contactLink vide).
+      return openRegistrationStageChoiceDialog({ contactLink: button.dataset.contactLink || "" }, stageClubId);
     }
     if (action === "edit-registration") {
       // Lot O-E2-B4R (§13) — binding club DOM AVANT toute résolution d'objet.
