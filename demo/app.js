@@ -25860,6 +25860,23 @@ ${esc(bodyText)}</pre>
     return { sourceFound: true, payments: [], fallbackTotal: 0, custom: true };
   }
 
+  // CONTACT-HUB-1F-2 — localisation PURE (module/id/stageId/part) d'un claimKey vers son point
+  // d'entrée "live" (paymentContextFrom / getPaymentList / validatePayment, 21-handlers.js) : mêmes
+  // trois formes que claimSourceContext ci-dessus, jamais un second parseur divergent. Sert
+  // UNIQUEMENT à savoir OÙ pointer un bouton de validation vers le moteur source existant — jamais un
+  // calcul financier, jamais une source de vérité. null pour un claim custom (aucun point d'entrée
+  // "live" : les lignes custom ne vivent que sur la facture elle-même).
+  function paymentSourceLocatorFromClaimKey(claimKey) {
+    const key = asText(claimKey);
+    let match = key.match(/^membership:(.+)$/);
+    if (match) return { module: "membership", id: match[1], stageId: "", part: "" };
+    match = key.match(/^order:(.+)$/);
+    if (match) return { module: "order", id: match[1], stageId: "", part: "" };
+    match = key.match(/^stage:([^:]+):([^:]+):(event|lodging)$/);
+    if (match) return { module: "registration", id: match[2], stageId: match[1], part: match[3] };
+    return null;
+  }
+
   // Toutes les factures (club EXPLICITE — clubId, jamais un simple id supposé unique tous clubs
   // confondus — non brouillon, non annulée) référençant ce claim.
   // Lot R-UX3H — lit désormais stateForClub(clubId), jamais le state global mutable directement (même
@@ -26285,6 +26302,32 @@ ${esc(bodyText)}</pre>
     return payments;
   }
 
+  // CONTACT-HUB-1F-2 — locator SOURCE (module/id/stageId/part) par POSITION, ALIGNÉ terme à terme avec
+  // invoiceCanonicalPayments(invoice) : même itération des claims (même Set, même ordre d'insertion),
+  // jamais recalculée séparément. Sert UNIQUEMENT à savoir, pour une ligne canonique affichée, si (et
+  // où) elle peut être validée via le moteur source existant (validatePayment) — jamais un calcul
+  // financier. null pour les entrées paymentsAfterIssue (aucun point d'entrée "live" : la seule voie de
+  // règlement d'une facture émise reste openInvoicePaymentDialog, hors scope de ce correctif).
+  function invoiceCanonicalPaymentOrigins(invoice = {}) {
+    const clubId = asText(invoice.clubId) || activeClubId();
+    const claims = new Set();
+    (invoice.lines || []).forEach((line) => {
+      const claimKey = lineClaimKey(invoice, line);
+      if (claimKey) claims.add(claimKey);
+    });
+    const origins = [];
+    claims.forEach((claimKey) => {
+      const context = claimSourceContext(claimKey, clubId);
+      if (!context.sourceFound) return;
+      const locator = paymentSourceLocatorFromClaimKey(claimKey);
+      (context.payments || []).forEach((payment, index) => {
+        origins.push(locator ? { ...locator, index, clubId, claimKey } : null);
+      });
+    });
+    (invoice.paymentsAfterIssue || []).forEach(() => origins.push(null));
+    return origins;
+  }
+
   // F2-AUDIT-006 — affichage documentaire distinct du moteur arithmétique : pour une facture émise,
   // liste les transactions CANONIQUES (invoiceCanonicalPayments, la vérité vivante — jamais dupliquée)
   // PLUS les entrées de paymentsSnapshot qui n'ont AUCUN équivalent canonique retrouvable (paiement
@@ -26300,8 +26343,18 @@ ${esc(bodyText)}</pre>
   // position dans ce tableau reste stable jusqu'à invoicePaymentsHtml (invoiceVisiblePayments n'y
   // filtre alors plus rien, l'ordre est préservé bout en bout).
   function invoicePaymentsForDisplay(invoice = {}) {
-    if (!invoice || invoice.status === "draft") return { payments: invoice.paymentsSnapshot || [], historicalIndexes: new Set() };
-    const canonical = invoiceCanonicalPayments(invoice).filter((payment) => asNumber(payment.amount) > 0.005);
+    if (!invoice || invoice.status === "draft") return { payments: invoice.paymentsSnapshot || [], historicalIndexes: new Set(), origins: [] };
+    const canonicalAll = invoiceCanonicalPayments(invoice);
+    // CONTACT-HUB-1F-2 — origins filtré EN PARALLÈLE du même prédicat (amount > 0.005), jamais
+    // recalculé séparément : reste aligné position à position avec `canonical` par construction.
+    const originsAll = invoiceCanonicalPaymentOrigins(invoice);
+    const canonical = [];
+    const canonicalOrigins = [];
+    canonicalAll.forEach((payment, i) => {
+      if (asNumber(payment.amount) <= 0.005) return;
+      canonical.push(payment);
+      canonicalOrigins.push(originsAll[i] || null);
+    });
     const available = new Map();
     canonical.forEach((payment) => {
       const key = paymentContentKey(payment);
@@ -26318,14 +26371,26 @@ ${esc(bodyText)}</pre>
     const payments = [...canonical, ...historicalOnly];
     const historicalIndexes = new Set();
     for (let i = canonical.length; i < payments.length; i++) historicalIndexes.add(i);
-    return { payments, historicalIndexes };
+    // Une entrée historique n'a jamais de locator (jamais actionnable, quelle que soit sa provenance).
+    const origins = [...canonicalOrigins, ...historicalOnly.map(() => null)];
+    return { payments, historicalIndexes, origins };
   }
 
   // Message de garde anti-surpaiement claim-aware : réutilisé par les 3 points de mutation F2
   // (validate-payment source, openInvoicePaymentDialog, use-credit-note-payment).
-  function claimOverpayMessage(claimState, candidateAmount) {
+  // CONTACT-HUB-1F-2 (correctif Pix, cas vidéo CDM-2026-0003) — options.allowExistingPendingSourceValidation
+  // NE désactive PAS le verrou readOnly en général : il ne fait que laisser passer, pour CE SEUL appel,
+  // la validation d'un paiement SOURCE déjà existant et déjà "A encaisser"/"En cours" (jamais un
+  // nouveau règlement — validatePayment calcule ce booléen AVANT toute mutation, sur la ligne réelle
+  // pré-existante). Le plafond anti-surpaiement qui suit (due = claimState.restDue) reste appliqué
+  // normalement : même dans les branches readOnly de claimCanonicalPaymentSlices, restDue y est
+  // TOUJOURS calculé à partir des seules transactions source connues (sourceOk), jamais inventé —
+  // un plafond sûr, jamais une simple neutralisation de readOnly. Tout appelant qui ne passe pas cette
+  // option (openInvoicePaymentDialog, use-credit-note-payment, et validatePayment lui-même pour une
+  // ligne neuve) conserve EXACTEMENT le comportement precédent.
+  function claimOverpayMessage(claimState, candidateAmount, options = {}) {
     if (!claimState) return "";
-    if (claimState.readOnly) {
+    if (claimState.readOnly && !options.allowExistingPendingSourceValidation) {
       return claimState.warnings?.[0] || "Ce claim est en attente de vérification : aucun nouveau règlement n'est accepté pour le moment.";
     }
     const due = Math.max(0, asNumber(claimState.restDue));
@@ -26894,7 +26959,7 @@ ${esc(bodyText)}</pre>
     // (openInvoicePaymentDialog/onSave) reste inchangée et intacte : ceci corrige uniquement une
     // présentation redevenue stale, jamais un bypass de sécurité.
     const canWritePayments = currentUserHasPermission("billing.write", invoice.clubId);
-    if (payWrap) payWrap.innerHTML = `<h3>Paiements et échéances</h3>${invoicePaymentsHtml(displayPayments.payments, displayPayments.historicalIndexes)}${(invoice.status !== "draft" && canWritePayments) ? invoicePaymentActionHtml(invoice) : ""}`;
+    if (payWrap) payWrap.innerHTML = `<h3>Paiements et échéances</h3>${invoicePaymentsHtml(displayPayments.payments, displayPayments.historicalIndexes, displayPayments.origins)}${(invoice.status !== "draft" && canWritePayments) ? invoicePaymentActionHtml(invoice) : ""}`;
     // Lot 5d-1 : rafraîchir le bloc « Avoirs liés » en place (avoir créé visible immédiatement).
     const cnWrap = host.querySelector("[data-invoice-credit-notes]");
     if (cnWrap) cnWrap.outerHTML = currentUserHasPermission("accounting.read", invoice.clubId) ? invoiceLinkedCreditNotesHtml(invoice) : "";
@@ -27870,7 +27935,7 @@ ${esc(bodyText)}</pre>
           <div><span>Payé</span><strong>${money(invoiceTotals.paid)}</strong></div>
           <div><span>Reste à payer</span><strong class="${invoiceTotals.due > 0 ? "due" : ""}">${money(invoiceTotals.due)}</strong></div>
         </div>
-        <div class="contact-recap-list">${invoiceRows.map(contactRecapInvoice).join("")}</div>
+        <div class="contact-recap-list">${invoiceRows.map((invoice) => contactRecapInvoice(invoice, { sourceClubId, canWriteBilling })).join("")}</div>
       </section>` : ""}
       ${canReadAccounting ? contactAvailableCreditNotesHtml(contact) : ""}
     </div>`;
@@ -28083,12 +28148,22 @@ ${esc(bodyText)}</pre>
     </article>`;
   }
 
-  function contactRecapInvoice(invoice) {
+  // CONTACT-HUB-1F-2 — canWriteBilling (canReadBilling && billing.write, calculé UNE SEULE FOIS par
+  // contactActivitySummary, même flag que le bouton "Créer / éditer une facture") gouverne "Encaisser
+  // la facture" : jamais une permission recalculée ici, jamais un nouveau moteur de reste dû —
+  // invoiceAllowedActions(invoice).addPayment est la MÊME primitive canonique déjà utilisée par
+  // invoicePaymentActionHtml à l'intérieur de l'éditeur de facture (statut payable + reste dû réel +
+  // non readOnly). Le bouton ouvre TOUJOURS la facture entière (jamais un claim précis), même
+  // multi-claims : « L'utilisateur pense à une PERSONNE, pas à un MODULE. »
+  function contactRecapInvoice(invoice, options = {}) {
+    const { sourceClubId = activeClubId(), canWriteBilling = false } = options;
     const totals = invoiceLiveTotals(invoice);
+    const canCashIn = canWriteBilling && invoiceAllowedActions(invoice).addPayment;
     return `<article class="contact-recap-row clickable-card" data-action="open-invoice" data-id="${esc(invoice.id)}">
       <div class="contact-recap-main">
         <strong>${esc(invoice.number || "Brouillon de facture")}</strong>
         <span>${esc(dateDisplay(invoice.issuedAt || invoice.createdAt) || "")}</span>
+        ${canCashIn ? `<button type="button" class="contact-recap-cashin-btn" data-action="open-contact-invoice-payment" data-cashin-club-id="${esc(sourceClubId)}" data-id="${esc(invoice.id)}" title="Encaisser cette facture">Encaisser la facture</button>` : ""}
       </div>
       ${invoiceStatusPill(invoice)}
       ${contactRecapAmounts(totals)}
@@ -28336,16 +28411,49 @@ ${esc(bodyText)}</pre>
   // `payments` fourni par invoicePaymentsForDisplay, jamais une clé de contenu) des paiements
   // HISTORIQUES-SEULS — affichage seul, jamais recompté ; jamais posé sur l'objet payment lui-même
   // (invoiceVisiblePayments renormalise, ce qui stripperait un marqueur ad hoc).
-  function invoicePaymentsHtml(payments = [], historicalIndexes = null) {
+  // CONTACT-HUB-1F-2 (correctif Pix, cas vidéo CDM-2026-0003) — origins (optionnel) : locator SOURCE
+  // par POSITION (invoicePaymentsForDisplay), null pour toute ligne HISTORIQUE ou paymentsAfterIssue.
+  // Une ligne canonique (jamais historique) encore "A encaisser"/"En cours", rattachée SANS AMBIGUÏTÉ à
+  // un claim source réel (origin non null) reste actionnable même si le claim est readOnly : ce n'est
+  // jamais un nouveau règlement, seulement la confirmation d'un encaissement déjà connu — réutilise TEL
+  // QUEL data-action="validate-payment" (validatePayment, 21-handlers.js), même moteur que le bouton
+  // « Payer » d'une fiche Discipline/Boutique/Stage. Une ligne historique n'a jamais d'origin (voir
+  // invoicePaymentsForDisplay) : par construction, jamais de bouton, quelle que soit son apparence.
+  // CONTACT-HUB-1F-2 (correctif Pix #2) — data-payment-confirm-pending="1" + data-payment-fingerprint
+  // (paymentFingerprint, MÊME primitive canonique que le focus "À faire" — jamais un second calcul
+  // d'identité) : ce bouton n'est JAMAIS le toggle "Payer"/"Annuler paiement" partagé par le reste de
+  // l'app — validatePayment (21-handlers.js) le refuse net (NO-OP) dès que la ligne source n'est plus
+  // EXACTEMENT celle rendue (déjà Payée/Annulée/Refusée/disparue, ou contenu changé sous lui).
+  function invoicePaymentsHtml(payments = [], historicalIndexes = null, origins = null) {
     const rows = invoiceVisiblePayments(payments);
     if (!rows.length) return `<div class="empty compact">Aucun paiement enregistré.</div>`;
     return `<div class="invoice-payment-list">${rows.map((payment, index) => {
       const isHistorical = Boolean(historicalIndexes && historicalIndexes.has(index));
+      const origin = !isHistorical && origins ? origins[index] : null;
+      const pendingActionable = Boolean(origin) && PENDING_PAYMENT_STATUSES.includes(paymentStatus(payment))
+        && currentUserCanWriteEmbeddedPayment(origin.module, origin.clubId);
+      const liveAttrs = pendingActionable ? [
+        `data-payment-module="${esc(origin.module)}"`,
+        `data-id="${esc(origin.id)}"`,
+        `data-payment-club-id="${esc(origin.clubId)}"`,
+        origin.stageId ? `data-stage-id="${esc(origin.stageId)}"` : "",
+        origin.part ? `data-part="${esc(origin.part)}"` : "",
+      ].filter(Boolean).join(" ") : "";
+      const validateActionHtml = pendingActionable ? `<div style="grid-column:1/-1;margin-top:4px;" data-payment-row="${origin.index}">
+        <input type="hidden" data-payment-field="check" data-index="${origin.index}" ${liveAttrs} value="${esc(payment.check || "")}" />
+        <input type="hidden" data-payment-field="checkNumber" data-index="${origin.index}" ${liveAttrs} value="${esc(payment.checkNumber || "")}" />
+        <input type="hidden" data-payment-field="amount" data-index="${origin.index}" ${liveAttrs} value="${esc(payment.amount)}" />
+        <input type="hidden" data-payment-field="taxRate" data-index="${origin.index}" ${liveAttrs} value="${esc(payment.taxRate ?? "")}" />
+        <input type="hidden" data-payment-field="date" data-index="${origin.index}" ${liveAttrs} value="${esc(payment.date || "")}" />
+        <input type="hidden" data-payment-field="state" data-index="${origin.index}" ${liveAttrs} value="${esc(payment.state || "")}" />
+        <button type="button" class="payment-ok" data-action="validate-payment" data-payment-confirm-pending="1" data-payment-fingerprint="${esc(paymentFingerprint(payment))}" data-index="${origin.index}" ${liveAttrs} title="Ce paiement existe déjà dans la source et est en attente d'encaissement : confirme qu'il a réellement été encaissé.">Valider l'encaissement</button>
+      </div>` : "";
       return `<div${isHistorical ? ` class="invoice-payment-historical" title="Paiement historique antérieur au correctif : conservé pour information, jamais recompté."` : ""}>
       <strong>${esc(invoicePaymentModeLabel(payment, index))}</strong>
       <span>${money(payment.amount)}</span>
       <span>${esc(invoiceDateLabel(payment.date))}</span>
       <span>${invoicePaymentStatusLabel(payment)}${isHistorical ? ` <em>(historique)</em>` : ""}</span>
+      ${validateActionHtml}
     </div>`;
     }).join("")}</div>`;
   }
@@ -29198,7 +29306,7 @@ ${esc(bodyText)}</pre>
       </div>`}
       <div class="dialog-section invoice-editor" data-invoice-editor-payments data-tour="invoice-payments">
         <h3>Paiements et échéances</h3>
-        ${invoicePaymentsHtml(previewPayments, locked ? displayPayments.historicalIndexes : null)}
+        ${invoicePaymentsHtml(previewPayments, locked ? displayPayments.historicalIndexes : null, locked ? displayPayments.origins : null)}
         ${locked ? invoicePaymentActionHtml(invoice) : ""}
       </div>
       ${currentUserHasPermission("accounting.read", targetClubId) ? invoiceLinkedCreditNotesHtml(invoice) : ""}
@@ -38691,6 +38799,11 @@ ${esc(bodyText)}</pre>
       // commande reste verrouillée dans ce flux (voir shopOrderReadOnlyReason), donc aucune fermeture/
       // réouverture n'est nécessaire ici. No-op si aucune consultation de cette commande n'est ouverte.
       if (paymentContext.module === "order") refreshOpenOrderConsultDialog(paymentContext.id);
+      // CONTACT-HUB-1F-2 (correctif Pix, cas vidéo CDM-2026-0003) — si ce paiement source vient d'être
+      // validé DEPUIS la zone « Paiements et échéances » d'une facture (invoicePaymentsHtml), la
+      // facture ouverte doit refléter son nouveau reste dû/statut immédiatement, sans fermeture ni
+      // réouverture. No-op si aucun éditeur de facture n'est ouvert (refreshOpenInvoiceEditor()).
+      refreshOpenInvoiceEditor();
       reopenPaymentBubble(paymentContext);
       return;
     }
@@ -39866,6 +39979,24 @@ ${esc(bodyText)}</pre>
       const contact = state.contacts[kind]?.find((row) => row.id === link.contactId);
       if (!contact) return;
       return openQuickInvoiceForClaim(contact, kind, button.dataset.claimKey || "", billingClubId);
+    }
+    if (action === "open-contact-invoice-payment") {
+      // CONTACT-HUB-1F-2 — action DÉDIÉE pour "Encaisser la facture" depuis la fiche Contact. Le
+      // handler générique add-invoice-payment (ligne ~772) ne revérifie NI le club actif NI
+      // billing.write au clic (openInvoicePaymentDialog lui-même ne revérifie que billing.read à
+      // l'ouverture, puis billing.write seulement au SAVE) : un bouton Contact resté à l'écran après
+      // un changement de club actif ou un retrait de billing.write ouvrirait donc quand même le
+      // dialogue. Ce wrapper ne fait QUE revérifier (club + billing.read + billing.write) puis
+      // déléguer à openInvoicePaymentDialog, qui revérifie lui-même — avec la facture RELUE depuis
+      // state.invoices, jamais depuis une fermeture de rendu — le statut (draft/cancelled/soldée) et
+      // recalcule le reste dû vivant (invoiceLiveTotals). Aucune logique financière ici, aucune
+      // écriture : la facture entière s'ouvre (jamais un claim précis, même si multi-claims).
+      const clubId = button.dataset.cashinClubId || "";
+      if (!clubId || activeClubId() !== clubId) return;
+      if (!currentUserHasPermission("billing.read", clubId) || !currentUserHasPermission("billing.write", clubId)) return;
+      const invoice = state.invoices.find((row) => row.id === button.dataset.id);
+      if (!invoice) return;
+      return openInvoicePaymentDialog(invoice);
     }
     if (action === "open-contact-payment") {
       // CONTACT-HUB-1F-1 (correctif Pix, problème A) — action DÉDIÉE, distincte de edit-membership/
@@ -41244,6 +41375,33 @@ ${esc(bodyText)}</pre>
     if (!ensureEmbeddedPaymentMutationAllowed(paymentContextFrom(button))) return false;
     const payments = getPaymentList(button);
     const index = Number(button.dataset.index);
+    // CONTACT-HUB-1F-2 (correctif Pix, cas vidéo CDM-2026-0003) — capturé AVANT toute mutation
+    // (ensurePaymentAt peut pousser une ligne neuve jusqu'à cet index, ou réinitialiser un slot
+    // manquant) : distingue un paiement DÉJÀ existant, DÉJÀ "A encaisser"/"En cours" avant ce clic,
+    // d'une ligne neuve/vide/déjà validée/annulée/refusée. Sert UNIQUEMENT à assouplir la garde
+    // anti-surpaiement claim-aware pour CE cas précis (voir claimOverpayMessage) — jamais un nouveau
+    // règlement.
+    const preexistingPendingAtStart = Boolean(payments) && Number.isInteger(index) && index >= 0 && index < payments.length
+      && PENDING_PAYMENT_STATUSES.includes(paymentStatus(payments[index]));
+    // CONTACT-HUB-1F-2 (correctif Pix #2) — intention EXPLICITE "confirm pending only"
+    // (data-payment-confirm-pending="1", posée UNIQUEMENT par invoicePaymentsHtml pour le bouton
+    // "Valider l'encaissement" de la facture, JAMAIS par les boutons live historiques "Payer"/
+    // "Annuler paiement") : data-action="validate-payment" reste, pour TOUS les autres appelants
+    // (fiches Discipline/Boutique/Stage, "À faire", consultation Boutique), un TOGGLE inchangé —
+    // ce bloc n'existe QUE pour ce cas précis et refuse tout net dès que la ligne n'est plus
+    // EXACTEMENT celle rendue : jamais recréée via ensurePaymentAt (vérifié AVANT son appel),
+    // jamais déjà Payée/Annulée/Refusée (donc jamais basculée vers "Annuler paiement" par
+    // cancelPaidPayment plus bas), et son empreinte de contenu doit correspondre EXACTEMENT à
+    // celle capturée au rendu (paymentFingerprint, même primitive canonique que le focus des
+    // cartes "À faire") — sinon la source a changé sous un bouton DOM périmé, aucune ancienne
+    // valeur cachée ne doit jamais l'écraser.
+    const confirmPendingOnly = button.dataset.paymentConfirmPending === "1";
+    if (confirmPendingOnly) {
+      if (!preexistingPendingAtStart) return false;
+      const expectedFingerprint = asText(button.dataset.paymentFingerprint || "");
+      if (!expectedFingerprint || paymentFingerprint(payments[index]) !== expectedFingerprint) return false;
+    }
+    const preexistingPending = confirmPendingOnly ? true : preexistingPendingAtStart;
     const payment = ensurePaymentAt(payments, index);
     if (!payment) return;
     // Un paiement refusé n'est jamais payable directement : il faut d'abord remettre son statut à
@@ -41294,7 +41452,7 @@ ${esc(bodyText)}</pre>
     const claimKey = claimKeyForPaymentContext(paymentContextFrom(button));
     const claimState = claimKey ? claimFinancialState(claimKey) : null;
     const overpayMessage = claimState
-      ? claimOverpayMessage(claimState, payment.amount)
+      ? claimOverpayMessage(claimState, payment.amount, { allowExistingPendingSourceValidation: preexistingPending })
       : paymentOverpayMessage(payments, index, payment.amount, paymentDueTotalFor(button));
     if (overpayMessage) {
       alert(overpayMessage);
