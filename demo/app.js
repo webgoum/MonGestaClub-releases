@@ -27765,6 +27765,21 @@ ${esc(bodyText)}</pre>
     // billing.write seul échouerait silencieusement (alerte) au clic si billing.read manque. Sans l'un
     // des deux : ensemble vide, aucun bouton "Facturer" nulle part (fail-closed dès le rendu).
     const canWriteBilling = canReadBilling && currentUserHasPermission("billing.write", sourceClubId);
+    // CONTACT-HUB-1G-1 — « Utiliser un avoir » directement sur une carte Facture : n'est jamais
+    // ambigu QUE si le contact possède EXACTEMENT UN avoir actif et positif (§1/§11 du mandat —
+    // 0 avoir : rien à proposer ; 2+ avoirs : le choix serait arbitraire, aucune sélection
+    // automatique, le mécanisme existant reste disponible en ouvrant la facture). Calculé UNE SEULE
+    // FOIS ici, jamais par facture (le MÊME avoir unique peut légitimement rendre un bouton sur
+    // plusieurs factures dues à la fois — §10 du mandat : chaque bouton cible explicitement SA
+    // propre facture, aucun croisement). Réutilise creditNotesAvailableForContact tel quel (déjà
+    // filtré actif + ce contact + club courant, aucune seconde logique de filtrage club).
+    const canWriteAccounting = canReadAccounting && currentUserHasPermission("accounting.write", sourceClubId);
+    const canUseCreditNoteDirect = canWriteBilling && canWriteAccounting;
+    let singleAvailableCreditNote = null;
+    if (canUseCreditNoteDirect) {
+      const eligibleNotes = creditNotesAvailableForContact(contact.id).filter((cn) => asNumber(cn.amount) > 0.005);
+      if (eligibleNotes.length === 1) singleAvailableCreditNote = eligibleNotes[0];
+    }
     let invoiceableClaimKeys = new Set();
     if (canWriteBilling) {
       const literallyBilledSourceKeys = billedSourceKeys("");
@@ -27935,7 +27950,7 @@ ${esc(bodyText)}</pre>
           <div><span>Payé</span><strong>${money(invoiceTotals.paid)}</strong></div>
           <div><span>Reste à payer</span><strong class="${invoiceTotals.due > 0 ? "due" : ""}">${money(invoiceTotals.due)}</strong></div>
         </div>
-        <div class="contact-recap-list">${invoiceRows.map((invoice) => contactRecapInvoice(invoice, { sourceClubId, canWriteBilling })).join("")}</div>
+        <div class="contact-recap-list">${invoiceRows.map((invoice) => contactRecapInvoice(invoice, { sourceClubId, canWriteBilling, singleAvailableCreditNote })).join("")}</div>
       </section>` : ""}
       ${canReadAccounting ? contactAvailableCreditNotesHtml(contact) : ""}
     </div>`;
@@ -28156,14 +28171,33 @@ ${esc(bodyText)}</pre>
   // non readOnly). Le bouton ouvre TOUJOURS la facture entière (jamais un claim précis), même
   // multi-claims : « L'utilisateur pense à une PERSONNE, pas à un MODULE. »
   function contactRecapInvoice(invoice, options = {}) {
-    const { sourceClubId = activeClubId(), canWriteBilling = false } = options;
+    const { sourceClubId = activeClubId(), canWriteBilling = false, singleAvailableCreditNote = null } = options;
     const totals = invoiceLiveTotals(invoice);
     const canCashIn = canWriteBilling && invoiceAllowedActions(invoice).addPayment;
+    // CONTACT-HUB-1G-1 — « Utiliser un avoir » réutilise EXACTEMENT canCashIn (même primitive
+    // canonique qu'« Encaisser la facture » : un avoir est un NOUVEAU règlement au même titre —
+    // jamais autorisé sur draft/cancelled/soldée/readOnly, aucune exception, doctrine 1F-2 inchangée)
+    // ET l'avoir unique déjà résolu par contactActivitySummary (canUseCreditNoteDirect implicite :
+    // billing + accounting lecture/écriture). Aucun second calcul de reste dû, aucune allocation
+    // devinée ici (min/remainder purement pour le LIBELLÉ affiché, la mutation réelle recalcule tout
+    // à chaud via readUsableCreditNote, 21-handlers.js).
+    let creditNoteButtonHtml = "";
+    if (canCashIn && singleAvailableCreditNote) {
+      const restDue = asNumber(totals.restDue);
+      const cnAmount = asNumber(singleAvailableCreditNote.amount);
+      const usedAmount = Math.min(cnAmount, restDue);
+      const remainder = cnAmount - usedAmount;
+      const title = remainder > 0.005
+        ? `Utiliser ${money(usedAmount)} de cet avoir sur la facture ; ${money(remainder)} resteront disponibles.`
+        : `Utiliser cet avoir de ${money(usedAmount)} sur cette facture.`;
+      creditNoteButtonHtml = `<button type="button" class="contact-recap-cashin-btn" data-action="use-credit-note-payment" data-credit-note-id="${esc(singleAvailableCreditNote.id)}" data-invoice-id="${esc(invoice.id)}" data-invoice-club-id="${esc(sourceClubId)}" data-credit-origin="contact" data-credit-contact-id="${esc(invoice.contactId)}" data-credit-contact-kind="${esc(invoice.contactKind)}" title="${esc(title)}">Utiliser un avoir</button>`;
+    }
     return `<article class="contact-recap-row clickable-card" data-action="open-invoice" data-id="${esc(invoice.id)}">
       <div class="contact-recap-main">
         <strong>${esc(invoice.number || "Brouillon de facture")}</strong>
         <span>${esc(dateDisplay(invoice.issuedAt || invoice.createdAt) || "")}</span>
         ${canCashIn ? `<button type="button" class="contact-recap-cashin-btn" data-action="open-contact-invoice-payment" data-cashin-club-id="${esc(sourceClubId)}" data-id="${esc(invoice.id)}" title="Encaisser cette facture">Encaisser la facture</button>` : ""}
+        ${creditNoteButtonHtml}
       </div>
       ${invoiceStatusPill(invoice)}
       ${contactRecapAmounts(totals)}
@@ -37759,7 +37793,33 @@ ${esc(bodyText)}</pre>
       const actualInvoiceClubId = invoiceTargetClubId({ id: invoiceId });
       if (!buttonClubId || activeClubId() !== buttonClubId || actualInvoiceClubId !== buttonClubId) return;
       const openedClubId = buttonClubId;
+      // CONTACT-HUB-1G-1 — origine explicite (data-credit-origin="contact", posée UNIQUEMENT par le
+      // bouton "Utiliser un avoir" de la fiche Contact, jamais par les points d'entrée historiques
+      // Facturation — invoiceLinkedCreditNotesHtml/openInvoicePaymentDialog ne posent jamais cet
+      // attribut, leur comportement reste donc strictement inchangé). Le bouton Contact n'est rendu
+      // que si billing.read ET accounting.read sont ÉGALEMENT vrais (en plus de .write, déjà exigé
+      // ci-dessous) : un vieux bouton Contact resté affiché après un retrait de LECTURE ne doit jamais
+      // rester utilisable — revérifié ICI et de nouveau après l'attente de confirmation (§13/§25).
+      const creditOrigin = asText(button.dataset.creditOrigin || "");
+      const isContactOrigin = creditOrigin === "contact";
+      const contactReadPermissionsOk = () => !isContactOrigin
+        || (currentUserHasPermission("billing.read", openedClubId) && currentUserHasPermission("accounting.read", openedClubId));
+      // CONTACT-HUB-1G-1 — identité du contact figée AU RENDU (data-credit-contact-id/-kind) : un
+      // vieux bouton Contact ne doit jamais rester valide si la facture a changé de titulaire (jamais
+      // observé en pratique, mais revalidé par principe, même doctrine que le club) ou si le contact
+      // d'origine a disparu du club courant entre le rendu et le clic (§26).
+      const contactIdentityOk = () => {
+        if (!isContactOrigin) return true;
+        const inv = state.invoices.find((item) => item.id === invoiceId);
+        if (!inv) return false;
+        const expectedContactId = asText(button.dataset.creditContactId || "");
+        const expectedContactKind = asText(button.dataset.creditContactKind || "");
+        if (!expectedContactId || asText(inv.contactId) !== expectedContactId) return false;
+        if (expectedContactKind && contactInvoiceKind(inv.contactKind) !== contactInvoiceKind(expectedContactKind)) return false;
+        return Boolean(invoiceContact(inv.contactKind, inv.contactId));
+      };
       if (!ensureUserPermissionsForClub(["billing.write", "accounting.write"], openedClubId)) return;
+      if (!contactReadPermissionsOk() || !contactIdentityOk()) return;
       // Lot B3b — lecture centralisée, appelée avant ET après la confirmation (montant utilisable
       // recalculé à chaud à chaque fois : jamais de valeur figée avant l'attente utilisateur).
       const readUsableCreditNote = () => {
@@ -37798,6 +37858,8 @@ ${esc(bodyText)}</pre>
         activeClubId() !== openedClubId
         || invoiceTargetClubId({ id: invoiceId }) !== openedClubId
         || !ensureUserPermissionsForClub(["billing.write", "accounting.write"], openedClubId)
+        || !contactReadPermissionsOk()
+        || !contactIdentityOk()
       ) return;
       // Relecture après l'attente utilisateur (le confirm est asynchrone) : l'avoir, la facture
       // ou le reste dû ont pu changer entre-temps (autre onglet, autre action, double-clic).
@@ -37853,10 +37915,22 @@ ${esc(bodyText)}</pre>
         amountUsed: usedAmount,
         remainingCredit: remainder > 0.005 ? remainder : 0,
       });
-      button.closest("dialog")?.close();
       persist(remainder > 0.005 ? `Avoir utilisé partiellement sur la facture ${freshTarget.number || ""}` : `Avoir utilisé sur la facture ${freshTarget.number || ""}`);
-      render();
-      setTimeout(() => openInvoiceEditor(freshTarget), 0);
+      // CONTACT-HUB-1G-1 (§7 du mandat, obligation produit) — depuis le Contact, l'utilisateur reste
+      // sur SA fiche : jamais de fermeture/réouverture vers l'éditeur de facture (qui fermerait la
+      // fiche Contact elle-même, le bouton étant un descendant de CE dialogue). render() + un
+      // rafraîchissement EN PLACE (refreshOpenContactDialog, no-op si aucune fiche Contact ouverte)
+      // suffisent : facture/avoirs disponibles/reste dû se recalculent tous depuis le state frais.
+      // Comportement historique (Facturation) strictement inchangé : fermeture + réouverture de la
+      // facture, exactement comme avant ce lot.
+      if (isContactOrigin) {
+        render();
+        refreshOpenContactDialog();
+      } else {
+        button.closest("dialog")?.close();
+        render();
+        setTimeout(() => openInvoiceEditor(freshTarget), 0);
+      }
       return;
     }
     if (action === "set-invoice-filter") {
