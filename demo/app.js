@@ -43423,10 +43423,15 @@ ${esc(bodyText)}</pre>
       </select></label>`;
     const startLabel = "Premier cours";
     const head = `<div class="form-grid compact">${typeSel}${field("recurrenceStart", startLabel, asText(rec.start) || "", "date")}</div>`;
+    // PLANNING-UX-1 — l'aide reste RATTACHÉE au bloc Récurrence/Fréquence : rendue ICI (dans le
+    // même conteneur data-recurrence-field), jamais comme sibling au niveau du .form-grid externe
+    // (où le placement automatique en grille 2 colonnes la faisait atterrir loin, dans la colonne
+    // d'à côté). Régénérée avec le reste à chaque changement de type (cf. rebuild plus bas).
+    const help = `<p class="muted">Par défaut, le créneau revient chaque semaine. Choisissez « Mensuelle » pour un cours « 1er lundi », « 3e samedi » ou « le 15 ». Pour « Même date », le jour de la semaine dépend de la date (le champ Jour est ignoré).</p>`;
     if (type === "weekly") {
       const iv = recurrenceInterval(course);
       const opts = [[1, "Toutes les semaines"], [2, "Toutes les 2 semaines"], [3, "Toutes les 3 semaines"], [4, "Toutes les 4 semaines"]];
-      return `${head}<label>Fréquence<select name="weekInterval">${opts.map(([v, l]) => `<option value="${v}" ${iv === v ? "selected" : ""}>${esc(l)}</option>`).join("")}</select></label>`;
+      return `${head}<label>Fréquence<select name="weekInterval">${opts.map(([v, l]) => `<option value="${v}" ${iv === v ? "selected" : ""}>${esc(l)}</option>`).join("")}</select></label>${help}`;
     }
     const mode = rec.monthlyMode === "date" ? "date" : "weekday";
     const modeSel = `<label>Type mensuel<select name="monthlyMode" data-recurrence-monthly-mode>
@@ -43441,7 +43446,7 @@ ${esc(bodyText)}</pre>
     } else {
       sub = field("monthlyDayOfMonth", "Jour du mois", rec.dayOfMonth || "", "number", 'min="1" max="31"');
     }
-    return `${head}<div class="form-grid compact">${modeSel}${sub}</div>`;
+    return `${head}<div class="form-grid compact">${modeSel}${sub}</div>${help}`;
   }
   // Lit l'objet récurrence depuis le formulaire (préserve la saisie au changement de type).
   function readRecurrenceFromForm(form) {
@@ -45056,8 +45061,10 @@ ${esc(bodyText)}</pre>
         ${field("startTime", "Début", course.startTime || "", "time")}
         ${field("endTime", "Fin", course.endTime || "", "time")}
       </div>`,
+      // PLANNING-UX-1 — le texte d'aide de récurrence est désormais rendu PAR recurrenceFieldsHtml
+      // elle-même (voir plus haut), à l'intérieur de ce même conteneur : il reste ainsi rattaché
+      // visuellement au bloc Récurrence/Fréquence au lieu de dériver dans la colonne d'à côté.
       `<div data-recurrence-field>${recurrenceFieldsHtml(course)}</div>`,
-      `<p class="muted">Par défaut, le créneau revient chaque semaine. Choisissez « Mensuelle » pour un cours « 1er lundi », « 3e samedi » ou « le 15 ». Pour « Même date », le jour de la semaine dépend de la date (le champ Jour est ignoré).</p>`,
       // Lot 3A (clôture) — sélecteur PAR IDENTIFIANT : value = discipline.id, homonymes distincts.
       disciplineSelectField("discipline", "Discipline", course),
       `<div data-group-field>${planningGroupFieldHtml(course)}</div>`,
