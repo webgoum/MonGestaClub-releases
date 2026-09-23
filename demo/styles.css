@@ -4037,6 +4037,18 @@ tfoot td {
   padding-left: 12px;
 }
 
+/* SETTINGS-DISCIPLINES-UI — même correctif que .settings-panel.permission-surface ci-dessus, pour la
+   même cause : disciplineCategoriesDialogBody (src/16-settings-themes.js) pose permissionSurfaceClass
+   directement sur son wrapper racine (data-discipline-categories-dialog, unique à cette fiche), qui
+   n'est ni .settings-panel ni .club-form-section — donc sans padding horizontal propre. Le titre, les
+   badges, les actions et le contenu (bandes de catégories/suggestions/zone de danger) restaient collés
+   à l'accent de bordure. Sélecteur scopé au SEUL wrapper de la fiche Discipline (attribut unique) :
+   ne touche jamais .permission-surface/.dialog-section/.band/.collapsible-band de façon globale, ni
+   les autres surfaces .settings-panel.permission-surface ci-dessus. */
+[data-discipline-categories-dialog].permission-surface {
+  padding-left: 14px;
+}
+
 /* Lot R-UX2B — langage visuel réservé à la fiche « Personnaliser les droits » (Paramètres > Comptes
    d'accès > compte > Accès aux clubs > Personnaliser les droits). Chaque groupe fonctionnel (Contacts,
    Adhésions, Facturation, Comptabilité, Sport, Documents, Newsletter, Stages, Rencontres, Boutique,
