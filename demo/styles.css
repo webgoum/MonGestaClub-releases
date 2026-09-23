@@ -9821,6 +9821,127 @@ small.email-variable-chip:hover {
   padding: 12px 14px;
 }
 
+/* ===== STAGE-1A — refonte de la fiche d'inscription Stage (openRegistrationDialog) =====
+   Même LANGAGE visuel que UX-CONTACT-1/DISCIPLINE-1 (mêmes valeurs de padding/gap/typo, pour la
+   cohérence demandée au mandat), namespace dédié .stage-registration-identity- / .stage-
+   registration-section (jamais les préfixes .contact-identity- ou .membership-identity-) : toute future retouche
+   d'un de ces trois dialogues ne peut affecter les deux autres par effet de bord. La photo réutilise
+   TELLE QUELLE .identity-photo-inline (déjà générique, aucune règle propre à ajouter ici) ; seuls
+   l'en-tête et les accordéons ont un habillage dédié. Contenu différent par nature : les deux
+   cellules alignées affichent Dates + Contact lié (pas Club + Date de naissance ni Discipline +
+   Groupe), reflet de l'identité métier propre à une inscription Stage (mandat STAGE-1A §2). */
+.stage-registration-identity-header,
+.stage-registration-section {
+  grid-column: 1 / -1;
+}
+
+.stage-registration-identity-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 16px;
+  padding-bottom: 18px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--line);
+}
+
+.stage-registration-identity-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.stage-registration-identity-kicker {
+  margin: 0;
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.stage-registration-identity-name-fields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+}
+
+.stage-registration-identity-name-fields label {
+  flex: 1 1 140px;
+  min-width: 0;
+}
+
+.stage-registration-identity-name-fields input {
+  font-size: 1.15rem;
+  font-weight: 750;
+}
+
+.stage-registration-identity-status-line {
+  margin: 0;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.stage-registration-identity-meta-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 8px 16px;
+  margin-top: 2px;
+}
+
+.stage-registration-identity-meta-cell {
+  min-width: 0;
+}
+
+.stage-registration-identity-meta-cell > span {
+  display: block;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 2px;
+}
+
+.stage-registration-identity-meta-cell strong {
+  display: block;
+  font-size: 0.92rem;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.stage-registration-identity-meta-cell.is-empty strong {
+  color: var(--muted);
+  font-weight: 500;
+  font-style: italic;
+}
+
+/* Même logique que .contact-identity-avatar-row/.membership-identity-avatar-row (cf. leur doctrine
+   ci-dessus) : la ligne Silhouette passe sous identité+photo (flex-wrap:wrap ci-dessus) et prend
+   toute la largeur de l'en-tête, jamais celle, étroite, de la photo. */
+.stage-registration-identity-avatar-row {
+  flex: 1 1 100%;
+  min-width: 0;
+}
+
+.stage-registration-identity-avatar-row .identity-avatar-details {
+  width: 100%;
+  min-width: 0;
+}
+
+.stage-registration-identity-avatar-row select {
+  min-width: 0;
+}
+
+/* Même doctrine que .contact-section/.membership-section .collapsible-inner (UX-CONTACT-1B/
+   DISCIPLINE-1) : padding SCOPÉ à cette bande, jamais une modification de .collapsible-inner de
+   base (partagée par Paramètres/Boutique/Stock/Tarifs). */
+.stage-registration-section .collapsible-inner {
+  padding: 12px 14px;
+}
+
 /* Les adaptations mobiles (≤768px, ≤390px) de la fiche Contact vivent dans le bloc @media canonique
    du bandeau mobile (MOB-1x, plus bas dans ce fichier) plutôt que dans un second bloc @media (max-
    width: 768px) séparé ici : plusieurs tests (ex. MOB-1G-01) extraient CE bloc canonique par un motif
@@ -14446,6 +14567,11 @@ td.due,
   .membership-section .collapsible-inner {
     padding: 10px;
   }
+
+  /* STAGE-1A — même resserrement, crochet dédié .stage-registration-section. */
+  .stage-registration-section .collapsible-inner {
+    padding: 10px;
+  }
 }
 
 @media (max-width: 390px) {
@@ -14468,6 +14594,14 @@ td.due,
   .membership-identity-name-fields input {
     font-size: 1.02rem;
   }
+
+  /* STAGE-1A — même resserrement que Contact/Discipline ci-dessus, crochet dédié. */
+  .stage-registration-identity-header {
+    gap: 12px;
+  }
+  .stage-registration-identity-name-fields input {
+    font-size: 1.02rem;
+  }
 }
 
 /* Complément UX-CONTACT-1 — à 320px, la cellule Date de naissance à 50% de largeur tronquait
@@ -14477,6 +14611,12 @@ td.due,
    360/375/390px où les 2 colonnes restent lisibles (mesuré : aucun débordement, aucune troncature). */
 @media (max-width: 340px) {
   .contact-identity-meta-grid {
+    grid-template-columns: 1fr;
+  }
+
+  /* STAGE-1A — même complément : Dates/Contact lié passent en 1 colonne pleine largeur à 320px,
+     même seuil et même raison (éviter toute troncature de contenu long, ex. un nom de contact). */
+  .stage-registration-identity-meta-grid {
     grid-template-columns: 1fr;
   }
 }

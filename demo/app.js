@@ -32000,6 +32000,111 @@ ${esc(bodyText)}</pre>
     showFloatingDialog(dialog, "select[name='stageId']");
   }
 
+  // STAGE-1A — en-tête d'identité de la fiche d'inscription Stage (niveau 1, toujours visible),
+  // même LANGAGE visuel que UX-CONTACT-1/DISCIPLINE-1 (membershipIdentityHeaderHtml ci-dessus :
+  // mêmes valeurs de padding/gap/typo pour la cohérence demandée au mandat) mais namespace dédié
+  // .stage-registration-identity-* (jamais .contact-identity-*/.membership-identity-*), pour que
+  // toute future retouche d'un de ces dialogues ne puisse jamais affecter les deux autres par effet
+  // de bord. lastName/firstName restent les VRAIS champs éditables (jamais dupliqués), avec le même
+  // identityFieldAttrs (readonly) déjà calculé par l'appelant selon canWriteStageIdentity — aucune
+  // nouvelle règle de permission. stageParticipantSelectField (sélection du contact lié) reste dans
+  // l'accordéon Coordonnées (mandat §3), jamais dans cet en-tête : contrairement à Discipline, le
+  // choix du contact n'est pas une information d'identité de PREMIER niveau pour une inscription
+  // Stage — seuls Nom/Prénom le sont. Deux cellules meta non redondantes avec la ligne de statut
+  // (qui porte déjà le nom du stage) : Dates (stageDateRangeLabel, déjà formaté ailleurs dans le
+  // code, jamais recalculé) et Contact lié (affichage seul, jamais un second champ).
+  function stageRegistrationIdentityHeaderHtml(row = {}, stage = {}, identityFieldAttrs = "") {
+    const link = parseContactLink(contactLinkForRow(row));
+    const linkedContact = link.contactId
+      ? (link.kind === "prospect" ? state.contacts.prospects : state.contacts.members).find((c) => c.id === link.contactId)
+      : null;
+    const contactLabel = linkedContact ? personLabel(linkedContact) : "Nouveau participant";
+    const hasDates = Boolean(stage.startDate || stage.endDate);
+    return `<div class="stage-registration-identity-header">
+      <div class="stage-registration-identity-main">
+        <p class="stage-registration-identity-kicker">Inscription stage</p>
+        <div class="stage-registration-identity-name-fields">
+          ${field("lastName", "Nom *", row.lastName, "text", `required ${identityFieldAttrs}`)}
+          ${field("firstName", "Prénom *", row.firstName, "text", `required ${identityFieldAttrs}`)}
+        </div>
+        <p class="stage-registration-identity-status-line">${esc(stage.name || "Stage")}</p>
+        <div class="stage-registration-identity-meta-grid">
+          <div class="stage-registration-identity-meta-cell${hasDates ? "" : " is-empty"}">
+            <span>Dates</span>
+            <strong>${esc(stageDateRangeLabel(stage))}</strong>
+          </div>
+          <div class="stage-registration-identity-meta-cell${linkedContact ? "" : " is-empty"}">
+            <span>Contact lié</span>
+            <strong>${esc(contactLabel)}</strong>
+          </div>
+        </div>
+      </div>
+      ${identityPhotoInlineHtml(row, !identityFieldAttrs)}
+      <div class="stage-registration-identity-avatar-row">${identityAvatarChoiceField(row)}</div>
+    </div>`;
+  }
+
+  // STAGE-1A — accordéon générique de la fiche d'inscription Stage, même principe que
+  // contactSectionHtml/membershipSectionHtml mais crochet dédié .stage-registration-section (jamais
+  // .contact-section/.membership-section). Réutilise VERBATIM .band/.collapsible-band/.band-title/
+  // .collapsible-title-row/.collapsible-arrow/.collapsible-content/.collapsible-inner (Lot MOB-1M) :
+  // aucune règle CSS propre à la bascule, aucun second moteur d'accordéon.
+  function stageRegistrationSectionHtml(id, title, innerHtml, { open = false } = {}) {
+    const empty = !asText(innerHtml).trim();
+    const isOpen = open && !empty;
+    return `<div class="band collapsible-band stage-registration-section ${isOpen ? "open" : ""}" data-stage-registration-section="${esc(id)}" ${empty ? "hidden" : ""}>
+      <div class="band-title collapsible-title-row" role="button" tabindex="0" aria-expanded="${isOpen ? "true" : "false"}">
+        <h2>${esc(title)}</h2>
+        <span class="collapsible-arrow" aria-hidden="true">›</span>
+      </div>
+      <div class="collapsible-content">
+        <div class="collapsible-inner">${innerHtml}</div>
+      </div>
+    </div>`;
+  }
+
+  // STAGE-1A — bascule des accordéons de la fiche d'inscription Stage : mono-ouverture EXCLUSIVE en
+  // mobile (≤768px, même seuil que MOB-1M/UX-CONTACT-1/DISCIPLINE-1), multi-ouverture libre en
+  // desktop. Écouteur DÉLÉGUÉ sur le <form> entier (survit à une reconstruction DOM partielle et à
+  // la réduction/restauration de fenêtre). Retourne openSection() pour l'ouverture automatique
+  // depuis le focus paiement event/lodging (mandat §8, voir openRegistrationDialog).
+  function bindStageRegistrationSectionToggles(form) {
+    const openSection = (band) => {
+      if (!band || band.hidden || band.classList.contains("open")) return;
+      if (window.matchMedia("(max-width: 768px)").matches) {
+        form.querySelectorAll(".stage-registration-section.open").forEach((other) => {
+          if (other === band) return;
+          other.classList.remove("open");
+          other.querySelector(".collapsible-title-row")?.setAttribute("aria-expanded", "false");
+        });
+      }
+      band.classList.add("open");
+      band.querySelector(".collapsible-title-row")?.setAttribute("aria-expanded", "true");
+    };
+    const toggle = (row) => {
+      const band = row.closest(".stage-registration-section");
+      if (!band) return;
+      if (band.classList.contains("open")) {
+        band.classList.remove("open");
+        row.setAttribute("aria-expanded", "false");
+      } else {
+        openSection(band);
+      }
+    };
+    form.addEventListener("click", (event) => {
+      const row = event.target.closest(".stage-registration-section > .collapsible-title-row");
+      if (row) toggle(row);
+    });
+    form.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      const row = event.target.closest(".stage-registration-section > .collapsible-title-row");
+      if (!row) return;
+      event.preventDefault();
+      toggle(row);
+    });
+    return { openSection };
+  }
+
   function openRegistrationDialog(stageId, row = {}, openedClubId = "", opts = {}) {
     // Lot O-E2-B4R2 (§3-4) — openedClubId EXPLICITE, AUCUN fallback interne vers activeClubId() :
     // même doctrine que les autres primitives durcies en B4R (openStageDialog, openGroupDialog...).
@@ -32077,18 +32182,27 @@ ${esc(bodyText)}</pre>
       discount: lodging.discount,
       payments: lodging.payments || [],
     }).subtotal;
-    const body = [
-      identityPhotoSection(row),
-      identityAvatarChoiceField(row),
+    // STAGE-1A — en-tête d'identité toujours visible + 3 accordéons thématiques (Coordonnées/Stage/
+    // Hébergement) + récapitulatif financier toujours visible, même langage que UX-CONTACT-1/
+    // DISCIPLINE-1 (voir stageRegistrationIdentityHeaderHtml/stageRegistrationSectionHtml ci-dessus).
+    // AUCUN name=/data-*/id n'a changé : mêmes champs, mêmes primitives (stageParticipantSelectField,
+    // paymentDueField, paymentFields), simplement réorganisés visuellement. La photo flottante
+    // (identityPhotoSection, .identity-photo-corner) est remplacée par la variante intégrée
+    // (identityPhotoInlineHtml, .identity-photo-inline) déjà posée par l'en-tête ci-dessus — jamais
+    // les deux à la fois. Coordonnées ouvert par défaut UNIQUEMENT pour une NOUVELLE inscription
+    // (mandat §3) ; Stage ouvert par défaut pour une inscription EXISTANTE (contenu financier déjà
+    // là, jamais caché par défaut) ; Hébergement fermé par défaut (ouvert automatiquement par le
+    // focus paiement lodging si besoin, voir onOpen ci-dessous, §8 du mandat).
+    const isNewRegistration = !row.id;
+    const coordonneesInner = [
       stageParticipantSelectField(row, stage),
-      field("lastName", "Nom *", row.lastName, "text", `required ${identityFieldAttrs}`),
-      field("firstName", "Prénom *", row.firstName, "text", `required ${identityFieldAttrs}`),
       field("phone", "Téléphone *", row.phone, "text", `required ${identityFieldAttrs}`),
       field("email", "E-mail *", row.email, "email", `required ${identityFieldAttrs}`),
       `<label class="wide">${labelHtml("Adresse *")}<input name="address" type="text" value="${esc(row.address || "")}" required ${identityFieldAttrs} /></label>`,
       field("postalCode", "CP *", row.postalCode, "text", `required ${identityFieldAttrs}`),
       field("city", "Ville *", row.city, "text", `required ${identityFieldAttrs}`),
-      `<div class="dialog-section"><h3>${esc(stage.name)}</h3></div>`,
+    ].join("");
+    const stageInner = [
       `<div class="form-grid compact stage-price-line">
         ${field("eventQty", "Nbr", event.quantity || (asNumber(stage.unitPrice) ? 1 : ""), "number", `step="1" min="0" ${identityFieldAttrs}`)}
         ${field("eventUnit", "Prix U", event.unitPrice ?? stage.unitPrice, "number", 'step="0.01" class="locked-price" readonly title="Prix défini dans la page Tarifs"')}
@@ -32096,7 +32210,9 @@ ${esc(bodyText)}</pre>
         ${paymentsReadableAtOpen ? paymentDueField("eventPayment", eventTotal, event.payments || []) : ""}
       </div>`,
       paymentFields("eventPayment", event.payments || [], eventTotal, stageDefaultTaxRate(stage), row.id ? `stage:${stageId}:${row.id}:event` : "", "registration", openedClubId, paymentsReadableAtOpen, paymentsWritableAtOpen, eventFocusPredicate),
-      `<div class="dialog-section"><h3>${esc(stage.lodgingName || "Hébergement")}</h3></div>`,
+    ].join("");
+    const lodgingInner = [
+      (stage.lodgingName ? `<p class="muted">${esc(stage.lodgingName)}</p>` : ""),
       `<div class="form-grid compact stage-price-line">
         ${field("lodgingQty", "Nbr", lodging.quantity || (asNumber(stage.lodgingUnitPrice) ? 1 : ""), "number", `step="1" min="0" ${identityFieldAttrs}`)}
         ${field("lodgingUnit", "Prix U", lodging.unitPrice ?? stage.lodgingUnitPrice, "number", 'step="0.01" class="locked-price" readonly title="Prix défini dans la page Tarifs"')}
@@ -32104,6 +32220,12 @@ ${esc(bodyText)}</pre>
         ${paymentsReadableAtOpen ? paymentDueField("lodgingPayment", lodgingTotal, lodging.payments || []) : ""}
       </div>`,
       paymentFields("lodgingPayment", lodging.payments || [], lodgingTotal, lodgingDefaultTaxRate(stage), row.id ? `stage:${stageId}:${row.id}:lodging` : "", "registration", openedClubId, paymentsReadableAtOpen, paymentsWritableAtOpen, lodgingFocusPredicate),
+    ].join("");
+    const body = [
+      stageRegistrationIdentityHeaderHtml(row, stage, identityFieldAttrs),
+      stageRegistrationSectionHtml("coordonnees", "Coordonnées", coordonneesInner, { open: isNewRegistration }),
+      stageRegistrationSectionHtml("stage", "Stage", stageInner, { open: !isNewRegistration }),
+      stageRegistrationSectionHtml("hebergement", "Hébergement", lodgingInner, { open: false }),
       registrationTotalSummary(eventTotal, lodgingTotal, stage),
     ].join("");
     const footerButtons = [
@@ -32250,11 +32372,19 @@ ${esc(bodyText)}</pre>
         input.addEventListener("change", () => updateRegistrationPaymentSplits(form, stage));
       });
       updateRegistrationPaymentSplits(form, stage);
+      // STAGE-1A — accordéons : bascule mono/multi-ouverture (mandat §7), branchée AVANT la logique
+      // de focus paiement ci-dessous pour pouvoir ouvrir le bon accordéon en amont du scroll.
+      const { openSection } = bindStageRegistrationSectionToggles(form);
       // Lot À faire R2 (correctif Pix, Bloqueur 2) — segment EXACT (event/lodging) selon
       // opts.focusPayment.segment, jamais deviné : voir paymentFocusScrollSelector
       // (09-payments-core.js). Au plus un seul des deux sélectionne réellement une section.
       const eventPaymentScroll = paymentFocusScrollSelector(opts.focusPayment, '[data-payment-prefix="eventPayment"]', "event");
       const lodgingPaymentScroll = paymentFocusScrollSelector(opts.focusPayment, '[data-payment-prefix="lodgingPayment"]', "lodging");
+      // STAGE-1A (mandat §8) — le paiement ciblé ne doit JAMAIS rester caché dans un accordéon fermé :
+      // ouvrir Stage/Hébergement AVANT le scroll, jamais après (sinon le scroll viserait un élément
+      // encore masqué par [hidden] via .collapsible-content non ouverte).
+      if (eventPaymentScroll) openSection(form.querySelector('[data-stage-registration-section="stage"]'));
+      if (lodgingPaymentScroll) openSection(form.querySelector('[data-stage-registration-section="hebergement"]'));
       const registrationPaymentScroll = eventPaymentScroll || lodgingPaymentScroll;
       if (registrationPaymentScroll) form.querySelector(registrationPaymentScroll)?.scrollIntoView({ block: "center", behavior: "smooth" });
     }, footerButtons);
