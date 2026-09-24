@@ -3779,17 +3779,52 @@ tfoot td {
   overflow: visible;
 }
 
-/* Boutique : la liste des commandes vit dans une bande dépliable dont les conteneurs
-   (.band -> .collapsible-content -> .collapsible-inner) ont overflow:hidden (requis par
-   l'animation de dépliage grid-template-rows). Une fois la bande OUVERTE, ce clip rognait
-   le panneau de paiement flottant d'une commande, et la commande suivante repassait au-dessus.
-   Tant qu'un tiroir de paiement est ouvert (bande forcément dépliée, hors animation), on
-   rétablit overflow:visible sur cette chaîne -> le panneau peut déborder et rester au-dessus.
-   Ciblé Boutique (.shop-collapsible-band) : aucun effet sur les autres bandes/listes, ni sur
-   les commandes fermées (la règle ne s'active qu'avec un .payment-drawer.live[open]). */
-.shop-collapsible-band:has(.payment-drawer.live[open]),
-.shop-collapsible-band:has(.payment-drawer.live[open]) .collapsible-content,
-.shop-collapsible-band:has(.payment-drawer.live[open]) .collapsible-inner {
+/* MOB-2K-B (P1) — GÉNÉRALISATION du correctif Boutique ci-dessus à TOUTES les bandes dépliables
+   pouvant contenir un tiroir de paiement (paymentFields()/paymentControls(), cf. 09-payments-core.js),
+   pas seulement Boutique. Cause confirmée par mesure réelle (Adhésion, .membership-section) :
+   .collapsible-content anime sa hauteur via grid-template-rows (0fr -> 1fr) et NE SE RECALCULE PAS
+   de façon fiable quand le contenu grandit APRÈS l'ouverture de la bande (ex. un tiroir de paiement
+   qui s'étoffe) — .collapsible-inner, avec son overflow:hidden hérité (requis pour l'animation de
+   dépliage), rogne alors le bas du contenu : mesuré 618px de contenu réel pour 449px seulement
+   visibles, bouton « Payer » entièrement inaccessible même après défilement au maximum du dialogue.
+   Le même mécanisme touche aussi bien un tiroir "live" (Boutique, flottant) qu'un tiroir "form"
+   (Adhésion/Stage, en flux normal) : on cible donc .payment-drawer[open] SANS filtrer sur .live,
+   volontairement plus large que le correctif Boutique d'origine.
+   4 familles de bandes RÉELLEMENT concernées (les seules à englober un tiroir de paiement dans le
+   projet, cf. audit MOB-2K-B) : .shop-collapsible-band (Boutique, paymentControls "live"),
+   .membership-section (Adhésion, paymentFields "form"), .stage-registration-section (Stage,
+   paymentFields "form"). .contact-section est ajoutée par prudence/cohérence (même architecture
+   partagée, cf. commentaire membershipSectionHtml) même si aucune de ses sections actuelles n'embarque
+   de tiroir — no-op tant que ce reste vrai (:has() ne matche rien).
+   Tant qu'un tiroir de paiement est ouvert (bande forcément dépliée, hors animation), on rétablit
+   overflow:visible sur toute la chaîne -> le contenu peut s'étendre à sa taille réelle, jamais rogné.
+   Accordéon FERMÉ : inchangé, .collapsible-band:not(.open) .collapsible-inner (règle dédiée,
+   spécificité équivalente, cf. plus haut) continue de forcer max-height:0 — cette règle ne s'active
+   QUE si un .payment-drawer[open] existe, donc jamais sur une bande sans paiement ni sur son état
+   fermé normal.
+   Sécurisation (révision pré-commit) — `.open` EXPLICITE ajouté à chaque sélecteur de conteneur, en
+   plus de `:has(.payment-drawer[open])` : sans lui, si la bande parente est refermée (perd sa classe
+   `.open`) alors qu'un payment-drawer descendant garde son attribut `[open]` (le natif <details> ne
+   se ferme jamais tout seul quand un ancêtre se replie), `:has()` continuerait de matcher et
+   overflow:visible resterait appliqué à une bande fermée — fuite visuelle potentielle. Vérifié dans
+   les 4 sources (src/12-shop-contacts-render.js, src/19-contact-dialogs.js x3) : les 4 familles
+   utilisent TOUTES littéralement la classe "open" comme unique marqueur d'ouverture (même ternaire
+   `${isOpen ? "open" : ""}` / `${open ? "open" : ""}`), donc `.open` est bien leur état réel, jamais
+   un marqueur inventé. Désormais : overflow:visible actif UNIQUEMENT si la bande est OUVERTE ET
+   qu'un payment-drawer descendant est ouvert — les deux conditions requises, jamais l'une sans
+   l'autre. */
+.shop-collapsible-band.open:has(.payment-drawer[open]),
+.shop-collapsible-band.open:has(.payment-drawer[open]) .collapsible-content,
+.shop-collapsible-band.open:has(.payment-drawer[open]) .collapsible-inner,
+.membership-section.open:has(.payment-drawer[open]),
+.membership-section.open:has(.payment-drawer[open]) .collapsible-content,
+.membership-section.open:has(.payment-drawer[open]) .collapsible-inner,
+.stage-registration-section.open:has(.payment-drawer[open]),
+.stage-registration-section.open:has(.payment-drawer[open]) .collapsible-content,
+.stage-registration-section.open:has(.payment-drawer[open]) .collapsible-inner,
+.contact-section.open:has(.payment-drawer[open]),
+.contact-section.open:has(.payment-drawer[open]) .collapsible-content,
+.contact-section.open:has(.payment-drawer[open]) .collapsible-inner {
   overflow: visible;
 }
 
@@ -13916,6 +13951,41 @@ td.due,
 }
 
 @media (max-width: 768px) {
+  /* MOB-2K-B — autozoom iPhone au focus. Cause racine confirmée par audit : `label { font-size:
+     0.82rem }` (13.12px) + `input/select/textarea { font: inherit }` (règle de base, non-mobile,
+     ligne ~438) font hériter 13.12px à la quasi-totalité des contrôles de formulaire, alors que
+     Safari iOS zoome automatiquement la page au focus de tout champ éditable rendu sous 16px.
+     Correctif volontairement CIBLÉ sur les seuls contrôles textuels réellement éditables (liste
+     explicite du mandat) — jamais checkbox/radio/range/color/hidden/file/button, qui n'affichent
+     aucun curseur de saisie et ne déclenchent donc pas ce zoom. Les LABELS eux-mêmes restent à
+     0.82rem (résolu indépendamment ci-dessus, jamais touché ici) : seuls les CONTRÔLES sont
+     recadrés à 16px, contredisant leur héritage `font:inherit` du label parent. Ni `user-scalable=
+     no` ni `maximum-scale` ne sont utilisés — le zoom VOLONTAIRE de l'utilisateur reste possible.
+     `!important` nécessaire et volontaire : l'audit (mesure réelle, pas seulement lecture du CSS) a
+     trouvé des dizaines de sélecteurs plus spécifiques et scopés à un contexte compact précis (ex.
+     `.payment-mini-row select { font-size: 0.74rem }`, spécificité (0,1,1) > (0,0,1) de `select` seul)
+     qui gagnaient silencieusement la cascade et repassaient sous 16px malgré cette règle. Il s'agit
+     d'une correction d'accessibilité/correction transversale : elle doit gagner sur TOUTE règle
+     cosmétique existante ou future, jamais l'inverse — doctrine déjà utilisée ailleurs dans ce fichier
+     (cf. `.collapsible-band:not(.open) .collapsible-inner`, plus haut). */
+  input[type="text"],
+  input[type="search"],
+  input[type="email"],
+  input[type="tel"],
+  input[type="url"],
+  input[type="password"],
+  input[type="number"],
+  input[type="date"],
+  input[type="time"],
+  input[type="datetime-local"],
+  input[type="month"],
+  input[type="week"],
+  input:not([type]),
+  select,
+  textarea {
+    font-size: 16px !important;
+  }
+
   /* La sidebar desktop et le topmenu classique ne servent plus de navigation mobile : ils
      deviennent visuellement absents (jamais un simple rétrécissement/scroll horizontal). */
   .shell > .sidebar { display: none; }
