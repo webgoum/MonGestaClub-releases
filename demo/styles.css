@@ -389,14 +389,31 @@ body {
    un <h1>, qui tronque déjà proprement avec ellipsis : aucun risque de débordement nouveau), titre
    de dialogue (.dialog-header h2) et identité de fiche (.discipline-summary-name, seul <h2> de ce
    type dans le code — Contact/Stage utilisent des champs éditables, jamais un <h2> statique).
+   MOB-2K-A — .cockpit-hero h2 (titre de bienvenue du tableau de bord) ajouté explicitement : décision
+   produit confirmée par Pix, c'est un titre majeur au même titre que h1, il avait perdu son override
+   de police lors du resserrage initial du sélecteur (régression MOB-2K, cause A confirmée par audit).
    h2/h3 ordinaires, accordéons (.band-title strong) et KPI (.kpi strong) restent en Nunito Sans
    (héritage naturel de --font-body) : jamais un h2/h3 générique, qui attraperait aussi les
    sous-titres et accordéons courants (doctrine explicite du lot, cf. rapport). */
 h1,
 .mobile-topbar-title,
 .dialog-header h2,
-.discipline-summary-name {
+.discipline-summary-name,
+.cockpit-hero h2 {
   font-family: var(--font-heading-major);
+}
+
+/* MOB-2K-A §5 — Bree Serif n'existe localement qu'en poids réel 400 (cf. google-fonts-local.css) :
+   demander 600/700 force Chrome/Safari à synthétiser un gras, potentiellement différemment selon le
+   moteur de rendu. .dialog-header h2/.discipline-summary-name/.cockpit-hero h2 héritaient du gras
+   <h2> par défaut du navigateur (jamais explicité), jamais audité depuis TYPOGRAPHY-1 : fixés à 400
+   explicitement. .mobile-topbar-title est traité séparément (poids 600 réel dans le bloc mobile
+   @media (max-width:768px), cf. plus bas) — pas ici, pour ne jamais le faire dépendre de la cascade
+   avec ce bloc non-media. h1 n'est pas concerné par ce correctif (hors périmètre du mandat). */
+.dialog-header h2,
+.discipline-summary-name,
+.cockpit-hero h2 {
+  font-weight: 400;
 }
 
 .sidebar,
@@ -2162,6 +2179,50 @@ tfoot td {
   margin: 0;
   max-width: 760px;
   color: var(--muted);
+  grid-area: paragraph;
+}
+
+/* MOB-2K-A §2 — grille (remplace le display:flex + style inline d'origine — un style inline aurait
+   empêché toute correction mobile ci-dessous sans !important). Desktop/tablette (>480px) : la zone
+   "logo" couvre les deux lignes (comme l'ancien align-items:center sur la ligne flex), "heading"
+   (saison+titre) et "paragraph" s'empilent à sa droite — comportement visuel strictement inchangé
+   par rapport à l'ancien display:flex + <div> unique englobant span/h2/p. */
+.home-welcome {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  grid-template-areas: "logo heading" "logo paragraph";
+  column-gap: 16px;
+  row-gap: 2px;
+  align-items: center;
+}
+
+.home-welcome-logo {
+  grid-area: logo;
+  align-self: center;
+  width: 64px;
+  height: 64px;
+  border-radius: 14px;
+  object-fit: contain;
+  background: rgba(255, 255, 255, 0.16);
+  padding: 6px;
+}
+
+.home-welcome-heading {
+  grid-area: heading;
+}
+
+@media (max-width: 480px) {
+  /* MOB-2K-A (révision pré-commit) — régression réelle iPhone (capture Thierry) : la composition en
+     colonne (logo au-dessus, titre, puis paragraphe) de la première correction améliorait la
+     lisibilité mais ajoutait trop de hauteur (390px : 441 -> 486px ; 320px : 463 -> 515px). Nouvelle
+     composition compacte, toujours SANS colonne logo+texte étroite (cause du bug d'origine) :
+     [ logo | saison+titre ] sur une ligne, [ paragraphe pleine largeur ] sur la ligne suivante,
+     celle-ci s'étendant SOUS le logo (grid-column: logo + heading réunies), jamais indentée. */
+  .home-welcome {
+    grid-template-columns: 64px 1fr;
+    grid-template-areas: "logo heading" "paragraph paragraph";
+    row-gap: 8px;
+  }
 }
 
 .quick-actions {
@@ -13901,9 +13962,9 @@ td.due,
     display: flex;
     flex-wrap: nowrap;
     align-items: center;
-    gap: 10px;
+    gap: 8px;
     min-height: 44px;
-    padding: 0 10px;
+    padding: 0 8px;
     background: var(--surface);
     border-bottom: 1px solid var(--line-strong);
     /* Correctif MOB-1L (bug réel constaté sur iPhone, vidéo de Thierry) : position:relative
@@ -13922,10 +13983,15 @@ td.due,
      .mobile-topbar (burger | titre | toolbar), sur la même ligne, la même surface sticky. .flex-wrap:
      nowrap ci-dessus + flex:0 0 auto sur .mobile-toolbar-bar (ci-dessous) garantissent qu'AUCUN
      élément ne bascule sur une 2e ligne : seul .mobile-topbar-title (flex:1 1 auto, min-width:0)
-     absorbe le manque de place en se tronquant (ellipsis), jamais les boutons d'action. Mesuré :
-     burger(44) + gaps(2x10) + padding(2x10) + barre d'outils compacte (~196 : 3 boutons 44px +
-     gaps + bouton "⋯" 44px) = 280px de contenu fixe ; à 320px il reste 40px pour le titre (tronqué,
-     comportement accepté par le mandat), à 390px 110px (confortable). */
+     absorbe le manque de place en se tronquant (ellipsis), jamais les boutons d'action. Mesuré à
+     l'origine (MOB-1M) : burger(44) + gaps(2x10) + padding(2x10) + barre d'outils compacte (~196 :
+     3 boutons 44px + gaps + bouton "⋯" 44px) = 280px de contenu fixe ; à 320px il ne restait que 40px
+     pour le titre (tronqué), à 390px 110px.
+     Correctif MOB-2K-A §4 : les boutons (44x44, touch target minimal imposé par le mandat) et le
+     nombre d'actions ne sont PAS réduits — seuls les gaps/paddings, purement esthétiques, sont
+     resserrés (padding .mobile-topbar 10→8px, gap principal 10→8px, gap barre d'outils 8→6px, gap
+     entre boutons prioritaires 6→4px, cf. règles ci-dessous et plus bas) : 14px regagnés, budget fixe
+     ramené à 266px. À 320px il reste désormais 54px pour le titre (au lieu de 40), à 390px 124px. */
   .mobile-nav-toggle {
     display: inline-flex;
     align-items: center;
@@ -13943,13 +14009,16 @@ td.due,
   .mobile-topbar-title {
     /* Correctif MOB-1M : seule partie flexible du bandeau unique (flex:1 1 auto) — absorbe tout
        l'espace restant entre le burger et la barre d'outils compacte, et se tronque en premier
-       (min-width:0 + ellipsis) plutôt que de forcer un retour à la ligne ou un débordement. */
+       (min-width:0 + ellipsis) plutôt que de forcer un retour à la ligne ou un débordement.
+       MOB-2K-A §5 : poids fixé à 400 (Bree Serif n'existe localement qu'en 400 réel — l'ancien 600
+       hérité de la typo précédente forçait un gras synthétique, potentiellement plus large sur
+       Safari, aggravant la troncature ci-dessous corrigée par ailleurs (§4). */
     flex: 1 1 auto;
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    font-weight: 600;
+    font-weight: 400;
     font-size: 0.95rem;
   }
 
@@ -14137,13 +14206,13 @@ td.due,
   .mobile-toolbar-bar {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 6px;
     flex: 0 0 auto;
   }
   .mobile-toolbar-priority {
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: 4px;
     flex: 1 1 auto;
     min-width: 0;
     overflow: hidden;
@@ -14243,6 +14312,22 @@ td.due,
     width: 20px;
     text-align: center;
     font-size: 0.75rem;
+  }
+
+  /* MOB-2K-A §7 — Boutique, débordement horizontal confirmé (audit MOB-2K : ~16-26px à 390px,
+     ~46-96px à 320px). .shop-article-row (colonnes fixes 32/56/98px + un plancher minmax(130px, 1fr)
+     pour le nom, jamais overridé pour mobile) dépassait mécaniquement la largeur du conteneur, le
+     plancher de 130px du nom étant le principal contributeur. Contenu s'adapte (aucun overflow-x
+     masqué) : plancher abaissé, colonnes secondaires resserrées, et le nom obtient enfin le
+     white-space:nowrap qui manquait pour que son text-overflow:ellipsis (règle de base, ligne
+     ~4425) ait un effet réel au lieu de simplement s'enrouler sans jamais tronquer proprement. */
+  .shop-article-row {
+    grid-template-columns: 32px minmax(70px, 1fr) 44px 80px;
+    gap: 8px;
+  }
+
+  .shop-article-row > span:not(.article-image) {
+    white-space: nowrap;
   }
 
   /* Lot MOB-1E — dialogues/modales mobile.

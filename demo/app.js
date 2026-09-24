@@ -11577,13 +11577,13 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
 
     return `
       <div class="cockpit-hero">
-        <div class="home-welcome" style="display:flex;gap:16px;align-items:center">
-          <img src="${esc(appLogoSrc())}" alt="" style="width:64px;height:64px;border-radius:14px;object-fit:contain;background:rgba(255,255,255,.16);padding:6px;flex:none" />
-          <div>
+        <div class="home-welcome">
+          <img class="home-welcome-logo" src="${esc(appLogoSrc())}" alt="" />
+          <div class="home-welcome-heading">
             <span>${esc(dashboardSeasonLabel())}</span>
             <h2>Bienvenue · ${esc(clubName)}</h2>
-            <p>${esc(welcomeMsg)}</p>
           </div>
+          <p>${esc(welcomeMsg)}</p>
         </div>
         <div class="quick-actions">${quickActions}</div>
       </div>
@@ -21156,7 +21156,7 @@ ${esc(bodyText)}</pre>
   // changement de politique puisque toute la bande est reconstruite par le rendu (render()).
   function groupAgePolicyButton(field, mode, label, detail, canManage, clubId) {
     const active = currentGroupAgePolicy()[field] === mode;
-    return `<button type="button" class="${active ? "primary" : ""}" aria-pressed="${active ? "true" : "false"}" data-action="set-group-age-policy" data-policy-field="${esc(field)}" data-policy-mode="${esc(mode)}" data-setting-club-id="${esc(clubId)}" ${canManage ? "" : "disabled"} style="flex:1 1 220px;text-align:left;padding:10px 12px">
+    return `<button type="button" class="${active ? "primary" : ""}" aria-pressed="${active ? "true" : "false"}" data-action="set-group-age-policy" data-policy-field="${esc(field)}" data-policy-mode="${esc(mode)}" data-setting-club-id="${esc(clubId)}" ${canManage ? "" : "disabled"} style="flex:1 1 200px;min-width:0;text-align:left;padding:10px 12px">
       <strong style="display:block">${esc(label)}</strong>
       <small style="display:block;font-weight:400;opacity:.85;margin-top:2px">${esc(detail)}</small>
     </button>`;
