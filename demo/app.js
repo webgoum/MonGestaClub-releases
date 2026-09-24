@@ -229,7 +229,7 @@
   // donc pas diverger silencieusement — une section ajoutée sans être déclarée ici est signalée.
   // Ajouter une bande = ajouter son identifiant ICI, nulle part ailleurs.
   const SETTINGS_PANEL_IDS = [
-    "themes", "typography", "postits", "features", "display", "menu-order", "checks",
+    "themes", "postits", "features", "display", "menu-order", "checks",
     "security", "logo", "emails", "smtp", "users", "data", "license",
     // Lot 3B-2B — gestion des profils sportifs et des catégories par discipline. Identifiant
     // volontairement distinct de la VUE « disciplines » (menu principal) : ce sont deux surfaces
@@ -3832,12 +3832,6 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
   function fontOptionValue(value, fallback) {
     const text = asText(value);
     return FONT_OPTIONS.some((font) => font.value === text) ? text : fallback;
-  }
-
-  function fontSizeScale(value) {
-    const text = asText(value);
-    const match = FONT_SIZE_OPTIONS.find(([key]) => key === text);
-    return match ? match[2] : "1";
   }
 
   function defaultTypographySettings() {
@@ -8611,7 +8605,6 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
     // Les identifiants de bande sont ceux passés à settingsCollapsibleBand() (16-settings-themes).
     const settingsBands = [
       ["themes", "Thèmes", "Changer l'apparence du logiciel.", ["theme", "apparence", "couleur", "couleurs", "graphite", "ubuntu", "classic", "sombre", "clair", "style"]],
-      ["typography", "Polices", "Choisir les polices des titres, du texte et des boutons.", ["police", "polices", "typographie", "font", "taille du texte", "caractere"]],
       ["postits", "Post-it À faire", "Couleurs et modèles des post-it.", ["post it", "postit", "pense bete", "couleur des post it"]],
       ["features", "Fonctionnalités du club", "Activer ou désactiver des fonctions pour ce club.", ["fonctionnalite", "fonctionnalites", "fonction", "module", "modules", "activer", "desactiver", "option du club"]],
       ["display", "Affichage", "Mode Simple, Avancé ou Personnalisé et modules visibles.", ["affichage", "mode", "mode simple", "mode avance", "mode personnalise", "simple", "avance", "personnalise", "layout", "interface", "menu visible"]],
@@ -10644,15 +10637,17 @@ const SPORT_DISCIPLINE_IDS = Object.freeze(new Set(Object.freeze(["bmx", "cross-
     else document.body.style.removeProperty("background");
   }
 
+  // TYPOGRAPHY-1 — la typographie est désormais FIXE (Nunito Sans + Bree Serif, :root de styles.css) ;
+  // aucune préférence utilisateur ne peut plus la modifier. Cette fonction devient un mécanisme de
+  // COMPATIBILITÉ PASSIVE : elle retire toute ancienne propriété inline posée par une session/version
+  // antérieure sur document.documentElement, pour que les valeurs CSS fixes reprennent toujours la
+  // main. settings.typography reste normalisé (lecture tolérante d'anciennes sauvegardes, cf.
+  // normalizeTypographySettings) mais n'est plus jamais appliqué à l'affichage.
   function applyTypographySettings() {
     settings.typography = normalizeTypographySettings(settings.typography);
     const root = document.documentElement;
-    root.style.setProperty("--font-body", settings.typography.bodyFont);
-    root.style.setProperty("--font-title", settings.typography.titleFont);
-    root.style.setProperty("--font-button", settings.typography.buttonFont);
-    root.style.setProperty("--font-menu", settings.typography.menuFont);
-    root.style.setProperty("--font-size-scale", fontSizeScale(settings.typography.fontSize));
-    root.style.setProperty("--font-weight-base", settings.typography.fontWeight);
+    ["--font-body", "--font-title", "--font-button", "--font-menu", "--font-size-scale", "--font-weight-base"]
+      .forEach((prop) => root.style.removeProperty(prop));
   }
 
   function postitDesignUrl(design) {
@@ -18027,36 +18022,6 @@ ${esc(bodyText)}</pre>
     return { ok: true, changed: true };
   }
 
-  // Lot R-UX3B (SEC-2) — la typographie du logiciel (settings.typography) est un réglage CLUB
-  // PARTAGÉ, persisté via persistSettings()/saveCurrentClubPayload exactement comme Logo/Identité/
-  // Saison ci-dessus, mais mutée jusqu'ici SANS AUCUNE GARDE (ni clubSettings.manage, ni club source,
-  // ni stale-club) directement dans les listeners. Corrigé avec la même doctrine STRUCT-B2-01 :
-  // club source explicite (jamais activeClubId() relu implicitement), clubSettings.manage, fail-closed.
-  function setClubTypographyFieldForClub(clubId, field, value) {
-    const cid = asText(clubId);
-    if (!cid) return { ok: false, reason: "no-club" };
-    if (activeClubId() !== cid) return { ok: false, reason: "stale-club" };
-    if (!Object.keys(defaultTypographySettings()).includes(asText(field))) return { ok: false, reason: "invalid-field" };
-    if (!currentUserHasPermission("clubSettings.manage", cid)) return { ok: false, reason: "forbidden" };
-    recordHistory();
-    settings.typography = normalizeTypographySettings({ ...(settings.typography || {}), [field]: value });
-    persistSettings();
-    applyTypographySettings();
-    return { ok: true };
-  }
-
-  function resetClubTypographyForClub(clubId) {
-    const cid = asText(clubId);
-    if (!cid) return { ok: false, reason: "no-club" };
-    if (activeClubId() !== cid) return { ok: false, reason: "stale-club" };
-    if (!currentUserHasPermission("clubSettings.manage", cid)) return { ok: false, reason: "forbidden" };
-    recordHistory();
-    settings.typography = defaultTypographySettings();
-    persistSettings();
-    applyTypographySettings();
-    return { ok: true };
-  }
-
   // Lot R-UX3B (SEC-3) — même doctrine pour les couleurs personnalisées du thème (settings.themeColors),
   // réglage CLUB partagé mutable jusqu'ici sans aucune garde depuis TROIS voies distinctes (pastille
   // couleur en direct, bouton « Origine » par couleur, bouton « Couleurs d'origine » du studio) : les
@@ -18160,7 +18125,6 @@ ${esc(bodyText)}</pre>
             </div>
           </article>`).join("")}
         </div>`)}
-      ${settingsCollapsibleBand("typography", "Polices", "Titres, texte, boutons", typographySettingsHtml())}
       ${settingsCollapsibleBand("postits", "Post-it À faire", "Couleurs et modèles", postitSettingsHtml())}
       ${settingsCollapsibleBand("features", "Fonctionnalités du club", featuresClubBandSummary(), featuresClubBandBody())}
       ${canReadSport ? settingsCollapsibleBand("sport-categories", "Disciplines et catégories sportives", sportCategoriesBandSummary(), sportCategoriesBandBody()) : ""}
@@ -20713,49 +20677,6 @@ ${esc(bodyText)}</pre>
     const message = saveExistingClubGuarded(updated, club, club.id);
     if (message) ui.saveMessage = message;
     render();
-  }
-
-  function fontSelect(name, label, value, detail = "", extra = "") {
-    return `<label>${esc(label)}
-      <select data-typography="${esc(name)}" ${extra}>
-        ${FONT_OPTIONS.map((font) => `<option value="${esc(font.value)}" ${font.value === value ? "selected" : ""}>${esc(font.label)} - ${esc(font.note)}</option>`).join("")}
-      </select>
-      ${detail ? `<small>${esc(detail)}</small>` : ""}
-    </label>`;
-  }
-
-  function typographySettingsHtml() {
-    settings.typography = normalizeTypographySettings(settings.typography);
-    // Lot R-UX3B (SEC-2) — canManage capturé ICI pour le RENDU uniquement (disabled/notice, UX) ;
-    // revalidé en LIVE par setClubTypographyFieldForClub/resetClubTypographyForClub au moment de
-    // chaque mutation, jamais seulement ici (même doctrine que canManageClubSettings de renderSettings()).
-    const typographyClubId = activeClubId();
-    const canManageTypography = currentUserHasPermission("clubSettings.manage", typographyClubId);
-    const typographyExtra = `data-setting-club-id="${esc(typographyClubId)}"${canManageTypography ? "" : " disabled"}`;
-    return `<div class="settings-panel typography-settings ${permissionSurfaceClass(canManageTypography)}">
-      <p class="muted">Choisis les polices du logiciel. Lobster est proposée pour les titres, mais les polices plus simples restent meilleures pour lire tous les jours.</p>
-      <div class="form-grid compact">
-        ${fontSelect("titleFont", "Police des titres", settings.typography.titleFont, "Titres de pages, fiches et indicateurs.", typographyExtra)}
-        ${fontSelect("bodyFont", "Police du texte", settings.typography.bodyFont, "Texte principal, formulaires et tableaux.", typographyExtra)}
-        ${fontSelect("buttonFont", "Police des boutons", settings.typography.buttonFont, "Boutons et actions.", typographyExtra)}
-        ${fontSelect("menuFont", "Police des menus", settings.typography.menuFont, "Menu de gauche et navigation.", typographyExtra)}
-        <label>Taille générale
-          <select data-typography="fontSize" ${typographyExtra}>${FONT_SIZE_OPTIONS.map(([key, label]) => `<option value="${esc(key)}" ${settings.typography.fontSize === key ? "selected" : ""}>${esc(label)}</option>`).join("")}</select>
-        </label>
-        <label>Épaisseur du texte
-          <select data-typography="fontWeight" ${typographyExtra}>${FONT_WEIGHT_OPTIONS.map(([key, label]) => `<option value="${esc(key)}" ${settings.typography.fontWeight === key ? "selected" : ""}>${esc(label)}</option>`).join("")}</select>
-        </label>
-      </div>
-      <div class="typography-preview">
-        <h3>Aperçu du titre MonGestaClub</h3>
-        <p>Voici un texte de formulaire, une information secondaire et un bouton pour vérifier la lisibilité.</p>
-        <button type="button">Bouton exemple</button>
-      </div>
-      <div class="inline-actions">
-        <button type="button" data-action="reset-typography" data-setting-club-id="${esc(typographyClubId)}" ${canManageTypography ? "" : "disabled"}>Réinitialiser les polices par défaut</button>
-      </div>
-      ${canManageTypography ? "" : readOnlyNoticeHtml("Vos droits actuels vous permettent de consulter les polices du logiciel, mais pas de les modifier. L'autorisation « Gérer les paramètres du club » est nécessaire.")}
-    </div>`;
   }
 
   function postitSettingsHtml() {
@@ -36768,17 +36689,6 @@ ${esc(bodyText)}</pre>
       draft[target.dataset.emailTemplateDraftField] = target.value;
       return;
     }
-    if (target.dataset.typography) {
-      // Lot R-UX3B (SEC-2) — mutation déléguée à setClubTypographyFieldForClub (src/16-settings-themes.js),
-      // doctrine STRUCT-B2-01 : club source explicite (data-setting-club-id), clubSettings.manage,
-      // fail-closed. Comportement historique préservé à l'identique si le droit est présent.
-      const sourceClubId = asText(target.dataset.settingClubId);
-      const result = setClubTypographyFieldForClub(sourceClubId, target.dataset.typography, target.value);
-      if (!result.ok) { render(); return; }
-      ui.saveMessage = "Polices mises à jour";
-      render();
-      return;
-    }
     if (target.dataset.postitStyle && target.tagName === "SELECT") {
       updatePostitStyleControl(target);
       return;
@@ -37582,17 +37492,6 @@ ${esc(bodyText)}</pre>
       ui.newsletterTemplateKey = "reminder";
       ui.newsletterExcludedEmails = [];
       ui.saveMessage = "Relances paiement : les contacts en retard sont présélectionnés.";
-      render();
-      return;
-    }
-    if (action === "reset-typography") {
-      // Lot R-UX3B (SEC-2) — mutation déléguée à resetClubTypographyForClub (src/16-settings-themes.js),
-      // doctrine STRUCT-B2-01 : club source explicite (data-setting-club-id), clubSettings.manage,
-      // fail-closed. Comportement historique préservé à l'identique si le droit est présent.
-      const sourceClubId = button.dataset.settingClubId || "";
-      const result = resetClubTypographyForClub(sourceClubId);
-      if (!result.ok) { render(); return; }
-      ui.saveMessage = "Polices par défaut restaurées";
       render();
       return;
     }
